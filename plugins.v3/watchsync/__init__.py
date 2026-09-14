@@ -9,16 +9,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Dict, Tuple, Optional
 from functools import wraps
 from collections import defaultdict
+# sqlite3 仅用于只读访问极空间自身的 /zvideo/zvideo.db，不用于插件自有存储。
 import sqlite3
 import os
 from urllib.parse import quote
 
-from app.core.event import eventmanager, Event
-from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import WebhookEventInfo
 from app.schemas.types import EventType
-from app.core.config import settings
+from app.sdk.config import settings
+from app.sdk.events import Event, eventmanager
+from app.sdk.logging import logger
+from app.sdk.services import MediaServerHelper
+
+from .models import WatchSyncRecordStore
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -166,7 +170,7 @@ class LocalZSpaceInstance:
 
     def get_data(self, url: str):
         try:
-            from app.utils.http import RequestUtils
+            from app.sdk.network import RequestUtils
             return RequestUtils(headers=self._headers()).get_res(url=self._replace_url(url))
         except Exception as e:
             logger.error(f"连接本机极影视出错：{e}")
@@ -174,7 +178,7 @@ class LocalZSpaceInstance:
 
     def post_data(self, url: str, data: Optional[str] = None, headers: dict = None):
         try:
-            from app.utils.http import RequestUtils
+            from app.sdk.network import RequestUtils
             return RequestUtils(headers=self._headers(headers)).post_res(
                 url=self._replace_url(url), data=data)
         except Exception as e:
@@ -190,7 +194,7 @@ class WatchSync(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
     # 插件版本
-    plugin_version = "3.0.0"
+    plugin_version = "4.0.0"
     # 插件作者
     plugin_author = "DzAvril"
     # 作者主页
@@ -214,7 +218,8 @@ class WatchSync(_PluginBase):
         self._emby_instances = {}
         self._zspace_instances = {}
         self._server_types = {}
-        self._db_path = None
+        # V3 插件自有表访问器，在 init_plugin 中按运行实例 ID 建立
+        self._record_store: Optional[WatchSyncRecordStore] = None
         self._zspace_poll_enabled = True
         self._zspace_poll_interval = 30
         self._zspace_poll_limit = 20
@@ -264,11 +269,11 @@ class WatchSync(_PluginBase):
                         f"zspace_poll_enabled={self._zspace_poll_enabled}, "
                         f"zspace_poll_interval={self._zspace_poll_interval}")
 
-        # 初始化数据库（需在配置加载后，确保 PLUGIN_DATA_PATH 已就绪）
+        # 初始化插件自有表（需在配置加载后执行，且必须可重复调用）
         self._init_database()
 
         # 获取Emby服务器实例
-        self._load_emby_instances()
+        self._load_media_server_instances()
         self._start_zspace_poll_scheduler()
 
         # 记录API端点信息（简化日志）
@@ -405,67 +410,22 @@ class WatchSync(_PluginBase):
 
     def _init_database(self):
         """
-        初始化数据库
+        初始化插件自有表与访问器。
+
+        只创建缺失的表结构，因此可重复调用；初始化失败时禁用明细记录能力，
+        但不影响观看记录同步主流程。
         """
+        self._record_store = None
         try:
-            # 获取插件数据目录
-            plugin_data_dir = os.path.join(
-                settings.PLUGIN_DATA_PATH, "watchsync/data")
-            if not os.path.exists(plugin_data_dir):
-                os.makedirs(plugin_data_dir)
-
-            self._db_path = os.path.join(plugin_data_dir, "watchsync.db")
-
-            # 创建数据库表
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.cursor()
-
-                # 同步记录表
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS sync_records (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
-                        source_server TEXT NOT NULL,
-                        source_user TEXT NOT NULL,
-                        target_server TEXT NOT NULL,
-                        target_user TEXT NOT NULL,
-                        media_name TEXT NOT NULL,
-                        media_type TEXT NOT NULL,
-                        media_id TEXT,
-                        position_ticks INTEGER,
-                        sync_type TEXT DEFAULT 'playback',
-                        status TEXT NOT NULL,
-                        error_message TEXT,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                # 检查并添加sync_type字段（为了兼容旧数据库）
-                try:
-                    cursor.execute(
-                        "ALTER TABLE sync_records ADD COLUMN sync_type TEXT DEFAULT 'playback'")
-                except sqlite3.OperationalError:
-                    # 字段已存在，忽略错误
-                    pass
-
-                # 统计信息表
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS sync_stats (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        date TEXT NOT NULL UNIQUE,
-                        total_syncs INTEGER DEFAULT 0,
-                        success_syncs INTEGER DEFAULT 0,
-                        failed_syncs INTEGER DEFAULT 0,
-                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-
-                conn.commit()
-                logger.info(f"数据库初始化完成: {self._db_path}")
-
+            WatchSyncRecordStore.ensure_table()
+            self._record_store = WatchSyncRecordStore(self.__class__.__name__)
+            logger.info(
+                f"插件自有表初始化完成: plugin_watchsync_record, "
+                f"instance={self._record_store.plugin_id}")
         except Exception as e:
-            logger.error(f"数据库初始化失败: {str(e)}")
-            self._db_path = None
+            logger.error(f"插件自有表初始化失败，本次运行不记录同步明细: {str(e)}")
+            logger.error(traceback.format_exc())
+            self._record_store = None
 
     def get_state(self) -> bool:
         return self._enabled
@@ -492,42 +452,33 @@ class WatchSync(_PluginBase):
             None,
         )
 
-    def _load_emby_instances(self):
+    def _load_media_server_instances(self):
         """
-        从主程序获取Emby和极影视服务器实例
+        通过 V3 稳定 SDK 获取 Emby 与极影视服务器实例。
+
+        旧实现直接读取宿主的 ``ModuleManager._running_modules`` 私有属性，V3 模块
+        分层后该入口不再属于插件合同，因此改为使用 ``MediaServerHelper``。
         """
         self._emby_instances = {}
         self._zspace_instances = {}
         self._server_types = {}
 
+        helper = None
         try:
-            from app.core.module import ModuleManager
-            module_manager = ModuleManager()
-            emby_module = module_manager._running_modules.get("EmbyModule")
-            if emby_module and hasattr(emby_module, 'get_instances'):
-                instances = emby_module.get_instances()
-                if instances:
-                    for name, instance in instances.items():
-                        self._emby_instances[name] = instance
-                        self._server_types[name] = "emby"
-                    logger.info(f"通过ModuleManager加载了 {len(instances)} 个Emby服务器实例")
+            helper = MediaServerHelper()
         except Exception as e:
-            logger.warning(f"ModuleManager方式获取Emby失败: {str(e)}")
+            logger.error(f"媒体服务器服务目录不可用: {str(e)}")
 
-        try:
-            from app.core.module import ModuleManager
-            module_manager = ModuleManager()
-            zspace_module = module_manager._running_modules.get("ZSpaceModule")
-            if zspace_module and hasattr(zspace_module, 'get_instances'):
-                instances = zspace_module.get_instances()
-                if instances:
-                    for name, instance in instances.items():
-                        self._emby_instances[name] = instance
-                        self._zspace_instances[name] = instance
-                        self._server_types[name] = "zspace"
-                    logger.info(f"通过ModuleManager加载了 {len(instances)} 个极影视服务器实例")
-        except Exception as e:
-            logger.warning(f"ModuleManager方式获取极影视失败: {str(e)}")
+        for server_type in ("emby", "zspace") if helper else ():
+            instances = self._fetch_media_server_instances(helper, server_type)
+            for name, instance in instances.items():
+                self._emby_instances[name] = instance
+                self._server_types[name] = server_type
+                if server_type == "zspace":
+                    self._zspace_instances[name] = instance
+            if instances:
+                label = "Emby" if server_type == "emby" else "极影视"
+                logger.info(f"加载了 {len(instances)} 个{label}服务器实例")
 
         local_zspace = self._load_local_zspace_instance()
         if local_zspace:
@@ -541,6 +492,63 @@ class WatchSync(_PluginBase):
         logger.info(
             f"媒体服务器加载完成: Emby={len([s for s, t in self._server_types.items() if t == 'emby'])}, "
             f"ZSpace={len(self._zspace_instances)}")
+
+    @staticmethod
+    def _fetch_media_server_instances(helper, server_type: str) -> Dict[str, Any]:
+        """
+        按服务器类型读取已配置实例，返回 ``服务器名 -> 实例`` 映射。
+
+        宿主不同版本的 ``get_services`` 签名存在差异，过滤式调用不受支持时降级为
+        全量读取，再按实例类型筛选。
+        """
+        services: Dict[str, Any] = {}
+        try:
+            services = helper.get_services(type_filter=server_type) or {}
+        except TypeError:
+            services = {}
+        except Exception as e:
+            logger.warning(f"获取 {server_type} 媒体服务器实例失败: {str(e)}")
+            return {}
+
+        if not services:
+            try:
+                all_services = helper.get_services() or {}
+            except Exception as e:
+                logger.warning(f"读取媒体服务器实例失败: {str(e)}")
+                all_services = {}
+            services = {
+                name: service_info
+                for name, service_info in all_services.items()
+                if WatchSync._classify_media_server(
+                    getattr(service_info, "instance", None)) == server_type
+            }
+
+        return {
+            name: service_info.instance
+            for name, service_info in services.items()
+            if getattr(service_info, "instance", None) is not None
+        }
+
+    @staticmethod
+    def _classify_media_server(instance) -> str:
+        """
+        按实例类名与模块名推断媒体服务器类型，返回 emby / zspace / unknown。
+
+        仅用于宿主未支持类型过滤时的兜底，判断依据与旧版 ``_is_zspace_instance``
+        保持一致，因此 Jellyfin、Plex 等其他类型不会被错误纳入。
+        """
+        if not instance:
+            return "unknown"
+        if getattr(instance, "_is_watchsync_zspace", False):
+            return "zspace"
+        descriptor = (
+            f"{instance.__class__.__name__}.{instance.__class__.__module__}"
+        ).lower()
+        if "zspace" in descriptor:
+            return "zspace"
+        if "emby" in descriptor:
+            return "emby"
+        return "unknown"
 
     def _load_local_zspace_instance(self) -> Optional[Tuple[str, LocalZSpaceInstance]]:
         """
@@ -1377,7 +1385,7 @@ class WatchSync(_PluginBase):
                 "X-Emby-Token": token,
                 "X-Emby-Authorization": f"MediaBrowser Token={token}",
             }
-        from app.utils.http import RequestUtils
+        from app.sdk.network import RequestUtils
         return RequestUtils(headers=headers).delete_res(actual_url)
 
     def _cleanup_expired_syncs(self):
@@ -2441,60 +2449,25 @@ class WatchSync(_PluginBase):
                             target_user: str, item_info: dict, position_ticks: int,
                             status: str, error_message: str = None, sync_type: str = "playback"):
         """
-        记录同步结果到数据库
+        记录同步结果到插件自有表
         """
-        if not self._db_path:
+        if not self._record_store:
             return
 
         try:
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.cursor()
-
-                # 插入同步记录
-                cursor.execute('''
-                    INSERT INTO sync_records
-                    (timestamp, source_server, source_user, target_server, target_user,
-                     media_name, media_type, media_id, position_ticks, sync_type, status, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    datetime.now().isoformat(),
-                    source_server,
-                    source_user,
-                    target_server,
-                    target_user,
-                    item_info.get('Name', ''),
-                    item_info.get('Type', ''),
-                    item_info.get('Id', ''),
-                    position_ticks,
-                    sync_type,
-                    status,
-                    error_message
-                ))
-
-                # 更新统计信息
-                today = datetime.now().strftime('%Y-%m-%d')
-                cursor.execute('''
-                    INSERT OR IGNORE INTO sync_stats (date, total_syncs, success_syncs, failed_syncs)
-                    VALUES (?, 0, 0, 0)
-                ''', (today,))
-
-                if status == 'success':
-                    cursor.execute('''
-                        UPDATE sync_stats
-                        SET total_syncs = total_syncs + 1, success_syncs = success_syncs + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE date = ?
-                    ''', (today,))
-                else:
-                    cursor.execute('''
-                        UPDATE sync_stats
-                        SET total_syncs = total_syncs + 1, failed_syncs = failed_syncs + 1,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE date = ?
-                    ''', (today,))
-
-                conn.commit()
-
+            self._record_store.add_record(
+                source_server=source_server,
+                source_user=source_user,
+                target_server=target_server,
+                target_user=target_user,
+                media_name=item_info.get('Name', ''),
+                media_type=item_info.get('Type', ''),
+                media_id=item_info.get('Id', ''),
+                position_ticks=position_ticks,
+                sync_type=sync_type,
+                status=status,
+                error_message=error_message,
+            )
         except Exception as e:
             logger.error(f"记录同步结果失败: {str(e)}")
 
@@ -2741,85 +2714,40 @@ class WatchSync(_PluginBase):
     def _get_stats(self) -> Dict[str, Any]:
         """
         获取同步统计信息
+
+        明细统计由插件自有表聚合并返回，同步组相关数字来自插件配置。
         """
         try:
-            if not self._db_path:
-                return {"success": False, "message": "数据库未初始化"}
+            if not self._record_store:
+                return {"success": False, "message": "插件自有表未初始化"}
 
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.cursor()
+            summary = self._record_store.summary()
+            total_syncs = summary["total_syncs"]
+            success_syncs = summary["success_syncs"]
 
-                # 从sync_records表获取详细统计
-                cursor.execute('''
-                    SELECT timestamp, source_user, target_user, sync_type, status, created_at
-                    FROM sync_records
-                    ORDER BY created_at DESC
-                ''')
+            # 计算成功率
+            success_rate = (success_syncs / total_syncs *
+                            100) if total_syncs > 0 else 0
 
-                all_records = cursor.fetchall()
-                total_syncs = len(all_records)
-                success_syncs = len(
-                    [r for r in all_records if r[4] == 'success'])
-                failed_syncs = total_syncs - success_syncs
+            # 获取同步组数量
+            enabled_groups = len(
+                [g for g in self._sync_groups if g.get("enabled", True)])
+            total_users = sum(len(g.get("users", []))
+                              for g in self._sync_groups if g.get("enabled", True))
 
-                # 计算成功率
-                success_rate = (success_syncs / total_syncs *
-                                100) if total_syncs > 0 else 0
+            stats = {
+                "总同步次数": total_syncs,
+                "今日同步次数": summary["today_syncs"],
+                "成功次数": success_syncs,
+                "失败次数": summary["failed_syncs"],
+                "成功率": f"{success_rate:.1f}",
+                "活跃用户数": summary["active_users"],
+                "同步类型": summary["sync_types"],
+                "同步组数": enabled_groups,
+                "组内用户数": total_users
+            }
 
-                # 计算今日同步次数 - 修复时区问题
-                today = datetime.now().date()
-                today_syncs = 0
-                for record in all_records:
-                    if record[5]:  # created_at字段
-                        try:
-                            # 处理不同的日期格式
-                            record_date_str = record[5]
-                            if 'T' in record_date_str:
-                                record_date = datetime.fromisoformat(
-                                    record_date_str.replace('Z', '+00:00')).date()
-                            else:
-                                record_date = datetime.strptime(
-                                    record_date_str, '%Y-%m-%d %H:%M:%S').date()
-
-                            if record_date == today:
-                                today_syncs += 1
-                        except Exception as e:
-                            logger.debug(f"解析日期失败: {record_date_str}, 错误: {e}")
-                            continue
-
-                # 计算活跃用户数（最近24小时）
-                yesterday = datetime.now() - timedelta(hours=24)
-                recent_records = [r for r in all_records if r[5] and
-                                  datetime.fromisoformat(r[5]) >= yesterday]
-                active_users = set()
-                for record in recent_records:
-                    active_users.add(record[1])  # source_user
-                    active_users.add(record[2])  # target_user
-
-                # 统计同步类型
-                sync_types = set()
-                for record in all_records:
-                    sync_types.add(record[3] or 'playback')
-
-                # 获取同步组数量
-                enabled_groups = len(
-                    [g for g in self._sync_groups if g.get("enabled", True)])
-                total_users = sum(len(g.get("users", []))
-                                  for g in self._sync_groups if g.get("enabled", True))
-
-                stats = {
-                    "总同步次数": total_syncs,
-                    "今日同步次数": today_syncs,
-                    "成功次数": success_syncs,
-                    "失败次数": failed_syncs,
-                    "成功率": f"{success_rate:.1f}",
-                    "活跃用户数": len(active_users),
-                    "同步类型": list(sync_types),
-                    "同步组数": enabled_groups,
-                    "组内用户数": total_users
-                }
-
-                return {"success": True, "data": stats}
+            return {"success": True, "data": stats}
 
         except Exception as e:
             logger.error(f"获取统计信息失败: {str(e)}")
@@ -2830,61 +2758,31 @@ class WatchSync(_PluginBase):
         获取同步记录，支持分页
         """
         try:
-            if not self._db_path:
-                return {"success": False, "message": "数据库未初始化"}
+            if not self._record_store:
+                return {"success": False, "message": "插件自有表未初始化"}
 
             # 限制最大记录数，防止性能问题
             limit = min(max(limit, 10), 100)  # 最小10条，最大100条
             offset = max(offset, 0)  # offset不能为负数
 
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.cursor()
+            result = self._record_store.list_records(limit=limit, offset=offset)
+            records = result["records"]
+            total_count = result["total"]
 
-                # 先获取总记录数
-                cursor.execute('SELECT COUNT(*) FROM sync_records')
-                total_count = cursor.fetchone()[0]
+            # 计算是否还有更多记录
+            has_more = (offset + len(records)) < total_count
 
-                # 获取同步记录
-                cursor.execute('''
-                    SELECT id, timestamp, source_server, source_user, target_server, target_user,
-                           media_name, media_type, sync_type, status, error_message, created_at, position_ticks
-                    FROM sync_records
-                    ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
-                ''', (limit, offset))
-
-                records = []
-                for row in cursor.fetchall():
-                    records.append({
-                        "id": row[0],
-                        "timestamp": row[1],
-                        "source_server": row[2],
-                        "source_user": row[3],
-                        "target_server": row[4],
-                        "target_user": row[5],
-                        "media_name": row[6],
-                        "media_type": row[7],
-                        "sync_type": row[8],
-                        "status": row[9],
-                        "error_message": row[10],
-                        "created_at": row[11],
-                        "position_ticks": row[12]
-                    })
-
-                # 计算是否还有更多记录
-                has_more = (offset + len(records)) < total_count
-
-                return {
-                    "success": True,
-                    "data": records,
-                    "pagination": {
-                        "total": total_count,
-                        "offset": offset,
-                        "limit": limit,
-                        "has_more": has_more,
-                        "current_count": len(records)
-                    }
+            return {
+                "success": True,
+                "data": records,
+                "pagination": {
+                    "total": total_count,
+                    "offset": offset,
+                    "limit": limit,
+                    "has_more": has_more,
+                    "current_count": len(records)
                 }
+            }
 
         except Exception as e:
             logger.error(f"获取同步记录失败: {str(e)}")
@@ -2944,30 +2842,20 @@ class WatchSync(_PluginBase):
         清理指定天数前的旧记录
         """
         try:
-            if not self._db_path:
-                return {"success": False, "message": "数据库未初始化"}
+            if not self._record_store:
+                return {"success": False, "message": "插件自有表未初始化"}
 
             # 限制天数范围，防止误删
             days = max(min(days, 365), 1)  # 最小1天，最大365天
-            cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+            cutoff_date = datetime.now() - timedelta(days=days)
 
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.cursor()
+            deleted_count = self._record_store.purge_expired(before=cutoff_date)
 
-                # 删除指定天数前的记录
-                cursor.execute('''
-                    DELETE FROM sync_records
-                    WHERE created_at < ?
-                ''', (cutoff_date,))
-
-                deleted_count = cursor.rowcount
-                conn.commit()
-
-                logger.info(f"清理了 {deleted_count} 条旧记录")
-                return {
-                    "success": True,
-                    "message": f"成功清理了 {deleted_count} 条{days}天前的记录"
-                }
+            logger.info(f"清理了 {deleted_count} 条旧记录")
+            return {
+                "success": True,
+                "message": f"成功清理了 {deleted_count} 条{days}天前的记录"
+            }
 
         except Exception as e:
             logger.error(f"清理旧记录失败: {str(e)}")

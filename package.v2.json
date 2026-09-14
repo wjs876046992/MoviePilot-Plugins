@@ -1411,6 +1411,8 @@
         "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png",
         "author": "DzAvril",
         "level": 1,
+        "v3": false,
+        "release": true,
         "history": {
             "v3.0.0": "片尾同步时检查已播放，播放进度接近片尾自动标记已播放",
             "v1.1": "支持极影视观看记录同步，并增加极影视到Emby轮询配置",
