@@ -11,9 +11,6 @@ from Crypto.Cipher import AES
 
 import aiohttp
 
-from app.modules.wechat import WeChat
-from app.schemas.types import NotificationType, MessageChannel
-
 
 def bytes_to_key(data: bytes, salt: bytes, output=48) -> bytes:
     """兼容v2 将bytes_to_key和encrypt导入"""
@@ -155,11 +152,12 @@ class PyCookieCloud:
 
 class MySender:
     """
-    多渠道消息发送器
+    第三方渠道消息发送器
     注意：所有网络请求是同步的，在异步上下文中调用时需用 asyncio.to_thread 包裹
+    MP内置通知由插件直接调用 post_message 处理，不经过此类
     """
 
-    def __init__(self, token=None, func=None):
+    def __init__(self, token=None):
         self.raw_token = token or ""
 
         self.quiet_flag = False
@@ -174,23 +172,20 @@ class MySender:
         self.current_index = 0
         self.first_text_sent = False
         self.init_success = bool(self.tokens)
-        self.post_message_func = func
 
     @property
     def other_channel(self):
         """
-        返回非 WeChat 通道及其对应 token 的列表
+        返回所有第三方通知通道及其对应 token 的列表
         :return: [(channel, token), ...]
         """
-        return [(channel, token) for channel, token in zip(self.channels, self.tokens) if channel.lower() != "wechat"]
+        return [(channel, token) for channel, token in zip(self.channels, self.tokens)]
 
     @staticmethod
     def _detect_channel(token):
         """根据 token 判断通知渠道"""
         token = token.lower()
 
-        if "wechat" in token:
-            return "WeChat"
         if token.startswith("sct"):
             return "ServerChan"
         elif "iyuu" in token:
@@ -224,12 +219,8 @@ class MySender:
         return "所有的通知方式都发送失败"
 
     def _try_send(self, title, content, image, channel, token=None, diy_token=None):
-        """尝试使用指定通道发送消息"""
-        if channel == "WeChat" and self.post_message_func:
-            return self._send_v2_wechat(title, content, image, token)
-        elif channel == "WeChat":
-            return self._send_wechat(title, content, image, token)
-        elif channel == "ServerChan":
+        """尝试使用指定第三方通道发送消息"""
+        if channel == "ServerChan":
             return self._send_serverchan(title, content, image, diy_token)
         elif channel == "IYUU":
             return self._send_iyuu(title, content, image, diy_token)
@@ -237,22 +228,6 @@ class MySender:
             return self._send_pushplus(title, content, image, diy_token)
         else:
             return f"未知的通知方式: {channel}"
-
-    @staticmethod
-    def _send_wechat(title, content, image, token):
-        wechat = WeChat()
-        if token and ',' in token:
-            _, actual_userid = token.split(',', 1)
-        else:
-            actual_userid = None
-        if image:
-            send_status = wechat.send_msg(title='企业微信登录二维码', image=image, link=image, userid=actual_userid)
-        else:
-            send_status = wechat.send_msg(title=title, text=content, userid=actual_userid)
-
-        if not send_status:
-            return "微信通知发送错误"
-        return None
 
     def _send_serverchan(self, title, content, image, diy_token=None):
         if diy_token:
@@ -324,23 +299,6 @@ class MySender:
         result = response.json()
         if result.get('code') != 200:
             return f"PushPlus send failed: {result.get('msg')}"
-        return None
-
-    def _send_v2_wechat(self, title, content, image, token):
-        """V2 微信通知发送"""
-        if token and ',' in token:
-            _, actual_userid = token.split(',', 1)
-        else:
-            actual_userid = None
-        self.post_message_func(
-            channel=MessageChannel.Wechat,
-            mtype=NotificationType.Plugin,
-            title=title,
-            text=content,
-            image=image,
-            link=image,
-            userid=actual_userid
-        )
         return None
 
     def reset_limit(self):

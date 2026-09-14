@@ -823,12 +823,13 @@
     "name": "动态企微可信IP",
     "description": "修改企微应用可信IP，支持Srever酱等第三方通知。验证码以？结尾发送到企业微信应用",
     "labels": "消息通知",
-    "version": "2.1.8",
+    "version": "3.0.0",
     "icon": "Wecom_A.png",
     "author": "RamenRa",
     "level": 2,
     "system_version": ">=2.12.0",
     "history": {
+      "v3.0.0": "重构通知系统：新增use_mp_notify配置项，MP内置通知独立于第三方通知且由MP管理发送到所有渠道；新增固定可信IP（pinned_ips）配置项；修复CookieCloud兼容性问题；修复Cookie解析空值防御；详情页添加测试通知按钮",
       "v2.1.8": "fix:修复github@318182456指出的问题。校验cookie出现的not enough values to unpack (expected 2, got 1)。错误。",
       "v2.1.7": "修复多线程环境下的任务管理及cookie误报等问题，提升稳定性",
       "v2.1.6-1": "修复并发安全与资源管理问题",
@@ -1401,5 +1402,19 @@
       "v1.1.0": "新增 ask 模式确认流程（识别后汇报待确认，用户确认后才上传）；新增跳过标签功能（刷流/保种/seedbox 标签的种子不自动上传）；修正源文件路径字段获取方式",
       "v1.0.0": "初始版本：支持 TransferComplete 事件监听、服务器端识别、版本对比（分辨率+文件大小）、分片并发上传、ask/silent 两种模式、上传历史记录"
     }
-  }
+  },
+    "WatchSync": { 
+        "name": "Emby观看记录同步",
+        "description": "在不同用户之间同步观看记录（自用插件，不保证兼容性）",
+        "labels": "Emby",
+        "version": "3.0.0",
+        "icon": "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png",
+        "author": "DzAvril",
+        "level": 1,
+        "history": {
+            "v3.0.0": "片尾同步时检查已播放，播放进度接近片尾自动标记已播放",
+            "v1.1": "支持极影视观看记录同步，并增加极影视到Emby轮询配置",
+            "v1.0": "新建"
+        }
+    }
 }
