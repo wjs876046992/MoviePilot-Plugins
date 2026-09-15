@@ -1132,21 +1132,29 @@ class WatchSync(_PluginBase):
     def _get_stats_db(self, db: Optional[Session] = None) -> Dict[str, Any]:
         assert db is not None
         plugin_id = self.__class__.__name__
-        records = db.execute(select(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id)).scalars().all()
+        
+        stmt = select(
+            WatchSyncRecord.status,
+            WatchSyncRecord.created_at,
+            WatchSyncRecord.source_user,
+            WatchSyncRecord.target_user,
+            WatchSyncRecord.sync_type
+        ).where(WatchSyncRecord.plugin_id == plugin_id)
+        records = db.execute(stmt).mappings().all()
         
         t_syncs = len(records)
-        s_syncs = sum(1 for r in records if r.status == 'success')
+        s_syncs = sum(1 for r in records if r['status'] == 'success')
         today = datetime.now().date()
         recent = datetime.now() - timedelta(hours=24)
         
         stats = {
             "总同步次数": t_syncs,
-            "今日同步次数": sum(1 for r in records if r.created_at and r.created_at.date() == today),
+            "今日同步次数": sum(1 for r in records if r['created_at'] and r['created_at'].date() == today),
             "成功次数": s_syncs,
             "失败次数": t_syncs - s_syncs,
             "成功率": f"{(s_syncs/t_syncs*100):.1f}" if t_syncs > 0 else "0",
-            "活跃用户数": len(set([r.source_user for r in records if r.created_at and r.created_at >= recent] + [r.target_user for r in records if r.created_at and r.created_at >= recent])),
-            "同步类型": list(set(r.sync_type or 'playback' for r in records)),
+            "活跃用户数": len(set([r['source_user'] for r in records if r['created_at'] and r['created_at'] >= recent] + [r['target_user'] for r in records if r['created_at'] and r['created_at'] >= recent])),
+            "同步类型": list(set(r['sync_type'] or 'playback' for r in records)),
             "同步组数": sum(1 for g in self._sync_groups if g.get("enabled", True)),
             "组内用户数": sum(len(g.get("users", [])) for g in self._sync_groups if g.get("enabled", True))
         }
@@ -1161,15 +1169,23 @@ class WatchSync(_PluginBase):
         plugin_id = self.__class__.__name__
         limit, offset = min(max(limit, 10), 100), max(offset, 0)
         total = db.execute(select(func.count()).select_from(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id)).scalar()
-        recs = db.execute(select(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id).order_by(desc(WatchSyncRecord.created_at)).limit(limit).offset(offset)).scalars().all()
+        
+        stmt = select(
+            WatchSyncRecord.id, WatchSyncRecord.plugin_id, WatchSyncRecord.source_server,
+            WatchSyncRecord.source_user, WatchSyncRecord.target_server, WatchSyncRecord.target_user,
+            WatchSyncRecord.media_name, WatchSyncRecord.media_type, WatchSyncRecord.media_id,
+            WatchSyncRecord.position_ticks, WatchSyncRecord.sync_type, WatchSyncRecord.status,
+            WatchSyncRecord.error_message, WatchSyncRecord.created_at
+        ).where(WatchSyncRecord.plugin_id == plugin_id).order_by(desc(WatchSyncRecord.created_at)).limit(limit).offset(offset)
+        
+        recs = db.execute(stmt).mappings().all()
         
         data = []
         for r in recs:
-            item = {}
-            for c in WatchSyncRecord.__table__.columns:
-                item[c.name] = getattr(r, c.name) if c.name != "created_at" else r.created_at.isoformat()
-            if "timestamp" not in item and getattr(r, "created_at", None):
-                item["timestamp"] = r.created_at.isoformat()
+            item = dict(r)
+            if item.get("created_at"):
+                item["created_at"] = item["created_at"].isoformat()
+                item["timestamp"] = item["created_at"]
             data.append(item)
             
         return {
