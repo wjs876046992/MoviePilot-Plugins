@@ -17,14 +17,14 @@
             <v-window-item value="page">
               <h2 class="text-h5 mb-4">Page组件</h2>
               <div class="component-preview">
-                <page-component :api="api" @action="handleAction"></page-component>
+                <page-component @action="handleAction"></page-component>
               </div>
             </v-window-item>
 
             <v-window-item value="config">
               <h2 class="text-h5 mb-4">Config组件</h2>
               <div class="component-preview">
-                <config-component :initial-config="initialConfig" :api="api" @save="handleConfigSave"></config-component>
+                <config-component :initial-config="initialConfig" @save="handleConfigSave"></config-component>
               </div>
             </v-window-item>
 
@@ -32,7 +32,7 @@
               <h2 class="text-h5 mb-4">Dashboard组件</h2>
               <v-switch v-model="dashboardConfig.attrs.border" label="显示边框" color="primary" class="mb-4"></v-switch>
               <div class="component-preview">
-                <dashboard-component :config="dashboardConfig" :api="api" :allow-refresh="true"></dashboard-component>
+                <dashboard-component :config="dashboardConfig" :allow-refresh="true"></dashboard-component>
               </div>
             </v-window-item>
           </v-window>
@@ -62,27 +62,6 @@ import DashboardComponent from './components/Dashboard.vue'
 
 // 活动标签页
 const activeTab = ref('page')
-
-// 模拟 API 供宿主独立运行测试沙盒联调使用，避免抛出 undefined 错误及无意义请求失败
-const api = {
-  get: (url) => {
-    if (url.includes('/servers')) {
-        return Promise.resolve({ success: true, data: [{ name: 'Dummy Server', type: 'emby', status: 'online' }] })
-    }
-    if (url.includes('/users')) {
-        return Promise.resolve({ success: true, data: { 'Dummy Server': [{ id: '123', name: 'Admin' }] } })
-    }
-    if (url.includes('/stats')) {
-        return Promise.resolve({ success: true, data: { '今日同步次数': 0, '成功率': '100', '活跃用户数': 0, '同步类型': [] } })
-    }
-    if (url.includes('/records')) {
-        return Promise.resolve({ success: true, data: [], pagination: { total: 0, has_more: false } })
-    }
-    return Promise.resolve({ success: true, data: {} })
-  },
-  post: () => Promise.resolve({ success: true, data: {} }),
-  delete: () => Promise.resolve({ success: true, data: {} }),
-}
 
 // 配置初始值
 const initialConfig = {

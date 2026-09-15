@@ -1,106 +1,150 @@
 <template>
-  <div class="dashboard-widget h-100">
-    <v-card :flat="!config?.attrs?.border" :variant="config?.attrs?.border ? 'outlined' : 'flat'" class="rounded-lg h-100 border-opacity-50">
-      
-      <!-- 卡片头 -->
-      <v-card-item v-if="config?.attrs?.border" class="border-b bg-grey-lighten-4 pa-3">
-        <template v-slot:prepend>
-          <v-icon color="primary" class="mr-2">mdi-chart-timeline-variant-shimmer</v-icon>
-        </template>
-        <v-card-title class="text-subtitle-1 font-weight-bold text-primary">{{ config?.attrs?.title || '观看状态仪表盘' }}</v-card-title>
+  <div class="dashboard-widget">
+    <v-card v-if="!config?.attrs?.border" flat>
+      <v-card-text class="pa-0">
+        <div class="dashboard-content">
+          <!-- 加载中状态 -->
+          <div v-if="loading" class="d-flex justify-center align-center py-4">
+            <v-progress-circular indeterminate color="primary"></v-progress-circular>
+          </div>
+
+          <!-- 数据内容 -->
+          <div v-else>
+            <!-- 服务状态指示器 -->
+            <div class="d-flex align-center mb-2">
+              <v-icon :color="serviceStatusColor" size="small" class="mr-2">
+                {{ serviceStatusIcon }}
+              </v-icon>
+              <span class="text-body-2 font-weight-medium">{{ serviceStatusText }}</span>
+              <v-spacer></v-spacer>
+              <v-chip :color="stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error'"
+                      size="x-small" variant="flat">
+                {{ stats.successRate }}%
+              </v-chip>
+            </div>
+
+            <!-- 核心指标 -->
+            <div class="d-flex justify-space-between align-center mb-3">
+              <div class="text-center">
+                <div class="text-h6 font-weight-bold text-primary">{{ stats.todayCount }}</div>
+                <div class="text-caption">今日同步</div>
+              </div>
+              <div class="text-center">
+                <div class="text-h6 font-weight-bold text-info">{{ stats.activeUsers }}</div>
+                <div class="text-caption">活跃用户</div>
+              </div>
+              <div class="text-center">
+                <div class="text-h6 font-weight-bold text-secondary">{{ stats.syncTypes.length }}</div>
+                <div class="text-caption">同步类型</div>
+              </div>
+            </div>
+
+            <!-- 最近同步记录（简化版） -->
+            <v-list v-if="syncRecords.length" density="compact" class="py-0">
+              <v-list-item v-for="(record, index) in syncRecords.slice(0, 3)" :key="index">
+                <template v-slot:prepend>
+                  <div class="d-flex align-center">
+                    <v-icon :color="getSyncTypeColor(record.sync_type)" size="x-small" class="mr-1">
+                      {{ getSyncTypeIcon(record.sync_type) }}
+                    </v-icon>
+                    <v-avatar :color="getStatusColor(record.status)" size="x-small">
+                      <v-icon size="x-small" color="white">{{ getStatusIcon(record.status) }}</v-icon>
+                    </v-avatar>
+                  </div>
+                </template>
+                <v-list-item-title class="text-body-2">{{ record.media_name }}</v-list-item-title>
+                <v-list-item-subtitle class="text-caption">
+                  {{ record.source_user }} → {{ record.target_user }}
+                </v-list-item-subtitle>
+                <template v-slot:append>
+                  <span class="text-caption">{{ formatTime(record.timestamp) }}</span>
+                </template>
+              </v-list-item>
+            </v-list>
+
+            <!-- 无数据提示 -->
+            <div v-else class="text-center text-caption text-medium-emphasis py-2">
+              暂无同步记录
+            </div>
+          </div>
+        </div>
+      </v-card-text>
+    </v-card>
+
+    <!-- 带边框的卡片 -->
+    <v-card v-else>
+      <v-card-item>
+        <v-card-title class="text-subtitle-1">{{ config?.attrs?.title || '观看记录同步' }}</v-card-title>
         <template v-slot:append>
-          <v-btn icon variant="tonal" color="primary" size="x-small" class="bg-white elevation-1" @click="refreshData" :loading="loading">
+          <v-btn icon size="x-small" variant="text" @click="refreshData">
             <v-icon size="small">mdi-refresh</v-icon>
           </v-btn>
         </template>
       </v-card-item>
 
-      <!-- 主要内容区域 -->
-      <v-card-text :class="config?.attrs?.border ? 'pa-4 pb-2' : 'pa-0'" style="height: 100%;">
-        <div class="dashboard-content d-flex flex-column h-100">
-          
-          <!-- 加载中状态 -->
-          <div v-if="loading" class="d-flex justify-center align-center flex-grow-1 py-10">
-            <v-progress-circular indeterminate color="primary" :size="36" :width="3"></v-progress-circular>
+      <v-card-text class="pt-2">
+        <!-- 加载中状态 -->
+        <div v-if="loading" class="d-flex justify-center align-center py-2">
+          <v-progress-circular indeterminate color="primary" size="small"></v-progress-circular>
+        </div>
+
+        <!-- 数据内容 -->
+        <div v-else>
+          <!-- 服务状态指示器 -->
+          <div class="d-flex align-center mb-2">
+            <v-icon :color="serviceStatusColor" size="small" class="mr-2">
+              {{ serviceStatusIcon }}
+            </v-icon>
+            <span class="text-body-2 font-weight-medium">{{ serviceStatusText }}</span>
+            <v-spacer></v-spacer>
+            <v-chip :color="stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error'"
+                    size="x-small" variant="flat">
+              {{ stats.successRate }}%
+            </v-chip>
           </div>
 
-          <!-- 数据内容 -->
-          <div v-else class="flex-grow-1">
-            
-            <!-- 服务状态指示器 -->
-            <div class="d-flex align-center px-4 py-2 mb-4 rounded-lg bg-surface-variant text-on-surface-variant shadow-sm border border-opacity-25" :class="`bg-${serviceStatusColor}-lighten-5 border-${serviceStatusColor}`">
-              <v-icon :color="serviceStatusColor" size="small" class="mr-2">{{ serviceStatusIcon }}</v-icon>
-              <span class="text-body-2 font-weight-bold" :class="`text-${serviceStatusColor}-darken-2`">{{ serviceStatusText }}</span>
-              <v-spacer></v-spacer>
-              <div class="d-flex align-center bg-white px-2 py-1 rounded-pill elevation-1" :class="`text-${stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error'}`">
-                <v-icon start size="x-small" class="mr-1">mdi-brightness-percent</v-icon>
-                <span class="text-caption font-weight-bold">{{ stats.successRate }}% 成功率</span>
-              </div>
+          <!-- 核心指标 -->
+          <div class="d-flex justify-space-between align-center mb-3">
+            <div class="text-center">
+              <div class="text-h6 font-weight-bold text-primary">{{ stats.todayCount }}</div>
+              <div class="text-caption">今日同步</div>
             </div>
-
-            <!-- 数据列 (Grid UI) -->
-            <v-row class="mb-4 mt-2 mx-0 align-stretch">
-              <v-col cols="4" class="text-center bg-grey-lighten-5 rounded-s-lg py-3">
-                <div class="text-h5 font-weight-black text-primary">{{ stats.todayCount }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">今日同步指令</div>
-              </v-col>
-              <v-col cols="4" class="text-center border-s border-e bg-blue-grey-lighten-5 py-3">
-                <div class="text-h5 font-weight-black text-info">{{ stats.activeUsers }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">24H 涉及用户</div>
-              </v-col>
-              <v-col cols="4" class="text-center bg-grey-lighten-5 rounded-e-lg py-3">
-                <div class="text-h5 font-weight-black text-secondary">{{ stats.syncTypes.length }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">同步涉及类型</div>
-              </v-col>
-            </v-row>
-
-            <div class="text-subtitle-2 text-grey-darken-1 mb-2 d-flex align-center">
-              <v-icon size="small" class="mr-1">mdi-history</v-icon>近期最新动向
+            <div class="text-center">
+              <div class="text-h6 font-weight-bold text-info">{{ stats.activeUsers }}</div>
+              <div class="text-caption">活跃用户</div>
             </div>
+            <div class="text-center">
+              <div class="text-h6 font-weight-bold text-secondary">{{ stats.syncTypes.length }}</div>
+              <div class="text-caption">同步类型</div>
+            </div>
+          </div>
 
-            <!-- 最近同步记录（简化卡片版） -->
-            <v-list v-if="syncRecords.length" density="compact" class="py-0 rounded-lg border border-opacity-50">
-              <v-list-item 
-                v-for="(record, index) in syncRecords.slice(0, 3)" 
-                :key="index" 
-                :class="{'border-b': index < syncRecords.slice(0, 3).length - 1}"
-                class="px-3"
-              >
-                <template v-slot:prepend>
-                  <v-avatar :color="getStatusColor(record.status)" size="28" class="mr-3 mt-1 elevation-1">
-                    <v-icon size="16" color="white">{{ getStatusIcon(record.status) }}</v-icon>
-                  </v-avatar>
-                </template>
-                
-                <v-list-item-title class="text-body-2 font-weight-bold text-primary-darken-1 pt-1 text-truncate">
-                  {{ record.media_name || '未命名媒体' }}
-                </v-list-item-title>
-                
-                <v-list-item-subtitle class="text-caption d-flex align-center mt-1 pb-1">
-                  <v-icon size="x-small" :color="getSyncTypeColor(record.sync_type)" class="mr-1">
+          <!-- 最近同步记录（简化版） -->
+          <v-list v-if="syncRecords.length" density="compact" class="py-0">
+            <v-list-item v-for="(record, index) in syncRecords.slice(0, 3)" :key="index">
+              <template v-slot:prepend>
+                <div class="d-flex align-center">
+                  <v-icon :color="getSyncTypeColor(record.sync_type)" size="x-small" class="mr-1">
                     {{ getSyncTypeIcon(record.sync_type) }}
                   </v-icon>
-                  <span class="text-truncate" style="max-width: 60%;">
-                    <span class="font-weight-medium">{{ record.source_user }}</span> 
-                    <v-icon size="x-small" class="mx-1 text-grey">mdi-arrow-right</v-icon> 
-                    <span class="font-weight-medium">{{ record.target_user }}</span>
-                  </span>
-                </v-list-item-subtitle>
-                
-                <template v-slot:append>
-                  <span class="text-caption text-medium-emphasis ml-2 bg-grey-lighten-4 px-2 py-1 rounded">
-                    {{ formatTime(record.timestamp) }}
-                  </span>
-                </template>
-              </v-list-item>
-            </v-list>
+                  <v-avatar :color="getStatusColor(record.status)" size="x-small">
+                    <v-icon size="x-small" color="white">{{ getStatusIcon(record.status) }}</v-icon>
+                  </v-avatar>
+                </div>
+              </template>
+              <v-list-item-title class="text-body-2">{{ record.media_name }}</v-list-item-title>
+              <v-list-item-subtitle class="text-caption">
+                {{ record.source_user }} → {{ record.target_user }}
+              </v-list-item-subtitle>
+              <template v-slot:append>
+                <span class="text-caption">{{ formatTime(record.timestamp) }}</span>
+              </template>
+            </v-list-item>
+          </v-list>
 
-            <!-- 无数据空状态呈现 -->
-            <div v-else class="text-center text-caption text-blue-grey-darken-1 py-8 rounded-lg border-dashed bg-grey-lighten-5">
-              <v-icon size="48" color="blue-grey-lighten-3" class="d-block mx-auto mb-2">mdi-cube-scan</v-icon>
-              这里还是一片荒芜...<br/>暂无有效同步记录
-            </div>
-            
+          <!-- 无数据提示 -->
+          <div v-else class="text-center text-caption text-medium-emphasis py-2">
+            暂无同步记录
           </div>
         </div>
       </v-card-text>
@@ -206,9 +250,9 @@ const serviceStatusColor = computed(() => {
 
 const serviceStatusText = computed(() => {
   const texts = {
-    'running': '核心服务正常运作中',
-    'stopped': '服务状态已中断/停止',
-    'error': '同步服务异常告警中'
+    'running': '同步服务运行中',
+    'stopped': '同步服务已停止',
+    'error': '同步服务异常'
   }
   return texts[serviceStatus.value] || '状态未知'
 })
@@ -227,11 +271,7 @@ function formatTime(timestamp) {
   } else if (diff < 86400000) { // 1天内
     return Math.floor(diff / 3600000) + '小时前'
   } else {
-    // 简短日期
-    const m = (date.getMonth() + 1).toString().padStart(2, '0')
-    const d = date.getDate().toString().padStart(2, '0')
-    const t = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-    return `${m}-${d} ${t}`
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString()
   }
 }
 
@@ -342,17 +382,3 @@ onUnmounted(() => {
   }
 })
 </script>
-
-<style scoped>
-.shadow-sm {
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-.border-dashed {
-  border-style: dashed !important;
-}
-.text-truncate {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-</style>

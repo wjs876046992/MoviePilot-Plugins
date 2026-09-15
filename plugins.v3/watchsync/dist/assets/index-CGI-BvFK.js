@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import _sfc_main from './__federation_expose_Page-DccViQ7G.js';
+import Page from './__federation_expose_Page-K61MfzHY.js';
 
 true&&(function polyfill() {
   const relList = document.createElement("link").relList;
@@ -44,4 +44,4 @@ const {createApp} = await importShared('vue');
 // 仅用于本地 `npm run dev` 预览。
 // 线上由宿主加载 dist/assets/remoteEntry.js 并挂载 ./Page、./Config、./Dashboard，
 // Vuetify 实例与全局样式均由宿主提供，插件侧不做重复引入。
-createApp(_sfc_main).mount('#app');
+createApp(Page).mount('#app');

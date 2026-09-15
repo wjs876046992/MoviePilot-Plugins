@@ -1,0 +1,12 @@
+
+.shadow-sm[data-v-cdbc66da] {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+.border-dashed[data-v-cdbc66da] {
+  border-style: dashed !important;
+}
+.text-truncate[data-v-cdbc66da] {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
