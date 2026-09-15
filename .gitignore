@@ -167,3 +167,5 @@ node_modules/
 yarn.lock
 .DS_Store
 .aider*
+# WorkBuddy 会话工作数据（项目记忆与本地记录）：只是本机工作产物，不进版本库
+.workbuddy/
