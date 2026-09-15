@@ -30,7 +30,7 @@ try:  # 宿主未提供媒体服务器服务目录时不阻断插件加载
 except Exception:  # noqa: BLE001
     MediaServerHelper = None
 
-from .models import WatchSyncRecord, WatchSyncRecordStore, WatchSyncStat
+from .models import ERROR_MESSAGE_MAX_LENGTH, MEDIA_NAME_MAX_LENGTH, WatchSyncRecord, WatchSyncRecordStore, WatchSyncStat, clip_text
 
 
 
@@ -123,7 +123,7 @@ class WatchSync(_PluginBase):
     plugin_name = "Emby观看记录同步"
     plugin_desc = "在不同用户之间同步观看记录（自用插件，不保证兼容性）"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
-    plugin_version = "3.0.1"
+    plugin_version = "3.0.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "watchsync_"
@@ -732,7 +732,7 @@ class WatchSync(_PluginBase):
                 if success:
                     self._loop_protector.add(target_user, target_item_id, sync_type)
 
-                self._record_sync_result(
+                self._record_sync_result_safely(
                     source_server=source_server,
                     source_user=source_user,
                     target_server=target_server,
@@ -744,7 +744,7 @@ class WatchSync(_PluginBase):
                     sync_type=sync_type
                 )
             except Exception as e:
-                self._record_sync_result(
+                self._record_sync_result_safely(
                     source_server=source_server,
                     source_user=source_user,
                     target_server=target_server,
@@ -800,7 +800,7 @@ class WatchSync(_PluginBase):
                 if success:
                     self._loop_protector.add(target_user, target_item_id, sync_type)
 
-                self._record_sync_result(
+                self._record_sync_result_safely(
                     source_server=source_server,
                     source_user=source_user,
                     target_server=target_server,
@@ -812,7 +812,7 @@ class WatchSync(_PluginBase):
                     sync_type=sync_type
                 )
             except Exception as e:
-                self._record_sync_result(
+                self._record_sync_result_safely(
                     source_server=source_server,
                     source_user=source_user,
                     target_server=target_server,
@@ -982,7 +982,7 @@ class WatchSync(_PluginBase):
         if success:
             self._loop_protector.add(target_user, target_item_id, "playback")
 
-        self._record_sync_result(source_server=source_server, source_user=source_user, target_server=target_server, target_user=target_user, item_info=item_info, position_ticks=position_ticks, status="success" if success else "error", sync_type="playback")
+        self._record_sync_result_safely(source_server=source_server, source_user=source_user, target_server=target_server, target_user=target_user, item_info=item_info, position_ticks=position_ticks, status="success" if success else "error", sync_type="playback")
         return success
 
     def _find_matching_item(self, emby_instance, target_user, source_item: dict) -> Optional[dict]:
@@ -1116,13 +1116,14 @@ class WatchSync(_PluginBase):
             source_user=source_user,
             target_server=target_server,
             target_user=target_user,
-            media_name=item_info.get('Name', ''),
+            # 文本列有宽度上限，先截断再写入，避免单个超长字段让整条记录写失败。
+            media_name=clip_text(item_info.get('Name', ''), MEDIA_NAME_MAX_LENGTH),
             media_type=item_info.get('Type', ''),
             media_id=item_info.get('Id', ''),
             position_ticks=position_ticks,
             sync_type=sync_type,
             status=status,
-            error_message=error_message
+            error_message=clip_text(error_message, ERROR_MESSAGE_MAX_LENGTH)
         )
         db.add(record)
         
@@ -1141,6 +1142,18 @@ class WatchSync(_PluginBase):
         stat.total_syncs += 1
         if status == 'success': stat.success_syncs += 1
         else: stat.failed_syncs += 1
+
+    def _record_sync_result_safely(self, **kwargs) -> None:
+        """记录同步明细，但不让明细落库失败影响同步主流程。
+
+        走到这里时进度/收藏已经写进目标服务器了，再因为一条明细存不进去而把异常
+        抛回 webhook 处理层，只会把一次数据库抖动升级成「处理Webhook消息失败」。
+        因此这里兜住异常，只记日志。
+        """
+        try:
+            self._record_sync_result(**kwargs)
+        except Exception as e:
+            logger.error(f"记录同步明细失败（不影响本次同步）: {str(e)}")
 
 
     # ====== API Endpoints (FastAPI路由入口，分离DB参数以确保兼容性) ======
