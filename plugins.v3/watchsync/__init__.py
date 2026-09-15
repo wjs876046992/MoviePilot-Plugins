@@ -13,7 +13,9 @@ import os
 from urllib.parse import quote
 import httpx2
 
+import warnings
 from sqlalchemy import String, Integer, DateTime, select, func, delete, desc
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.orm import Mapped, mapped_column, Session
 
 from app.db import Base, db_query, db_update, Engine
@@ -26,37 +28,41 @@ from app.sdk.config import settings
 from apscheduler.triggers.interval import IntervalTrigger
 
 
-class WatchSyncRecord(Base):
-    __tablename__ = "plugin_watchsync_record"
-    __table_args__ = {"extend_existing": True}
+# 忽略插件重载时因为重复注册同名模型（Declarative Base 类型覆盖）产生的 SAWarning
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=sa_exc.SAWarning)
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    source_server: Mapped[str] = mapped_column(String(100), nullable=False)
-    source_user: Mapped[str] = mapped_column(String(100), nullable=False)
-    target_server: Mapped[str] = mapped_column(String(100), nullable=False)
-    target_user: Mapped[str] = mapped_column(String(100), nullable=False)
-    media_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    media_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    media_id: Mapped[str] = mapped_column(String(100), nullable=True)
-    position_ticks: Mapped[int] = mapped_column(Integer, nullable=True)
-    sync_type: Mapped[str] = mapped_column(String(50), default='playback')
-    status: Mapped[str] = mapped_column(String(50), nullable=False)
-    error_message: Mapped[str] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    class WatchSyncRecord(Base):
+        __tablename__ = "plugin_watchsync_record"
+        __table_args__ = {"extend_existing": True}
+
+        id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+        plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+        source_server: Mapped[str] = mapped_column(String(100), nullable=False)
+        source_user: Mapped[str] = mapped_column(String(100), nullable=False)
+        target_server: Mapped[str] = mapped_column(String(100), nullable=False)
+        target_user: Mapped[str] = mapped_column(String(100), nullable=False)
+        media_name: Mapped[str] = mapped_column(String(255), nullable=False)
+        media_type: Mapped[str] = mapped_column(String(50), nullable=False)
+        media_id: Mapped[str] = mapped_column(String(100), nullable=True)
+        position_ticks: Mapped[int] = mapped_column(Integer, nullable=True)
+        sync_type: Mapped[str] = mapped_column(String(50), default='playback')
+        status: Mapped[str] = mapped_column(String(50), nullable=False)
+        error_message: Mapped[str] = mapped_column(String(500), nullable=True)
+        created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
-class WatchSyncStat(Base):
-    __tablename__ = "plugin_watchsync_stat"
-    __table_args__ = {"extend_existing": True}
+    class WatchSyncStat(Base):
+        __tablename__ = "plugin_watchsync_stat"
+        __table_args__ = {"extend_existing": True}
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    date: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    total_syncs: Mapped[int] = mapped_column(Integer, default=0)
-    success_syncs: Mapped[int] = mapped_column(Integer, default=0)
-    failed_syncs: Mapped[int] = mapped_column(Integer, default=0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+        id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+        plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+        date: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+        total_syncs: Mapped[int] = mapped_column(Integer, default=0)
+        success_syncs: Mapped[int] = mapped_column(Integer, default=0)
+        failed_syncs: Mapped[int] = mapped_column(Integer, default=0)
+        updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class SyncLoopProtector:
