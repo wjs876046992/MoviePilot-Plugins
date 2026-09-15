@@ -32,7 +32,6 @@ class WatchSyncRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    timestamp: Mapped[str] = mapped_column(String(100), nullable=False)
     source_server: Mapped[str] = mapped_column(String(100), nullable=False)
     source_user: Mapped[str] = mapped_column(String(100), nullable=False)
     target_server: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -1061,7 +1060,6 @@ class WatchSync(_PluginBase):
         plugin_id = self.__class__.__name__
         record = WatchSyncRecord(
             plugin_id=plugin_id,
-            timestamp=datetime.now().isoformat(),
             source_server=source_server,
             source_user=source_user,
             target_server=target_server,
@@ -1164,9 +1162,19 @@ class WatchSync(_PluginBase):
         limit, offset = min(max(limit, 10), 100), max(offset, 0)
         total = db.execute(select(func.count()).select_from(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id)).scalar()
         recs = db.execute(select(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id).order_by(desc(WatchSyncRecord.created_at)).limit(limit).offset(offset)).scalars().all()
+        
+        data = []
+        for r in recs:
+            item = {}
+            for c in WatchSyncRecord.__table__.columns:
+                item[c.name] = getattr(r, c.name) if c.name != "created_at" else r.created_at.isoformat()
+            if "timestamp" not in item and getattr(r, "created_at", None):
+                item["timestamp"] = r.created_at.isoformat()
+            data.append(item)
+            
         return {
             "success": True, 
-            "data": [{c.name: getattr(r, c.name) if c.name != "created_at" else r.created_at.isoformat() for c in WatchSyncRecord.__table__.columns} for r in recs],
+            "data": data,
             "pagination": {"total": total, "offset": offset, "limit": limit, "has_more": (offset + len(recs)) < total, "current_count": len(recs)}
         }
 
