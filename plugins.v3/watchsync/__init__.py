@@ -32,6 +32,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", category=sa_exc.SAWarning)
 
+    # 强制清理内存中的旧表结构定义，防止 extend_existing=True 把已被删除的 timestamp “幽灵”字段重新带回来
+    if "plugin_watchsync_record" in Base.metadata.tables:
+        Base.metadata.remove(Base.metadata.tables["plugin_watchsync_record"])
+    if "plugin_watchsync_stat" in Base.metadata.tables:
+        Base.metadata.remove(Base.metadata.tables["plugin_watchsync_stat"])
+
     class WatchSyncRecord(Base):
         __tablename__ = "plugin_watchsync_record"
         __table_args__ = {"extend_existing": True}
