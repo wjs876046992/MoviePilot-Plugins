@@ -13,7 +13,7 @@ import os
 from urllib.parse import quote
 import httpx2
 
-from sqlalchemy import String, Integer, DateTime, select, func, delete
+from sqlalchemy import String, Integer, DateTime, select, func, delete, desc
 from sqlalchemy.orm import Mapped, mapped_column, Session
 
 from app.db import Base, db_query, db_update, Engine
@@ -61,9 +61,7 @@ class WatchSyncStat(Base):
 
 
 class SyncLoopProtector:
-    """
-    防循环同步装置
-    """
+    """防循环同步装置"""
     def __init__(self, ttl_seconds: int = 15):
         self._cache: Dict[Tuple[str, str, str], datetime] = {}
         self._ttl = timedelta(seconds=ttl_seconds)
@@ -150,7 +148,7 @@ class WatchSync(_PluginBase):
     plugin_name = "Emby观看记录同步"
     plugin_desc = "在不同用户之间同步观看记录（自用插件，不保证兼容性）"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
-    plugin_version = "3.0.0"
+    plugin_version = "3.0.1"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "watchsync_"
@@ -233,49 +231,47 @@ class WatchSync(_PluginBase):
         ]
 
     def _emby_request(self, instance, method: str, url: str, **kwargs):
-        """兼容层：封装所有的 HTTP 调用，保障多版本 SDK 的运行平滑度"""
-        if hasattr(instance, method + "_data"):
-            if "json" in kwargs:
-                kwargs["data"] = json.dumps(kwargs.pop("json"))
-                if isinstance(instance, LocalZSpaceInstance):
-                    kwargs.setdefault("headers", {})["Content-Type"] = "application/json"
-                    
-            if method == "get" and isinstance(instance, LocalZSpaceInstance):
-                return getattr(instance, "get_data")(url)
-                
-            try:
-                return getattr(instance, method + "_data")(url, **kwargs)
-            except TypeError:
-                if "headers" in kwargs:
-                    kwargs.pop("headers")
-                return getattr(instance, method + "_data")(url, **kwargs)
+        """完全独立的 HTTP 通讯代理，不再依赖易碎的后端内部兼容层实现"""
+        host = getattr(instance, "_host", getattr(instance, "host", "")) or ""
+        apikey = getattr(instance, "_apikey", getattr(instance, "api_key", getattr(instance, "token", ""))) or ""
+        
+        if host and not host.endswith("/"):
+            host += "/"
             
-        host = getattr(instance, "_host", "") or ""
-        apikey = getattr(instance, "_apikey", "") or ""
         actual_url = url.replace("[HOST]", host).replace("[APIKEY]", apikey)
         if hasattr(instance, "user"):
-            actual_url = actual_url.replace("[USER]", getattr(instance, "user", "") or "")
+            actual_url = actual_url.replace("[USER]", getattr(instance, "user", None) or "")
             
-        headers = {}
+        headers = kwargs.get("headers", {})
         if self._is_zspace_instance(instance):
-            token = apikey
-            headers = {
-                "X-Emby-Token": token,
-                "X-Emby-Authorization": f"MediaBrowser Token={token}",
-            }
-        if "headers" in kwargs and kwargs["headers"]:
-            headers.update(kwargs["headers"])
-            
+            headers["X-Emby-Token"] = apikey
+            headers["X-Emby-Authorization"] = f"MediaBrowser Token={apikey}"
+        
+        json_data = kwargs.get("json")
+        data_data = kwargs.get("data")
+        
         try:
             if method == "get":
-                return httpx2.get(actual_url, headers=headers, timeout=10)
+                return httpx2.get(actual_url, headers=headers, timeout=15)
             elif method == "post":
-                return httpx2.post(actual_url, headers=headers, content=kwargs.get("data"), json=kwargs.get("json"), timeout=10)
+                if json_data is not None:
+                    return httpx2.post(actual_url, headers=headers, json=json_data, timeout=15)
+                elif data_data is not None:
+                    return httpx2.post(actual_url, headers=headers, content=data_data, timeout=15)
+                else:
+                    return httpx2.post(actual_url, headers=headers, timeout=15)
             elif method == "delete":
-                return httpx2.delete(actual_url, headers=headers, timeout=10)
+                return httpx2.delete(actual_url, headers=headers, timeout=15)
         except Exception as e:
-            logger.error(f"HTTP请求出错 ({method} {actual_url})：{e}")
-            return None
+            logger.error(f"WatchSync HTTP请求出错 ({method} {actual_url[:100]}...)：{e}")
+            
+        # 安全的回退调用原生方法
+        if not isinstance(instance, LocalZSpaceInstance) and hasattr(instance, f"{method}_data"):
+            try:
+                return getattr(instance, f"{method}_data")(actual_url, **kwargs)
+            except Exception:
+                pass
+        return None
 
     @staticmethod
     def _coerce_int(value, default: int, min_value: int) -> int:
@@ -374,33 +370,46 @@ class WatchSync(_PluginBase):
             },
             None,
         )
+        
+    @staticmethod
+    def _get_running_modules() -> dict:
+        try:
+            from app.sdk.plugins import module_manager
+            if hasattr(module_manager, '_running_modules'):
+                return module_manager._running_modules
+        except Exception:
+            pass
+        try:
+            from app.sdk.plugins import ModuleManager
+            return getattr(ModuleManager(), '_running_modules', {})
+        except Exception:
+            pass
+        try:
+            from app.core.module import ModuleManager
+            return getattr(ModuleManager(), '_running_modules', {})
+        except Exception:
+            pass
+        return {}
 
     def _load_emby_instances(self):
         self._emby_instances = {}
         self._zspace_instances = {}
         self._server_types = {}
 
-        try:
-            from app.core.module import ModuleManager
-            module_manager = ModuleManager()
-            emby_module = module_manager._running_modules.get("EmbyModule")
-            if emby_module and hasattr(emby_module, 'get_instances'):
-                for name, instance in emby_module.get_instances().items():
-                    self._emby_instances[name] = instance
-                    self._server_types[name] = "emby"
-        except Exception:
-            pass
+        running_modules = self._get_running_modules()
 
-        try:
-            from app.core.module import ModuleManager
-            zspace_module = ModuleManager()._running_modules.get("ZSpaceModule")
-            if zspace_module and hasattr(zspace_module, 'get_instances'):
-                for name, instance in zspace_module.get_instances().items():
-                    self._emby_instances[name] = instance
-                    self._zspace_instances[name] = instance
-                    self._server_types[name] = "zspace"
-        except Exception:
-            pass
+        emby_module = running_modules.get("EmbyModule")
+        if emby_module and hasattr(emby_module, 'get_instances'):
+            for name, instance in emby_module.get_instances().items():
+                self._emby_instances[name] = instance
+                self._server_types[name] = "emby"
+
+        zspace_module = running_modules.get("ZSpaceModule")
+        if zspace_module and hasattr(zspace_module, 'get_instances'):
+            for name, instance in zspace_module.get_instances().items():
+                self._emby_instances[name] = instance
+                self._zspace_instances[name] = instance
+                self._server_types[name] = "zspace"
 
         local_zspace = self._load_local_zspace_instance()
         if local_zspace:
@@ -1151,7 +1160,6 @@ class WatchSync(_PluginBase):
     @db_query
     def _get_records_db(self, db: Optional[Session] = None, *, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         assert db is not None
-        from sqlalchemy import desc
         plugin_id = self.__class__.__name__
         limit, offset = min(max(limit, 10), 100), max(offset, 0)
         total = db.execute(select(func.count()).select_from(WatchSyncRecord).where(WatchSyncRecord.plugin_id == plugin_id)).scalar()
@@ -1190,5 +1198,4 @@ class WatchSync(_PluginBase):
         return []
 
     def stop_service(self):
-        # 释放所有后台句柄与线程。Service 调度清理已由主程序的 V3 接管。
         pass

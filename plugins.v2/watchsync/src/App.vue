@@ -63,9 +63,23 @@ import DashboardComponent from './components/Dashboard.vue'
 // 活动标签页
 const activeTab = ref('page')
 
-// 模拟 API 供宿主独立运行测试沙盒联调使用，避免抛出 undefined 错误
+// 模拟 API 供宿主独立运行测试沙盒联调使用，避免抛出 undefined 错误及无意义请求失败
 const api = {
-  get: () => Promise.resolve({ success: true, data: {} }),
+  get: (url) => {
+    if (url.includes('/servers')) {
+        return Promise.resolve({ success: true, data: [{ name: 'Dummy Server', type: 'emby', status: 'online' }] })
+    }
+    if (url.includes('/users')) {
+        return Promise.resolve({ success: true, data: { 'Dummy Server': [{ id: '123', name: 'Admin' }] } })
+    }
+    if (url.includes('/stats')) {
+        return Promise.resolve({ success: true, data: { '今日同步次数': 0, '成功率': '100', '活跃用户数': 0, '同步类型': [] } })
+    }
+    if (url.includes('/records')) {
+        return Promise.resolve({ success: true, data: [], pagination: { total: 0, has_more: false } })
+    }
+    return Promise.resolve({ success: true, data: {} })
+  },
   post: () => Promise.resolve({ success: true, data: {} }),
   delete: () => Promise.resolve({ success: true, data: {} }),
 }
