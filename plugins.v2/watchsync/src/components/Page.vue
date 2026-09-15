@@ -1,11 +1,14 @@
 <template>
   <div class="plugin-page">
-    <v-card>
-      <v-card-item>
-        <v-card-title>{{ title }}</v-card-title>
+    <v-card class="rounded-lg shadow-sm" elevation="0" variant="outlined">
+      <v-card-item class="border-b bg-grey-lighten-4 pa-4">
+        <template #prepend>
+          <v-icon color="primary" size="x-large" class="mr-2">mdi-history</v-icon>
+        </template>
+        <v-card-title class="text-primary font-weight-bold">{{ title }}</v-card-title>
         <template #append>
-          <div class="d-flex align-center gap-2">
-            <v-btn color="primary" @click="refreshData" :loading="loading" text="刷新" variant="tonal">
+          <div class="d-flex align-center gap-3">
+            <v-btn color="primary" rounded="lg" @click="refreshData" :loading="loading" text="刷新" variant="flat" size="small" class="px-4 font-weight-medium box-shadow-sm">
               <template v-slot:prepend>
                 <v-icon>mdi-refresh</v-icon>
               </template>
@@ -13,82 +16,127 @@
 
             <v-menu>
               <template v-slot:activator="{ props }">
-                <v-btn v-bind="props" color="secondary" :loading="clearing" text="清理" variant="outlined">
+                <v-btn v-bind="props" color="secondary" rounded="lg" :loading="clearing" text="清理" variant="tonal" size="small" class="px-4 font-weight-medium">
                   <template v-slot:prepend>
                     <v-icon>mdi-delete-sweep</v-icon>
                   </template>
                 </v-btn>
               </template>
-              <v-list>
+              <v-list rounded="lg" elevation="3" class="mt-1">
                 <v-list-item @click="clearOldRecords(7)">
-                  <v-list-item-title>清理7天前</v-list-item-title>
+                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="warning">mdi-calendar-alert</v-icon></template>
+                  <v-list-item-title class="text-body-2">清理7天前</v-list-item-title>
                 </v-list-item>
                 <v-list-item @click="clearOldRecords(30)">
-                  <v-list-item-title>清理30天前</v-list-item-title>
+                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="error">mdi-calendar-remove</v-icon></template>
+                  <v-list-item-title class="text-body-2">清理30天前</v-list-item-title>
                 </v-list-item>
                 <v-list-item @click="clearOldRecords(90)">
-                  <v-list-item-title>清理90天前</v-list-item-title>
+                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="grey">mdi-delete-forever</v-icon></template>
+                  <v-list-item-title class="text-body-2">清理90天前</v-list-item-title>
                 </v-list-item>
               </v-list>
             </v-menu>
 
-            <v-btn color="info" @click="exportLogs" text="导出" variant="outlined">
+            <v-btn color="info" rounded="lg" @click="exportLogs" text="导出" variant="tonal" size="small" class="px-4 font-weight-medium">
               <template v-slot:prepend>
                 <v-icon>mdi-download</v-icon>
               </template>
             </v-btn>
-            <v-btn color="primary" @click="notifySwitch" text="配置" variant="outlined">
+            <v-btn color="primary" rounded="lg" @click="notifySwitch" text="配置" variant="outlined" size="small" class="px-4 font-weight-medium bg-white">
               <template v-slot:prepend>
                 <v-icon>mdi-cog</v-icon>
               </template>
             </v-btn>
 
-            <v-btn icon color="primary" variant="text" @click="notifyClose">
+            <v-btn icon color="grey-darken-1" variant="text" size="small" @click="notifyClose" class="bg-white elevation-1 ml-1" style="border: 1px solid #e0e0e0;">
               <v-icon>mdi-close</v-icon>
             </v-btn>
           </div>
         </template>
       </v-card-item>
-      <v-card-text style="max-height: 75vh; overflow-y: auto;">
-        <v-alert v-if="error" type="error" class="mb-4">{{ error }}</v-alert>
-        <v-skeleton-loader v-if="loading" type="card"></v-skeleton-loader>
+
+      <v-card-text class="pa-4 bg-grey-lighten-5" style="max-height: 75vh; overflow-y: auto;">
+        <v-alert v-if="error" type="error" variant="tonal" class="mb-4 border border-error">{{ error }}</v-alert>
+        
+        <div v-if="loading" class="pa-4">
+          <v-skeleton-loader type="list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line"></v-skeleton-loader>
+        </div>
+        
         <div v-else>
           <!-- 最近同步记录 -->
-          <div v-if="groupedSyncRecords && groupedSyncRecords.length" class="mt-4">
-            <v-timeline density="compact">
+          <div v-if="groupedSyncRecords && groupedSyncRecords.length" class="mt-2">
+            <v-timeline density="compact" side="end" align="start">
               <v-timeline-item
                 v-for="(group, index) in groupedSyncRecords"
                 :key="index"
                 size="small"
+                :dot-color="getItemColor(group.status)"
+                fill-dot
               >
                 <template #icon>
-                  <v-avatar size="24" :color="getItemColor(group.status)">
-                    <v-icon size="16" color="white">{{ getItemIcon(group.status) }}</v-icon>
-                  </v-avatar>
+                  <v-icon size="14" color="white">{{ getItemIcon(group.status) }}</v-icon>
                 </template>
-                <div class="d-flex align-center">
-                  <v-icon :color="getMediaTypeColor(group.media_type)" size="small" class="mr-2">
-                    {{ getMediaTypeIcon(group.media_type) }}
-                  </v-icon>
-                  <v-icon :color="getSyncTypeColor(group.sync_type)" size="small" class="mr-2">
-                    {{ getSyncTypeIcon(group.sync_type) }}
-                  </v-icon>
-                  <span class="font-weight-medium">{{ group.media_name }}</span>
-                </div>
-                <div class="text-caption text-secondary">
-                  <div>{{ group.source_user }} → {{ group.target_users.join(', ') }}</div>
-                  <div v-if="group.description">{{ group.description }}</div>
-                  <div v-if="group.error_message" class="text-error">错误: {{ group.error_message }}</div>
-                  <div>{{ formatTime(group.timestamp) }}</div>
-                </div>
+                
+                <v-card 
+                  variant="outlined" 
+                  class="rounded-lg pa-3 ml-2 shadow-sm bg-white border-opacity-75"
+                  :class="group.status === 'error' ? 'border-error' : 'border-success'"
+                >
+                  <div class="d-flex justify-space-between align-center mb-2">
+                    <div class="d-flex align-center">
+                      <v-icon :color="getMediaTypeColor(group.media_type)" size="small" class="mr-1">
+                        {{ getMediaTypeIcon(group.media_type) }}
+                      </v-icon>
+                      <v-icon :color="getSyncTypeColor(group.sync_type)" size="small" class="mr-2">
+                        {{ getSyncTypeIcon(group.sync_type) }}
+                      </v-icon>
+                      <span class="font-weight-bold text-subtitle-2 text-primary-darken-1">{{ group.media_name }}</span>
+                    </div>
+                    <span class="text-caption text-medium-emphasis bg-grey-lighten-4 px-2 py-1 rounded-pill">
+                      {{ formatTime(group.timestamp) }}
+                    </span>
+                  </div>
+                  
+                  <div class="text-body-2 mb-2 d-flex align-center flex-wrap gap-1">
+                    <v-chip size="x-small" variant="flat" color="grey-lighten-3" class="text-grey-darken-3 font-weight-medium">
+                      <v-icon start size="x-small">mdi-account-arrow-right</v-icon>
+                      {{ group.source_user }}
+                    </v-chip>
+                    <v-icon size="x-small" color="grey-lighten-1" class="mx-1">mdi-arrow-right-bold</v-icon>
+                    <v-chip 
+                      v-for="(target_user, idx) in group.target_users" 
+                      :key="idx" 
+                      size="x-small" 
+                      variant="flat" 
+                      :color="group.status === 'error' ? 'error-lighten-4' : 'success-lighten-4'" 
+                      :class="group.status === 'error' ? 'text-error' : 'text-success-darken-2'"
+                      class="font-weight-medium mr-1"
+                    >
+                      {{ target_user }}
+                    </v-chip>
+                  </div>
+
+                  <div v-if="group.description" class="text-caption text-indigo-darken-1 bg-indigo-lighten-5 pa-2 rounded d-flex align-center">
+                    <v-icon size="small" class="mr-2" color="indigo">mdi-information-outline</v-icon>
+                    {{ group.description }}
+                  </div>
+                  
+                  <div v-if="group.error_message" class="text-caption text-error bg-error-lighten-5 pa-2 rounded mt-2 d-flex align-start border border-error border-opacity-25">
+                    <v-icon size="small" class="mr-1 mt-n1" color="error">mdi-alert-circle</v-icon>
+                    <span>{{ group.error_message }}</span>
+                  </div>
+                </v-card>
               </v-timeline-item>
             </v-timeline>
 
             <!-- 加载更多按钮 -->
-            <div v-if="pagination.hasMore" class="text-center mt-4">
+            <div v-if="pagination.hasMore" class="text-center mt-6 mb-2">
               <v-btn
                 color="primary"
                 variant="outlined"
+                rounded="pill"
+                class="px-6 bg-white"
                 @click="loadMoreRecords"
                 :loading="pagination.loading"
               >
@@ -98,9 +146,15 @@
             </div>
 
             <!-- 分页信息 -->
-            <div v-if="pagination.total > 0" class="text-center mt-2 text-caption text-secondary">
-              已显示 {{ syncRecords.length }} / {{ pagination.total }} 条记录
+            <div v-if="pagination.total > 0" class="text-center mt-3 text-caption text-medium-emphasis font-weight-medium">
+              当前展示 {{ syncRecords.length }} / {{ pagination.total }} 条记录
             </div>
+          </div>
+          
+          <div v-else class="text-center py-10">
+            <v-icon size="80" color="grey-lighten-2" class="mb-4">mdi-history</v-icon>
+            <div class="text-h6 text-grey-darken-1 font-weight-medium">暂无同步记录</div>
+            <div class="text-body-2 text-grey">当配置生效且触发同步后，相关的记录会展示在此处</div>
           </div>
         </div>
       </v-card-text>
@@ -453,3 +507,15 @@ onMounted(() => {
   refreshData()
 })
 </script>
+
+<style scoped>
+.box-shadow-sm {
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+.gap-1 {
+  gap: 4px;
+}
+.gap-3 {
+  gap: 12px;
+}
+</style>
