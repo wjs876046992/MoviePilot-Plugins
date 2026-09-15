@@ -17,14 +17,14 @@
             <v-window-item value="page">
               <h2 class="text-h5 mb-4">Page组件</h2>
               <div class="component-preview">
-                <page-component @action="handleAction"></page-component>
+                <page-component :api="api" @action="handleAction"></page-component>
               </div>
             </v-window-item>
 
             <v-window-item value="config">
               <h2 class="text-h5 mb-4">Config组件</h2>
               <div class="component-preview">
-                <config-component :initial-config="initialConfig" @save="handleConfigSave"></config-component>
+                <config-component :initial-config="initialConfig" :api="api" @save="handleConfigSave"></config-component>
               </div>
             </v-window-item>
 
@@ -32,7 +32,7 @@
               <h2 class="text-h5 mb-4">Dashboard组件</h2>
               <v-switch v-model="dashboardConfig.attrs.border" label="显示边框" color="primary" class="mb-4"></v-switch>
               <div class="component-preview">
-                <dashboard-component :config="dashboardConfig" :allow-refresh="true"></dashboard-component>
+                <dashboard-component :config="dashboardConfig" :api="api" :allow-refresh="true"></dashboard-component>
               </div>
             </v-window-item>
           </v-window>
@@ -62,6 +62,13 @@ import DashboardComponent from './components/Dashboard.vue'
 
 // 活动标签页
 const activeTab = ref('page')
+
+// 模拟 API 供宿主独立运行测试沙盒联调使用，避免抛出 undefined 错误
+const api = {
+  get: () => Promise.resolve({ success: true, data: {} }),
+  post: () => Promise.resolve({ success: true, data: {} }),
+  delete: () => Promise.resolve({ success: true, data: {} }),
+}
 
 // 配置初始值
 const initialConfig = {

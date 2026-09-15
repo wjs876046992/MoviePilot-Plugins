@@ -235,7 +235,20 @@ class WatchSync(_PluginBase):
     def _emby_request(self, instance, method: str, url: str, **kwargs):
         """兼容层：封装所有的 HTTP 调用，保障多版本 SDK 的运行平滑度"""
         if hasattr(instance, method + "_data"):
-            return getattr(instance, method + "_data")(url, **kwargs)
+            if "json" in kwargs:
+                kwargs["data"] = json.dumps(kwargs.pop("json"))
+                if isinstance(instance, LocalZSpaceInstance):
+                    kwargs.setdefault("headers", {})["Content-Type"] = "application/json"
+                    
+            if method == "get" and isinstance(instance, LocalZSpaceInstance):
+                return getattr(instance, "get_data")(url)
+                
+            try:
+                return getattr(instance, method + "_data")(url, **kwargs)
+            except TypeError:
+                if "headers" in kwargs:
+                    kwargs.pop("headers")
+                return getattr(instance, method + "_data")(url, **kwargs)
             
         host = getattr(instance, "_host", "") or ""
         apikey = getattr(instance, "_apikey", "") or ""
@@ -1057,7 +1070,13 @@ class WatchSync(_PluginBase):
         today = datetime.now().strftime('%Y-%m-%d')
         stat = db.execute(select(WatchSyncStat).where(WatchSyncStat.plugin_id == plugin_id, WatchSyncStat.date == today)).scalar_one_or_none()
         if not stat:
-            stat = WatchSyncStat(plugin_id=plugin_id, date=today)
+            stat = WatchSyncStat(
+                plugin_id=plugin_id, 
+                date=today, 
+                total_syncs=0, 
+                success_syncs=0, 
+                failed_syncs=0
+            )
             db.add(stat)
             
         stat.total_syncs += 1
