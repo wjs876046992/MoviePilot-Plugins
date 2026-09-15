@@ -13,12 +13,10 @@ import os
 from urllib.parse import quote
 import httpx2
 
-import warnings
-from sqlalchemy import String, Integer, DateTime, select, func, delete, desc
-from sqlalchemy import exc as sa_exc
-from sqlalchemy.orm import Mapped, mapped_column, Session
+from sqlalchemy import select, func, delete, desc
+from sqlalchemy.orm import Session
 
-from app.db import Base, db_query, db_update, Engine
+from app.db import db_query, db_update
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.plugins import _PluginBase
@@ -27,48 +25,14 @@ from app.schemas.types import EventType
 from app.sdk.config import settings
 from apscheduler.triggers.interval import IntervalTrigger
 
+try:  # 宿主未提供媒体服务器服务目录时不阻断插件加载
+    from app.sdk.services import MediaServerHelper
+except Exception:  # noqa: BLE001
+    MediaServerHelper = None
 
-# 忽略插件重载时因为重复注册同名模型（Declarative Base 类型覆盖）产生的 SAWarning
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", category=sa_exc.SAWarning)
-
-    # 强制清理内存中的旧表结构定义，防止 extend_existing=True 把已被删除的 timestamp “幽灵”字段重新带回来
-    if "plugin_watchsync_record" in Base.metadata.tables:
-        Base.metadata.remove(Base.metadata.tables["plugin_watchsync_record"])
-    if "plugin_watchsync_stat" in Base.metadata.tables:
-        Base.metadata.remove(Base.metadata.tables["plugin_watchsync_stat"])
-
-    class WatchSyncRecord(Base):
-        __tablename__ = "plugin_watchsync_record"
-        __table_args__ = {"extend_existing": True}
-
-        id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-        plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-        source_server: Mapped[str] = mapped_column(String(100), nullable=False)
-        source_user: Mapped[str] = mapped_column(String(100), nullable=False)
-        target_server: Mapped[str] = mapped_column(String(100), nullable=False)
-        target_user: Mapped[str] = mapped_column(String(100), nullable=False)
-        media_name: Mapped[str] = mapped_column(String(255), nullable=False)
-        media_type: Mapped[str] = mapped_column(String(50), nullable=False)
-        media_id: Mapped[str] = mapped_column(String(100), nullable=True)
-        position_ticks: Mapped[int] = mapped_column(Integer, nullable=True)
-        sync_type: Mapped[str] = mapped_column(String(50), default='playback')
-        status: Mapped[str] = mapped_column(String(50), nullable=False)
-        error_message: Mapped[str] = mapped_column(String(500), nullable=True)
-        created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+from .models import WatchSyncRecord, WatchSyncRecordStore, WatchSyncStat
 
 
-    class WatchSyncStat(Base):
-        __tablename__ = "plugin_watchsync_stat"
-        __table_args__ = {"extend_existing": True}
-
-        id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-        plugin_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-        date: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-        total_syncs: Mapped[int] = mapped_column(Integer, default=0)
-        success_syncs: Mapped[int] = mapped_column(Integer, default=0)
-        failed_syncs: Mapped[int] = mapped_column(Integer, default=0)
-        updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class SyncLoopProtector:
@@ -201,8 +165,8 @@ class WatchSync(_PluginBase):
 
     @staticmethod
     def ensure_table() -> None:
-        WatchSyncRecord.__table__.create(bind=Engine, checkfirst=True)
-        WatchSyncStat.__table__.create(bind=Engine, checkfirst=True)
+        """创建插件自有表；委托给 models 的单一建表入口，可重复调用。"""
+        WatchSyncRecordStore.ensure_table()
 
     def init_plugin(self, config: dict = None):
         self.ensure_table()
@@ -383,52 +347,128 @@ class WatchSync(_PluginBase):
         )
         
     @staticmethod
-    def _get_running_modules() -> dict:
+    def _classify_media_server(instance) -> str:
+        """按实例类名与模块名推断媒体服务器类型，返回 emby / zspace / unknown。
+
+        仅在宿主不支持类型过滤时兜底，依据与 ``_is_zspace_instance`` 一致，
+        因此 Jellyfin、Plex 等其他类型不会被误纳。
+        """
+        if not instance:
+            return "unknown"
+        if getattr(instance, "_is_watchsync_zspace", False):
+            return "zspace"
+        descriptor = (
+            f"{instance.__class__.__name__}.{instance.__class__.__module__}"
+        ).lower()
+        if "zspace" in descriptor:
+            return "zspace"
+        if "emby" in descriptor:
+            return "emby"
+        return "unknown"
+
+    @staticmethod
+    def _fetch_catalog_instances(server_type: str) -> Dict[str, Any]:
+        """经稳定 SDK 的服务目录读取指定类型的媒体服务器实例。
+
+        ``MediaServerHelper`` 是 V3 的媒体服务器发现入口（见
+        docs/V3_Plugin_Adaptation.md §2）。宿主不同版本的 ``get_services`` 签名存在差异，
+        过滤式调用不受支持时降级为全量读取，再按实例类型筛选。
+        """
+        if MediaServerHelper is None:
+            return {}
+
         try:
-            from app.sdk.plugins import module_manager
-            if hasattr(module_manager, '_running_modules'):
-                return module_manager._running_modules
-        except Exception:
-            pass
+            helper = MediaServerHelper()
+        except Exception as e:
+            logger.warning(f"媒体服务器服务目录不可用: {str(e)}")
+            return {}
+
+        try:
+            services = helper.get_services(type_filter=server_type) or {}
+        except TypeError:
+            services = {}
+        except Exception as e:
+            logger.warning(f"读取 {server_type} 媒体服务器实例失败: {str(e)}")
+            return {}
+
+        if not services:
+            try:
+                all_services = helper.get_services() or {}
+            except Exception as e:
+                logger.warning(f"读取媒体服务器实例失败: {str(e)}")
+                all_services = {}
+            services = {
+                name: service_info
+                for name, service_info in all_services.items()
+                if WatchSync._classify_media_server(
+                    getattr(service_info, "instance", None)) == server_type
+            }
+
+        return {
+            name: service_info.instance
+            for name, service_info in services.items()
+            if getattr(service_info, "instance", None) is not None
+        }
+
+    @staticmethod
+    def _fetch_module_instances(module_id: str) -> Dict[str, Any]:
+        """经稳定 SDK 的公开入口取运行中宿主模块的实例映射。
+
+        不使用宿主私有的 ``ModuleManager._running_modules``；``get_running_module``
+        是语义等价的公开方法（返回已发布实例、不触发物化）。
+        """
         try:
             from app.sdk.plugins import ModuleManager
-            return getattr(ModuleManager(), '_running_modules', {})
-        except Exception:
-            pass
+
+            module = ModuleManager().get_running_module(module_id)
+        except Exception as e:
+            logger.warning(f"读取运行模块 {module_id} 失败: {str(e)}")
+            return {}
+
+        get_instances = getattr(module, "get_instances", None)
+        if not callable(get_instances):
+            return {}
         try:
-            from app.core.module import ModuleManager
-            return getattr(ModuleManager(), '_running_modules', {})
-        except Exception:
-            pass
-        return {}
+            return get_instances() or {}
+        except Exception as e:
+            logger.warning(f"读取 {module_id} 实例失败: {str(e)}")
+            return {}
+
+    def _register_instance(self, name: str, instance, server_type: str) -> None:
+        """登记一个媒体服务器实例，极影视同时登记为 Emby 兼容层。"""
+        self._emby_instances[name] = instance
+        self._server_types[name] = server_type
+        if server_type == "zspace":
+            self._zspace_instances[name] = instance
 
     def _load_emby_instances(self):
+        """加载 Emby 与极影视实例：优先服务目录，其次运行模块，最后本机自动发现。"""
         self._emby_instances = {}
         self._zspace_instances = {}
         self._server_types = {}
 
-        running_modules = self._get_running_modules()
-
-        emby_module = running_modules.get("EmbyModule")
-        if emby_module and hasattr(emby_module, 'get_instances'):
-            for name, instance in emby_module.get_instances().items():
-                self._emby_instances[name] = instance
-                self._server_types[name] = "emby"
-
-        zspace_module = running_modules.get("ZSpaceModule")
-        if zspace_module and hasattr(zspace_module, 'get_instances'):
-            for name, instance in zspace_module.get_instances().items():
-                self._emby_instances[name] = instance
-                self._zspace_instances[name] = instance
-                self._server_types[name] = "zspace"
+        for module_id, server_type in (("EmbyModule", "emby"), ("ZSpaceModule", "zspace")):
+            instances = self._fetch_catalog_instances(server_type)
+            if not instances:
+                # 服务目录不可用或未命中时退回运行模块，仅使用公开入口。
+                instances = self._fetch_module_instances(module_id)
+            for name, instance in instances.items():
+                self._register_instance(name, instance, server_type)
 
         local_zspace = self._load_local_zspace_instance()
         if local_zspace:
             name, instance = local_zspace
             if name not in self._emby_instances:
-                self._emby_instances[name] = instance
-                self._zspace_instances[name] = instance
-                self._server_types[name] = "zspace"
+                self._register_instance(name, instance, "zspace")
+
+        if not self._emby_instances:
+            # 静默失败会让“插件已加载但不工作”难以排查，这里必须留痕。
+            logger.warning("未加载到任何 Emby/极影视实例，请确认宿主已配置并启用媒体服务器")
+        else:
+            logger.info(
+                f"媒体服务器加载完成: "
+                f"Emby={len([s for s, t in self._server_types.items() if t == 'emby'])}, "
+                f"ZSpace={len(self._zspace_instances)}")
 
     def _load_local_zspace_instance(self) -> Optional[Tuple[str, LocalZSpaceInstance]]:
         import sqlite3
@@ -1138,7 +1178,12 @@ class WatchSync(_PluginBase):
 
 
     def _get_stats_endpoint(self) -> Dict[str, Any]:
-        return self._get_stats_db()
+        """统计端点：自有表异常时返回失败信封，不把 500 直接抛给前端。"""
+        try:
+            return self._get_stats_db()
+        except Exception as e:
+            logger.error(f"获取同步统计失败: {str(e)}")
+            return {"success": False, "message": str(e)}
 
     @db_query
     def _get_stats_db(self, db: Optional[Session] = None) -> Dict[str, Any]:
@@ -1173,7 +1218,12 @@ class WatchSync(_PluginBase):
         return {"success": True, "data": stats}
 
     def _get_records_endpoint(self, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
-        return self._get_records_db(limit=limit, offset=offset)
+        """记录端点：自有表异常时返回失败信封，不把 500 直接抛给前端。"""
+        try:
+            return self._get_records_db(limit=limit, offset=offset)
+        except Exception as e:
+            logger.error(f"获取同步记录失败: {str(e)}")
+            return {"success": False, "message": str(e)}
 
     @db_query
     def _get_records_db(self, db: Optional[Session] = None, *, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
@@ -1213,7 +1263,12 @@ class WatchSync(_PluginBase):
         return {"success": True, "data": sts}
 
     def _clear_old_records_endpoint(self, days: int = 30) -> Dict[str, Any]:
-        return self._clear_old_records_db(days=days)
+        """清理端点：自有表异常时返回失败信封，不把 500 直接抛给前端。"""
+        try:
+            return self._clear_old_records_db(days=days)
+        except Exception as e:
+            logger.error(f"清理旧记录失败: {str(e)}")
+            return {"success": False, "message": str(e)}
 
     @db_update
     def _clear_old_records_db(self, db: Optional[Session] = None, *, days: int = 30) -> Dict[str, Any]:

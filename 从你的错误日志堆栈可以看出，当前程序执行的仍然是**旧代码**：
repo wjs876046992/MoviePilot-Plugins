@@ -1,2 +1,0 @@
-File "/app/app/plugins/watchsync/__init__.py", line 1164, in _get_records_db
-recs = db.execute(select(WatchSyncRecord).where(...)).scalars().all()

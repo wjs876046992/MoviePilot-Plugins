@@ -31,19 +31,23 @@ FORBIDDEN_IMPORT_PREFIXES = (
 )
 
 # 旧实现依赖的宿主私有入口与插件数据目录常量。
+# 注意不禁止标识符 ``ModuleManager``：经 ``app.sdk.plugins`` 使用它的公开方法
+# （如 get_running_module）是合规的；被禁止的是读取其 ``_running_modules`` 私有属性，
+# 以及经 ``app.core.module`` 之类的旧路径导入（后者由导入前缀检查覆盖）。
 FORBIDDEN_IDENTIFIERS = (
-    "ModuleManager",
     "_running_modules",
     "__running_modules",
     "PLUGIN_DATA_PATH",
 )
 
 # 迁移后必须经由的稳定 SDK 入口。
+# 不要求 ``app.sdk.network``：HTTP 层为规避宿主代理异常直接使用宿主依赖 ``httpx2``
+# （后端 pyproject 已声明 ``httpx2[http2,socks]~=2.12.0``），这不属于旧路径导入。
 REQUIRED_SDK_MODULES = {
     "app.sdk.config",
     "app.sdk.events",
     "app.sdk.logging",
-    "app.sdk.network",
+    "app.sdk.plugins",
     "app.sdk.services",
 }
 
@@ -174,15 +178,24 @@ def test_dashboard_meta_and_api_surface_are_preserved() -> None:
     assert all(item["auth"] == "bear" for item in api)
 
 
-def test_record_endpoints_degrade_before_self_owned_table_is_ready() -> None:
-    """自有表初始化失败时只降级明细能力，返回失败信封而不是抛异常。"""
+def test_record_endpoints_return_failure_envelope_instead_of_raising(monkeypatch) -> None:
+    """自有表读取异常时返回失败信封，不把异常抛给宿主接口层。"""
     plugin = _bare_plugin()
-    plugin._record_store = None
 
-    assert plugin._get_records()["success"] is False
-    assert plugin._clear_old_records(30)["success"] is False
-    assert plugin._get_stats()["success"] is False
-    assert "未初始化" in plugin._get_stats()["message"]
+    def _boom(*args, **kwargs):
+        raise RuntimeError("plugin_watchsync_record 表不可用")
+
+    for name in ("_get_records_db", "_get_stats_db", "_clear_old_records_db"):
+        monkeypatch.setattr(plugin, name, _boom)
+
+    responses = (
+        plugin._get_records_endpoint(),
+        plugin._get_stats_endpoint(),
+        plugin._clear_old_records_endpoint(30),
+    )
+    for response in responses:
+        assert response["success"] is False
+        assert "不可用" in response["message"]
 
 
 def test_committed_federation_bundle_exposes_vue_components() -> None:

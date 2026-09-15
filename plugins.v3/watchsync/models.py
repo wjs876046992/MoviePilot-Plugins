@@ -43,8 +43,27 @@ class WatchSyncRecord(Base):
     error_message: Mapped[Optional[str]] = mapped_column(String(1024))
 
 
+class WatchSyncStat(Base):
+    """按天聚合的同步统计，避免每次都全表扫描明细。"""
+
+    __tablename__ = "plugin_watchsync_stat"
+    # V3 热重载和虚拟分身会重复执行模型声明，必须复用同一份表元数据。
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # 运行实例 ID：虚拟分身共用同一份源码，靠该列隔离各自数据。
+    plugin_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    total_syncs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_syncs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_syncs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.now, onupdate=datetime.now
+    )
+
+
 class WatchSyncRecordStore:
-    """WatchSyncRecord 的建表与读写封装。"""
+    """插件自有表的建表与数据访问封装。"""
 
     def __init__(self, plugin_id: str):
         """绑定当前运行实例 ID，用于隔离虚拟分身之间的数据。"""
@@ -57,10 +76,11 @@ class WatchSyncRecordStore:
 
     @staticmethod
     def ensure_table() -> None:
-        """仅创建本插件的数据表，不触发宿主全部元数据建表。"""
+        """仅创建本插件的两张数据表，可重复调用，不触发宿主全部元数据建表。"""
         from app.db import Engine
 
         WatchSyncRecord.__table__.create(bind=Engine, checkfirst=True)
+        WatchSyncStat.__table__.create(bind=Engine, checkfirst=True)
 
     @db_update
     def add_record(
