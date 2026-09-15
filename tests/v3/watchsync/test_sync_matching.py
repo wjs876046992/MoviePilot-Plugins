@@ -175,13 +175,82 @@ def test_pick_best_matching_item_returns_none_without_candidates() -> None:
     assert _plugin()._pick_best_matching_item({"Type": "Movie"}, []) is None
 
 
-def test_media_search_terms_add_normalized_series_name_for_episodes() -> None:
-    """单集标题不够用时补充剧名与归一化剧名，并保持去重顺序。"""
+def test_pick_best_matching_item_rejects_episode_of_another_series() -> None:
+    """同季同集但剧名不同 → 不得命中，否则进度会被写到别的剧上。"""
+    plugin = _plugin()
+    candidates = [
+        {"Name": "第 13 集", "Type": "Episode", "SeriesName": "完全无关的剧",
+         "ParentIndexNumber": 1, "IndexNumber": 13},
+    ]
+
+    picked = plugin._pick_best_matching_item(
+        {"Type": "Episode", "Name": "第 13 集", "SeriesName": "杀手妈咪",
+         "ParentIndexNumber": 1, "IndexNumber": 13, "ProviderIds": {}},
+        candidates,
+    )
+
+    assert picked is None
+
+
+def test_pick_best_matching_item_returns_none_when_no_episode_matches() -> None:
+    """候选里没有源剧集时返回 None，不能退而挑第一个候选。"""
+    plugin = _plugin()
+    candidates = [
+        {"Name": "第 5 集", "Type": "Episode", "SeriesName": "别的剧",
+         "ParentIndexNumber": 2, "IndexNumber": 5},
+    ]
+
+    picked = plugin._pick_best_matching_item(
+        {"Type": "Episode", "Name": "第 13 集", "SeriesName": "杀手妈咪",
+         "ParentIndexNumber": 1, "IndexNumber": 13, "ProviderIds": {}},
+        candidates,
+    )
+
+    assert picked is None
+
+
+def test_pick_best_matching_item_second_round_uses_series_and_name() -> None:
+    """候选缺季号时（极影视常见）第二轮按剧名 + 名称命中。"""
+    plugin = _plugin()
+    candidates = [
+        {"Name": "第 1 集", "Type": "Episode", "SeriesName": "某剧", "IndexNumber": 1},
+    ]
+
+    picked = plugin._pick_best_matching_item(
+        {"Type": "Episode", "Name": "第 1 集", "SeriesName": "某剧",
+         "ParentIndexNumber": 1, "IndexNumber": 1},
+        candidates,
+    )
+
+    assert picked is not None and picked["Name"] == "第 1 集"
+
+
+def test_pick_best_matching_item_keeps_v2_movie_fallback() -> None:
+    """电影沿用 V2 行为：名称 + 年份都对不上时仍取首个候选。
+
+    这条是 V2 的既有语义（V2 只在剧集分支 return None），本次照原样保留，
+    属于已知残留风险 —— 若要收紧需另外确认。
+    """
+    plugin = _plugin()
+    candidates = [
+        {"Name": "别的电影", "Type": "Movie", "ProductionYear": 2001, "ProviderIds": {}},
+    ]
+
+    picked = plugin._pick_best_matching_item(
+        {"Type": "Movie", "Name": "流浪地球", "ProductionYear": 2019, "ProviderIds": {}},
+        candidates,
+    )
+
+    assert picked is not None and picked["Name"] == "别的电影"
+
+
+def test_media_search_terms_put_series_name_first_for_episodes() -> None:
+    """剧集先搜剧名（单集名常是本地化的「第 N 集」，区分度太低），并保持去重顺序。"""
     plugin = _plugin()
     terms = plugin._get_media_search_terms(
         {"Type": "Episode", "Name": "E01", "SeriesName": "某剧 第 1 季"}
     )
-    assert terms == ["E01", "某剧 第 1 季", "某剧"]
+    assert terms == ["某剧 第 1 季", "某剧", "E01"]
 
 
 def test_media_search_terms_keep_movie_titles_only() -> None:

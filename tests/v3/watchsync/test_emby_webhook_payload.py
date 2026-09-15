@@ -281,5 +281,5 @@ def test_real_episode_payload_has_no_tmdb_id_and_falls_back_to_names() -> None:
     plugin = _plugin()
 
     assert payload["Item"]["ProviderIds"] == {}
-    # 剧名归一后与剧名本身相同，因此去重后只剩两个检索词。
-    assert plugin._get_media_search_terms(payload["Item"]) == ["第 13 集", "杀手妈咪"]
+    # 剧集先搜剧名；剧名归一后与剧名本身相同，所以去重后只剩两个检索词。
+    assert plugin._get_media_search_terms(payload["Item"]) == ["杀手妈咪", "第 13 集"]

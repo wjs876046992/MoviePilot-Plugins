@@ -123,7 +123,7 @@ class WatchSync(_PluginBase):
     plugin_name = "Emby观看记录同步"
     plugin_desc = "在不同用户之间同步观看记录（自用插件，不保证兼容性）"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
-    plugin_version = "3.0.2"
+    plugin_version = "3.0.3"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "watchsync_"
@@ -1013,8 +1013,23 @@ class WatchSync(_PluginBase):
         return None
 
     def _get_media_search_terms(self, source_item: dict) -> List[str]:
+        """生成检索词。
+
+        剧集**先搜剧名**：Emby 上的单集标题常常是本地化的「第 13 集」，几乎没有区分度，
+        拿它当首个检索词会捞回一堆无关剧集；先按剧名搜、再按季/集过滤更可靠。电影仍按片名。
+        """
+        if source_item.get("Type") == "Movie":
+            candidates = [source_item.get("Name"), source_item.get("OriginalTitle")]
+        else:
+            series_name = source_item.get("SeriesName")
+            candidates = [
+                series_name,
+                self._normalize_series_name(series_name),
+                source_item.get("Name"),
+                source_item.get("OriginalTitle"),
+            ]
+
         terms = []
-        candidates = [source_item.get("Name"), source_item.get("OriginalTitle")] if source_item.get("Type") == "Movie" else [source_item.get("Name"), source_item.get("SeriesName"), self._normalize_series_name(source_item.get("SeriesName")), source_item.get("OriginalTitle")]
         for term in candidates:
             if term and term not in terms: terms.append(term)
         return terms
@@ -1045,22 +1060,41 @@ class WatchSync(_PluginBase):
         return expanded or candidates
 
     def _pick_best_matching_item(self, source_item: dict, candidates: List[dict]) -> Optional[dict]:
+        """从搜索结果中挑出与源媒体对应的那一项。
+
+        剧集必须**剧名 + 季号 + 集号**都对上才算命中。全都对不上时返回 None（宁可不做），
+        而不是退而求其次挑一个候选 —— 那等于把观看进度写到别的剧集上。
+        """
         if not candidates: return None
         st, sn, sy, ss, se = source_item.get("Type"), (source_item.get("Name") or "").strip().lower(), source_item.get("ProductionYear"), source_item.get("ParentIndexNumber"), source_item.get("IndexNumber")
         s_ser = self._normalize_series_name(source_item.get("SeriesName")).lower()
+        s_tmdb = (source_item.get("ProviderIds") or {}).get("Tmdb")
 
         for c in candidates:
-            if source_item.get("ProviderIds", {}).get("Tmdb") and c.get("ProviderIds", {}).get("Tmdb") == source_item.get("ProviderIds", {}).get("Tmdb"): return c
+            if s_tmdb and (c.get("ProviderIds") or {}).get("Tmdb") == s_tmdb: return c
 
         if st == "Movie":
             for c in candidates:
                 if (c.get("Name") or "").strip().lower() == sn and (not sy or not c.get("ProductionYear") or str(c.get("ProductionYear")) == str(sy)): return c
         elif st in ["Episode", "Series"]:
+            # 第一轮：类型 + 季号 + 集号 + 剧名全部对上。
             for c in candidates:
                 if st == "Episode" and c.get("Type") != "Episode": continue
-                if st == "Episode" and ss and str(ss) != str(c.get("ParentIndexNumber")): continue
-                if st == "Episode" and se and str(se) != str(c.get("IndexNumber")): continue
+                c_ser = self._normalize_series_name(c.get("SeriesName") or c.get("Name")).lower()
+                if st == "Episode" and ss and (not c.get("ParentIndexNumber") or str(ss) != str(c.get("ParentIndexNumber"))): continue
+                if st == "Episode" and se and (not c.get("IndexNumber") or str(se) != str(c.get("IndexNumber"))): continue
+                if s_ser and c_ser and s_ser != c_ser: continue
                 return c
+
+            # 第二轮：季/集信息不全时，退回按剧名 + 名称比对。
+            for c in candidates:
+                c_ser = self._normalize_series_name(c.get("SeriesName") or c.get("Name")).lower()
+                if s_ser and c_ser and s_ser != c_ser: continue
+                if sn and (c.get("Name") or "").strip().lower() and sn != (c.get("Name") or "").strip().lower(): continue
+                return c
+
+            # 宁可这次不同步，也不要把进度写到错误的媒体上。
+            return None
         return candidates[0]
 
     @staticmethod
