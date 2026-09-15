@@ -1067,7 +1067,8 @@ class WatchSync(_PluginBase):
         """
         if not candidates: return None
         st, sn, sy, ss, se = source_item.get("Type"), (source_item.get("Name") or "").strip().lower(), source_item.get("ProductionYear"), source_item.get("ParentIndexNumber"), source_item.get("IndexNumber")
-        s_ser = self._normalize_series_name(source_item.get("SeriesName")).lower()
+        s_ser_name = source_item.get("SeriesName") or (source_item.get("Name") if st == "Series" else "")
+        s_ser = self._normalize_series_name(s_ser_name).lower()
         s_tmdb = (source_item.get("ProviderIds") or {}).get("Tmdb")
 
         for c in candidates:
@@ -1080,7 +1081,8 @@ class WatchSync(_PluginBase):
             # 第一轮：类型 + 季号 + 集号 + 剧名全部对上。
             for c in candidates:
                 if st == "Episode" and c.get("Type") != "Episode": continue
-                c_ser = self._normalize_series_name(c.get("SeriesName") or c.get("Name")).lower()
+                c_ser_name = c.get("SeriesName") or (c.get("Name") if c.get("Type") == "Series" else "")
+                c_ser = self._normalize_series_name(c_ser_name).lower()
                 if st == "Episode" and ss and (not c.get("ParentIndexNumber") or str(ss) != str(c.get("ParentIndexNumber"))): continue
                 if st == "Episode" and se and (not c.get("IndexNumber") or str(se) != str(c.get("IndexNumber"))): continue
                 if s_ser and c_ser and s_ser != c_ser: continue
@@ -1088,7 +1090,8 @@ class WatchSync(_PluginBase):
 
             # 第二轮：季/集信息不全时，退回按剧名 + 名称比对。
             for c in candidates:
-                c_ser = self._normalize_series_name(c.get("SeriesName") or c.get("Name")).lower()
+                c_ser_name = c.get("SeriesName") or (c.get("Name") if c.get("Type") == "Series" else "")
+                c_ser = self._normalize_series_name(c_ser_name).lower()
                 if s_ser and c_ser and s_ser != c_ser: continue
                 if sn and (c.get("Name") or "").strip().lower() and sn != (c.get("Name") or "").strip().lower(): continue
                 return c
