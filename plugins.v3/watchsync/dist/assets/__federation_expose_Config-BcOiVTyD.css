@@ -1,0 +1,170 @@
+
+/* 主卡片容器 */
+.config-main-card[data-v-c1daa538] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}
+
+/* 顶部标题栏渐变 */
+.header-surface[data-v-c1daa538] {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%
+  );
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+.header-icon-box[data-v-c1daa538] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+}
+.close-btn[data-v-c1daa538] {
+  color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.6);
+}
+
+/* 配置内容区域 */
+.config-body[data-v-c1daa538] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
+  max-height: 72vh;
+}
+
+/* 区域小标签 */
+.section-label[data-v-c1daa538] {
+  letter-spacing: 0.05em;
+}
+
+/* 设置统一卡片 */
+.settings-group-card[data-v-c1daa538] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.09) !important;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.settings-group-card[data-v-c1daa538]:hover {
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.25) !important;
+}
+.zspace-card[data-v-c1daa538] {
+  border-color: rgba(var(--v-theme-warning, 251, 140, 0), 0.25) !important;
+}
+.zspace-card[data-v-c1daa538]:hover {
+  border-color: rgba(var(--v-theme-warning, 251, 140, 0), 0.45) !important;
+}
+
+/* 行间分割线 */
+.row-divider[data-v-c1daa538] {
+  border-color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06) !important;
+}
+
+/* 行图标 */
+.setting-icon-box[data-v-c1daa538] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.setting-icon-primary[data-v-c1daa538] {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+}
+.setting-icon-warning[data-v-c1daa538] {
+  background: rgba(var(--v-theme-warning, 251, 140, 0), 0.12);
+}
+
+/* 同步组卡片 */
+.group-panel-card[data-v-c1daa538] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.1) !important;
+  transition: all 0.2s ease;
+}
+.group-panel-card[data-v-c1daa538]:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+.group-header[data-v-c1daa538] {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.03);
+}
+.group-header-badge[data-v-c1daa538] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+  flex-shrink: 0;
+}
+
+/* 节点卡片容器 */
+.endpoint-node-card[data-v-c1daa538] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+  transition: all 0.18s ease;
+}
+.endpoint-node-card[data-v-c1daa538]:hover {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.035);
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.25);
+}
+.node-number-badge[data-v-c1daa538] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+  color: rgb(var(--v-theme-primary, 24, 103, 192));
+}
+.node-field-box[data-v-c1daa538] {
+  min-width: 180px;
+}
+.node-sync-indicator[data-v-c1daa538] {
+  width: 24px;
+  height: 24px;
+  opacity: 0.6;
+}
+
+/* 节点空状态 */
+.node-empty-dashed-box[data-v-c1daa538] {
+  border: 1px dashed rgba(var(--v-theme-primary, 24, 103, 192), 0.35);
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.02);
+  transition: all 0.2s ease;
+}
+.node-empty-dashed-box[data-v-c1daa538]:hover {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.6);
+}
+
+/* 暂无同步组空状态 */
+.empty-sync-box[data-v-c1daa538] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.15);
+}
+.empty-icon-wrapper[data-v-c1daa538] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+}
+
+/* 底部操作条 */
+.footer-surface[data-v-c1daa538] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border-top: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+.save-btn[data-v-c1daa538] {
+  letter-spacing: 0.03em;
+}
+.cursor-pointer[data-v-c1daa538] {
+  cursor: pointer;
+}
+.ga-2[data-v-c1daa538] {
+  gap: 8px;
+}

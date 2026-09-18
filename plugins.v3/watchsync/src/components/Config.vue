@@ -1,30 +1,37 @@
 <template>
   <div class="plugin-config">
-    <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-card" elevation="0" variant="outlined">
+    <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
-      <!-- 顶栏 -->
-      <v-card-item class="header-surface px-4 py-3">
+      <!-- 优雅顶栏 -->
+      <v-card-item class="header-surface px-5 py-4">
         <template #prepend>
           <div class="header-icon-box mr-3">
-            <v-icon color="primary" size="20">mdi-cogs</v-icon>
+            <v-icon color="primary" size="22">mdi-sync-circle</v-icon>
           </div>
         </template>
-        <v-card-title class="text-subtitle-1 font-weight-bold">观看记录同步配置</v-card-title>
+        <div>
+          <v-card-title class="text-subtitle-1 font-weight-bold pa-0 text-slate-800 d-flex align-center">
+            观看记录同步配置
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v3.0.2</v-chip>
+          </v-card-title>
+          <div class="text-caption text-medium-emphasis">设定全局同步策略与多端设备用户映射网络</div>
+        </div>
         <template #append>
           <v-btn icon variant="text" size="small" class="rounded-lg close-btn" @click="notifyClose">
             <v-icon size="18">mdi-close</v-icon>
-            <v-tooltip activator="parent" location="bottom">关闭</v-tooltip>
+            <v-tooltip activator="parent" location="bottom">关闭配置</v-tooltip>
           </v-btn>
         </template>
       </v-card-item>
 
+      <!-- 提示信息 -->
       <v-expand-transition>
-        <div v-if="successMessage || error">
+        <div v-if="successMessage || error" class="px-5 pt-3">
           <v-alert
             v-if="successMessage"
             type="success"
             variant="tonal"
-            class="mx-4 mt-4 rounded-lg font-weight-medium"
+            class="rounded-lg font-weight-medium"
             closable
             @click:close="successMessage = null"
           >
@@ -34,7 +41,7 @@
             v-if="error"
             type="error"
             variant="tonal"
-            class="mx-4 mt-4 rounded-lg"
+            class="rounded-lg"
             closable
             @click:close="error = null"
           >
@@ -43,350 +50,402 @@
         </div>
       </v-expand-transition>
 
-      <v-card-text class="config-body overflow-y-auto pa-4 flex-grow-1">
+      <!-- 配置主体 -->
+      <v-card-text class="config-body overflow-y-auto px-5 py-4 flex-grow-1">
         <v-form ref="form" v-model="isFormValid" @submit.prevent="saveConfig">
 
-          <!-- 基本设置 -->
-          <div class="section-title d-flex align-center mb-3">
-            <div class="section-icon section-icon-primary">
-              <v-icon size="18" color="primary">mdi-tune</v-icon>
-            </div>
-            <span class="text-subtitle-2 font-weight-bold ml-2">基本设置</span>
-            <v-divider class="ml-3 opacity-25"></v-divider>
+          <!-- 全局同步策略卡片 -->
+          <div class="section-label d-flex align-center mb-2">
+            <v-icon size="16" color="primary" class="mr-1">mdi-tune-variant</v-icon>
+            <span class="text-caption font-weight-bold text-uppercase text-medium-emphasis tracking-wider">全局同步策略</span>
           </div>
 
-          <v-card variant="outlined" class="section-card rounded-lg mb-6">
-            <v-card-text class="pa-4">
+          <v-card variant="outlined" class="settings-group-card rounded-xl mb-5">
+            <!-- 插件主开关行 -->
+            <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+              <div class="d-flex align-center mr-3">
+                <div class="setting-icon-box mr-3 setting-icon-primary">
+                  <v-icon size="18" color="primary">mdi-power</v-icon>
+                </div>
+                <div>
+                  <div class="font-weight-bold text-body-2">同步引擎主开关</div>
+                  <div class="text-caption text-medium-emphasis">开启后将自动监听并双向同步多服务器间的播放进度与已看状态</div>
+                </div>
+              </div>
               <v-switch
                 v-model="config.enabled"
-                label="启用当前插件 (观看记录同步)"
                 color="primary"
                 inset
-                hide-details="auto"
-                class="font-weight-medium"
-                hint="全局开关。启用后将自动建立对应不同用户的事件监听与同步"
-                persistent-hint
+                hide-details
+                density="compact"
+                class="flex-shrink-0"
               ></v-switch>
-            </v-card-text>
-          </v-card>
-
-          <!-- 媒体类型与阈值 -->
-          <div class="section-title d-flex align-center mb-3">
-            <div class="section-icon section-icon-info">
-              <v-icon size="18" color="info">mdi-sync-circle</v-icon>
             </div>
-            <span class="text-subtitle-2 font-weight-bold ml-2">媒体类型与阈值</span>
-            <v-divider class="ml-3 opacity-25"></v-divider>
-          </div>
 
-          <v-card variant="outlined" class="section-card rounded-lg mb-6">
-            <v-card-text class="pa-4">
-              <v-row>
-                <v-col cols="12" md="6" class="py-2">
-                  <v-switch
-                    v-model="config.sync_movies"
-                    label="同步 电影 观看记录"
-                    color="info"
-                    inset
-                    hide-details
-                  ></v-switch>
+            <v-divider class="row-divider"></v-divider>
+
+            <!-- 媒体类型行 -->
+            <div class="px-4 py-3">
+              <v-row align="center">
+                <v-col cols="12" sm="6" class="py-1">
+                  <div class="d-flex align-center justify-space-between">
+                    <div class="d-flex align-center mr-2">
+                      <v-icon size="18" color="info" class="mr-2">mdi-movie-outline</v-icon>
+                      <span class="text-body-2 font-weight-medium">同步电影记录</span>
+                    </div>
+                    <v-switch
+                      v-model="config.sync_movies"
+                      color="info"
+                      inset
+                      hide-details
+                      density="compact"
+                    ></v-switch>
+                  </div>
                 </v-col>
-                <v-col cols="12" md="6" class="py-2">
-                  <v-switch
-                    v-model="config.sync_tv"
-                    label="同步 电视剧 观看记录"
-                    color="info"
-                    inset
-                    hide-details
-                  ></v-switch>
+                <v-col cols="12" sm="6" class="py-1">
+                  <div class="d-flex align-center justify-space-between">
+                    <div class="d-flex align-center mr-2">
+                      <v-icon size="18" color="info" class="mr-2">mdi-television-box</v-icon>
+                      <span class="text-body-2 font-weight-medium">同步电视剧记录</span>
+                    </div>
+                    <v-switch
+                      v-model="config.sync_tv"
+                      color="info"
+                      inset
+                      hide-details
+                      density="compact"
+                    ></v-switch>
+                  </div>
                 </v-col>
-                <v-col cols="12" md="6" class="mt-2">
+              </v-row>
+            </div>
+
+            <v-divider class="row-divider"></v-divider>
+
+            <!-- 观看门槛行 -->
+            <div class="px-4 py-3">
+              <v-row align="center">
+                <v-col cols="12" md="7">
+                  <div class="text-body-2 font-weight-medium">有效观看时长门槛</div>
+                  <div class="text-caption text-medium-emphasis">播放时间超过此阈值才触发自动同步，防止误点触发，推荐 300 秒</div>
+                </v-col>
+                <v-col cols="12" md="5">
                   <v-text-field
                     v-model.number="config.min_watch_time"
-                    label="最小观看时长阈值（秒）"
                     variant="outlined"
-                    density="comfortable"
+                    density="compact"
                     type="number"
                     min="0"
-                    color="info"
-                    prepend-inner-icon="mdi-clock-outline"
-                    hint="有效观看超过此阈值才会触发自动同步"
-                    persistent-hint
+                    suffix="秒"
+                    hide-details
+                    color="primary"
+                    prepend-inner-icon="mdi-timer-outline"
+                    class="rounded-lg"
                   ></v-text-field>
                 </v-col>
               </v-row>
-            </v-card-text>
+            </div>
           </v-card>
 
-          <!-- 极影视同步强化 (智能展开) -->
+          <!-- 极空间/极影视强化 (智能联动展开) -->
           <v-expand-transition>
-            <div v-if="hasZspaceInGroups">
-              <div class="section-title d-flex align-center mb-3">
-                <div class="section-icon section-icon-warning">
-                  <v-icon size="18" color="warning">mdi-television-classic</v-icon>
-                </div>
-                <span class="text-subtitle-2 font-weight-bold ml-2">极影视同步强化</span>
-                <v-divider class="ml-3 opacity-25"></v-divider>
+            <div v-if="hasZspaceInGroups" class="mb-5">
+              <div class="section-label d-flex align-center mb-2">
+                <v-icon size="16" color="warning" class="mr-1">mdi-television-classic</v-icon>
+                <span class="text-caption font-weight-bold text-uppercase text-medium-emphasis tracking-wider">极空间专属扩展</span>
+                <v-chip size="x-small" color="warning" variant="tonal" class="ml-2 font-weight-bold">已检测到极影视</v-chip>
               </div>
 
-              <v-alert
-                type="warning"
-                variant="tonal"
-                class="mb-4 rounded-lg font-weight-medium"
-                icon="mdi-information-outline"
-              >
-                检测到配置中包含极影视服务端。开启以下轮询可有效捕获极影视独立产生的主动进度变化。
-              </v-alert>
+              <v-card variant="outlined" class="settings-group-card rounded-xl zspace-card">
+                <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+                  <div class="d-flex align-center mr-3">
+                    <div class="setting-icon-box mr-3 setting-icon-warning">
+                      <v-icon size="18" color="warning">mdi-timer-sync-outline</v-icon>
+                    </div>
+                    <div>
+                      <div class="font-weight-bold text-body-2">从极影视主动轮询进度</div>
+                      <div class="text-caption text-medium-emphasis">极影视无被动 Webhook，开启定时轮询可捕获其独立产生的进度同步至 Emby</div>
+                    </div>
+                  </div>
+                  <v-switch
+                    v-model="config.zspace_poll_enabled"
+                    color="warning"
+                    inset
+                    hide-details
+                    density="compact"
+                    class="flex-shrink-0"
+                  ></v-switch>
+                </div>
 
-              <v-card variant="outlined" class="section-card rounded-lg mb-6">
-                <v-card-text class="pa-4">
-                  <v-row>
-                    <v-col cols="12" md="6">
-                      <v-switch
-                        v-model="config.zspace_poll_enabled"
-                        label="从极影视读取最新进度同步至 Emby"
-                        color="warning"
-                        inset
-                        hint="关闭此项不影响 Emby 同步至极影视"
-                        persistent-hint
-                      ></v-switch>
-                    </v-col>
-                    <v-col v-if="config.zspace_poll_enabled" cols="12" md="6">
-                      <v-text-field
-                        v-model.number="config.zspace_poll_interval"
-                        label="极影视轮询间隔（秒）"
-                        variant="outlined"
-                        density="comfortable"
-                        type="number"
-                        min="10"
-                        step="5"
-                        color="warning"
-                        prepend-inner-icon="mdi-timer-sync-outline"
-                        hint="降低数值可提高进度响应速度，建议: 30"
-                        persistent-hint
-                      ></v-text-field>
-                    </v-col>
-                  </v-row>
-                </v-card-text>
+                <v-expand-transition>
+                  <div v-if="config.zspace_poll_enabled">
+                    <v-divider class="row-divider"></v-divider>
+                    <div class="px-4 py-3">
+                      <v-row align="center">
+                        <v-col cols="12" md="7">
+                          <div class="text-body-2 font-weight-medium">轮询探测间隔</div>
+                          <div class="text-caption text-medium-emphasis">数值越小同步越及时，建议设为 30 秒</div>
+                        </v-col>
+                        <v-col cols="12" md="5">
+                          <v-text-field
+                            v-model.number="config.zspace_poll_interval"
+                            variant="outlined"
+                            density="compact"
+                            type="number"
+                            min="10"
+                            step="5"
+                            suffix="秒"
+                            hide-details
+                            color="warning"
+                            prepend-inner-icon="mdi-av-timer"
+                            class="rounded-lg"
+                          ></v-text-field>
+                        </v-col>
+                      </v-row>
+                    </div>
+                  </div>
+                </v-expand-transition>
               </v-card>
             </div>
           </v-expand-transition>
 
-          <!-- 同步组配置 -->
-          <div class="section-title d-flex align-center mb-3">
-            <div class="section-icon section-icon-success">
-              <v-icon size="18" color="success">mdi-account-group</v-icon>
+          <!-- 同步组互通网络 -->
+          <div class="d-flex align-center justify-space-between mb-3">
+            <div class="section-label d-flex align-center">
+              <v-icon size="16" color="success" class="mr-1">mdi-lan-connect</v-icon>
+              <span class="text-caption font-weight-bold text-uppercase text-medium-emphasis tracking-wider">同步互联组网络</span>
+              <v-chip size="x-small" color="success" variant="tonal" class="ml-2 font-weight-bold">
+                {{ config.sync_groups.length }} 组
+              </v-chip>
             </div>
-            <span class="text-subtitle-2 font-weight-bold ml-2">同步组配置（联络网）</span>
-            <v-divider class="ml-3 opacity-25 d-none d-sm-flex"></v-divider>
-            <v-spacer class="d-none d-sm-flex"></v-spacer>
             <v-btn
-              color="success"
+              color="primary"
               size="small"
-              variant="flat"
+              variant="tonal"
               rounded="lg"
-              class="px-3 font-weight-medium flex-shrink-0"
+              class="font-weight-medium"
               @click="addSyncGroup"
             >
-              <v-icon start size="18">mdi-plus-circle</v-icon>
-              建立新同步组
+              <v-icon start size="16">mdi-plus</v-icon>
+              添加同步组
             </v-btn>
           </div>
 
-          <v-alert
-            v-if="config.sync_groups.length === 0"
-            type="info"
-            variant="tonal"
-            class="mb-5 rounded-lg"
-            icon="mdi-information-outline"
-          >
-            当前无已添加的同步组。请添加并建立联系组，将多端的账号绑定在一起进行数据互通。
-          </v-alert>
+          <!-- 同步组列表为空时 -->
+          <div v-if="config.sync_groups.length === 0" class="empty-sync-box rounded-xl pa-8 text-center mb-4">
+            <div class="empty-icon-wrapper mb-3">
+              <v-icon size="36" color="primary">mdi-account-network-outline</v-icon>
+            </div>
+            <div class="text-subtitle-2 font-weight-bold text-medium-emphasis">暂未创建同步组</div>
+            <div class="text-caption text-disabled mt-1 mb-4">创建同步组后，可将不同服务端的多个账号绑定为一个互通群组</div>
+            <v-btn color="primary" variant="flat" size="small" rounded="lg" @click="addSyncGroup">
+              <v-icon start size="16">mdi-plus</v-icon>
+              创建第一个同步组
+            </v-btn>
+          </div>
 
-          <!-- 同步组列表 -->
-          <v-card
-            v-for="(group, groupIndex) in config.sync_groups"
-            :key="groupIndex"
-            class="group-card rounded-lg mb-4 overflow-hidden"
-            variant="outlined"
-          >
-            <v-toolbar density="compact" color="success" variant="tonal" class="group-toolbar px-2">
-              <div class="group-badge ml-2 mr-3">
-                <v-icon size="15" color="success">mdi-account-network</v-icon>
-              </div>
-              <v-toolbar-title class="text-body-2 font-weight-bold text-truncate">
-                {{ group.name || `未命名组合 ${groupIndex + 1}` }}
-              </v-toolbar-title>
-              <v-spacer></v-spacer>
-
-              <v-switch
-                v-model="group.enabled"
-                color="success"
-                density="compact"
-                hide-details
-                label="联通开关"
-                class="mr-4 text-caption font-weight-medium flex-shrink-0"
-              ></v-switch>
-
-              <v-btn
-                icon
-                variant="text"
-                color="error"
-                size="x-small"
-                class="rounded-lg flex-shrink-0"
-                @click="removeSyncGroup(groupIndex)"
-              >
-                <v-icon size="16">mdi-delete</v-icon>
-                <v-tooltip activator="parent" location="top">删除此组</v-tooltip>
-              </v-btn>
-            </v-toolbar>
-
-            <v-card-text class="pa-4">
-              <v-text-field
-                v-model="group.name"
-                label="同步组名称标注"
-                variant="outlined"
-                density="comfortable"
-                color="success"
-                prepend-inner-icon="mdi-pencil-outline"
-                placeholder="如：极空间TV客厅组 & 卧室Emby账号"
-                hide-details="auto"
-                class="mb-4"
-              ></v-text-field>
-
-              <div class="d-flex align-center justify-space-between flex-wrap gap-2 mb-3">
-                <span class="text-caption font-weight-medium text-medium-emphasis d-flex align-center">
-                  <v-icon size="15" class="mr-1">mdi-account-multiple</v-icon>
-                  组内关联账号
-                  <v-chip size="x-small" variant="tonal" color="success" class="ml-2 font-weight-bold">
-                    {{ group.users?.length || 0 }}
+          <!-- 同步组卡片列表 -->
+          <div v-else class="sync-groups-list">
+            <v-card
+              v-for="(group, groupIndex) in config.sync_groups"
+              :key="groupIndex"
+              variant="outlined"
+              class="group-panel-card rounded-xl mb-4 overflow-hidden"
+            >
+              <!-- 组卡片顶部工具栏 -->
+              <div class="group-header d-flex align-center justify-space-between px-4 py-3">
+                <div class="d-flex align-center flex-grow-1 mr-3 overflow-hidden">
+                  <div class="group-header-badge mr-2">
+                    <v-icon size="16" color="primary">mdi-folder-network-outline</v-icon>
+                  </div>
+                  <span class="font-weight-bold text-body-2 text-truncate">
+                    {{ group.name || `未命名同步组 ${groupIndex + 1}` }}
+                  </span>
+                  <v-chip size="x-small" variant="tonal" color="primary" class="ml-2 flex-shrink-0 font-weight-medium">
+                    {{ group.users?.length || 0 }} 个端点
                   </v-chip>
-                </span>
-                <v-btn
-                  color="info"
-                  variant="tonal"
-                  size="small"
-                  class="px-3 font-weight-medium"
-                  rounded="lg"
-                  @click="addGroupUser(groupIndex)"
-                >
-                  <v-icon start size="16">mdi-account-plus</v-icon>
-                  关联新账号
-                </v-btn>
-              </div>
+                </div>
 
-              <v-divider class="mb-3 opacity-25"></v-divider>
-
-              <!-- 组内用户 -->
-              <div v-if="group.users && group.users.length">
-                <div
-                  v-for="(user, userIndex) in group.users"
-                  :key="userIndex"
-                  class="user-row d-flex align-center flex-wrap ga-2 rounded-lg pa-2 mb-2"
-                >
-                  <div class="user-index flex-shrink-0">
-                    <v-avatar size="26" color="blue-grey-lighten-4" class="text-blue-grey-darken-3 font-weight-bold text-caption">
-                      {{ userIndex + 1 }}
-                    </v-avatar>
-                  </div>
-
-                  <div class="flex-grow-1" style="min-width: 200px;">
-                    <v-select
-                      v-model="user.server"
-                      :items="embyServers"
-                      item-title="name"
-                      item-value="name"
-                      label="归属服务端"
-                      variant="outlined"
-                      density="compact"
-                      color="primary"
-                      hide-details="auto"
-                      bg-color="white"
-                      prepend-inner-icon="mdi-server"
-                      @update:model-value="onGroupUserServerChange(groupIndex, userIndex)"
-                    ></v-select>
-                  </div>
-
-                  <div class="flex-grow-1" style="min-width: 200px;">
-                    <v-select
-                      v-model="user.username"
-                      :items="getServerUsers(user.server)"
-                      item-title="name"
-                      item-value="name"
-                      label="具体用户名"
-                      variant="outlined"
-                      density="compact"
-                      color="primary"
-                      bg-color="white"
-                      prepend-inner-icon="mdi-account"
-                      :loading="loadingUsers[user.server]"
-                      :hint="user.server ? `${getServerUsers(user.server).length} 个可用识别目标` : '请先在左侧提供服务器'"
-                      persistent-hint
-                    ></v-select>
-                  </div>
-
-                  <div class="flex-shrink-0">
-                    <v-btn
-                      color="grey"
-                      variant="text"
-                      size="small"
-                      icon
-                      class="rounded-lg"
-                      @click="removeGroupUser(groupIndex, userIndex)"
-                    >
-                      <v-icon size="18">mdi-close</v-icon>
-                      <v-tooltip activator="parent" location="left">移除这个账号对象</v-tooltip>
-                    </v-btn>
-                  </div>
+                <div class="d-flex align-center flex-shrink-0">
+                  <v-switch
+                    v-model="group.enabled"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                    label="启用"
+                    class="mr-3 font-weight-medium text-caption"
+                  ></v-switch>
+                  <v-btn
+                    icon
+                    variant="text"
+                    color="error"
+                    size="small"
+                    class="rounded-lg"
+                    @click="removeSyncGroup(groupIndex)"
+                  >
+                    <v-icon size="18">mdi-delete-outline</v-icon>
+                    <v-tooltip activator="parent" location="top">删除此组</v-tooltip>
+                  </v-btn>
                 </div>
               </div>
 
-              <!-- 组内空状态 -->
-              <div v-else class="group-empty d-flex flex-column align-center justify-center py-6 rounded-lg text-center">
-                <v-icon size="34" color="grey-lighten-1" class="mb-2">mdi-account-multiple-remove-outline</v-icon>
-                <div class="text-caption text-medium-emphasis">当前组尚未绑定任何账号角色</div>
+              <v-divider class="row-divider"></v-divider>
+
+              <!-- 组详情内容 -->
+              <div class="pa-4">
+                <!-- 组名称编辑框 -->
+                <v-text-field
+                  v-model="group.name"
+                  label="同步组名称"
+                  placeholder="例如：客厅极空间TV 与 卧室Emby互通"
+                  variant="outlined"
+                  density="compact"
+                  color="primary"
+                  prepend-inner-icon="mdi-tag-outline"
+                  hide-details="auto"
+                  class="mb-4 rounded-lg"
+                ></v-text-field>
+
+                <!-- 组内成员列表标题与添加按钮 -->
+                <div class="d-flex align-center justify-space-between mb-3">
+                  <span class="text-caption font-weight-bold text-medium-emphasis d-flex align-center">
+                    <v-icon size="15" class="mr-1 text-primary">mdi-account-multiple</v-icon>
+                    组内互通账号节点
+                  </span>
+                  <v-btn
+                    color="primary"
+                    variant="text"
+                    size="small"
+                    class="font-weight-medium px-2"
+                    @click="addGroupUser(groupIndex)"
+                  >
+                    <v-icon start size="16">mdi-account-plus-outline</v-icon>
+                    添加账号节点
+                  </v-btn>
+                </div>
+
+                <!-- 组内用户节点 -->
+                <div v-if="group.users && group.users.length" class="endpoint-nodes-container">
+                  <div
+                    v-for="(user, userIndex) in group.users"
+                    :key="userIndex"
+                    class="endpoint-node-card d-flex align-center flex-wrap ga-2 rounded-lg pa-3 mb-2"
+                  >
+                    <!-- 序号与图标 -->
+                    <div class="d-flex align-center flex-shrink-0 mr-1">
+                      <div class="node-number-badge font-weight-bold">
+                        {{ userIndex + 1 }}
+                      </div>
+                    </div>
+
+                    <!-- 服务端选择 -->
+                    <div class="flex-grow-1 node-field-box">
+                      <v-select
+                        v-model="user.server"
+                        :items="embyServers"
+                        item-title="name"
+                        item-value="name"
+                        label="选择服务端"
+                        variant="outlined"
+                        density="compact"
+                        color="primary"
+                        hide-details="auto"
+                        prepend-inner-icon="mdi-server-network"
+                        @update:model-value="onGroupUserServerChange(groupIndex, userIndex)"
+                      ></v-select>
+                    </div>
+
+                    <!-- 互通指示图标 -->
+                    <div class="node-sync-indicator d-none d-sm-flex align-center justify-center flex-shrink-0">
+                      <v-icon size="16" color="primary">mdi-swap-horizontal</v-icon>
+                    </div>
+
+                    <!-- 用户名选择 -->
+                    <div class="flex-grow-1 node-field-box">
+                      <v-select
+                        v-model="user.username"
+                        :items="getServerUsers(user.server)"
+                        item-title="name"
+                        item-value="name"
+                        label="选择对应用户"
+                        variant="outlined"
+                        density="compact"
+                        color="primary"
+                        prepend-inner-icon="mdi-account-outline"
+                        :loading="loadingUsers[user.server]"
+                        :hint="user.server ? `${getServerUsers(user.server).length} 个可用用户` : '请先在左侧选择服务端'"
+                        persistent-hint
+                      ></v-select>
+                    </div>
+
+                    <!-- 移除按钮 -->
+                    <div class="flex-shrink-0">
+                      <v-btn
+                        color="error"
+                        variant="text"
+                        size="small"
+                        icon
+                        class="rounded-lg"
+                        @click="removeGroupUser(groupIndex, userIndex)"
+                      >
+                        <v-icon size="18">mdi-close-circle-outline</v-icon>
+                        <v-tooltip activator="parent" location="left">移除此节点</v-tooltip>
+                      </v-btn>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 组内暂无节点时的虚线添加块 -->
+                <div
+                  v-else
+                  class="node-empty-dashed-box d-flex align-center justify-center py-4 rounded-lg cursor-pointer"
+                  @click="addGroupUser(groupIndex)"
+                >
+                  <v-icon size="18" color="primary" class="mr-2">mdi-plus-circle-outline</v-icon>
+                  <span class="text-caption font-weight-medium text-primary">点击添加组内第一个关联端点</span>
+                </div>
               </div>
-            </v-card-text>
-          </v-card>
+            </v-card>
+          </div>
         </v-form>
       </v-card-text>
 
-      <!-- 底部操作栏 -->
-      <v-card-actions class="footer-surface px-4 py-3">
+      <!-- 底部控制栏 -->
+      <v-card-actions class="footer-surface px-5 py-3">
         <v-btn
           color="primary"
           variant="flat"
           rounded="lg"
-          class="px-5 font-weight-bold"
+          class="px-5 font-weight-bold save-btn"
           @click="saveConfig"
           :loading="saving"
         >
-          <v-icon start>mdi-content-save-check</v-icon>
+          <v-icon start size="18">mdi-content-save-check</v-icon>
           保存配置
         </v-btn>
 
         <v-btn
-          color="blue-grey-darken-1"
+          color="secondary"
           variant="tonal"
           rounded="lg"
           class="px-4 ml-2 font-weight-medium"
           @click="resetForm"
         >
-          <v-icon start>mdi-undo-variant</v-icon>
-          重置默认
+          <v-icon start size="18">mdi-undo-variant</v-icon>
+          重置
         </v-btn>
 
         <v-spacer></v-spacer>
 
         <v-btn
-          color="info"
+          color="primary"
           variant="text"
           rounded="lg"
           class="font-weight-medium px-3"
           @click="notifySwitch"
         >
           查看统计面板
-          <v-icon end size="18">mdi-arrow-right-top</v-icon>
+          <v-icon end size="16">mdi-arrow-right</v-icon>
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -656,12 +715,12 @@ function notifySwitch() {
 }
 </script>
 <style scoped>
-/* 卡片 */
-.config-card {
+/* 主卡片容器 */
+.config-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
 }
 
-/* 顶栏微渐变 */
+/* 顶部标题栏渐变 */
 .header-surface {
   background: linear-gradient(
     135deg,
@@ -675,9 +734,9 @@ function notifySwitch() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
 
@@ -685,86 +744,155 @@ function notifySwitch() {
   color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.6);
 }
 
-/* 主体背景 */
+/* 配置内容区域 */
 .config-body {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
-  max-height: 70vh;
+  max-height: 72vh;
 }
 
-/* 分节标题 */
-.section-title {
-  margin-top: 8px;
+/* 区域小标签 */
+.section-label {
+  letter-spacing: 0.05em;
 }
 
-.section-icon {
+/* 设置统一卡片 */
+.settings-group-card {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.09) !important;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.settings-group-card:hover {
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.25) !important;
+}
+
+.zspace-card {
+  border-color: rgba(var(--v-theme-warning, 251, 140, 0), 0.25) !important;
+}
+.zspace-card:hover {
+  border-color: rgba(var(--v-theme-warning, 251, 140, 0), 0.45) !important;
+}
+
+/* 行间分割线 */
+.row-divider {
+  border-color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06) !important;
+}
+
+/* 行图标 */
+.setting-icon-box {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   flex-shrink: 0;
 }
-.section-icon-primary { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12); }
-.section-icon-info    { background: rgba(var(--v-theme-info, 33, 150, 243), 0.12); }
-.section-icon-warning { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.14); }
-.section-icon-success { background: rgba(var(--v-theme-success, 76, 175, 80), 0.12); }
-
-/* 分节卡片 */
-.section-card {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
-  border-color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.1) !important;
+.setting-icon-primary {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+}
+.setting-icon-warning {
+  background: rgba(var(--v-theme-warning, 251, 140, 0), 0.12);
 }
 
 /* 同步组卡片 */
-.group-card {
+.group-panel-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
-  border-color: rgba(var(--v-theme-success, 76, 175, 80), 0.3) !important;
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.1) !important;
+  transition: all 0.2s ease;
+}
+.group-panel-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
-.group-toolbar {
-  border-bottom: 1px solid rgba(var(--v-theme-success, 76, 175, 80), 0.18);
+.group-header {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.03);
 }
 
-.group-badge {
+.group-header-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+  flex-shrink: 0;
+}
+
+/* 节点卡片容器 */
+.endpoint-node-card {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+  transition: all 0.18s ease;
+}
+.endpoint-node-card:hover {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.035);
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.25);
+}
+
+.node-number-badge {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  border-radius: 7px;
-  background: rgba(var(--v-theme-success, 76, 175, 80), 0.15);
-  flex-shrink: 0;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+  color: rgb(var(--v-theme-primary, 24, 103, 192));
 }
 
-/* 组内用户行 */
-.user-row {
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.03);
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
-  transition: border-color 0.18s ease, background 0.18s ease;
-}
-.user-row:hover {
-  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.04);
-  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.2);
+.node-field-box {
+  min-width: 180px;
 }
 
-.user-index {
-  padding-top: 4px;
+.node-sync-indicator {
+  width: 24px;
+  height: 24px;
+  opacity: 0.6;
 }
 
-/* 组内空状态 */
-.group-empty {
+/* 节点空状态 */
+.node-empty-dashed-box {
+  border: 1px dashed rgba(var(--v-theme-primary, 24, 103, 192), 0.35);
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.02);
+  transition: all 0.2s ease;
+}
+.node-empty-dashed-box:hover {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.6);
+}
+
+/* 暂无同步组空状态 */
+.empty-sync-box {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
-  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.15);
+}
+.empty-icon-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
 }
 
-/* 底部操作栏 */
+/* 底部操作条 */
 .footer-surface {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border-top: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
 
-.gap-2 {
+.save-btn {
+  letter-spacing: 0.03em;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+.ga-2 {
   gap: 8px;
 }
 </style>
