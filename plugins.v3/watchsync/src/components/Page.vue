@@ -1,102 +1,117 @@
 <template>
-  <div class="plugin-page">
-    <v-card class="rounded-xl overflow-hidden page-card" elevation="0" variant="outlined">
-      <!-- 顶栏 -->
-      <v-card-item class="px-4 py-3 border-b header-surface">
+  <div class="plugin-page h-100">
+    <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
+
+      <!-- 优雅顶栏（与配置页设计语言保持一致） -->
+      <v-card-item class="header-surface px-5 py-3 border-b">
         <template #prepend>
           <div class="header-icon-box mr-3">
-            <v-icon color="primary" size="20">mdi-history</v-icon>
+            <v-icon color="primary" size="22">mdi-history</v-icon>
           </div>
         </template>
 
-        <v-card-title class="d-flex align-center flex-wrap">
-          <span class="text-subtitle-1 font-weight-bold">{{ title }}</span>
-          <v-chip
-            v-if="pagination.total > 0"
-            size="x-small"
-            variant="tonal"
-            color="primary"
-            class="ml-3 font-weight-medium"
-          >
-            {{ pagination.total }} 条记录
-          </v-chip>
-        </v-card-title>
+        <div>
+          <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center flex-wrap ga-2">
+            <span>{{ title }}</span>
+            <v-chip
+              v-if="pagination.total > 0"
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              class="font-weight-bold"
+            >
+              {{ pagination.total }} 条同步记录
+            </v-chip>
+          </v-card-title>
+          <div class="text-caption text-medium-emphasis">实时查看跨媒体服务器播放进度、收藏与标记同步流水</div>
+        </div>
 
         <template #append>
-          <div class="d-flex align-center gap-2">
+          <div class="d-flex align-center ga-1">
+            <!-- 刷新按钮 -->
             <v-btn
+              icon
+              variant="tonal"
               color="primary"
-              rounded="lg"
-              variant="flat"
               size="small"
-              class="px-3 font-weight-medium"
-              :loading="loading"
+              class="rounded-lg mr-1"
               @click="refreshData"
+              :loading="loading"
             >
-              <v-icon start size="18">mdi-refresh</v-icon>
-              刷新
+              <v-icon size="18">mdi-refresh</v-icon>
+              <v-tooltip activator="parent" location="bottom">刷新记录</v-tooltip>
             </v-btn>
 
-            <v-menu>
-              <template v-slot:activator="{ props }">
+            <!-- 更多操作下拉菜单（清理、导出） -->
+            <v-menu location="bottom end">
+              <template v-slot:activator="{ props: menuProps }">
                 <v-btn
-                  v-bind="props"
-                  color="secondary"
-                  rounded="lg"
-                  variant="tonal"
+                  icon
+                  variant="text"
                   size="small"
-                  class="px-3 font-weight-medium"
-                  :loading="clearing"
+                  class="rounded-lg mr-1 text-medium-emphasis"
+                  v-bind="menuProps"
                 >
-                  <v-icon start size="18">mdi-delete-sweep</v-icon>
-                  清理
+                  <v-icon size="18">mdi-dots-vertical</v-icon>
+                  <v-tooltip activator="parent" location="bottom">清理与导出</v-tooltip>
                 </v-btn>
               </template>
-              <v-list rounded="lg" elevation="3" class="mt-1 py-1" density="compact" min-width="180">
-                <v-list-item @click="clearOldRecords(7)" rounded="lg">
-                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="warning">mdi-calendar-alert</v-icon></template>
-                  <v-list-item-title class="text-body-2 font-weight-medium">清理 7 天前</v-list-item-title>
-                </v-list-item>
-                <v-list-item @click="clearOldRecords(30)" rounded="lg">
-                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="error">mdi-calendar-remove</v-icon></template>
-                  <v-list-item-title class="text-body-2 font-weight-medium">清理 30 天前</v-list-item-title>
-                </v-list-item>
-                <v-list-item @click="clearOldRecords(90)" rounded="lg">
-                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="grey">mdi-delete-forever</v-icon></template>
-                  <v-list-item-title class="text-body-2 font-weight-medium">清理 90 天前</v-list-item-title>
-                </v-list-item>
+              <v-list density="compact" class="rounded-lg shadow-elevation py-1">
+                <v-list-subheader class="text-caption font-weight-bold">清理历史日志</v-list-subheader>
+                <v-list-item
+                  @click="clearOldRecords(7)"
+                  :disabled="clearing"
+                  prepend-icon="mdi-calendar-clock"
+                  title="清理 7 天前记录"
+                ></v-list-item>
+                <v-list-item
+                  @click="clearOldRecords(30)"
+                  :disabled="clearing"
+                  prepend-icon="mdi-calendar-month"
+                  title="清理 30 天前记录"
+                ></v-list-item>
+                <v-list-item
+                  @click="clearOldRecords(90)"
+                  :disabled="clearing"
+                  prepend-icon="mdi-calendar-alert"
+                  title="清理 90 天前记录"
+                ></v-list-item>
+                <v-divider class="my-1"></v-divider>
+                <v-list-item
+                  @click="clearOldRecords(0)"
+                  :disabled="clearing"
+                  prepend-icon="mdi-delete-forever"
+                  title="清理全部记录"
+                  base-color="error"
+                ></v-list-item>
+                <v-divider class="my-1"></v-divider>
+                <v-list-item
+                  @click="exportLogs"
+                  prepend-icon="mdi-download"
+                  title="导出记录数据"
+                ></v-list-item>
               </v-list>
             </v-menu>
 
-            <v-btn
-              color="info"
-              rounded="lg"
-              variant="tonal"
-              size="small"
-              class="px-3 font-weight-medium"
-              @click="exportLogs"
-            >
-              <v-icon start size="18">mdi-download</v-icon>
-              导出
-            </v-btn>
-
+            <!-- 前往配置 -->
             <v-btn
               color="primary"
               rounded="lg"
               variant="outlined"
               size="small"
-              class="px-3 font-weight-medium config-btn"
+              class="px-3 font-weight-medium mr-1"
               @click="notifySwitch"
             >
-              <v-icon start size="18">mdi-cog</v-icon>
+              <v-icon start size="16">mdi-cog-outline</v-icon>
               配置
             </v-btn>
 
+            <!-- 关闭窗口 -->
             <v-btn
               icon
               variant="text"
               size="small"
-              class="rounded-lg close-btn ml-1"
+              class="rounded-lg close-btn text-medium-emphasis"
               @click="notifyClose"
             >
               <v-icon size="18">mdi-close</v-icon>
@@ -106,134 +121,190 @@
         </template>
       </v-card-item>
 
-      <!-- 内容区 -->
-      <v-card-text class="pa-4 body-surface" style="max-height: 75vh; overflow-y: auto;">
+      <!-- 主体滚动区 -->
+      <v-card-text class="pa-4 flex-grow-1 overflow-y-auto body-surface">
+        <!-- 错误提示条 -->
         <v-alert
           v-if="error"
           type="error"
           variant="tonal"
-          class="mb-4 rounded-lg"
+          class="mb-4 rounded-xl border-opacity-25"
           closable
           @click:close="error = null"
         >
           {{ error }}
         </v-alert>
 
-        <!-- 骨架屏 -->
-        <div v-if="loading" class="pa-2">
-          <v-skeleton-loader
-            type="list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line"
-            class="rounded-lg"
-          ></v-skeleton-loader>
+        <!-- 加载中骨架屏 -->
+        <div v-if="loading" class="d-flex flex-column ga-3 py-2">
+          <div v-for="i in 4" :key="i" class="skeleton-card pa-4 rounded-xl">
+            <div class="d-flex align-center justify-space-between mb-3">
+              <div class="d-flex align-center ga-2">
+                <v-skeleton-loader type="avatar" size="32"></v-skeleton-loader>
+                <v-skeleton-loader type="text" width="180"></v-skeleton-loader>
+              </div>
+              <v-skeleton-loader type="text" width="70"></v-skeleton-loader>
+            </div>
+            <v-skeleton-loader type="text" width="60%"></v-skeleton-loader>
+          </div>
         </div>
 
+        <!-- 记录流内容区 -->
         <div v-else>
-          <!-- 带时间线的同步记录 -->
-          <div v-if="groupedSyncRecords && groupedSyncRecords.length">
-            <v-timeline density="compact" side="end" align="start">
-              <v-timeline-item
-                v-for="(group, index) in groupedSyncRecords"
-                :key="index"
-                size="small"
-                :dot-color="getItemColor(group.status)"
-                fill-dot
-              >
-                <template #icon>
-                  <v-icon size="14" color="white">{{ getItemIcon(group.status) }}</v-icon>
-                </template>
-
-                <v-card
-                  variant="outlined"
-                  class="record-card rounded-lg pa-3 ml-2"
-                  :class="group.status === 'error' ? 'record-card-error' : 'record-card-success'"
-                >
-                  <!-- 头部：媒体类型 + 同步类型 + 媒体名 + 时间 -->
-                  <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-2">
-                    <div class="d-flex align-center overflow-hidden">
-                      <div class="media-badge mr-2" :class="`media-badge-${getMediaTypeColor(group.media_type)}`">
-                        <v-icon size="15" :color="getMediaTypeColor(group.media_type)">
-                          {{ getMediaTypeIcon(group.media_type) }}
-                        </v-icon>
-                      </div>
-                      <span class="font-weight-bold text-body-2 text-truncate record-title">{{ group.media_name }}</span>
-                      <v-icon
-                        size="16"
-                        :color="getSyncTypeColor(group.sync_type)"
-                        class="ml-2 flex-shrink-0"
-                      >
-                        {{ getSyncTypeIcon(group.sync_type) }}
-                      </v-icon>
-                    </div>
-                    <span class="text-caption text-disabled text-no-wrap time-chip px-2 py-1 rounded-pill">
-                      {{ formatTime(group.timestamp) }}
-                    </span>
-                  </div>
-
-                  <!-- 用户流向 -->
-                  <div class="d-flex align-center flex-wrap gap-1 mb-2">
-                    <v-chip size="x-small" variant="tonal" color="blue-grey" class="font-weight-medium">
-                      <v-icon start size="12">mdi-account-arrow-right</v-icon>
-                      {{ group.source_user }}
-                    </v-chip>
-                    <v-icon size="12" color="grey" class="mx-1">mdi-arrow-right-bold</v-icon>
-                    <v-chip
-                      v-for="(target_user, idx) in group.target_users"
-                      :key="idx"
-                      size="x-small"
-                      variant="tonal"
-                      :color="group.status === 'error' ? 'error' : 'success'"
-                      class="font-weight-medium"
-                    >
-                      {{ target_user }}
-                    </v-chip>
-                  </div>
-
-                  <!-- 描述 -->
-                  <div v-if="group.description" class="desc-box text-caption d-flex align-center rounded pa-2">
-                    <v-icon size="14" class="mr-2 flex-shrink-0" color="indigo">mdi-information-outline</v-icon>
-                    <span>{{ group.description }}</span>
-                  </div>
-
-                  <!-- 错误信息 -->
+          <div v-if="groupedSyncRecords && groupedSyncRecords.length" class="d-flex flex-column ga-3">
+            <div
+              v-for="(group, index) in groupedSyncRecords"
+              :key="index"
+              class="record-stream-card rounded-xl pa-3 pa-sm-4 transition-fast"
+              :class="group.status === 'error' ? 'stream-card-error' : 'stream-card-success'"
+            >
+              <!-- 顶部信息行：状态指示点 + 媒体主信息 + 进度与时间 -->
+              <div class="d-flex align-start justify-space-between flex-wrap ga-2 mb-2">
+                <div class="d-flex align-center ga-3 flex-grow-1 overflow-hidden">
+                  <!-- 状态徽章 -->
                   <div
-                    v-if="group.error_message"
-                    class="error-box text-caption d-flex align-start rounded pa-2 mt-2"
+                    class="status-indicator-box flex-shrink-0"
+                    :class="`indicator-${group.status === 'error' ? 'error' : 'success'}`"
                   >
-                    <v-icon size="14" class="mr-2 flex-shrink-0 mt-1" color="error">mdi-alert-circle</v-icon>
-                    <span class="text-break">{{ group.error_message }}</span>
+                    <v-icon size="16" :color="getItemColor(group.status)">
+                      {{ getItemIcon(group.status) }}
+                    </v-icon>
                   </div>
-                </v-card>
-              </v-timeline-item>
-            </v-timeline>
 
-            <!-- 加载更多 -->
-            <div v-if="pagination.hasMore" class="text-center mt-4 mb-2">
+                  <!-- 媒体名称与标签 -->
+                  <div class="overflow-hidden">
+                    <div class="d-flex align-center flex-wrap ga-2">
+                      <span class="text-body-2 font-weight-bold text-truncate media-title">
+                        {{ group.media_name || '未命名媒体' }}
+                      </span>
+
+                      <!-- 媒体类型徽章 -->
+                      <v-chip
+                        size="x-small"
+                        variant="flat"
+                        :color="getMediaTypeColor(group.media_type)"
+                        class="font-weight-medium px-2 media-chip"
+                      >
+                        {{ group.media_type || '媒体' }}
+                      </v-chip>
+
+                      <!-- 同步动作徽章 -->
+                      <v-chip
+                        size="x-small"
+                        variant="tonal"
+                        :color="getSyncTypeColor(group.sync_type)"
+                        class="font-weight-medium px-2 sync-type-chip"
+                      >
+                        <v-icon start size="12">{{ getSyncTypeIcon(group.sync_type) }}</v-icon>
+                        {{ getEventDescription(group.sync_type) || group.sync_type }}
+                      </v-chip>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 进度与相对时间 -->
+                <div class="d-flex align-center ga-2 flex-shrink-0 ml-auto">
+                  <!-- 播放进度时间胶囊 -->
+                  <div
+                    v-if="group.position_ticks"
+                    class="progress-pill d-flex align-center px-2 py-1 rounded-pill"
+                  >
+                    <v-icon size="12" class="mr-1" color="primary">mdi-progress-clock</v-icon>
+                    <span class="text-caption font-weight-bold">{{ formatProgress(group.position_ticks) }}</span>
+                  </div>
+
+                  <!-- 发生时间 -->
+                  <div class="time-label text-caption text-medium-emphasis">
+                    {{ formatTime(group.timestamp || group.created_at) }}
+                  </div>
+                </div>
+              </div>
+
+              <!-- 节点流向展示条 (From 源节点 -> To 目标节点) -->
+              <div class="flow-container d-flex align-center flex-wrap ga-2 rounded-lg px-3 py-2 mt-2">
+                <!-- 源端 -->
+                <div class="flow-node d-flex align-center">
+                  <v-icon size="14" color="primary" class="mr-1">mdi-server-network</v-icon>
+                  <span class="text-caption text-medium-emphasis mr-1 font-weight-medium">{{ group.source_server || '源服务器' }}</span>
+                  <span class="node-user text-caption font-weight-bold">{{ group.source_user }}</span>
+                </div>
+
+                <!-- 流向指示箭头 -->
+                <div class="flow-arrow d-flex align-center justify-center">
+                  <v-icon size="14" color="primary">mdi-arrow-right-thin</v-icon>
+                </div>
+
+                <!-- 目标端用户列表 -->
+                <div class="flow-targets d-flex align-center flex-wrap ga-1">
+                  <div
+                    v-for="(target_user, idx) in group.target_users"
+                    :key="idx"
+                    class="flow-node target-node d-flex align-center"
+                  >
+                    <v-icon size="14" :color="group.status === 'error' ? 'error' : 'success'" class="mr-1">mdi-account-check-outline</v-icon>
+                    <span v-if="group.target_server" class="text-caption text-medium-emphasis mr-1">{{ group.target_server }}:</span>
+                    <span class="node-user text-caption font-weight-bold">{{ target_user }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 描述备注 -->
+              <div v-if="group.description" class="desc-box text-caption d-flex align-center rounded-lg pa-2 mt-2">
+                <v-icon size="14" class="mr-2 flex-shrink-0" color="info">mdi-information-outline</v-icon>
+                <span>{{ group.description }}</span>
+              </div>
+
+              <!-- 异常错误报告条 -->
+              <div
+                v-if="group.error_message"
+                class="error-box text-caption d-flex align-start rounded-lg pa-2 mt-2"
+              >
+                <v-icon size="15" class="mr-2 flex-shrink-0 mt-0.5" color="error">mdi-alert-circle-outline</v-icon>
+                <span class="text-break">{{ group.error_message }}</span>
+              </div>
+            </div>
+
+            <!-- 分页加载更多 -->
+            <div v-if="pagination.hasMore" class="text-center mt-3 mb-1">
               <v-btn
                 color="primary"
                 variant="tonal"
-                rounded="pill"
-                class="px-6 font-weight-medium"
+                rounded="lg"
+                class="px-6 font-weight-medium load-more-btn"
                 @click="loadMoreRecords"
                 :loading="pagination.loading"
               >
-                <v-icon start size="18">mdi-chevron-down</v-icon>
+                <v-icon start size="16">mdi-chevron-double-down</v-icon>
                 加载更多历史记录
               </v-btn>
             </div>
 
-            <!-- 分页信息 -->
-            <div v-if="pagination.total > 0" class="text-center mt-3 text-caption text-disabled">
-              当前展示 {{ syncRecords.length }} / {{ pagination.total }} 条记录
+            <!-- 分页统计 -->
+            <div v-if="pagination.total > 0" class="text-center text-caption text-medium-emphasis pb-2">
+              已加载 {{ syncRecords.length }} / 共 {{ pagination.total }} 条记录
             </div>
           </div>
 
           <!-- 空状态 -->
-          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-lg text-center">
+          <div v-else class="empty-box d-flex flex-column align-center justify-center py-12 px-4 rounded-xl text-center">
             <div class="empty-icon mb-3">
-              <v-icon size="34" color="primary">mdi-history</v-icon>
+              <v-icon size="32" color="primary">mdi-sync-off</v-icon>
             </div>
-            <div class="text-subtitle-2 font-weight-bold text-medium-emphasis">暂无同步记录</div>
-            <div class="text-caption text-disabled mt-1">当配置生效且触发同步后，相关的记录会展示在此处</div>
+            <div class="text-subtitle-2 font-weight-bold text-medium-emphasis">暂无同步流水记录</div>
+            <div class="text-caption text-disabled mt-1" style="max-width: 320px;">
+              当配置保存生效并在受支持的多端播放、标记时，所有自动同步的历史状态将在此处实时归档。
+            </div>
+            <v-btn
+              color="primary"
+              variant="tonal"
+              size="small"
+              rounded="lg"
+              class="mt-4 px-4"
+              @click="notifySwitch"
+            >
+              <v-icon start size="16">mdi-cog-outline</v-icon>
+              前往检查同步配置
+            </v-btn>
           </div>
         </div>
       </v-card-text>
@@ -586,16 +657,17 @@ onMounted(() => {
 })
 </script>
 <style scoped>
-/* 卡片 */
-.page-card {
+/* 主卡片外观 */
+.page-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border-color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08) !important;
 }
 
-/* 头部微渐变 */
+/* 优雅渐变顶栏 (对齐 Config 页面风格) */
 .header-surface {
   background: linear-gradient(
     135deg,
-    rgba(var(--v-theme-primary, 24, 103, 192), 0.07) 0%,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%,
     rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%
   );
 }
@@ -604,77 +676,127 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
 
-.config-btn {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
-}
-
 .close-btn {
-  color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.6);
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.12);
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+.close-btn:hover {
+  transform: rotate(90deg);
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
 
-/* 内容背景 */
 .body-surface {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
 }
 
-/* 记录卡片 */
-.record-card {
+/* 骨架屏卡片 */
+.skeleton-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
-}
-.record-card:hover {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
-}
-.record-card-success {
-  border-color: rgba(var(--v-theme-success, 76, 175, 80), 0.28);
-}
-.record-card-error {
-  border-color: rgba(var(--v-theme-error, 176, 0, 32), 0.35);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
 
-.record-title {
-  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+/* 同步流水卡片 (优雅扁平流式) */
+.record-stream-card {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  transition: all 0.2s ease;
 }
 
-/* 媒体类型徽章 */
-.media-badge {
+.record-stream-card:hover {
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.05);
+  transform: translateY(-1px);
+}
+
+.stream-card-success {
+  border-left: 3px solid rgb(var(--v-theme-success, 76, 175, 80));
+}
+
+.stream-card-error {
+  border-left: 3px solid rgb(var(--v-theme-error, 176, 0, 32));
+}
+
+/* 状态指示框 */
+.status-indicator-box {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  flex-shrink: 0;
 }
-.media-badge-blue   { background: rgba(33, 150, 243, 0.12); }
-.media-badge-green  { background: rgba(76, 175, 80, 0.12); }
-.media-badge-purple { background: rgba(156, 39, 176, 0.12); }
-.media-badge-grey   { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08); }
-
-/* 时间胶囊 */
-.time-chip {
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
+.indicator-success {
+  background: rgba(var(--v-theme-success, 76, 175, 80), 0.12);
+}
+.indicator-error {
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.12);
 }
 
-/* 描述块 */
-.desc-box {
-  background: rgba(var(--v-theme-info, 33, 150, 243), 0.08);
-  border: 1px solid rgba(var(--v-theme-info, 33, 150, 243), 0.18);
+/* 媒体名称 */
+.media-title {
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+  max-width: 280px;
+}
+
+/* 标签圆角 */
+.media-chip, .sync-type-chip {
+  border-radius: 6px;
+}
+
+/* 播放进度微胶囊 */
+.progress-pill {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.08);
+  border: 1px solid rgba(var(--v-theme-primary, 24, 103, 192), 0.18);
+  color: rgb(var(--v-theme-primary, 24, 103, 192));
+}
+
+/* 节点流向容器 (对齐配置页用户映射节点风格) */
+.flow-container {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
+}
+
+.flow-node {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-surface, 255, 255, 255), 0.7);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
+}
+
+.target-node {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.04);
+}
+
+.node-user {
   color: rgb(var(--v-theme-on-surface, 0, 0, 0));
 }
 
-/* 错误块 */
+.flow-arrow {
+  width: 20px;
+}
+
+/* 描述与错误消息条 */
+.desc-box {
+  background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+  border: 1px solid rgba(var(--v-theme-info, 33, 150, 243), 0.18);
+  color: rgb(var(--v-theme-info, 33, 150, 243));
+}
+
 .error-box {
-  background: rgba(var(--v-theme-error, 176, 0, 32), 0.08);
-  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.25);
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
   color: rgb(var(--v-theme-error, 176, 0, 32));
+}
+
+/* 加载更多 */
+.load-more-btn {
+  border: 1px solid rgba(var(--v-theme-primary, 24, 103, 192), 0.2);
 }
 
 /* 空状态 */
@@ -683,8 +805,8 @@ onMounted(() => {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }
 .empty-icon {
-  width: 64px;
-  height: 64px;
+  width: 60px;
+  height: 60px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -692,10 +814,7 @@ onMounted(() => {
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
 }
 
-.gap-1 {
-  gap: 4px;
-}
-.gap-2 {
-  gap: 8px;
+.shadow-elevation {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 </style>
