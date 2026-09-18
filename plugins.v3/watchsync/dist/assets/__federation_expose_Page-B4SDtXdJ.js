@@ -1,45 +1,46 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
-const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,toDisplayString:_toDisplayString,mergeProps:_mergeProps,createElementVNode:_createElementVNode,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,normalizeClass:_normalizeClass} = await importShared('vue');
+const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,mergeProps:_mergeProps,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,normalizeClass:_normalizeClass} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "plugin-page" };
-const _hoisted_2 = { class: "d-flex align-center gap-3" };
-const _hoisted_3 = {
-  key: 1,
-  class: "pa-4"
-};
-const _hoisted_4 = { key: 2 };
+const _hoisted_2 = { class: "header-icon-box mr-3" };
+const _hoisted_3 = { class: "text-subtitle-1 font-weight-bold" };
+const _hoisted_4 = { class: "d-flex align-center gap-2" };
 const _hoisted_5 = {
-  key: 0,
-  class: "mt-2"
-};
-const _hoisted_6 = { class: "d-flex justify-space-between align-center mb-2" };
-const _hoisted_7 = { class: "d-flex align-center" };
-const _hoisted_8 = { class: "font-weight-bold text-subtitle-2 text-primary-darken-1" };
-const _hoisted_9 = { class: "text-caption text-medium-emphasis bg-grey-lighten-4 px-2 py-1 rounded-pill" };
-const _hoisted_10 = { class: "text-body-2 mb-2 d-flex align-center flex-wrap gap-1" };
-const _hoisted_11 = {
-  key: 0,
-  class: "text-caption text-indigo-darken-1 bg-indigo-lighten-5 pa-2 rounded d-flex align-center"
-};
-const _hoisted_12 = {
   key: 1,
-  class: "text-caption text-error bg-error-lighten-5 pa-2 rounded mt-2 d-flex align-start border border-error border-opacity-25"
+  class: "pa-2"
 };
+const _hoisted_6 = { key: 2 };
+const _hoisted_7 = { key: 0 };
+const _hoisted_8 = { class: "d-flex justify-space-between align-center flex-wrap gap-2 mb-2" };
+const _hoisted_9 = { class: "d-flex align-center overflow-hidden" };
+const _hoisted_10 = { class: "font-weight-bold text-body-2 text-truncate record-title" };
+const _hoisted_11 = { class: "text-caption text-disabled text-no-wrap time-chip px-2 py-1 rounded-pill" };
+const _hoisted_12 = { class: "d-flex align-center flex-wrap gap-1 mb-2" };
 const _hoisted_13 = {
   key: 0,
-  class: "text-center mt-6 mb-2"
+  class: "desc-box text-caption d-flex align-center rounded pa-2"
 };
 const _hoisted_14 = {
   key: 1,
-  class: "text-center mt-3 text-caption text-medium-emphasis font-weight-medium"
+  class: "error-box text-caption d-flex align-start rounded pa-2 mt-2"
 };
-const _hoisted_15 = {
+const _hoisted_15 = { class: "text-break" };
+const _hoisted_16 = {
+  key: 0,
+  class: "text-center mt-4 mb-2"
+};
+const _hoisted_17 = {
   key: 1,
-  class: "text-center py-10"
+  class: "text-center mt-3 text-caption text-disabled"
 };
+const _hoisted_18 = {
+  key: 1,
+  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-lg text-center"
+};
+const _hoisted_19 = { class: "empty-icon mb-3" };
 
 const {ref,onMounted} = await importShared('vue');
 
@@ -395,16 +396,17 @@ onMounted(() => {
 
 return (_ctx, _cache) => {
   const _component_v_icon = _resolveComponent("v-icon");
+  const _component_v_chip = _resolveComponent("v-chip");
   const _component_v_card_title = _resolveComponent("v-card-title");
   const _component_v_btn = _resolveComponent("v-btn");
   const _component_v_list_item_title = _resolveComponent("v-list-item-title");
   const _component_v_list_item = _resolveComponent("v-list-item");
   const _component_v_list = _resolveComponent("v-list");
   const _component_v_menu = _resolveComponent("v-menu");
+  const _component_v_tooltip = _resolveComponent("v-tooltip");
   const _component_v_card_item = _resolveComponent("v-card-item");
   const _component_v_alert = _resolveComponent("v-alert");
   const _component_v_skeleton_loader = _resolveComponent("v-skeleton-loader");
-  const _component_v_chip = _resolveComponent("v-chip");
   const _component_v_card = _resolveComponent("v-card");
   const _component_v_timeline_item = _resolveComponent("v-timeline-item");
   const _component_v_timeline = _resolveComponent("v-timeline");
@@ -412,43 +414,47 @@ return (_ctx, _cache) => {
 
   return (_openBlock(), _createElementBlock("div", _hoisted_1, [
     _createVNode(_component_v_card, {
-      class: "rounded-lg shadow-sm",
+      class: "rounded-xl overflow-hidden page-card",
       elevation: "0",
       variant: "outlined"
     }, {
       default: _withCtx(() => [
-        _createVNode(_component_v_card_item, { class: "border-b bg-grey-lighten-4 pa-4" }, {
+        _createVNode(_component_v_card_item, { class: "px-4 py-3 border-b header-surface" }, {
           prepend: _withCtx(() => [
-            _createVNode(_component_v_icon, {
-              color: "primary",
-              size: "x-large",
-              class: "mr-2"
-            }, {
-              default: _withCtx(() => [...(_cache[3] || (_cache[3] = [
-                _createTextVNode("mdi-history", -1)
-              ]))]),
-              _: 1
-            })
+            _createElementVNode("div", _hoisted_2, [
+              _createVNode(_component_v_icon, {
+                color: "primary",
+                size: "20"
+              }, {
+                default: _withCtx(() => [...(_cache[4] || (_cache[4] = [
+                  _createTextVNode("mdi-history", -1)
+                ]))]),
+                _: 1
+              })
+            ])
           ]),
           append: _withCtx(() => [
-            _createElementVNode("div", _hoisted_2, [
+            _createElementVNode("div", _hoisted_4, [
               _createVNode(_component_v_btn, {
                 color: "primary",
                 rounded: "lg",
-                onClick: refreshData,
-                loading: loading.value,
-                text: "刷新",
                 variant: "flat",
                 size: "small",
-                class: "px-4 font-weight-medium box-shadow-sm"
+                class: "px-3 font-weight-medium",
+                loading: loading.value,
+                onClick: refreshData
               }, {
-                prepend: _withCtx(() => [
-                  _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => [...(_cache[4] || (_cache[4] = [
+                default: _withCtx(() => [
+                  _createVNode(_component_v_icon, {
+                    start: "",
+                    size: "18"
+                  }, {
+                    default: _withCtx(() => [...(_cache[5] || (_cache[5] = [
                       _createTextVNode("mdi-refresh", -1)
                     ]))]),
                     _: 1
-                  })
+                  }),
+                  _cache[6] || (_cache[6] = _createTextVNode(" 刷新 ", -1))
                 ]),
                 _: 1
               }, 8, ["loading"]),
@@ -457,19 +463,22 @@ return (_ctx, _cache) => {
                   _createVNode(_component_v_btn, _mergeProps(props, {
                     color: "secondary",
                     rounded: "lg",
-                    loading: clearing.value,
-                    text: "清理",
                     variant: "tonal",
                     size: "small",
-                    class: "px-4 font-weight-medium"
+                    class: "px-3 font-weight-medium",
+                    loading: clearing.value
                   }), {
-                    prepend: _withCtx(() => [
-                      _createVNode(_component_v_icon, null, {
-                        default: _withCtx(() => [...(_cache[5] || (_cache[5] = [
+                    default: _withCtx(() => [
+                      _createVNode(_component_v_icon, {
+                        start: "",
+                        size: "18"
+                      }, {
+                        default: _withCtx(() => [...(_cache[7] || (_cache[7] = [
                           _createTextVNode("mdi-delete-sweep", -1)
                         ]))]),
                         _: 1
-                      })
+                      }),
+                      _cache[8] || (_cache[8] = _createTextVNode(" 清理 ", -1))
                     ]),
                     _: 1
                   }, 16, ["loading"])
@@ -478,28 +487,31 @@ return (_ctx, _cache) => {
                   _createVNode(_component_v_list, {
                     rounded: "lg",
                     elevation: "3",
-                    class: "mt-1"
+                    class: "mt-1 py-1",
+                    density: "compact",
+                    "min-width": "180"
                   }, {
                     default: _withCtx(() => [
                       _createVNode(_component_v_list_item, {
-                        onClick: _cache[0] || (_cache[0] = $event => (clearOldRecords(7)))
+                        onClick: _cache[0] || (_cache[0] = $event => (clearOldRecords(7))),
+                        rounded: "lg"
                       }, {
                         prepend: _withCtx(() => [
                           _createVNode(_component_v_icon, {
-                            size: "small",
+                            size: "18",
                             class: "mr-2",
                             color: "warning"
                           }, {
-                            default: _withCtx(() => [...(_cache[6] || (_cache[6] = [
+                            default: _withCtx(() => [...(_cache[9] || (_cache[9] = [
                               _createTextVNode("mdi-calendar-alert", -1)
                             ]))]),
                             _: 1
                           })
                         ]),
                         default: _withCtx(() => [
-                          _createVNode(_component_v_list_item_title, { class: "text-body-2" }, {
-                            default: _withCtx(() => [...(_cache[7] || (_cache[7] = [
-                              _createTextVNode("清理7天前", -1)
+                          _createVNode(_component_v_list_item_title, { class: "text-body-2 font-weight-medium" }, {
+                            default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
+                              _createTextVNode("清理 7 天前", -1)
                             ]))]),
                             _: 1
                           })
@@ -507,24 +519,25 @@ return (_ctx, _cache) => {
                         _: 1
                       }),
                       _createVNode(_component_v_list_item, {
-                        onClick: _cache[1] || (_cache[1] = $event => (clearOldRecords(30)))
+                        onClick: _cache[1] || (_cache[1] = $event => (clearOldRecords(30))),
+                        rounded: "lg"
                       }, {
                         prepend: _withCtx(() => [
                           _createVNode(_component_v_icon, {
-                            size: "small",
+                            size: "18",
                             class: "mr-2",
                             color: "error"
                           }, {
-                            default: _withCtx(() => [...(_cache[8] || (_cache[8] = [
+                            default: _withCtx(() => [...(_cache[11] || (_cache[11] = [
                               _createTextVNode("mdi-calendar-remove", -1)
                             ]))]),
                             _: 1
                           })
                         ]),
                         default: _withCtx(() => [
-                          _createVNode(_component_v_list_item_title, { class: "text-body-2" }, {
-                            default: _withCtx(() => [...(_cache[9] || (_cache[9] = [
-                              _createTextVNode("清理30天前", -1)
+                          _createVNode(_component_v_list_item_title, { class: "text-body-2 font-weight-medium" }, {
+                            default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
+                              _createTextVNode("清理 30 天前", -1)
                             ]))]),
                             _: 1
                           })
@@ -532,24 +545,25 @@ return (_ctx, _cache) => {
                         _: 1
                       }),
                       _createVNode(_component_v_list_item, {
-                        onClick: _cache[2] || (_cache[2] = $event => (clearOldRecords(90)))
+                        onClick: _cache[2] || (_cache[2] = $event => (clearOldRecords(90))),
+                        rounded: "lg"
                       }, {
                         prepend: _withCtx(() => [
                           _createVNode(_component_v_icon, {
-                            size: "small",
+                            size: "18",
                             class: "mr-2",
                             color: "grey"
                           }, {
-                            default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
+                            default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
                               _createTextVNode("mdi-delete-forever", -1)
                             ]))]),
                             _: 1
                           })
                         ]),
                         default: _withCtx(() => [
-                          _createVNode(_component_v_list_item_title, { class: "text-body-2" }, {
-                            default: _withCtx(() => [...(_cache[11] || (_cache[11] = [
-                              _createTextVNode("清理90天前", -1)
+                          _createVNode(_component_v_list_item_title, { class: "text-body-2 font-weight-medium" }, {
+                            default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                              _createTextVNode("清理 90 天前", -1)
                             ]))]),
                             _: 1
                           })
@@ -565,54 +579,67 @@ return (_ctx, _cache) => {
               _createVNode(_component_v_btn, {
                 color: "info",
                 rounded: "lg",
-                onClick: exportLogs,
-                text: "导出",
                 variant: "tonal",
                 size: "small",
-                class: "px-4 font-weight-medium"
+                class: "px-3 font-weight-medium",
+                onClick: exportLogs
               }, {
-                prepend: _withCtx(() => [
-                  _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
+                default: _withCtx(() => [
+                  _createVNode(_component_v_icon, {
+                    start: "",
+                    size: "18"
+                  }, {
+                    default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
                       _createTextVNode("mdi-download", -1)
                     ]))]),
                     _: 1
-                  })
+                  }),
+                  _cache[16] || (_cache[16] = _createTextVNode(" 导出 ", -1))
                 ]),
                 _: 1
               }),
               _createVNode(_component_v_btn, {
                 color: "primary",
                 rounded: "lg",
-                onClick: notifySwitch,
-                text: "配置",
                 variant: "outlined",
                 size: "small",
-                class: "px-4 font-weight-medium bg-white"
+                class: "px-3 font-weight-medium config-btn",
+                onClick: notifySwitch
               }, {
-                prepend: _withCtx(() => [
-                  _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
+                default: _withCtx(() => [
+                  _createVNode(_component_v_icon, {
+                    start: "",
+                    size: "18"
+                  }, {
+                    default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
                       _createTextVNode("mdi-cog", -1)
                     ]))]),
                     _: 1
-                  })
+                  }),
+                  _cache[18] || (_cache[18] = _createTextVNode(" 配置 ", -1))
                 ]),
                 _: 1
               }),
               _createVNode(_component_v_btn, {
                 icon: "",
-                color: "grey-darken-1",
                 variant: "text",
                 size: "small",
-                onClick: notifyClose,
-                class: "bg-white elevation-1 ml-1",
-                style: {"border":"1px solid #e0e0e0"}
+                class: "rounded-lg close-btn ml-1",
+                onClick: notifyClose
               }, {
                 default: _withCtx(() => [
-                  _createVNode(_component_v_icon, null, {
-                    default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                  _createVNode(_component_v_icon, { size: "18" }, {
+                    default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
                       _createTextVNode("mdi-close", -1)
+                    ]))]),
+                    _: 1
+                  }),
+                  _createVNode(_component_v_tooltip, {
+                    activator: "parent",
+                    location: "bottom"
+                  }, {
+                    default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+                      _createTextVNode("关闭", -1)
                     ]))]),
                     _: 1
                   })
@@ -622,9 +649,23 @@ return (_ctx, _cache) => {
             ])
           ]),
           default: _withCtx(() => [
-            _createVNode(_component_v_card_title, { class: "text-primary font-weight-bold" }, {
+            _createVNode(_component_v_card_title, { class: "d-flex align-center flex-wrap" }, {
               default: _withCtx(() => [
-                _createTextVNode(_toDisplayString(title.value), 1)
+                _createElementVNode("span", _hoisted_3, _toDisplayString(title.value), 1),
+                (pagination.value.total > 0)
+                  ? (_openBlock(), _createBlock(_component_v_chip, {
+                      key: 0,
+                      size: "x-small",
+                      variant: "tonal",
+                      color: "primary",
+                      class: "ml-3 font-weight-medium"
+                    }, {
+                      default: _withCtx(() => [
+                        _createTextVNode(_toDisplayString(pagination.value.total) + " 条记录 ", 1)
+                      ]),
+                      _: 1
+                    }))
+                  : _createCommentVNode("", true)
               ]),
               _: 1
             })
@@ -632,7 +673,7 @@ return (_ctx, _cache) => {
           _: 1
         }),
         _createVNode(_component_v_card_text, {
-          class: "pa-4 bg-grey-lighten-5",
+          class: "pa-4 body-surface",
           style: {"max-height":"75vh","overflow-y":"auto"}
         }, {
           default: _withCtx(() => [
@@ -641,7 +682,9 @@ return (_ctx, _cache) => {
                   key: 0,
                   type: "error",
                   variant: "tonal",
-                  class: "mb-4 border border-error"
+                  class: "mb-4 rounded-lg",
+                  closable: "",
+                  "onClick:close": _cache[3] || (_cache[3] = $event => (error.value = null))
                 }, {
                   default: _withCtx(() => [
                     _createTextVNode(_toDisplayString(error.value), 1)
@@ -650,12 +693,15 @@ return (_ctx, _cache) => {
                 }))
               : _createCommentVNode("", true),
             (loading.value)
-              ? (_openBlock(), _createElementBlock("div", _hoisted_3, [
-                  _createVNode(_component_v_skeleton_loader, { type: "list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line" })
+              ? (_openBlock(), _createElementBlock("div", _hoisted_5, [
+                  _createVNode(_component_v_skeleton_loader, {
+                    type: "list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line",
+                    class: "rounded-lg"
+                  })
                 ]))
-              : (_openBlock(), _createElementBlock("div", _hoisted_4, [
+              : (_openBlock(), _createElementBlock("div", _hoisted_6, [
                   (groupedSyncRecords.value && groupedSyncRecords.value.length)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_5, [
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_7, [
                         _createVNode(_component_v_timeline, {
                           density: "compact",
                           side: "end",
@@ -683,48 +729,51 @@ return (_ctx, _cache) => {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_card, {
                                     variant: "outlined",
-                                    class: _normalizeClass(["rounded-lg pa-3 ml-2 shadow-sm bg-white border-opacity-75", group.status === 'error' ? 'border-error' : 'border-success'])
+                                    class: _normalizeClass(["record-card rounded-lg pa-3 ml-2", group.status === 'error' ? 'record-card-error' : 'record-card-success'])
                                   }, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("div", _hoisted_6, [
-                                        _createElementVNode("div", _hoisted_7, [
+                                      _createElementVNode("div", _hoisted_8, [
+                                        _createElementVNode("div", _hoisted_9, [
+                                          _createElementVNode("div", {
+                                            class: _normalizeClass(["media-badge mr-2", `media-badge-${getMediaTypeColor(group.media_type)}`])
+                                          }, [
+                                            _createVNode(_component_v_icon, {
+                                              size: "15",
+                                              color: getMediaTypeColor(group.media_type)
+                                            }, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(getMediaTypeIcon(group.media_type)), 1)
+                                              ]),
+                                              _: 2
+                                            }, 1032, ["color"])
+                                          ], 2),
+                                          _createElementVNode("span", _hoisted_10, _toDisplayString(group.media_name), 1),
                                           _createVNode(_component_v_icon, {
-                                            color: getMediaTypeColor(group.media_type),
-                                            size: "small",
-                                            class: "mr-1"
-                                          }, {
-                                            default: _withCtx(() => [
-                                              _createTextVNode(_toDisplayString(getMediaTypeIcon(group.media_type)), 1)
-                                            ]),
-                                            _: 2
-                                          }, 1032, ["color"]),
-                                          _createVNode(_component_v_icon, {
+                                            size: "16",
                                             color: getSyncTypeColor(group.sync_type),
-                                            size: "small",
-                                            class: "mr-2"
+                                            class: "ml-2 flex-shrink-0"
                                           }, {
                                             default: _withCtx(() => [
                                               _createTextVNode(_toDisplayString(getSyncTypeIcon(group.sync_type)), 1)
                                             ]),
                                             _: 2
-                                          }, 1032, ["color"]),
-                                          _createElementVNode("span", _hoisted_8, _toDisplayString(group.media_name), 1)
+                                          }, 1032, ["color"])
                                         ]),
-                                        _createElementVNode("span", _hoisted_9, _toDisplayString(formatTime(group.timestamp)), 1)
+                                        _createElementVNode("span", _hoisted_11, _toDisplayString(formatTime(group.timestamp)), 1)
                                       ]),
-                                      _createElementVNode("div", _hoisted_10, [
+                                      _createElementVNode("div", _hoisted_12, [
                                         _createVNode(_component_v_chip, {
                                           size: "x-small",
-                                          variant: "flat",
-                                          color: "grey-lighten-3",
-                                          class: "text-grey-darken-3 font-weight-medium"
+                                          variant: "tonal",
+                                          color: "blue-grey",
+                                          class: "font-weight-medium"
                                         }, {
                                           default: _withCtx(() => [
                                             _createVNode(_component_v_icon, {
                                               start: "",
-                                              size: "x-small"
+                                              size: "12"
                                             }, {
-                                              default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
+                                              default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
                                                 _createTextVNode("mdi-account-arrow-right", -1)
                                               ]))]),
                                               _: 1
@@ -734,11 +783,11 @@ return (_ctx, _cache) => {
                                           _: 2
                                         }, 1024),
                                         _createVNode(_component_v_icon, {
-                                          size: "x-small",
-                                          color: "grey-lighten-1",
+                                          size: "12",
+                                          color: "grey",
                                           class: "mx-1"
                                         }, {
-                                          default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                                          default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
                                             _createTextVNode("mdi-arrow-right-bold", -1)
                                           ]))]),
                                           _: 1
@@ -747,45 +796,45 @@ return (_ctx, _cache) => {
                                           return (_openBlock(), _createBlock(_component_v_chip, {
                                             key: idx,
                                             size: "x-small",
-                                            variant: "flat",
-                                            color: group.status === 'error' ? 'error-lighten-4' : 'success-lighten-4',
-                                            class: _normalizeClass([group.status === 'error' ? 'text-error' : 'text-success-darken-2', "font-weight-medium mr-1"])
+                                            variant: "tonal",
+                                            color: group.status === 'error' ? 'error' : 'success',
+                                            class: "font-weight-medium"
                                           }, {
                                             default: _withCtx(() => [
                                               _createTextVNode(_toDisplayString(target_user), 1)
                                             ]),
                                             _: 2
-                                          }, 1032, ["color", "class"]))
+                                          }, 1032, ["color"]))
                                         }), 128))
                                       ]),
                                       (group.description)
-                                        ? (_openBlock(), _createElementBlock("div", _hoisted_11, [
+                                        ? (_openBlock(), _createElementBlock("div", _hoisted_13, [
                                             _createVNode(_component_v_icon, {
-                                              size: "small",
-                                              class: "mr-2",
+                                              size: "14",
+                                              class: "mr-2 flex-shrink-0",
                                               color: "indigo"
                                             }, {
-                                              default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+                                              default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
                                                 _createTextVNode("mdi-information-outline", -1)
                                               ]))]),
                                               _: 1
                                             }),
-                                            _createTextVNode(" " + _toDisplayString(group.description), 1)
+                                            _createElementVNode("span", null, _toDisplayString(group.description), 1)
                                           ]))
                                         : _createCommentVNode("", true),
                                       (group.error_message)
-                                        ? (_openBlock(), _createElementBlock("div", _hoisted_12, [
+                                        ? (_openBlock(), _createElementBlock("div", _hoisted_14, [
                                             _createVNode(_component_v_icon, {
-                                              size: "small",
-                                              class: "mr-1 mt-n1",
+                                              size: "14",
+                                              class: "mr-2 flex-shrink-0 mt-1",
                                               color: "error"
                                             }, {
-                                              default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                                              default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
                                                 _createTextVNode("mdi-alert-circle", -1)
                                               ]))]),
                                               _: 1
                                             }),
-                                            _createElementVNode("span", null, _toDisplayString(group.error_message), 1)
+                                            _createElementVNode("span", _hoisted_15, _toDisplayString(group.error_message), 1)
                                           ]))
                                         : _createCommentVNode("", true)
                                     ]),
@@ -799,45 +848,49 @@ return (_ctx, _cache) => {
                           _: 1
                         }),
                         (pagination.value.hasMore)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_13, [
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_16, [
                               _createVNode(_component_v_btn, {
                                 color: "primary",
-                                variant: "outlined",
+                                variant: "tonal",
                                 rounded: "pill",
-                                class: "px-6 bg-white",
+                                class: "px-6 font-weight-medium",
                                 onClick: loadMoreRecords,
                                 loading: pagination.value.loading
                               }, {
                                 default: _withCtx(() => [
-                                  _createVNode(_component_v_icon, { left: "" }, {
-                                    default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+                                  _createVNode(_component_v_icon, {
+                                    start: "",
+                                    size: "18"
+                                  }, {
+                                    default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
                                       _createTextVNode("mdi-chevron-down", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[20] || (_cache[20] = _createTextVNode(" 加载更多历史记录 ", -1))
+                                  _cache[26] || (_cache[26] = _createTextVNode(" 加载更多历史记录 ", -1))
                                 ]),
                                 _: 1
                               }, 8, ["loading"])
                             ]))
                           : _createCommentVNode("", true),
                         (pagination.value.total > 0)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_14, " 当前展示 " + _toDisplayString(syncRecords.value.length) + " / " + _toDisplayString(pagination.value.total) + " 条记录 ", 1))
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_17, " 当前展示 " + _toDisplayString(syncRecords.value.length) + " / " + _toDisplayString(pagination.value.total) + " 条记录 ", 1))
                           : _createCommentVNode("", true)
                       ]))
-                    : (_openBlock(), _createElementBlock("div", _hoisted_15, [
-                        _createVNode(_component_v_icon, {
-                          size: "80",
-                          color: "grey-lighten-2",
-                          class: "mb-4"
-                        }, {
-                          default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
-                            _createTextVNode("mdi-history", -1)
-                          ]))]),
-                          _: 1
-                        }),
-                        _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-h6 text-grey-darken-1 font-weight-medium" }, "暂无同步记录", -1)),
-                        _cache[23] || (_cache[23] = _createElementVNode("div", { class: "text-body-2 text-grey" }, "当配置生效且触发同步后，相关的记录会展示在此处", -1))
+                    : (_openBlock(), _createElementBlock("div", _hoisted_18, [
+                        _createElementVNode("div", _hoisted_19, [
+                          _createVNode(_component_v_icon, {
+                            size: "34",
+                            color: "primary"
+                          }, {
+                            default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                              _createTextVNode("mdi-history", -1)
+                            ]))]),
+                            _: 1
+                          })
+                        ]),
+                        _cache[28] || (_cache[28] = _createElementVNode("div", { class: "text-subtitle-2 font-weight-bold text-medium-emphasis" }, "暂无同步记录", -1)),
+                        _cache[29] || (_cache[29] = _createElementVNode("div", { class: "text-caption text-disabled mt-1" }, "当配置生效且触发同步后，相关的记录会展示在此处", -1))
                       ]))
                 ]))
           ]),
@@ -851,6 +904,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-51f66530"]]);
+const Page = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7f5cdba7"]]);
 
 export { Page as default };

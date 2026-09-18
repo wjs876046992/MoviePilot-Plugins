@@ -123,7 +123,7 @@ class WatchSync(_PluginBase):
     plugin_name = "Emby观看记录同步"
     plugin_desc = "在不同用户之间同步观看记录（自用插件，不保证兼容性）"
     plugin_icon = "https://raw.githubusercontent.com/DzAvril/MoviePilot-Plugins/main/icons/emby_watch_sync.png"
-    plugin_version = "3.0.1"
+    plugin_version = "3.0.2"
     plugin_author = "DzAvril"
     author_url = "https://github.com/DzAvril"
     plugin_config_prefix = "watchsync_"

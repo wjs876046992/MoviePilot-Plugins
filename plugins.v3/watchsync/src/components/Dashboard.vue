@@ -1,104 +1,138 @@
 <template>
   <div class="dashboard-widget h-100">
-    <v-card :flat="!config?.attrs?.border" :variant="config?.attrs?.border ? 'outlined' : 'flat'" class="rounded-lg h-100 border-opacity-50">
-
-      <!-- 卡片头 -->
-      <v-card-item v-if="config?.attrs?.border" class="border-b bg-grey-lighten-4 pa-3">
-        <template v-slot:prepend>
-          <v-icon color="primary" class="mr-2">mdi-chart-timeline-variant-shimmer</v-icon>
+    <v-card
+      :flat="!config?.attrs?.border"
+      :variant="config?.attrs?.border ? 'outlined' : 'flat'"
+      class="rounded-xl h-100 overflow-hidden dashboard-card"
+      :class="config?.attrs?.border ? 'border-opacity-25' : ''"
+    >
+      <!-- 卡片头：渐变图标 + 标题 + 实时状态脉冲点 -->
+      <v-card-item v-if="config?.attrs?.border" class="px-4 py-3 border-b header-surface">
+        <template #prepend>
+          <div class="header-icon-box mr-3">
+            <v-icon color="primary" size="20">mdi-chart-timeline-variant-shimmer</v-icon>
+          </div>
         </template>
-        <v-card-title class="text-subtitle-1 font-weight-bold text-primary">{{ config?.attrs?.title || '观看状态仪表盘' }}</v-card-title>
-        <template v-slot:append>
-          <v-btn icon variant="tonal" color="primary" size="x-small" class="bg-white elevation-1" @click="refreshData" :loading="loading">
-            <v-icon size="small">mdi-refresh</v-icon>
+        <v-card-title class="text-subtitle-1 font-weight-bold d-flex align-center">
+          {{ config?.attrs?.title || '观看状态仪表盘' }}
+          <span class="status-dot ml-2" :class="`dot-${serviceStatus}`"></span>
+        </v-card-title>
+        <template #append>
+          <v-btn
+            icon
+            variant="tonal"
+            color="primary"
+            size="small"
+            rounded="lg"
+            @click="refreshData"
+            :loading="loading"
+          >
+            <v-icon size="18">mdi-refresh</v-icon>
+            <v-tooltip activator="parent" location="bottom">刷新数据</v-tooltip>
           </v-btn>
         </template>
       </v-card-item>
 
       <!-- 主要内容区域 -->
-      <v-card-text :class="config?.attrs?.border ? 'pa-4 pb-2' : 'pa-0'" style="height: 100%;">
+      <v-card-text :class="config?.attrs?.border ? 'pa-4' : 'pa-0'" style="height: 100%;">
         <div class="dashboard-content d-flex flex-column h-100">
 
           <!-- 加载中状态 -->
-          <div v-if="loading" class="d-flex justify-center align-center flex-grow-1 py-10">
-            <v-progress-circular indeterminate color="primary" :size="36" :width="3"></v-progress-circular>
+          <div v-if="loading" class="d-flex flex-column justify-center align-center flex-grow-1 py-11">
+            <v-progress-circular indeterminate color="primary" :size="40" :width="3.5" class="mb-3"></v-progress-circular>
+            <span class="text-caption text-medium-emphasis">正在汇总同步数据…</span>
           </div>
 
           <!-- 数据内容 -->
-          <div v-else class="flex-grow-1">
+          <div v-else class="flex-grow-1 d-flex flex-column">
 
-            <!-- 服务状态指示器 -->
-            <div class="d-flex align-center px-4 py-2 mb-4 rounded-lg bg-surface-variant text-on-surface-variant shadow-sm border border-opacity-25" :class="`bg-${serviceStatusColor}-lighten-5 border-${serviceStatusColor}`">
-              <v-icon :color="serviceStatusColor" size="small" class="mr-2">{{ serviceStatusIcon }}</v-icon>
-              <span class="text-body-2 font-weight-bold" :class="`text-${serviceStatusColor}-darken-2`">{{ serviceStatusText }}</span>
+            <!-- 服务状态条 -->
+            <div class="status-strip d-flex align-center px-3 py-2 mb-3 rounded-lg" :class="`strip-${serviceStatusColor}`">
+              <v-icon :color="serviceStatusColor" size="18" class="mr-2">{{ serviceStatusIcon }}</v-icon>
+              <span class="text-caption font-weight-bold" :class="`text-${serviceStatusColor}-darken-2`">
+                {{ serviceStatusText }}
+              </span>
               <v-spacer></v-spacer>
-              <div class="d-flex align-center bg-white px-2 py-1 rounded-pill elevation-1" :class="`text-${stats.successRate >= 90 ? 'success' : stats.successRate >= 70 ? 'warning' : 'error'}`">
-                <v-icon start size="x-small" class="mr-1">mdi-brightness-percent</v-icon>
-                <span class="text-caption font-weight-bold">{{ stats.successRate }}% 成功率</span>
+              <div class="rate-pill d-flex align-center px-2 py-1 rounded-pill" :class="rateTone">
+                <v-icon size="12" class="mr-1">mdi-shield-check-outline</v-icon>
+                <span class="text-caption font-weight-black">{{ stats.successRate }}%</span>
               </div>
             </div>
 
-            <!-- 数据列 (Grid UI) -->
-            <v-row class="mb-4 mt-2 mx-0 align-stretch">
-              <v-col cols="4" class="text-center bg-grey-lighten-5 rounded-s-lg py-3">
-                <div class="text-h5 font-weight-black text-primary">{{ stats.todayCount }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">今日同步指令</div>
+            <!-- 核心指标卡 -->
+            <v-row class="mb-3 mx-0 align-stretch">
+              <v-col cols="4" class="pa-1">
+                <div class="stat-card stat-primary rounded-lg text-center py-3 px-1 h-100">
+                  <div class="text-h5 font-weight-black text-primary stat-value">{{ stats.todayCount }}</div>
+                  <div class="text-caption text-medium-emphasis font-weight-medium mt-1">今日指令</div>
+                </div>
               </v-col>
-              <v-col cols="4" class="text-center border-s border-e bg-blue-grey-lighten-5 py-3">
-                <div class="text-h5 font-weight-black text-info">{{ stats.activeUsers }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">24H 涉及用户</div>
+              <v-col cols="4" class="pa-1">
+                <div class="stat-card stat-info rounded-lg text-center py-3 px-1 h-100">
+                  <div class="text-h5 font-weight-black text-info stat-value">{{ stats.activeUsers }}</div>
+                  <div class="text-caption text-medium-emphasis font-weight-medium mt-1">24H 用户</div>
+                </div>
               </v-col>
-              <v-col cols="4" class="text-center bg-grey-lighten-5 rounded-e-lg py-3">
-                <div class="text-h5 font-weight-black text-secondary">{{ stats.syncTypes.length }}</div>
-                <div class="text-caption font-weight-medium text-medium-emphasis mt-1">同步涉及类型</div>
+              <v-col cols="4" class="pa-1">
+                <div class="stat-card stat-secondary rounded-lg text-center py-3 px-1 h-100">
+                  <div class="text-h5 font-weight-black text-secondary stat-value">{{ stats.syncTypes.length }}</div>
+                  <div class="text-caption text-medium-emphasis font-weight-medium mt-1">涉及类型</div>
+                </div>
               </v-col>
             </v-row>
 
-            <div class="text-subtitle-2 text-grey-darken-1 mb-2 d-flex align-center">
-              <v-icon size="small" class="mr-1">mdi-history</v-icon>近期最新动向
+            <!-- 最近动向标题 -->
+            <div class="d-flex align-center justify-space-between mb-2 px-1">
+              <span class="text-caption font-weight-bold text-medium-emphasis d-flex align-center">
+                <v-icon size="14" class="mr-1 text-primary">mdi-history</v-icon>
+                最近动向
+              </span>
+              <span v-if="recentRecords.length" class="text-caption text-disabled">最新 {{ recentRecords.length }} 条</span>
             </div>
 
-            <!-- 最近同步记录（简化卡片版） -->
-            <v-list v-if="syncRecords.length" density="compact" class="py-0 rounded-lg border border-opacity-50">
-              <v-list-item
-                v-for="(record, index) in syncRecords.slice(0, 3)"
+            <!-- 最近同步记录 -->
+            <div v-if="recentRecords.length" class="flex-grow-1">
+              <div
+                v-for="(record, index) in recentRecords"
                 :key="index"
-                :class="{'border-b': index < syncRecords.slice(0, 3).length - 1}"
-                class="px-3"
+                class="record-item d-flex align-center py-2 px-3 mb-2 rounded-lg"
               >
-                <template v-slot:prepend>
-                  <v-avatar :color="getStatusColor(record.status)" size="28" class="mr-3 mt-1 elevation-1">
-                    <v-icon size="16" color="white">{{ getStatusIcon(record.status) }}</v-icon>
-                  </v-avatar>
-                </template>
-
-                <v-list-item-title class="text-body-2 font-weight-bold text-primary-darken-1 pt-1 text-truncate">
-                  {{ record.media_name || '未命名媒体' }}
-                </v-list-item-title>
-
-                <v-list-item-subtitle class="text-caption d-flex align-center mt-1 pb-1">
-                  <v-icon size="x-small" :color="getSyncTypeColor(record.sync_type)" class="mr-1">
-                    {{ getSyncTypeIcon(record.sync_type) }}
+                <!-- 状态图标 -->
+                <div class="record-badge mr-3" :class="`badge-${getStatusColor(record.status)}`">
+                  <v-icon size="16" :color="getStatusColor(record.status)">
+                    {{ getStatusIcon(record.status) }}
                   </v-icon>
-                  <span class="text-truncate" style="max-width: 60%;">
-                    <span class="font-weight-medium">{{ record.source_user }}</span>
-                    <v-icon size="x-small" class="mx-1 text-grey">mdi-arrow-right</v-icon>
-                    <span class="font-weight-medium">{{ record.target_user }}</span>
-                  </span>
-                </v-list-item-subtitle>
+                </div>
 
-                <template v-slot:append>
-                  <span class="text-caption text-medium-emphasis ml-2 bg-grey-lighten-4 px-2 py-1 rounded">
-                    {{ formatTime(record.timestamp) }}
-                  </span>
-                </template>
-              </v-list-item>
-            </v-list>
+                <!-- 媒体与流向 -->
+                <div class="flex-grow-1 overflow-hidden mr-2">
+                  <div class="record-title text-caption font-weight-bold text-truncate">
+                    {{ record.media_name || '未命名媒体' }}
+                  </div>
+                  <div class="text-caption text-disabled d-flex align-center text-truncate mt-1">
+                    <v-icon size="12" :color="getSyncTypeColor(record.sync_type)" class="mr-1 flex-shrink-0">
+                      {{ getSyncTypeIcon(record.sync_type) }}
+                    </v-icon>
+                    <span class="text-truncate">{{ record.source_user }}</span>
+                    <v-icon size="10" class="mx-1 flex-shrink-0 text-grey">mdi-arrow-right</v-icon>
+                    <span class="text-truncate">{{ record.target_user }}</span>
+                  </div>
+                </div>
 
-            <!-- 无数据空状态呈现 -->
-            <div v-else class="text-center text-caption text-blue-grey-darken-1 py-8 rounded-lg border-dashed bg-grey-lighten-5">
-              <v-icon size="48" color="blue-grey-lighten-3" class="d-block mx-auto mb-2">mdi-cube-scan</v-icon>
-              这里还是一片荒芜...<br/>暂无有效同步记录
+                <!-- 时间 -->
+                <div class="text-right flex-shrink-0">
+                  <span class="text-caption text-disabled text-no-wrap">{{ formatTime(record.timestamp || record.created_at) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-else class="empty-box d-flex flex-column align-center justify-center flex-grow-1 py-7 px-4 rounded-lg text-center">
+              <div class="empty-icon mb-2">
+                <v-icon size="26" color="primary">mdi-sync-off</v-icon>
+              </div>
+              <div class="text-caption font-weight-bold text-medium-emphasis">这里还是一片荒芜</div>
+              <div class="text-caption text-disabled mt-1">暂无有效同步记录</div>
             </div>
 
           </div>
@@ -135,7 +169,7 @@ const stats = ref({
   activeUsers: 0,
   syncTypes: []
 })
-const syncRecords = ref([])
+const recentRecords = ref([])
 const serviceStatus = ref('running') // running, stopped, error
 let refreshTimer = null
 
@@ -213,10 +247,18 @@ const serviceStatusText = computed(() => {
   return texts[serviceStatus.value] || '状态未知'
 })
 
+// 成功率徽章配色
+const rateTone = computed(() => {
+  if (stats.value.successRate >= 90) return 'rate-success'
+  if (stats.value.successRate >= 70) return 'rate-warning'
+  return 'rate-error'
+})
+
 // 格式化时间
 function formatTime(timestamp) {
   if (!timestamp) return ''
   const date = new Date(timestamp)
+  if (isNaN(date.getTime())) return ''
   const now = new Date()
   const diff = now - date
 
@@ -304,13 +346,13 @@ async function loadDashboardRecords() {
   try {
     const result = await props.api.get('plugin/WatchSync/records?limit=3')
     if (result && result.success) {
-      syncRecords.value = result.data || []
+      recentRecords.value = result.data || []
     } else {
-      syncRecords.value = []
+      recentRecords.value = []
     }
   } catch (error) {
     console.error('获取同步记录失败:', error)
-    syncRecords.value = []
+    recentRecords.value = []
   }
 }
 
@@ -344,15 +386,155 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.shadow-sm {
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+/* 卡片整体 */
+.dashboard-card {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  transition: box-shadow 0.25s ease;
 }
-.border-dashed {
-  border-style: dashed !important;
+
+/* 头部微渐变 */
+.header-surface {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.07) 0%,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%
+  );
 }
-.text-truncate {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+.header-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+}
+
+/* 状态脉冲点 */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.dot-running {
+  background-color: rgb(var(--v-theme-success, 76, 175, 80));
+  animation: pulse-success 2s infinite;
+}
+.dot-stopped {
+  background-color: rgb(var(--v-theme-warning, 251, 140, 0));
+}
+.dot-error {
+  background-color: rgb(var(--v-theme-error, 176, 0, 32));
+  animation: pulse-error 1.4s infinite;
+}
+
+@keyframes pulse-success {
+  0%   { box-shadow: 0 0 0 0 rgba(var(--v-theme-success, 76, 175, 80), 0.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(var(--v-theme-success, 76, 175, 80), 0); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--v-theme-success, 76, 175, 80), 0); }
+}
+@keyframes pulse-error {
+  0%   { box-shadow: 0 0 0 0 rgba(var(--v-theme-error, 176, 0, 32), 0.6); }
+  70%  { box-shadow: 0 0 0 6px rgba(var(--v-theme-error, 176, 0, 32), 0); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--v-theme-error, 176, 0, 32), 0); }
+}
+
+/* 服务状态条 */
+.status-strip {
+  border: 1px solid transparent;
+}
+.strip-success {
+  background: rgba(var(--v-theme-success, 76, 175, 80), 0.08);
+  border-color: rgba(var(--v-theme-success, 76, 175, 80), 0.22);
+}
+.strip-warning {
+  background: rgba(var(--v-theme-warning, 251, 140, 0), 0.08);
+  border-color: rgba(var(--v-theme-warning, 251, 140, 0), 0.22);
+}
+.strip-error {
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.08);
+  border-color: rgba(var(--v-theme-error, 176, 0, 32), 0.22);
+}
+.strip-grey {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
+  border-color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.12);
+}
+
+/* 成功率胶囊 */
+.rate-pill {
+  background: rgba(var(--v-theme-surface, 255, 255, 255), 0.85);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+.rate-success { color: rgb(var(--v-theme-success, 76, 175, 80)); }
+.rate-warning { color: rgb(var(--v-theme-warning, 251, 140, 0)); }
+.rate-error   { color: rgb(var(--v-theme-error, 176, 0, 32)); }
+
+/* 指标卡 */
+.stat-card {
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+.stat-primary {
+  background: linear-gradient(180deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.09) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
+}
+.stat-info {
+  background: linear-gradient(180deg, rgba(var(--v-theme-info, 33, 150, 243), 0.09) 0%, rgba(var(--v-theme-info, 33, 150, 243), 0.02) 100%);
+}
+.stat-secondary {
+  background: linear-gradient(180deg, rgba(var(--v-theme-secondary, 92, 187, 246), 0.09) 0%, rgba(var(--v-theme-secondary, 92, 187, 246), 0.02) 100%);
+}
+.stat-value {
+  line-height: 1.15;
+}
+
+/* 记录条目 */
+.record-item {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.record-item:hover {
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.05);
+  border-color: rgba(var(--v-theme-primary, 24, 103, 192), 0.22);
+}
+
+.record-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.badge-success { background: rgba(var(--v-theme-success, 76, 175, 80), 0.12); }
+.badge-error   { background: rgba(var(--v-theme-error, 176, 0, 32), 0.12); }
+.badge-warning { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.14); }
+.badge-grey    { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08); }
+
+.record-title {
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+}
+
+/* 空状态 */
+.empty-box {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.18);
+}
+.empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
 }
 </style>

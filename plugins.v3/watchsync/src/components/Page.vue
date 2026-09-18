@@ -1,71 +1,135 @@
 <template>
   <div class="plugin-page">
-    <v-card class="rounded-lg shadow-sm" elevation="0" variant="outlined">
-      <v-card-item class="border-b bg-grey-lighten-4 pa-4">
+    <v-card class="rounded-xl overflow-hidden page-card" elevation="0" variant="outlined">
+      <!-- 顶栏 -->
+      <v-card-item class="px-4 py-3 border-b header-surface">
         <template #prepend>
-          <v-icon color="primary" size="x-large" class="mr-2">mdi-history</v-icon>
+          <div class="header-icon-box mr-3">
+            <v-icon color="primary" size="20">mdi-history</v-icon>
+          </div>
         </template>
-        <v-card-title class="text-primary font-weight-bold">{{ title }}</v-card-title>
+
+        <v-card-title class="d-flex align-center flex-wrap">
+          <span class="text-subtitle-1 font-weight-bold">{{ title }}</span>
+          <v-chip
+            v-if="pagination.total > 0"
+            size="x-small"
+            variant="tonal"
+            color="primary"
+            class="ml-3 font-weight-medium"
+          >
+            {{ pagination.total }} 条记录
+          </v-chip>
+        </v-card-title>
+
         <template #append>
-          <div class="d-flex align-center gap-3">
-            <v-btn color="primary" rounded="lg" @click="refreshData" :loading="loading" text="刷新" variant="flat" size="small" class="px-4 font-weight-medium box-shadow-sm">
-              <template v-slot:prepend>
-                <v-icon>mdi-refresh</v-icon>
-              </template>
+          <div class="d-flex align-center gap-2">
+            <v-btn
+              color="primary"
+              rounded="lg"
+              variant="flat"
+              size="small"
+              class="px-3 font-weight-medium"
+              :loading="loading"
+              @click="refreshData"
+            >
+              <v-icon start size="18">mdi-refresh</v-icon>
+              刷新
             </v-btn>
 
             <v-menu>
               <template v-slot:activator="{ props }">
-                <v-btn v-bind="props" color="secondary" rounded="lg" :loading="clearing" text="清理" variant="tonal" size="small" class="px-4 font-weight-medium">
-                  <template v-slot:prepend>
-                    <v-icon>mdi-delete-sweep</v-icon>
-                  </template>
+                <v-btn
+                  v-bind="props"
+                  color="secondary"
+                  rounded="lg"
+                  variant="tonal"
+                  size="small"
+                  class="px-3 font-weight-medium"
+                  :loading="clearing"
+                >
+                  <v-icon start size="18">mdi-delete-sweep</v-icon>
+                  清理
                 </v-btn>
               </template>
-              <v-list rounded="lg" elevation="3" class="mt-1">
-                <v-list-item @click="clearOldRecords(7)">
-                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="warning">mdi-calendar-alert</v-icon></template>
-                  <v-list-item-title class="text-body-2">清理7天前</v-list-item-title>
+              <v-list rounded="lg" elevation="3" class="mt-1 py-1" density="compact" min-width="180">
+                <v-list-item @click="clearOldRecords(7)" rounded="lg">
+                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="warning">mdi-calendar-alert</v-icon></template>
+                  <v-list-item-title class="text-body-2 font-weight-medium">清理 7 天前</v-list-item-title>
                 </v-list-item>
-                <v-list-item @click="clearOldRecords(30)">
-                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="error">mdi-calendar-remove</v-icon></template>
-                  <v-list-item-title class="text-body-2">清理30天前</v-list-item-title>
+                <v-list-item @click="clearOldRecords(30)" rounded="lg">
+                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="error">mdi-calendar-remove</v-icon></template>
+                  <v-list-item-title class="text-body-2 font-weight-medium">清理 30 天前</v-list-item-title>
                 </v-list-item>
-                <v-list-item @click="clearOldRecords(90)">
-                  <template v-slot:prepend><v-icon size="small" class="mr-2" color="grey">mdi-delete-forever</v-icon></template>
-                  <v-list-item-title class="text-body-2">清理90天前</v-list-item-title>
+                <v-list-item @click="clearOldRecords(90)" rounded="lg">
+                  <template v-slot:prepend><v-icon size="18" class="mr-2" color="grey">mdi-delete-forever</v-icon></template>
+                  <v-list-item-title class="text-body-2 font-weight-medium">清理 90 天前</v-list-item-title>
                 </v-list-item>
               </v-list>
             </v-menu>
 
-            <v-btn color="info" rounded="lg" @click="exportLogs" text="导出" variant="tonal" size="small" class="px-4 font-weight-medium">
-              <template v-slot:prepend>
-                <v-icon>mdi-download</v-icon>
-              </template>
-            </v-btn>
-            <v-btn color="primary" rounded="lg" @click="notifySwitch" text="配置" variant="outlined" size="small" class="px-4 font-weight-medium bg-white">
-              <template v-slot:prepend>
-                <v-icon>mdi-cog</v-icon>
-              </template>
+            <v-btn
+              color="info"
+              rounded="lg"
+              variant="tonal"
+              size="small"
+              class="px-3 font-weight-medium"
+              @click="exportLogs"
+            >
+              <v-icon start size="18">mdi-download</v-icon>
+              导出
             </v-btn>
 
-            <v-btn icon color="grey-darken-1" variant="text" size="small" @click="notifyClose" class="bg-white elevation-1 ml-1" style="border: 1px solid #e0e0e0;">
-              <v-icon>mdi-close</v-icon>
+            <v-btn
+              color="primary"
+              rounded="lg"
+              variant="outlined"
+              size="small"
+              class="px-3 font-weight-medium config-btn"
+              @click="notifySwitch"
+            >
+              <v-icon start size="18">mdi-cog</v-icon>
+              配置
+            </v-btn>
+
+            <v-btn
+              icon
+              variant="text"
+              size="small"
+              class="rounded-lg close-btn ml-1"
+              @click="notifyClose"
+            >
+              <v-icon size="18">mdi-close</v-icon>
+              <v-tooltip activator="parent" location="bottom">关闭</v-tooltip>
             </v-btn>
           </div>
         </template>
       </v-card-item>
 
-      <v-card-text class="pa-4 bg-grey-lighten-5" style="max-height: 75vh; overflow-y: auto;">
-        <v-alert v-if="error" type="error" variant="tonal" class="mb-4 border border-error">{{ error }}</v-alert>
+      <!-- 内容区 -->
+      <v-card-text class="pa-4 body-surface" style="max-height: 75vh; overflow-y: auto;">
+        <v-alert
+          v-if="error"
+          type="error"
+          variant="tonal"
+          class="mb-4 rounded-lg"
+          closable
+          @click:close="error = null"
+        >
+          {{ error }}
+        </v-alert>
 
-        <div v-if="loading" class="pa-4">
-          <v-skeleton-loader type="list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line"></v-skeleton-loader>
+        <!-- 骨架屏 -->
+        <div v-if="loading" class="pa-2">
+          <v-skeleton-loader
+            type="list-item-avatar-two-line, list-item-avatar-two-line, list-item-avatar-two-line"
+            class="rounded-lg"
+          ></v-skeleton-loader>
         </div>
 
         <div v-else>
-          <!-- 最近同步记录 -->
-          <div v-if="groupedSyncRecords && groupedSyncRecords.length" class="mt-2">
+          <!-- 带时间线的同步记录 -->
+          <div v-if="groupedSyncRecords && groupedSyncRecords.length">
             <v-timeline density="compact" side="end" align="start">
               <v-timeline-item
                 v-for="(group, index) in groupedSyncRecords"
@@ -80,88 +144,102 @@
 
                 <v-card
                   variant="outlined"
-                  class="rounded-lg pa-3 ml-2 shadow-sm bg-white border-opacity-75"
-                  :class="group.status === 'error' ? 'border-error' : 'border-success'"
+                  class="record-card rounded-lg pa-3 ml-2"
+                  :class="group.status === 'error' ? 'record-card-error' : 'record-card-success'"
                 >
-                  <div class="d-flex justify-space-between align-center mb-2">
-                    <div class="d-flex align-center">
-                      <v-icon :color="getMediaTypeColor(group.media_type)" size="small" class="mr-1">
-                        {{ getMediaTypeIcon(group.media_type) }}
-                      </v-icon>
-                      <v-icon :color="getSyncTypeColor(group.sync_type)" size="small" class="mr-2">
+                  <!-- 头部：媒体类型 + 同步类型 + 媒体名 + 时间 -->
+                  <div class="d-flex justify-space-between align-center flex-wrap gap-2 mb-2">
+                    <div class="d-flex align-center overflow-hidden">
+                      <div class="media-badge mr-2" :class="`media-badge-${getMediaTypeColor(group.media_type)}`">
+                        <v-icon size="15" :color="getMediaTypeColor(group.media_type)">
+                          {{ getMediaTypeIcon(group.media_type) }}
+                        </v-icon>
+                      </div>
+                      <span class="font-weight-bold text-body-2 text-truncate record-title">{{ group.media_name }}</span>
+                      <v-icon
+                        size="16"
+                        :color="getSyncTypeColor(group.sync_type)"
+                        class="ml-2 flex-shrink-0"
+                      >
                         {{ getSyncTypeIcon(group.sync_type) }}
                       </v-icon>
-                      <span class="font-weight-bold text-subtitle-2 text-primary-darken-1">{{ group.media_name }}</span>
                     </div>
-                    <span class="text-caption text-medium-emphasis bg-grey-lighten-4 px-2 py-1 rounded-pill">
+                    <span class="text-caption text-disabled text-no-wrap time-chip px-2 py-1 rounded-pill">
                       {{ formatTime(group.timestamp) }}
                     </span>
                   </div>
 
-                  <div class="text-body-2 mb-2 d-flex align-center flex-wrap gap-1">
-                    <v-chip size="x-small" variant="flat" color="grey-lighten-3" class="text-grey-darken-3 font-weight-medium">
-                      <v-icon start size="x-small">mdi-account-arrow-right</v-icon>
+                  <!-- 用户流向 -->
+                  <div class="d-flex align-center flex-wrap gap-1 mb-2">
+                    <v-chip size="x-small" variant="tonal" color="blue-grey" class="font-weight-medium">
+                      <v-icon start size="12">mdi-account-arrow-right</v-icon>
                       {{ group.source_user }}
                     </v-chip>
-                    <v-icon size="x-small" color="grey-lighten-1" class="mx-1">mdi-arrow-right-bold</v-icon>
+                    <v-icon size="12" color="grey" class="mx-1">mdi-arrow-right-bold</v-icon>
                     <v-chip
                       v-for="(target_user, idx) in group.target_users"
                       :key="idx"
                       size="x-small"
-                      variant="flat"
-                      :color="group.status === 'error' ? 'error-lighten-4' : 'success-lighten-4'"
-                      :class="group.status === 'error' ? 'text-error' : 'text-success-darken-2'"
-                      class="font-weight-medium mr-1"
+                      variant="tonal"
+                      :color="group.status === 'error' ? 'error' : 'success'"
+                      class="font-weight-medium"
                     >
                       {{ target_user }}
                     </v-chip>
                   </div>
 
-                  <div v-if="group.description" class="text-caption text-indigo-darken-1 bg-indigo-lighten-5 pa-2 rounded d-flex align-center">
-                    <v-icon size="small" class="mr-2" color="indigo">mdi-information-outline</v-icon>
-                    {{ group.description }}
+                  <!-- 描述 -->
+                  <div v-if="group.description" class="desc-box text-caption d-flex align-center rounded pa-2">
+                    <v-icon size="14" class="mr-2 flex-shrink-0" color="indigo">mdi-information-outline</v-icon>
+                    <span>{{ group.description }}</span>
                   </div>
 
-                  <div v-if="group.error_message" class="text-caption text-error bg-error-lighten-5 pa-2 rounded mt-2 d-flex align-start border border-error border-opacity-25">
-                    <v-icon size="small" class="mr-1 mt-n1" color="error">mdi-alert-circle</v-icon>
-                    <span>{{ group.error_message }}</span>
+                  <!-- 错误信息 -->
+                  <div
+                    v-if="group.error_message"
+                    class="error-box text-caption d-flex align-start rounded pa-2 mt-2"
+                  >
+                    <v-icon size="14" class="mr-2 flex-shrink-0 mt-1" color="error">mdi-alert-circle</v-icon>
+                    <span class="text-break">{{ group.error_message }}</span>
                   </div>
                 </v-card>
               </v-timeline-item>
             </v-timeline>
 
-            <!-- 加载更多按钮 -->
-            <div v-if="pagination.hasMore" class="text-center mt-6 mb-2">
+            <!-- 加载更多 -->
+            <div v-if="pagination.hasMore" class="text-center mt-4 mb-2">
               <v-btn
                 color="primary"
-                variant="outlined"
+                variant="tonal"
                 rounded="pill"
-                class="px-6 bg-white"
+                class="px-6 font-weight-medium"
                 @click="loadMoreRecords"
                 :loading="pagination.loading"
               >
-                <v-icon left>mdi-chevron-down</v-icon>
+                <v-icon start size="18">mdi-chevron-down</v-icon>
                 加载更多历史记录
               </v-btn>
             </div>
 
             <!-- 分页信息 -->
-            <div v-if="pagination.total > 0" class="text-center mt-3 text-caption text-medium-emphasis font-weight-medium">
+            <div v-if="pagination.total > 0" class="text-center mt-3 text-caption text-disabled">
               当前展示 {{ syncRecords.length }} / {{ pagination.total }} 条记录
             </div>
           </div>
 
-          <div v-else class="text-center py-10">
-            <v-icon size="80" color="grey-lighten-2" class="mb-4">mdi-history</v-icon>
-            <div class="text-h6 text-grey-darken-1 font-weight-medium">暂无同步记录</div>
-            <div class="text-body-2 text-grey">当配置生效且触发同步后，相关的记录会展示在此处</div>
+          <!-- 空状态 -->
+          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-lg text-center">
+            <div class="empty-icon mb-3">
+              <v-icon size="34" color="primary">mdi-history</v-icon>
+            </div>
+            <div class="text-subtitle-2 font-weight-bold text-medium-emphasis">暂无同步记录</div>
+            <div class="text-caption text-disabled mt-1">当配置生效且触发同步后，相关的记录会展示在此处</div>
           </div>
         </div>
       </v-card-text>
     </v-card>
   </div>
 </template>
-
 <script setup>
 import { ref, onMounted } from 'vue'
 
@@ -507,15 +585,117 @@ onMounted(() => {
   refreshData()
 })
 </script>
-
 <style scoped>
-.box-shadow-sm {
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+/* 卡片 */
+.page-card {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
 }
+
+/* 头部微渐变 */
+.header-surface {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.07) 0%,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%
+  );
+}
+
+.header-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+}
+
+.config-btn {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}
+
+.close-btn {
+  color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.6);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.12);
+}
+
+/* 内容背景 */
+.body-surface {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
+}
+
+/* 记录卡片 */
+.record-card {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.record-card:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
+}
+.record-card-success {
+  border-color: rgba(var(--v-theme-success, 76, 175, 80), 0.28);
+}
+.record-card-error {
+  border-color: rgba(var(--v-theme-error, 176, 0, 32), 0.35);
+}
+
+.record-title {
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+}
+
+/* 媒体类型徽章 */
+.media-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.media-badge-blue   { background: rgba(33, 150, 243, 0.12); }
+.media-badge-green  { background: rgba(76, 175, 80, 0.12); }
+.media-badge-purple { background: rgba(156, 39, 176, 0.12); }
+.media-badge-grey   { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08); }
+
+/* 时间胶囊 */
+.time-chip {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
+}
+
+/* 描述块 */
+.desc-box {
+  background: rgba(var(--v-theme-info, 33, 150, 243), 0.08);
+  border: 1px solid rgba(var(--v-theme-info, 33, 150, 243), 0.18);
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+}
+
+/* 错误块 */
+.error-box {
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.08);
+  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.25);
+  color: rgb(var(--v-theme-error, 176, 0, 32));
+}
+
+/* 空状态 */
+.empty-box {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+.empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+}
+
 .gap-1 {
   gap: 4px;
 }
-.gap-3 {
-  gap: 12px;
+.gap-2 {
+  gap: 8px;
 }
 </style>

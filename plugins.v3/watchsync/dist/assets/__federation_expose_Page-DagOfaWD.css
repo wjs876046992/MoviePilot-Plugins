@@ -1,0 +1,112 @@
+
+/* 卡片 */
+.page-card[data-v-7f5cdba7] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}
+
+/* 头部微渐变 */
+.header-surface[data-v-7f5cdba7] {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.07) 0%,
+    rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%
+  );
+}
+.header-icon-box[data-v-7f5cdba7] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+}
+.config-btn[data-v-7f5cdba7] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+}
+.close-btn[data-v-7f5cdba7] {
+  color: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.6);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.12);
+}
+
+/* 内容背景 */
+.body-surface[data-v-7f5cdba7] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
+}
+
+/* 记录卡片 */
+.record-card[data-v-7f5cdba7] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.record-card[data-v-7f5cdba7]:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
+}
+.record-card-success[data-v-7f5cdba7] {
+  border-color: rgba(var(--v-theme-success, 76, 175, 80), 0.28);
+}
+.record-card-error[data-v-7f5cdba7] {
+  border-color: rgba(var(--v-theme-error, 176, 0, 32), 0.35);
+}
+.record-title[data-v-7f5cdba7] {
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+}
+
+/* 媒体类型徽章 */
+.media-badge[data-v-7f5cdba7] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.media-badge-blue[data-v-7f5cdba7]   { background: rgba(33, 150, 243, 0.12);
+}
+.media-badge-green[data-v-7f5cdba7]  { background: rgba(76, 175, 80, 0.12);
+}
+.media-badge-purple[data-v-7f5cdba7] { background: rgba(156, 39, 176, 0.12);
+}
+.media-badge-grey[data-v-7f5cdba7]   { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+
+/* 时间胶囊 */
+.time-chip[data-v-7f5cdba7] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
+}
+
+/* 描述块 */
+.desc-box[data-v-7f5cdba7] {
+  background: rgba(var(--v-theme-info, 33, 150, 243), 0.08);
+  border: 1px solid rgba(var(--v-theme-info, 33, 150, 243), 0.18);
+  color: rgb(var(--v-theme-on-surface, 0, 0, 0));
+}
+
+/* 错误块 */
+.error-box[data-v-7f5cdba7] {
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.08);
+  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.25);
+  color: rgb(var(--v-theme-error, 176, 0, 32));
+}
+
+/* 空状态 */
+.empty-box[data-v-7f5cdba7] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+.empty-icon[data-v-7f5cdba7] {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.1);
+}
+.gap-1[data-v-7f5cdba7] {
+  gap: 4px;
+}
+.gap-2[data-v-7f5cdba7] {
+  gap: 8px;
+}
