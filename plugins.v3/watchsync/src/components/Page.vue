@@ -657,6 +657,13 @@ onMounted(() => {
 })
 </script>
 <style scoped>
+/* 限制 PC 端最大宽度并居中，防止宽屏显示器横向过度拉伸 */
+.plugin-page {
+  max-width: 980px;
+  margin: 0 auto;
+  width: 100%;
+}
+
 /* 主卡片外观 */
 .page-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));

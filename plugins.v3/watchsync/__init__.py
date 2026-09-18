@@ -1147,6 +1147,24 @@ class WatchSync(_PluginBase):
     def _record_sync_result(self, db: Optional[Session] = None, *, source_server: str, source_user: str, target_server: str, target_user: str, item_info: dict, position_ticks: int, status: str, error_message: str = None, sync_type: str = "playback"):
         assert db is not None
         plugin_id = self.__class__.__name__
+
+        # 智能合成更完整友好的媒体名称（避免电视剧只显示“第1集”而缺少剧名）
+        media_type = item_info.get('Type', '')
+        media_name = item_info.get('Name', '')
+
+        if media_type == 'Episode':
+            series_name = item_info.get('SeriesName', '')
+            season_idx = item_info.get('ParentIndexNumber')
+            episode_idx = item_info.get('IndexNumber')
+            ep_prefix = ""
+            if season_idx is not None and episode_idx is not None:
+                ep_prefix = f"S{season_idx:02d}E{episode_idx:02d} "
+            elif episode_idx is not None:
+                ep_prefix = f"EP{episode_idx:02d} "
+
+            if series_name:
+                media_name = f"{series_name} {ep_prefix}{media_name}".strip()
+
         record = WatchSyncRecord(
             plugin_id=plugin_id,
             source_server=source_server,
@@ -1154,8 +1172,8 @@ class WatchSync(_PluginBase):
             target_server=target_server,
             target_user=target_user,
             # 文本列有宽度上限，先截断再写入，避免单个超长字段让整条记录写失败。
-            media_name=clip_text(item_info.get('Name', ''), MEDIA_NAME_MAX_LENGTH),
-            media_type=item_info.get('Type', ''),
+            media_name=clip_text(media_name, MEDIA_NAME_MAX_LENGTH),
+            media_type=media_type,
             media_id=item_info.get('Id', ''),
             position_ticks=position_ticks,
             sync_type=sync_type,
