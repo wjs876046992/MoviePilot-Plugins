@@ -657,10 +657,8 @@ onMounted(() => {
 })
 </script>
 <style scoped>
-/* 限制 PC 端最大宽度并居中，防止宽屏显示器横向过度拉伸 */
+/* 容器宽度与配置页对齐：100% 撑满 host 弹窗，不设人为限制 */
 .plugin-page {
-  max-width: 980px;
-  margin: 0 auto;
   width: 100%;
 }
 
@@ -748,7 +746,17 @@ onMounted(() => {
 /* 媒体名称 */
 .media-title {
   color: rgb(var(--v-theme-on-surface, 0, 0, 0));
-  max-width: 280px;
+  max-width: 480px;
+}
+@media (min-width: 960px) {
+  .media-title {
+    max-width: 620px;
+  }
+}
+@media (min-width: 1280px) {
+  .media-title {
+    max-width: 760px;
+  }
 }
 
 /* 标签圆角 */
