@@ -810,5 +810,18 @@
       "v1.1": "支持极影视观看记录同步，并增加极影视到Emby轮询配置",
       "v1.0": "新建"
     }
+  },
+  "Rsync115Sync": {
+    "name": "115网盘同步助手",
+    "description": "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、杜绝 ..* 幽灵临时文件、双向对账审计与命令定向重试",
+    "author": "HermanWu",
+    "version": "0.0.1",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "repo": "https://github.com/wjs876046992/MoviePilot-Plugins",
+    "history": {
+      "v0.0.1": "首发版本：需依赖 CD2 挂载映射，支持入库 N 小时冷却延迟、就地写入（--inplace）杜绝幽灵文件、双向大小对账审计与指令定向重试。"
+    },
+    "release": true
   }
 }
