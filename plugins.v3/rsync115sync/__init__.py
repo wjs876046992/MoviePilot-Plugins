@@ -517,8 +517,14 @@ class Rsync115Sync(_PluginBase):
     def handle_command(self, event: Event):
         data = event.event_data or {}
         action = data.get("action")
-        # 兼容微信/TG等传入的文本参数
-        text_arg = (data.get("arg") or data.get("text") or "").strip()
+        # 兼容 MoviePilot 的 arg_str 以及各类渠道传入的参数
+        text_arg = (
+            data.get("arg_str")
+            or data.get("args")
+            or data.get("arg")
+            or data.get("text")
+            or ""
+        ).strip()
 
         if action == "search":
             # 根据关键字从本地源目录或历史记录查找匹配的文件
