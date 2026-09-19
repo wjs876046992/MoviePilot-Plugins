@@ -484,6 +484,8 @@ class Rsync115Sync(_PluginBase):
             return missing, corrupt
 
         valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
+        now_ts = time.time()
+        cooling_seconds = self._delay_hours * 3600
 
         for root, _, files in os.walk(source_dir):
             for f in files:
@@ -498,6 +500,12 @@ class Rsync115Sync(_PluginBase):
                 rel_f = os.path.relpath(src_f, source_dir)
                 dest_f = os.path.join(target_dir, rel_f)
                 key = f"{pair_name}:{rel_f}"
+
+                # 关键过滤：若该文件仍在冷却缓冲倒计时内，属于正常等待调度，不计入缺失/待重试
+                if key in self._pending_queue:
+                    enter_ts = self._pending_queue[key]
+                    if (now_ts - enter_ts) < cooling_seconds:
+                        continue
 
                 if not os.path.exists(dest_f):
                     missing.append(key)
