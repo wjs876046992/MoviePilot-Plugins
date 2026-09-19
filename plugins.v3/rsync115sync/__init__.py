@@ -511,6 +511,39 @@ class Rsync115Sync(_PluginBase):
 
         return missing, corrupt
 
+    @staticmethod
+    def _parse_confirm_indices(arg_str: str, total_count: int) -> List[int]:
+        """
+        解析用户输入的确认重试序号
+        支持格式：
+          - "" 或 "all" 或 "全部": 全选 [0..total_count-1]
+          - "1": 选单个
+          - "1,2" 或 "1 2": 选多个
+          - "1-2 4" 或 "1~3": 范围 + 单个混合
+        """
+        if not arg_str or arg_str.lower() in ["all", "全部"]:
+            return list(range(total_count))
+
+        selected = set()
+        normalized = arg_str.replace(",", " ").replace("，", " ")
+        parts = normalized.split()
+
+        for p in parts:
+            if "-" in p or "~" in p:
+                sep = "-" if "-" in p else "~"
+                subparts = p.split(sep)
+                if len(subparts) == 2 and subparts[0].isdigit() and subparts[1].isdigit():
+                    start, end = int(subparts[0]), int(subparts[1])
+                    for idx in range(min(start, end), max(start, end) + 1):
+                        if 1 <= idx <= total_count:
+                            selected.add(idx - 1)
+            elif p.isdigit():
+                idx = int(p)
+                if 1 <= idx <= total_count:
+                    selected.add(idx - 1)
+
+        return sorted(list(selected))
+
     # ================= 交互命令分发 (带关键字查找与确认重试) =================
 
     @eventmanager.register(EventType.PluginAction)
@@ -562,8 +595,11 @@ class Rsync115Sync(_PluginBase):
                 f"--------------------------------\n"
                 f"{list_text}\n"
                 f"--------------------------------\n"
-                f"👉 确认立即重试上传以上文件吗？\n"
-                f"发送 /rsync_confirm 即可立即开始重传！"
+                f"👉 请发送确认指令触发重传：\n"
+                f"• 全部重传: /rsync_confirm (或 /rsync_confirm all)\n"
+                f"• 选单序号: /rsync_confirm 1\n"
+                f"• 多个序号: /rsync_confirm 1,2 或 /rsync_confirm 1 2\n"
+                f"• 范围序号: /rsync_confirm 1-2 4"
             )
             self._post_reply(event, reply)
 
@@ -576,9 +612,30 @@ class Rsync115Sync(_PluginBase):
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中，请稍后再试。")
                 return
 
-            to_retry = list(self._waiting_confirm_retries)
+            # 解析用户输入的序号参数（支持 1 / 1,2 / 1-2 4 / all / 全部 等）
+            total_candidates = self._waiting_confirm_retries
+            total_count = len(total_candidates)
+            selected_indices = self._parse_confirm_indices(text_arg, total_count)
+
+            if not selected_indices:
+                self._post_reply(
+                    event,
+                    f"⚠️ 输入的序号无效！有效范围为 1~{total_count}。\n"
+                    f"示例：/rsync_confirm 1 或 /rsync_confirm 1,2 或 /rsync_confirm 1-2 4 或 /rsync_confirm all"
+                )
+                return
+
+            to_retry = [total_candidates[i] for i in selected_indices]
             self._waiting_confirm_retries = []
-            self._post_reply(event, f"✅ 已确认，正在对 {len(to_retry)} 个指定媒体启动重传...")
+
+            chosen_names = "\n".join([f"• {item}" for item in to_retry])
+            self._post_reply(
+                event,
+                f"✅ 已确认重试 ({len(to_retry)}/{total_count} 个媒体)：\n"
+                f"{chosen_names}\n"
+                f"--------------------------------\n"
+                f"🚀 正在启动定向上传..."
+            )
             self._start_sync_thread(mode="retry", custom_files=to_retry, channel_event=event)
 
         elif action == "sync":
