@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.event import Event, EventType, eventmanager
 from app.plugins import _PluginBase
 from app.sdk.logging import logger
-from app.sdk.services import CronTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 
 class Rsync115Sync(_PluginBase):
