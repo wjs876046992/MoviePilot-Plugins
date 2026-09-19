@@ -4,7 +4,7 @@ import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
-const _hoisted_1 = { class: "plugin-page" };
+const _hoisted_1 = { class: "plugin-page pa-2 pa-sm-4" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = { class: "d-flex align-center ga-1" };
 const _hoisted_4 = { class: "stat-card stat-info rounded-xl pa-3 text-center" };
@@ -74,7 +74,6 @@ const emit = __emit;
 const loading = ref(false);
 const syncing = ref(false);
 const retrying = ref(false);
-const cleaning = ref(false);
 const currentTab = ref('queue');
 const actionMsg = ref('');
 
@@ -141,20 +140,6 @@ async function triggerRetry() {
     actionMsg.value = '启动重试出错: ' + e.message;
   } finally {
     retrying.value = false;
-  }
-}
-
-async function triggerClean() {
-  cleaning.value = true;
-  actionMsg.value = '正在扫描并清理幽灵文件...';
-  try {
-    const res = await props.api.post('plugin/Rsync115Sync/clean');
-    actionMsg.value = `已清理 ${res?.cleaned_count || 0} 个 ..* 幽灵临时文件！`;
-    fetchStatus();
-  } catch (e) {
-    actionMsg.value = '清理出错: ' + e.message;
-  } finally {
-    cleaning.value = false;
   }
 }
 
@@ -399,29 +384,6 @@ return (_ctx, _cache) => {
                     _cache[15] || (_cache[15] = _createTextVNode(" 定向重试失败文件 ", -1))
                   ]),
                   _: 1
-                }, 8, ["loading", "disabled"]),
-                _createVNode(_component_v_btn, {
-                  color: "secondary",
-                  variant: "tonal",
-                  size: "small",
-                  rounded: "lg",
-                  onClick: triggerClean,
-                  loading: cleaning.value,
-                  disabled: statusData.value.is_running
-                }, {
-                  default: _withCtx(() => [
-                    _createVNode(_component_v_icon, {
-                      start: "",
-                      size: "16"
-                    }, {
-                      default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
-                        _createTextVNode("mdi-broom", -1)
-                      ]))]),
-                      _: 1
-                    }),
-                    _cache[17] || (_cache[17] = _createTextVNode(" 清理网盘 ..* 幽灵文件 ", -1))
-                  ]),
-                  _: 1
                 }, 8, ["loading", "disabled"])
               ]),
               (actionMsg.value)
@@ -442,7 +404,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                      default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
                         _createTextVNode("mdi-timer-sand", -1)
                       ]))]),
                       _: 1
@@ -457,7 +419,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+                      default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
                         _createTextVNode("mdi-alert-circle-outline", -1)
                       ]))]),
                       _: 1
@@ -507,12 +469,12 @@ return (_ctx, _cache) => {
                           color: "primary",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+                          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
                             _createTextVNode("mdi-check-circle-outline", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
+                        _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
                       ]))
                 ]))
               : _createCommentVNode("", true),
@@ -527,7 +489,7 @@ return (_ctx, _cache) => {
                           }, [
                             _createElementVNode("div", _hoisted_24, [
                               _createElementVNode("div", _hoisted_25, _toDisplayString(file), 1),
-                              _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "两端均无对应文件或目标端未创建成功", -1))
+                              _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "两端均无对应文件或目标端未创建成功", -1))
                             ]),
                             _createVNode(_component_v_chip, {
                               size: "x-small",
@@ -535,7 +497,7 @@ return (_ctx, _cache) => {
                               variant: "flat",
                               class: "font-weight-bold flex-shrink-0"
                             }, {
-                              default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                              default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
                                 _createTextVNode("彻底缺失", -1)
                               ]))]),
                               _: 1
@@ -549,7 +511,7 @@ return (_ctx, _cache) => {
                           }, [
                             _createElementVNode("div", _hoisted_26, [
                               _createElementVNode("div", _hoisted_27, _toDisplayString(file), 1),
-                              _cache[24] || (_cache[24] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "目标端大小不一致，传输中途断流", -1))
+                              _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "目标端大小不一致，传输中途断流", -1))
                             ]),
                             _createVNode(_component_v_chip, {
                               size: "x-small",
@@ -557,7 +519,7 @@ return (_ctx, _cache) => {
                               variant: "flat",
                               class: "font-weight-bold flex-shrink-0"
                             }, {
-                              default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+                              default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
                                 _createTextVNode("文件残缺", -1)
                               ]))]),
                               _: 1
@@ -571,12 +533,12 @@ return (_ctx, _cache) => {
                           color: "success",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
+                          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
                             _createTextVNode("mdi-shield-check", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "两端文件经对账完全一致，零缺失零残缺！", -1))
+                        _cache[25] || (_cache[25] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "两端文件经对账完全一致，零缺失零残缺！", -1))
                       ]))
                 ]))
               : _createCommentVNode("", true)
@@ -591,6 +553,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4b40485c"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d8033297"]]);
 
 export { App as default };

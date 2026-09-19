@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-page">
+  <div class="plugin-page pa-2 pa-sm-4">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->
@@ -77,10 +77,6 @@
             <v-btn color="warning" variant="tonal" size="small" rounded="lg" @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
               <v-icon start size="16">mdi-refresh</v-icon>
               定向重试失败文件
-            </v-btn>
-            <v-btn color="secondary" variant="tonal" size="small" rounded="lg" @click="triggerClean" :loading="cleaning" :disabled="statusData.is_running">
-              <v-icon start size="16">mdi-broom</v-icon>
-              清理网盘 ..* 幽灵文件
             </v-btn>
           </div>
           <div v-if="actionMsg" class="text-caption font-weight-bold text-primary">{{ actionMsg }}</div>
@@ -168,7 +164,6 @@ const emit = defineEmits(['close', 'switch'])
 const loading = ref(false)
 const syncing = ref(false)
 const retrying = ref(false)
-const cleaning = ref(false)
 const currentTab = ref('queue')
 const actionMsg = ref('')
 
@@ -238,20 +233,6 @@ async function triggerRetry() {
   }
 }
 
-async function triggerClean() {
-  cleaning.value = true
-  actionMsg.value = '正在扫描并清理幽灵文件...'
-  try {
-    const res = await props.api.post('plugin/Rsync115Sync/clean')
-    actionMsg.value = `已清理 ${res?.cleaned_count || 0} 个 ..* 幽灵临时文件！`
-    fetchStatus()
-  } catch (e) {
-    actionMsg.value = '清理出错: ' + e.message
-  } finally {
-    cleaning.value = false
-  }
-}
-
 onMounted(() => {
   fetchStatus()
   timer = setInterval(fetchStatus, 30000)
@@ -263,6 +244,11 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.plugin-page {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px 20px !important;
+}
 .page-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;

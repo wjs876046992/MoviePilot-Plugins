@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-config">
+  <div class="plugin-config pa-2 pa-sm-4">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.1</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.3</v-chip>
           </v-card-title>
           <div class="text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -46,20 +46,12 @@
             <v-switch v-model="config.enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
             <div>
               <div class="font-weight-bold text-body-2">监听媒体转移入库事件</div>
               <div class="text-caption text-medium-emphasis">下载与刮削转移完成后自动纳入延迟冷却队列</div>
             </div>
             <v-switch v-model="config.listen_transfer" color="primary" inset hide-details density="compact"></v-switch>
-          </div>
-
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
-            <div>
-              <div class="font-weight-bold text-body-2">自动清理 ..* 幽灵临时文件</div>
-              <div class="text-caption text-medium-emphasis">同步与重试前自动扫描目标端并删除遗留的隐藏脏文件</div>
-            </div>
-            <v-switch v-model="config.auto_clean_ghosts" color="primary" inset hide-details density="compact"></v-switch>
           </div>
         </div>
 
@@ -192,7 +184,6 @@ const config = ref({
   enabled: false,
   listen_transfer: true,
   notify: true,
-  auto_clean_ghosts: true,
   delay_hours: 2.0,
   cron: '0 */2 * * *',
   sync_pairs: [],
@@ -258,6 +249,11 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.plugin-config {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px 20px !important;
+}
 .config-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;

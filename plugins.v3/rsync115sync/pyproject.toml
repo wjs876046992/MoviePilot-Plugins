@@ -1,6 +1,6 @@
 [project]
 name = "rsync115sync"
-version = "0.0.1"
+version = "0.0.3"
 description = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。通过 rsync 同步本地文件到 CD2 挂载的 115 网盘，支持入库冷却延迟、双向对账及命令定向重试"
 authors = [{ name = "HermanWu" }]
 dependencies = []
