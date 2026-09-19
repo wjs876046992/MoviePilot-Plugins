@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-config pa-2 pa-sm-4">
+  <div class="plugin-config" style="padding: 18px 22px !important; box-sizing: border-box; width: 100%;">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.3</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.4</v-chip>
           </v-card-title>
           <div class="text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>

@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-page pa-2 pa-sm-4">
+  <div class="plugin-page" style="padding: 18px 22px !important; box-sizing: border-box; width: 100%;">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->

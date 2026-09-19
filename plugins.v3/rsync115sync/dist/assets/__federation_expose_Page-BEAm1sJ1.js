@@ -4,7 +4,10 @@ import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
-const _hoisted_1 = { class: "plugin-page pa-2 pa-sm-4" };
+const _hoisted_1 = {
+  class: "plugin-page",
+  style: {"padding":"18px 22px !important","box-sizing":"border-box","width":"100%"}
+};
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = { class: "d-flex align-center ga-1" };
 const _hoisted_4 = { class: "stat-card stat-info rounded-xl pa-3 text-center" };
@@ -553,6 +556,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d8033297"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bfceeb75"]]);
 
 export { App as default };

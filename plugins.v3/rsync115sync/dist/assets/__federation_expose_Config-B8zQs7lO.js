@@ -4,7 +4,10 @@ import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
-const _hoisted_1 = { class: "plugin-config pa-2 pa-sm-4" };
+const _hoisted_1 = {
+  class: "plugin-config",
+  style: {"padding":"18px 22px !important","box-sizing":"border-box","width":"100%"}
+};
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = {
   key: 0,
@@ -198,7 +201,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
-                      _createTextVNode("v0.0.3", -1)
+                      _createTextVNode("v0.0.4", -1)
                     ]))]),
                     _: 1
                   })
@@ -601,6 +604,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-5e94fd2e"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1bd337ca"]]);
 
 export { Config as default };
