@@ -33,6 +33,13 @@ Naming/identity rules (all three must agree):
 - `plugin_version` (in the class), the index `version`, and the newest `history` entry must match
 - `history` is newest-first, semantic-version descending
 
+Version numbering rule — **each numeric segment of `x.y.z` may only be a single digit 0-9**
+(so the maximum is `9.9.9`). When a segment would reach 10, carry into the next segment instead:
+`0.0.10` is forbidden, use `0.1.0`; `0.9.10` is forbidden, use `1.0.0`. This overrides the usual
+semantic-versioning reading of those numbers (e.g. a carry out of patch does *not* mean a feature
+release). Versions already published under the old scheme are left alone — the rule applies to
+versions created from now on.
+
 ## Commands
 
 Tests need the MoviePilot backend. Default location is a sibling directory `../MoviePilot` (workspace
