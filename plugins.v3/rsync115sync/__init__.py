@@ -774,7 +774,13 @@ class Rsync115Sync(_PluginBase):
                 # 定时任务没有发起人，必须带上 mtype 才能交由宿主按「通知场景开关」
                 # 路由受众。不带 mtype 时 check_message 会跳过范围校验，消息将
                 # 广播给所有渠道的所有用户；带 mtype 后默认按「插件」场景 = 仅管理员。
-                self.post_message(mtype=self._plugin_mtype(), title="115网盘同步报告", text=msg)
+                mtype = self._plugin_mtype()
+                if mtype is None:
+                    # 无法确定消息类型时宁可不发，也不重演“广播给全部用户”的问题
+                    logger.warning(f"[Rsync115Sync] 宿主 MessageType 不可用，已跳过本次通知以免广播："
+                                   f"{msg.replace(chr(10), ' | ')}")
+                else:
+                    self.post_message(mtype=mtype, title="115网盘同步报告", text=msg)
             else:
                 logger.info(f"[Rsync115Sync] {msg.replace(chr(10), ' | ')}")
 
