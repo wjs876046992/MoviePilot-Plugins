@@ -65,9 +65,9 @@ const config = ref({
   delay_hours: 2.0,
   cron: '0 */2 * * *',
   sync_pairs: [],
-  media_extensions: 'mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb',
+  media_extensions: 'mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass',
   exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*',
-  rsync_timeout: 60,
+  rsync_timeout: 600,
   task_timeout: 3600,
   rate_limit_enabled: true,
   upload_batch_size: 200,
@@ -212,7 +212,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
-                      _createTextVNode("v0.0.9", -1)
+                      _createTextVNode("v0.0.10", -1)
                     ]))]),
                     _: 1
                   })
@@ -766,6 +766,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7fe4280a"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-cec66fce"]]);
 
 export { Config as default };

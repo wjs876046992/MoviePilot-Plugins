@@ -24,7 +24,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.9"
+    plugin_version = "0.0.10"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
@@ -38,6 +38,26 @@ class Rsync115Sync(_PluginBase):
     # 因为实际入库单元是“整集”（媒体 + 外挂字幕）
     _SIDECAR_EXTS = {"srt", "ass", "ssa", "sub", "idx", "sup", "vtt"}
 
+    # ---- 默认参数（与 sync_115.sh 对齐）----
+    # 同步扩展名：shell 侧含字幕与更多容器格式。字幕必须纳入，
+    # 否则「留足外挂字幕下载时间」的冷却设计就失去意义。
+    DEFAULT_MEDIA_EXTENSIONS = (
+        "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass"
+    )
+    DEFAULT_EXCLUDE_PATTERNS = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
+    # I/O 超时对齐 shell 的 IO_TIMEOUT=600：CD2 挂载下大文件单次 I/O
+    # 超过 60 秒很常见，--timeout 只约束 I/O 无响应而非总时长
+    DEFAULT_RSYNC_TIMEOUT = 600
+    DEFAULT_TASK_TIMEOUT = 3600
+
+    # 历史默认值：用于把“从未改过配置”的老用户平滑迁移到新默认值。
+    # 只有当前值恰好等于旧默认串时才替换，绝不覆盖用户自定义值。
+    _LEGACY_DEFAULTS = {
+        "media_extensions": "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb",
+        "exclude_patterns": "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store",
+        "rsync_timeout": 60,
+    }
+
     def __init__(self):
         super().__init__()
         self._enabled: bool = False
@@ -50,10 +70,10 @@ class Rsync115Sync(_PluginBase):
         self._sync_pairs: List[Dict[str, Any]] = []
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
-        self._media_extensions: str = "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-        self._exclude_patterns: str = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
-        self._rsync_timeout: int = 60
-        self._task_timeout: int = 3600
+        self._media_extensions: str = self.DEFAULT_MEDIA_EXTENSIONS
+        self._exclude_patterns: str = self.DEFAULT_EXCLUDE_PATTERNS
+        self._rsync_timeout: int = self.DEFAULT_RSYNC_TIMEOUT
+        self._task_timeout: int = self.DEFAULT_TASK_TIMEOUT
 
         # ---- 上传限流与风控退避（防小文件高频上传触发 115 风控）----
         # 全局生效：ready / retry / force / 补传 共用同一套窗口计数。
@@ -118,10 +138,10 @@ class Rsync115Sync(_PluginBase):
             self._delay_hours = float(config.get("delay_hours", 2.0))
             self._cron = config.get("cron", "0 */2 * * *")
             self._sync_pairs = config.get("sync_pairs") or []
-            self._media_extensions = config.get("media_extensions") or "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-            self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
-            self._rsync_timeout = int(config.get("rsync_timeout") or 60)
-            self._task_timeout = int(config.get("task_timeout") or 3600)
+            self._media_extensions = config.get("media_extensions") or self.DEFAULT_MEDIA_EXTENSIONS
+            self._exclude_patterns = config.get("exclude_patterns") or self.DEFAULT_EXCLUDE_PATTERNS
+            self._rsync_timeout = int(config.get("rsync_timeout") or self.DEFAULT_RSYNC_TIMEOUT)
+            self._task_timeout = int(config.get("task_timeout") or self.DEFAULT_TASK_TIMEOUT)
             # 上传限流配置：允许用户按自己的风控容忍度调整
             self._rate_limit_enabled = bool(config.get("rate_limit_enabled", True))
             self._upload_batch_size = max(0, int(config.get("upload_batch_size") or 200))
@@ -131,6 +151,8 @@ class Rsync115Sync(_PluginBase):
             if config.get("rate_limit_keywords"):
                 self._rate_limit_keywords = config.get("rate_limit_keywords")
             self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
+            # 老配置迁移：把「从未调整过」的旧默认值平滑升到新默认值
+            self._migrate_legacy_defaults(config)
 
         # 恢复限流窗口与退避状态（必须早于任何上传判定）
         self._load_rate_limit_state()
@@ -433,10 +455,10 @@ class Rsync115Sync(_PluginBase):
         self._delay_hours = float(config.get("delay_hours", 2.0))
         self._cron = config.get("cron", "0 */2 * * *")
         self._sync_pairs = config.get("sync_pairs") or []
-        self._media_extensions = config.get("media_extensions") or "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-        self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
-        self._rsync_timeout = int(config.get("rsync_timeout") or 60)
-        self._task_timeout = int(config.get("task_timeout") or 3600)
+        self._media_extensions = config.get("media_extensions") or self.DEFAULT_MEDIA_EXTENSIONS
+        self._exclude_patterns = config.get("exclude_patterns") or self.DEFAULT_EXCLUDE_PATTERNS
+        self._rsync_timeout = int(config.get("rsync_timeout") or self.DEFAULT_RSYNC_TIMEOUT)
+        self._task_timeout = int(config.get("task_timeout") or self.DEFAULT_TASK_TIMEOUT)
         # 上传限流配置：允许用户按自己的风控容忍度调整
         self._rate_limit_enabled = bool(config.get("rate_limit_enabled", True))
         self._upload_batch_size = max(0, int(config.get("upload_batch_size") or 200))
@@ -623,6 +645,44 @@ class Rsync115Sync(_PluginBase):
         self._persist_rate_limit_state()
         logger.warning(f"[Rsync115Sync] 🚫 触发风控退避：{reason}，"
                        f"暂停上传 {self._backoff_secs // 60} 分钟")
+
+    def _migrate_legacy_defaults(self, config: Dict[str, Any]):
+        """
+        把老用户的「旧默认值」平滑迁移到新默认值。
+
+        只在当前值**恰好等于旧默认串**时才替换——用户只要手工改过任何一个字符，
+        就完全不动，绝不覆盖自定义配置。
+
+        迁移后必须 update_config 固化：否则存在竞态（用户先打开配置页拿到旧值，
+        后端重载完成迁移，用户再保存时用旧值覆盖回去）。
+        幂等：迁移后值已等于新默认，不再匹配旧串。
+        """
+        try:
+            changed = {}
+            # 扩展名：旧默认（无字幕）→ 新默认（含字幕）
+            cur_ext = (config.get("media_extensions") or "").strip()
+            if cur_ext and cur_ext == self._LEGACY_DEFAULTS["media_extensions"]:
+                self._media_extensions = self.DEFAULT_MEDIA_EXTENSIONS
+                changed["media_extensions"] = self.DEFAULT_MEDIA_EXTENSIONS
+            # 排除规则：旧默认（无 ..*）→ 新默认
+            cur_ex = (config.get("exclude_patterns") or "").strip()
+            if cur_ex and cur_ex == self._LEGACY_DEFAULTS["exclude_patterns"]:
+                self._exclude_patterns = self.DEFAULT_EXCLUDE_PATTERNS
+                changed["exclude_patterns"] = self.DEFAULT_EXCLUDE_PATTERNS
+            # I/O 超时：60 → 600（前端为 v-model.number，兼容 int/str 两种形态）
+            cur_to = str(config.get("rsync_timeout") or "").strip()
+            if cur_to and cur_to == str(self._LEGACY_DEFAULTS["rsync_timeout"]):
+                self._rsync_timeout = self.DEFAULT_RSYNC_TIMEOUT
+                changed["rsync_timeout"] = self.DEFAULT_RSYNC_TIMEOUT
+
+            if changed:
+                merged = dict(config)
+                merged.update(changed)
+                self.update_config(merged)
+                logger.info(f"[Rsync115Sync] 🔧 已迁移旧默认配置: {', '.join(changed)}")
+        except Exception as e:
+            # 迁移失败不应影响插件启动，保留原配置即可
+            logger.warning(f"[Rsync115Sync] 旧配置迁移失败（保持原值）: {e}")
 
     # ================= 存量媒体补传（零 API 本地扫描） =================
 

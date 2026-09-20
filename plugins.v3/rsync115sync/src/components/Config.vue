@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.9</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.10</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -277,9 +277,9 @@ const config = ref({
   delay_hours: 2.0,
   cron: '0 */2 * * *',
   sync_pairs: [],
-  media_extensions: 'mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb',
+  media_extensions: 'mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass',
   exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*',
-  rsync_timeout: 60,
+  rsync_timeout: 600,
   task_timeout: 3600,
   rate_limit_enabled: true,
   upload_batch_size: 200,
