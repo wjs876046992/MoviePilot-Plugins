@@ -186,7 +186,7 @@
         <!-- 标签 1：延迟冷却队列 -->
         <div v-if="currentTab === 'queue'">
           <div v-if="queueList.length" class="d-flex flex-column ga-2">
-            <div v-for="(item, idx) in queueList" :key="'q-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <div v-for="item in queuePaged.slice" :key="item.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
               <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
@@ -233,6 +233,27 @@
               </div>
             </div>
           </div>
+          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="paged.pageRef.value = paged.page - 1"
+            >
+              <v-icon start size="16">mdi-chevron-left</v-icon>上一页
+            </v-btn>
+            <span class="text-caption text-medium-emphasis">
+              第 <strong>{{ paged.page }}</strong> / {{ paged.pages }} 页 ·
+              共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+            </span>
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="paged.pageRef.value = paged.page + 1"
+            >
+              下一页<v-icon end size="16">mdi-chevron-right</v-icon>
+            </v-btn>
+          </div>
           <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-check-circle-outline</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">暂无正在冷却中的媒体文件</div>
@@ -242,25 +263,35 @@
         <!-- 标签 2：对账异常与失败清单 -->
         <div v-if="currentTab === 'failed'">
           <div v-if="failedCount" class="d-flex flex-column ga-2">
-            <!-- 缺失未同步 -->
-            <div v-for="(file, idx) in statusData.last_status?.missing_files || []" :key="'m-' + idx" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <!-- 缺失未同步 + 大小残缺：合并为一个列表以便统一分页 -->
+            <div v-for="entry in failedPaged.slice" :key="entry.kind + ':' + entry.file" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
               <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
-                  :model-value="selectedKeys.includes(file)"
+                  :model-value="selectedKeys.includes(entry.file)"
                   density="compact"
                   hide-details
                   color="primary"
                   class="flex-shrink-0 mr-2"
-                  @update:model-value="toggleSelect(file)"
+                  @update:model-value="toggleSelect(entry.file)"
                 ></v-checkbox>
                 <div class="overflow-hidden">
-                  <div class="font-weight-bold text-body-2 text-error text-truncate">{{ file }}</div>
-                  <div class="text-caption text-medium-emphasis mt-0.5">本地已入库，但 115 网盘端尚未同步到位</div>
+                  <div
+                    class="font-weight-bold text-body-2 text-truncate"
+                    :class="entry.kind === 'missing' ? 'text-error' : 'text-warning'"
+                  >{{ entry.file }}</div>
+                  <div class="text-caption text-medium-emphasis mt-0.5">
+                    {{ entry.kind === 'missing' ? '本地已入库，但 115 网盘端尚未同步到位' : '目标端大小不一致，传输中途断流' }}
+                  </div>
                 </div>
               </div>
               <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
-                <v-chip size="x-small" color="error" variant="flat" class="font-weight-bold">待同步</v-chip>
+                <v-chip
+                  size="x-small"
+                  :color="entry.kind === 'missing' ? 'error' : 'warning'"
+                  variant="flat"
+                  class="font-weight-bold"
+                >{{ entry.kind === 'missing' ? '待同步' : '文件残缺' }}</v-chip>
                 <v-btn
                   size="x-small"
                   variant="tonal"
@@ -281,45 +312,27 @@
                 </v-btn>
               </div>
             </div>
-            <!-- 大小残缺 -->
-            <div v-for="(file, idx) in statusData.last_status?.corrupt_files || []" :key="'c-' + idx" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
-              <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
-                <v-checkbox
-                  v-if="selectMode"
-                  :model-value="selectedKeys.includes(file)"
-                  density="compact"
-                  hide-details
-                  color="primary"
-                  class="flex-shrink-0 mr-2"
-                  @update:model-value="toggleSelect(file)"
-                ></v-checkbox>
-                <div class="overflow-hidden">
-                  <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ file }}</div>
-                  <div class="text-caption text-medium-emphasis mt-0.5">目标端大小不一致，传输中途断流</div>
-                </div>
-              </div>
-              <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
-                <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">文件残缺</v-chip>
-                <v-btn
-                  size="x-small"
-                  variant="tonal"
-                  color="primary"
-                  rounded="lg"
-                  class="px-2"
-                  :loading="itemLoading === file"
-                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== file)"
-                  @click="syncSingle(file)"
-                >
-                  <v-icon start size="14">mdi-refresh</v-icon>
-                  重试
-                  <v-tooltip activator="parent" location="top">先清理目标端残缺文件，再重新上传</v-tooltip>
-                </v-btn>
-                <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
-                  <v-icon size="16">mdi-eye-off-outline</v-icon>
-                  <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
-                </v-btn>
-              </div>
-            </div>
+          </div>
+          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="paged.pageRef.value = paged.page - 1"
+            >
+              <v-icon start size="16">mdi-chevron-left</v-icon>上一页
+            </v-btn>
+            <span class="text-caption text-medium-emphasis">
+              第 <strong>{{ paged.page }}</strong> / {{ paged.pages }} 页 ·
+              共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+            </span>
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="paged.pageRef.value = paged.page + 1"
+            >
+              下一页<v-icon end size="16">mdi-chevron-right</v-icon>
+            </v-btn>
           </div>
           <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
@@ -330,7 +343,7 @@
         <!-- 标签 3：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
-            <div v-for="(rule, idx) in ignoredList" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
               <div class="list-row-main overflow-hidden mr-sm-3 mr-0">
                 <div class="font-weight-bold text-body-2 text-truncate">{{ rule.rule }}</div>
                 <div class="text-caption text-medium-emphasis mt-0.5">
@@ -347,6 +360,27 @@
                 </v-btn>
               </div>
             </div>
+          </div>
+          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="paged.pageRef.value = paged.page - 1"
+            >
+              <v-icon start size="16">mdi-chevron-left</v-icon>上一页
+            </v-btn>
+            <span class="text-caption text-medium-emphasis">
+              第 <strong>{{ paged.page }}</strong> / {{ paged.pages }} 页 ·
+              共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+            </span>
+            <v-btn
+              size="small" variant="text" rounded="lg" class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="paged.pageRef.value = paged.page + 1"
+            >
+              下一页<v-icon end size="16">mdi-chevron-right</v-icon>
+            </v-btn>
           </div>
           <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-eye-off-outline</v-icon>
@@ -396,6 +430,15 @@ const statusData = ref({
 
 const ignoredList = ref([])
 
+// 分页：每页固定条数。队列可能上百条，一次全渲染既卡顿又难浏览。
+// 页码按标签分别记录，切换标签不会丢失各自的位置。
+// Per-tab pagination state. The queue can hold hundreds of entries; rendering all
+// of them hurts both performance and readability.
+const PAGE_SIZE = 15
+const pageQueue = ref(1)
+const pageFailed = ref(1)
+const pageIgnored = ref(1)
+
 // 批量选择 / 单条手动触发
 const selectMode = ref(false)
 const selectedKeys = ref([])
@@ -420,16 +463,49 @@ const blockedMinutes = computed(() =>
 const queueList = ref([])
 let timer = null
 
-// 当前标签页可被勾选的条目 key 列表
+// ---- 分页工具 ----
+// 三个标签共用同一套切片/页码纠偏逻辑，只在外面绑定各自的页码 ref。
+// Shared slicing helpers; each tab binds its own page ref.
+function paginate(list, pageRef) {
+  const total = list.length
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  // 数据变少（如同步成功后条目被移除）时页码可能越界，这里就地纠偏，
+  // 否则用户会停留在空白页且无法自行返回
+  const page = Math.min(Math.max(1, pageRef.value), pages)
+  if (page !== pageRef.value) pageRef.value = page
+  const start = (page - 1) * PAGE_SIZE
+  // 一并带出 pageRef，模板里的翻页按钮才能作用于当前标签对应的页码
+  return { total, pages, page, pageRef, slice: list.slice(start, start + PAGE_SIZE) }
+}
+
+// 对账异常标签的两类清单合成一个列表，才能让「每页 15 条」覆盖整体。
+// missing/corrupt 用 kind 区分，渲染时按 kind 决定配色与按钮文案。
+// Merge missing + corrupt into one list so the page size applies to the whole tab.
+const failedEntries = computed(() => [
+  ...(statusData.value.last_status?.missing_files || []).map((file) => ({ file, kind: 'missing' })),
+  ...(statusData.value.last_status?.corrupt_files || []).map((file) => ({ file, kind: 'corrupt' })),
+])
+
+const queuePaged = computed(() => paginate(queueList.value, pageQueue))
+const failedPaged = computed(() => paginate(failedEntries.value, pageFailed))
+const ignoredPaged = computed(() => paginate(ignoredList.value, pageIgnored))
+
+// 当前标签页的分页结果，供模板统一渲染底部页码条
+const paged = computed(() => {
+  if (currentTab.value === 'queue') return queuePaged.value
+  if (currentTab.value === 'failed') return failedPaged.value
+  return ignoredPaged.value
+})
+
+// 当前标签页可被勾选的条目 key 列表。
+// ⚠️ 必须是**本页**条目而不是全部条目：批量选择以「页」为单位才符合直觉，
+// 否则「全选本页」会选中用户看不见的条目，误同步风险很高。
 const selectableItems = computed(() => {
   if (currentTab.value === 'queue') {
-    return queueList.value.map((it) => it.key)
+    return queuePaged.value.slice.map((it) => it.key)
   }
   if (currentTab.value === 'failed') {
-    return [
-      ...(statusData.value.last_status?.missing_files || []),
-      ...(statusData.value.last_status?.corrupt_files || []),
-    ]
+    return failedPaged.value.slice.map((it) => it.file)
   }
   return []
 })
@@ -721,6 +797,15 @@ onUnmounted(() => {
 }
 .empty-box {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+/* 分页条：与列表用虚线分隔，弱化存在感，避免抢占内容注意力 */
+.pager-bar {
+  border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
+  padding-top: 12px;
+}
+.pager-btn {
+  /* 与说明文字基线对齐，避免按钮内图标把行高撑开 */
+  letter-spacing: normal;
 }
 
 /* ===== 移动端适配 =====
