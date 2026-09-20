@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.8</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.9</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -224,6 +224,17 @@
                   persistent-hint
                 ></v-textarea>
               </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model.number="config.force_cooldown_days"
+                  label="全量校验冷却 (天)"
+                  type="number"
+                  variant="outlined"
+                  density="compact"
+                  hint="全量校验会遍历 115 全目录，请求量按文件数计；0 表示不限制（不建议）"
+                  persistent-hint
+                ></v-text-field>
+              </v-col>
             </v-row>
           </div>
         </div>
@@ -276,6 +287,7 @@ const config = ref({
   upload_window_secs: 1800,
   backoff_secs: 3600,
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
+  force_cooldown_days: 7,
 })
 
 function addPair() {

@@ -24,7 +24,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.8"
+    plugin_version = "0.0.9"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
@@ -73,6 +73,11 @@ class Rsync115Sync(_PluginBase):
         self._upload_blocked_until: float = 0.0
         # 当前批次实际提交给 rsync 的文件数，用于成功后扣减配额
         self._current_batch_size: int = 0
+
+        # 全量校验（force）冷却：该模式会遍历 115 挂载点全目录，
+        # 请求量按媒体库文件数计，必须限频而非随意手动触发。
+        self._force_cooldown_days: int = 7
+        self._last_force_ts: float = 0.0
 
         # 锁与运行时状态
         self._lock = threading.Lock()
@@ -125,9 +130,11 @@ class Rsync115Sync(_PluginBase):
             self._backoff_secs = max(1, int(config.get("backoff_secs") or 3600))
             if config.get("rate_limit_keywords"):
                 self._rate_limit_keywords = config.get("rate_limit_keywords")
+            self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
 
         # 恢复限流窗口与退避状态（必须早于任何上传判定）
         self._load_rate_limit_state()
+        self._last_force_ts = float(self.get_data("last_force_ts") or 0.0)
 
         # 恢复持久化数据
         saved_queue = self.get_data("pending_queue") or {}
@@ -413,6 +420,7 @@ class Rsync115Sync(_PluginBase):
                 "upload_window_secs": self._upload_window_secs,
                 "backoff_secs": self._backoff_secs,
                 "rate_limit_keywords": self._rate_limit_keywords,
+                "force_cooldown_days": self._force_cooldown_days,
             }
         }
 
@@ -437,6 +445,7 @@ class Rsync115Sync(_PluginBase):
         self._backoff_secs = max(1, int(config.get("backoff_secs") or 3600))
         if config.get("rate_limit_keywords"):
             self._rate_limit_keywords = config.get("rate_limit_keywords")
+        self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
         self.update_config(config)
         return {"success": True, "message": "配置保存成功"}
 
@@ -461,6 +470,8 @@ class Rsync115Sync(_PluginBase):
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
                 "upload_blocked_until": self._upload_blocked_until,
+                "last_force_ts": self._last_force_ts,
+                "force_cooldown_days": self._force_cooldown_days,
             }
         }
 
@@ -759,6 +770,31 @@ class Rsync115Sync(_PluginBase):
 
     # ================= 核心同步执行逻辑 (严格对齐 sync_115.sh) =================
 
+    def _force_cooldown_allows(self) -> Tuple[bool, str]:
+        """
+        force 全量校验的冷却判定。
+
+        该模式会遍历 115 挂载点全目录，是本插件最重的 API 操作，
+        因此按天限频。只有成功执行才推进时间戳——失败不占用冷却额度，
+        便于排障（重复尝试仍受窗口配额约束，不会无限冲击 115）。
+        """
+        days = max(0, int(self._force_cooldown_days))
+        if days <= 0 or self._last_force_ts <= 0:
+            return True, ""
+        elapsed = time.time() - self._last_force_ts
+        remain = days * 86400 - elapsed
+        if remain <= 0:
+            return True, ""
+        hours = int(remain // 3600)
+        next_ts = datetime.fromtimestamp(self._last_force_ts + days * 86400)
+        return False, (f"全量校验冷却中（每 {days} 天一次），"
+                       f"约 {hours} 小时后可用，最早 {next_ts.strftime('%Y-%m-%d %H:%M')}")
+
+    def _mark_force_done(self):
+        """记录一次成功的全量校验，开始计算冷却。"""
+        self._last_force_ts = time.time()
+        self.save_data("last_force_ts", self._last_force_ts)
+
     def _resume_backfill_if_pending(self) -> bool:
         """
         定时巡检时自动续跑未完成的补传队列。
@@ -878,11 +914,24 @@ class Rsync115Sync(_PluginBase):
                 if "::" in dest or dest.startswith("rsync://"):
                     cmd.append("--contimeout=30")
 
+                # 全量模式（force）没有 --files-from 清单，必须靠 include/exclude
+                # 过滤才能限定传输范围。rsync 规则按顺序首条匹配生效，因此
+                # --include 必须全部排在 --exclude 之前，且 --exclude="*" 放最后兜底。
+                if mode not in ("ready", "retry", "backfill"):
+                    cmd.append("--include=*/")
+                    if not all_ext:
+                        for _ext in [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]:
+                            cmd.append(f"--include=*.{_ext}")
+
                 # 排除目录参数
                 for ex in self._exclude_patterns.splitlines():
                     ex_clean = ex.strip()
                     if ex_clean:
                         cmd.append(f"--exclude={ex_clean}")
+
+                # 全量模式兜底：过滤掉未显式 include 的一切，避免无差别整树传输
+                if mode not in ("ready", "retry", "backfill"):
+                    cmd.append("--exclude=*")
 
                 temp_list_file = None
                 pair_files = []
@@ -1151,6 +1200,10 @@ class Rsync115Sync(_PluginBase):
 
             is_success = (not has_error and not total_missing and not total_corrupt)
             self._last_status["success"] = is_success
+
+            # 全量校验冷却只在成功时开始计时：失败不占用额度，便于立即排障重试
+            if mode == "force" and not has_error:
+                self._mark_force_done()
 
             # 判断异常集合是否发生变化（用于抑制重复告警）
             anomaly_now = set(total_missing) | set(total_corrupt)
@@ -1454,8 +1507,18 @@ class Rsync115Sync(_PluginBase):
         elif action == "force":
             if self._is_running:
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中。")
-            else:
-                self._start_sync_thread(mode="force", channel_event=event)
+                return
+            allowed, reason = self._force_cooldown_allows()
+            if not allowed:
+                self._post_reply(
+                    event,
+                    f"⛔ 已跳过全量校验：{reason}\n"
+                    f"该操作会遍历 115 全目录（请求量按媒体库文件数计，可能上万次），"
+                    f"频繁执行极易触发风控。\n"
+                    f"如需补传存量媒体，请改用 /rsync_backfill（只扫源端、按配额分批）。"
+                )
+                return
+            self._start_sync_thread(mode="force", channel_event=event)
 
         elif action == "retry":
             if self._is_running:
