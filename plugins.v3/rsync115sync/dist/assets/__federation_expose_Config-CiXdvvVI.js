@@ -147,7 +147,7 @@ return (_ctx, _cache) => {
       variant: "outlined"
     }, {
       default: _withCtx(() => [
-        _createVNode(_component_v_card_item, { class: "header-surface px-5 py-4" }, {
+        _createVNode(_component_v_card_item, { class: "header-surface header-card-item px-5 py-4" }, {
           prepend: _withCtx(() => [
             _createElementVNode("div", _hoisted_2, [
               _createVNode(_component_v_icon, {
@@ -201,14 +201,14 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
-                      _createTextVNode("v0.0.3", -1)
+                      _createTextVNode("v0.0.4", -1)
                     ]))]),
                     _: 1
                   })
                 ]),
                 _: 1
               }),
-              _cache[12] || (_cache[12] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
+              _cache[12] || (_cache[12] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
             ])
           ]),
           _: 1
@@ -604,6 +604,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-375bd3d3"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-0b19968b"]]);
 
 export { Config as default };

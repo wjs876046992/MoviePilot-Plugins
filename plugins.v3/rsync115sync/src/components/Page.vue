@@ -3,7 +3,7 @@
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->
-      <v-card-item class="header-surface px-5 py-3 border-b">
+      <v-card-item class="header-surface header-card-item px-5 py-3 border-b">
         <template #prepend>
           <div class="header-icon-box mr-3">
             <v-icon color="primary" size="22">mdi-cloud-sync</v-icon>
@@ -21,7 +21,7 @@
               {{ statusData.is_running ? '正在同步 ⏳' : (statusData.last_status?.success ? '空闲中 ✅' : '有异常待重试 ⚠️') }}
             </v-chip>
           </v-card-title>
-          <div class="text-caption text-medium-emphasis">监控入库延迟冷却进度、双向对账异常与一键快速定向重试</div>
+          <div class="header-subtitle text-caption text-medium-emphasis">监控入库延迟冷却进度、双向对账异常与一键快速定向重试</div>
         </div>
         <template #append>
           <div class="d-flex align-center ga-1">
@@ -183,7 +183,7 @@
                   rounded="lg"
                   class="px-2"
                   :loading="itemLoading === item.key"
-                  :disabled="statusData.is_running || (itemLoading && itemLoading !== item.key)"
+                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== item.key)"
                   @click="syncSingle(item.key)"
                 >
                   <v-icon start size="14">mdi-cloud-upload-outline</v-icon>
@@ -230,7 +230,7 @@
                   rounded="lg"
                   class="px-2"
                   :loading="itemLoading === file"
-                  :disabled="statusData.is_running || (itemLoading && itemLoading !== file)"
+                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== file)"
                   @click="syncSingle(file)"
                 >
                   <v-icon start size="14">mdi-refresh</v-icon>
@@ -269,7 +269,7 @@
                   rounded="lg"
                   class="px-2"
                   :loading="itemLoading === file"
-                  :disabled="statusData.is_running || (itemLoading && itemLoading !== file)"
+                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== file)"
                   @click="syncSingle(file)"
                 >
                   <v-icon start size="14">mdi-refresh</v-icon>
@@ -556,6 +556,12 @@ onUnmounted(() => {
 }
 .header-surface {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
+}
+/* 顶栏标题与副标题：宿主渲染器可能改变标题行高，这里显式补足间距，
+   避免 PopUp 内 Title 与下方 Content 贴得过近。仅调整外边距，
+   不覆盖 text-caption 的小字号行高，保证 12px 文本的可读性 */
+.header-card-item .header-subtitle {
+  margin-top: 6px;
 }
 .header-icon-box {
   width: 36px;

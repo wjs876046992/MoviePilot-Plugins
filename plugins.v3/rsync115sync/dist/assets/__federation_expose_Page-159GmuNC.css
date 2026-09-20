@@ -1,17 +1,23 @@
 
-.plugin-page[data-v-6d4b9768] {
+.plugin-page[data-v-9860e776] {
   width: 100%;
   box-sizing: border-box;
   padding: 16px 20px !important;
 }
-.page-main-card[data-v-6d4b9768] {
+.page-main-card[data-v-9860e776] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-6d4b9768] {
+.header-surface[data-v-9860e776] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
 }
-.header-icon-box[data-v-6d4b9768] {
+/* 顶栏标题与副标题：宿主渲染器可能改变标题行高，这里显式补足间距，
+   避免 PopUp 内 Title 与下方 Content 贴得过近。仅调整外边距，
+   不覆盖 text-caption 的小字号行高，保证 12px 文本的可读性 */
+.header-card-item .header-subtitle[data-v-9860e776] {
+  margin-top: 6px;
+}
+.header-icon-box[data-v-9860e776] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -20,30 +26,30 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.stat-card[data-v-6d4b9768] {
+.stat-card[data-v-9860e776] {
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.stat-info[data-v-6d4b9768] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+.stat-info[data-v-9860e776] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
 }
-.stat-primary[data-v-6d4b9768] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+.stat-primary[data-v-9860e776] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
 }
-.stat-error[data-v-6d4b9768] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+.stat-error[data-v-9860e776] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
 }
-.action-strip[data-v-6d4b9768] {
+.action-strip[data-v-9860e776] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
-.queue-item-card[data-v-6d4b9768] {
+.queue-item-card[data-v-9860e776] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.batch-bar[data-v-6d4b9768] {
+.batch-bar[data-v-9860e776] {
   border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
 }
-.failed-item-card[data-v-6d4b9768] {
+.failed-item-card[data-v-9860e776] {
   background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
   border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
 }
-.empty-box[data-v-6d4b9768] {
+.empty-box[data-v-9860e776] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }

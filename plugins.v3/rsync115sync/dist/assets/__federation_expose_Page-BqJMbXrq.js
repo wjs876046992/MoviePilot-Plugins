@@ -337,7 +337,7 @@ return (_ctx, _cache) => {
       variant: "outlined"
     }, {
       default: _withCtx(() => [
-        _createVNode(_component_v_card_item, { class: "header-surface px-5 py-3 border-b" }, {
+        _createVNode(_component_v_card_item, { class: "header-surface header-card-item px-5 py-3 border-b" }, {
           prepend: _withCtx(() => [
             _createElementVNode("div", _hoisted_2, [
               _createVNode(_component_v_icon, {
@@ -450,7 +450,7 @@ return (_ctx, _cache) => {
                 ]),
                 _: 1
               }),
-              _cache[3] || (_cache[3] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "监控入库延迟冷却进度、双向对账异常与一键快速定向重试", -1))
+              _cache[3] || (_cache[3] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "监控入库延迟冷却进度、双向对账异常与一键快速定向重试", -1))
             ])
           ]),
           _: 1
@@ -733,7 +733,7 @@ return (_ctx, _cache) => {
                                 rounded: "lg",
                                 class: "px-2",
                                 loading: itemLoading.value === item.key,
-                                disabled: statusData.value.is_running || (itemLoading.value && itemLoading.value !== item.key),
+                                disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== item.key),
                                 onClick: $event => (syncSingle(item.key))
                               }, {
                                 default: _withCtx(() => [
@@ -823,7 +823,7 @@ return (_ctx, _cache) => {
                                 rounded: "lg",
                                 class: "px-2",
                                 loading: itemLoading.value === file,
-                                disabled: statusData.value.is_running || (itemLoading.value && itemLoading.value !== file),
+                                disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== file),
                                 onClick: $event => (syncSingle(file))
                               }, {
                                 default: _withCtx(() => [
@@ -919,7 +919,7 @@ return (_ctx, _cache) => {
                                 rounded: "lg",
                                 class: "px-2",
                                 loading: itemLoading.value === file,
-                                disabled: statusData.value.is_running || (itemLoading.value && itemLoading.value !== file),
+                                disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== file),
                                 onClick: $event => (syncSingle(file))
                               }, {
                                 default: _withCtx(() => [
@@ -1076,6 +1076,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-6d4b9768"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9860e776"]]);
 
 export { App as default };

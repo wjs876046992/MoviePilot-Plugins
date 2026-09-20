@@ -3,7 +3,7 @@
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
-      <v-card-item class="header-surface px-5 py-4">
+      <v-card-item class="header-surface header-card-item px-5 py-4">
         <template #prepend>
           <div class="header-icon-box mr-3">
             <v-icon color="primary" size="22">mdi-cloud-sync</v-icon>
@@ -12,9 +12,9 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.3</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.4</v-chip>
           </v-card-title>
-          <div class="text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
+          <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
         <template #append>
           <v-btn icon variant="text" size="small" class="rounded-lg close-btn" @click="notifyClose">
@@ -261,6 +261,12 @@ onMounted(() => {
 .header-surface {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+/* 顶栏标题与副标题：宿主渲染器可能改变标题行高，这里显式补足间距，
+   避免 PopUp 内 Title 与下方 Content 贴得过近。仅调整外边距，
+   不覆盖 text-caption 的小字号行高，保证 12px 文本的可读性 */
+.header-card-item .header-subtitle {
+  margin-top: 6px;
 }
 .header-icon-box {
   width: 36px;
