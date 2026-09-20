@@ -67,7 +67,7 @@
           </v-col>
         </v-row>
 
-        <!-- 补传 / 限流进度提示 -->
+        <!-- 补传 / 限流进度提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
           v-if="statusData.backfill_remaining || isThrottled"
           :type="isThrottled ? 'warning' : 'info'"
@@ -75,14 +75,15 @@
           density="compact"
           class="rounded-lg mb-3 text-body-2"
         >
-          <span v-if="isThrottled">
-            ⏸ 已进入风控退避，约 {{ blockedMinutes }} 分钟后自动恢复上传。
-          </span>
-          <span v-if="statusData.backfill_remaining">
+          <div v-if="isThrottled" class="font-weight-medium">
+            ⏸ 为避免触发 115 风控，上传已自动暂停，约 {{ blockedMinutes }} 分钟后恢复，无需手动操作。
+          </div>
+          <div v-if="statusData.backfill_remaining">
             存量补传进行中：剩余 <strong>{{ statusData.backfill_remaining }}</strong>
-            <template v-if="statusData.backfill_total"> / 共 {{ statusData.backfill_total }}</template> 个，
-            按每窗口 {{ statusData.upload_max_per_window }} 个自动推进（本窗口已用 {{ statusData.upload_window_count }} 个）。
-          </span>
+            <template v-if="statusData.backfill_total"> / 共 {{ statusData.backfill_total }}</template> 个。
+            为防风控，每个时间窗口最多上传 {{ statusData.upload_max_per_window }} 个
+            （本窗口已用 {{ statusData.upload_window_count }} 个），未传完的会自动继续。
+          </div>
         </v-alert>
 
         <!-- 快捷操作工具条 -->

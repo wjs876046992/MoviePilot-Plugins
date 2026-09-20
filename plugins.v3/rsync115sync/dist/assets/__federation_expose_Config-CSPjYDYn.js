@@ -35,9 +35,19 @@ const _hoisted_16 = { class: "settings-group-card rounded-xl overflow-hidden pa-
 const _hoisted_17 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
 const _hoisted_18 = { class: "settings-group-card rounded-xl overflow-hidden" };
 const _hoisted_19 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
-const _hoisted_20 = { class: "px-4 py-3" };
+const _hoisted_20 = {
+  key: 0,
+  class: "px-4 py-2 batch-bar"
+};
+const _hoisted_21 = { class: "d-flex align-center flex-wrap ga-2" };
+const _hoisted_22 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_23 = {
+  key: 0,
+  class: "text-caption text-warning font-weight-medium mt-1"
+};
+const _hoisted_24 = { class: "px-4 py-3" };
 
-const {ref,onMounted} = await importShared('vue');
+const {ref,computed,onMounted} = await importShared('vue');
 
 
 
@@ -78,6 +88,68 @@ const config = ref({
   force_cooldown_days: 7,
 });
 
+// ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
+
+// 窗口时长的可读表述（秒 → 分钟/小时）
+const windowHumanText = computed(() => {
+  const s = Number(config.value.upload_window_secs) || 0;
+  if (s <= 0) return '（未设置）'
+  if (s % 3600 === 0) return `${s / 3600} 小时`
+  if (s % 60 === 0) return `${s / 60} 分钟`
+  return `${s} 秒`
+});
+
+// 平均速率：每窗口配额 / 窗口时长，让用户直观看到“每分钟大概传几个”
+const effectiveRateText = computed(() => {
+  const n = Number(config.value.upload_max_per_window) || 0;
+  const s = Number(config.value.upload_window_secs) || 0;
+  if (n <= 0 || s <= 0) return '未启用'
+  const perMin = (n * 60) / s;
+  if (perMin >= 10) return `${perMin.toFixed(0)} 个/分钟`
+  if (perMin >= 1) return `${perMin.toFixed(1)} 个/分钟`
+  return `${(perMin * 60).toFixed(0)} 个/小时`
+});
+
+// 参数合理性提醒：避免用户把限流调成“形同虚设”或“永远跑不完”
+const rateConfigWarnings = computed(() => {
+  const warns = [];
+  const batch = Number(config.value.upload_batch_size) || 0;
+  const quota = Number(config.value.upload_max_per_window) || 0;
+  const win = Number(config.value.upload_window_secs) || 0;
+  const backoff = Number(config.value.backoff_secs) || 0;
+
+  if (quota <= 0) {
+    warns.push('单窗口配额为 0：限流将拦截全部上传，建议保持 500 或更高。');
+  }
+  if (batch <= 0) {
+    warns.push('单批上限为 0：单次将不处理任何文件。');
+  }
+  if (batch > 0 && quota > 0 && batch > quota) {
+    warns.push(
+      `单批上限（${batch}）大于窗口配额（${quota}）：单批就会耗尽整个窗口额度，` +
+      `建议把单批上限设为不高于窗口配额。`
+    );
+  }
+  if (win <= 0) {
+    warns.push('窗口时长需大于 0 秒，否则配额会立即失效。');
+  }
+  if (backoff > 0 && backoff < 60) {
+    warns.push(`退避时长仅 ${backoff} 秒：过短可能来不及让 115 侧恢复，建议至少 300 秒。`);
+  }
+  // 速率过高告警：这是最容易触发风控的配置，必须显式提示
+  if (quota > 0 && win > 0) {
+    const perMin = (quota * 60) / win;
+    if (perMin > 60) {
+      warns.push(
+        `当前速率约 ${perMin.toFixed(0)} 个/分钟（超过每秒 1 个），触发 115 风控的风险很高。` +
+        `建议降低「单窗口上传文件数上限」或延长「限流窗口时长」。`
+      );
+    }
+  }
+  return warns
+});
+
+// 目录映射新增与限流换算无关，以下是原有逻辑
 function addPair() {
   config.value.sync_pairs.push({
     name: '',
@@ -212,7 +284,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
-                      _createTextVNode("v0.0.10", -1)
+                      _createTextVNode("v0.0.11", -1)
                     ]))]),
                     _: 1
                   })
@@ -326,6 +398,23 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
+            _createVNode(_component_v_alert, {
+              type: "info",
+              variant: "tonal",
+              density: "compact",
+              class: "rounded-lg mb-3 text-body-2"
+            }, {
+              default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                _createTextVNode(" 为每个媒体库配置一对路径：", -1),
+                _createElementVNode("b", null, "本地源目录", -1),
+                _createTextVNode(" → ", -1),
+                _createElementVNode("b", null, "CD2 挂载的 115 目录", -1),
+                _createTextVNode("。 插件只同步这些映射内的文件，不会扫描其它位置。 ", -1),
+                _createElementVNode("b", null, "「同步所有文件类型」", -1),
+                _createTextVNode("关闭时只传视频与字幕（推荐），开启后连同 nfo、图片等一律上传； 文件类型由下方「同步的扩展名」统一控制。 ", -1)
+              ]))]),
+              _: 1
+            }),
             (config.value.sync_pairs.length)
               ? (_openBlock(), _createElementBlock("div", _hoisted_9, [
                   (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(config.value.sync_pairs, (pair, idx) => {
@@ -344,7 +433,7 @@ return (_ctx, _cache) => {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, { size: "18" }, {
-                              default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                              default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
                                 _createTextVNode("mdi-trash-can-outline", -1)
                               ]))]),
                               _: 1
@@ -429,12 +518,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+                default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                   _createTextVNode("mdi-timer-sand", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[29] || (_cache[29] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
+              _cache[30] || (_cache[30] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
             _createElementVNode("div", _hoisted_14, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
@@ -455,7 +544,7 @@ return (_ctx, _cache) => {
                         variant: "outlined",
                         density: "compact",
                         suffix: "小时",
-                        hint: "媒体入库后等待 N 小时，留足外挂字幕下载与刮削时间，到期后才触发上传",
+                        hint: "媒体入库后等待 N 小时再上传，留足外挂字幕下载与刮削时间，避免抢先上传导致字幕丢失。设为 0 可关闭等待",
                         "persistent-hint": ""
                       }, null, 8, ["modelValue"])
                     ]),
@@ -473,7 +562,7 @@ return (_ctx, _cache) => {
                         variant: "outlined",
                         density: "compact",
                         placeholder: "0 */2 * * *",
-                        hint: "默认每 2 小时定时巡检一次达到冷却要求的就绪文件",
+                        hint: "多久巡检一次。到期文件会按上面的限流规则分批上传。补传队列未完成时优先续跑",
                         "persistent-hint": ""
                       }, null, 8, ["modelValue"])
                     ]),
@@ -489,12 +578,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
                   _createTextVNode("mdi-shield-check-outline", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[31] || (_cache[31] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
+              _cache[32] || (_cache[32] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
             ]),
             _createElementVNode("div", _hoisted_16, [
               _createVNode(_component_v_row, { density: "compact" }, {
@@ -546,7 +635,7 @@ return (_ctx, _cache) => {
                         variant: "outlined",
                         density: "compact",
                         rows: "3",
-                        hint: "默认排除群晖元数据与系统废件",
+                        hint: "每行一条，命中即跳过。默认排除群晖元数据与系统临时文件；注意排除只作用于源端，无法清理 115 上已有的残留",
                         "persistent-hint": ""
                       }, null, 8, ["modelValue"])
                     ]),
@@ -562,16 +651,36 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
                   _createTextVNode("mdi-speedometer-slow", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[33] || (_cache[33] = _createTextVNode(" 上传限流与风控退避 ", -1))
+              _cache[34] || (_cache[34] = _createTextVNode(" 上传限流与风控退避 ", -1))
             ]),
+            _createVNode(_component_v_alert, {
+              type: "info",
+              variant: "tonal",
+              density: "compact",
+              class: "rounded-lg mb-2 text-body-2"
+            }, {
+              default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
+                _createElementVNode("div", { class: "font-weight-bold mb-1" }, "为什么需要限流？", -1),
+                _createTextVNode(" 115 网盘会统计", -1),
+                _createElementVNode("b", null, "单位时间内上传的文件个数", -1),
+                _createTextVNode("。大量小文件（尤其是字幕、样张） 在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。 ", -1),
+                _createElementVNode("br", null, null, -1),
+                _createTextVNode(" 本插件用两层限制来避免：", -1),
+                _createElementVNode("b", null, "单批上限", -1),
+                _createTextVNode("控制一次传输提交多少文件， ", -1),
+                _createElementVNode("b", null, "窗口配额", -1),
+                _createTextVNode("控制一段时间内累计上传多少文件。超出的部分不会丢弃， 会在下一个窗口自动继续，直到全部传完。 ", -1)
+              ]))]),
+              _: 1
+            }),
             _createElementVNode("div", _hoisted_18, [
               _createElementVNode("div", _hoisted_19, [
-                _cache[34] || (_cache[34] = _createElementVNode("div", null, [
+                _cache[36] || (_cache[36] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
                 ], -1)),
@@ -584,7 +693,41 @@ return (_ctx, _cache) => {
                   density: "compact"
                 }, null, 8, ["modelValue"])
               ]),
-              _createElementVNode("div", _hoisted_20, [
+              (config.value.rate_limit_enabled)
+                ? (_openBlock(), _createElementBlock("div", _hoisted_20, [
+                    _createElementVNode("div", _hoisted_21, [
+                      _createVNode(_component_v_chip, {
+                        size: "small",
+                        color: "primary",
+                        variant: "tonal",
+                        class: "font-weight-bold"
+                      }, {
+                        default: _withCtx(() => [
+                          _createVNode(_component_v_icon, {
+                            start: "",
+                            size: "14"
+                          }, {
+                            default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                              _createTextVNode("mdi-speedometer", -1)
+                            ]))]),
+                            _: 1
+                          }),
+                          _createTextVNode(" 当前速率约 " + _toDisplayString(effectiveRateText.value), 1)
+                        ]),
+                        _: 1
+                      }),
+                      _createElementVNode("span", _hoisted_22, " 即每 " + _toDisplayString(windowHumanText.value) + " 最多上传 " + _toDisplayString(config.value.upload_max_per_window || 0) + " 个文件 ", 1)
+                    ]),
+                    (rateConfigWarnings.value.length)
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_23, [
+                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(rateConfigWarnings.value, (w, i) => {
+                            return (_openBlock(), _createElementBlock("div", { key: i }, "⚠️ " + _toDisplayString(w), 1))
+                          }), 128))
+                        ]))
+                      : _createCommentVNode("", true)
+                  ]))
+                : _createCommentVNode("", true),
+              _createElementVNode("div", _hoisted_24, [
                 _createVNode(_component_v_row, { density: "compact" }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_col, {
@@ -601,7 +744,7 @@ return (_ctx, _cache) => {
                           variant: "outlined",
                           density: "compact",
                           disabled: !config.value.rate_limit_enabled,
-                          hint: "单次 rsync 最多处理多少个文件，超出部分留待下一轮",
+                          hint: "一次传输最多提交多少个文件。宁小勿大：小文件扎堆时，大批量最容易触发风控。超出部分自动留到下一轮，不会丢失",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue", "disabled"])
                       ]),
@@ -621,7 +764,7 @@ return (_ctx, _cache) => {
                           variant: "outlined",
                           density: "compact",
                           disabled: !config.value.rate_limit_enabled,
-                          hint: "一个时间窗口内累计最多上传多少个文件",
+                          hint: "一个窗口内累计最多上传多少个文件。这是防风控的主要闸门——115 按单位时间内的文件个数判定异常",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue", "disabled"])
                       ]),
@@ -641,7 +784,7 @@ return (_ctx, _cache) => {
                           variant: "outlined",
                           density: "compact",
                           disabled: !config.value.rate_limit_enabled,
-                          hint: "默认 1800 秒（30 分钟），窗口滚动后额度自动恢复",
+                          hint: "默认 1800 秒（30 分钟）。窗口结束后额度自动重置，未传完的继续。窗口越短、峰值越高，建议不要低于 300 秒",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue", "disabled"])
                       ]),
@@ -661,7 +804,7 @@ return (_ctx, _cache) => {
                           variant: "outlined",
                           density: "compact",
                           disabled: !config.value.rate_limit_enabled,
-                          hint: "检测到限流特征后暂停上传的时长，默认 3600 秒",
+                          hint: "一旦命中风控特征，暂停上传这么久再恢复，给 115 侧缓冲时间。默认 3600 秒（1 小时）",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue", "disabled"])
                       ]),
@@ -677,7 +820,7 @@ return (_ctx, _cache) => {
                           density: "compact",
                           rows: "3",
                           disabled: !config.value.rate_limit_enabled,
-                          hint: "从 rsync / CD2 错误输出中匹配，命中后立即暂停上传进入退避期",
+                          hint: "从 rsync / CD2 的错误输出里匹配这些关键词，命中即暂停上传并进入退避。每行一条，不区分大小写",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue", "disabled"])
                       ]),
@@ -696,7 +839,7 @@ return (_ctx, _cache) => {
                           type: "number",
                           variant: "outlined",
                           density: "compact",
-                          hint: "全量校验会遍历 115 全目录，请求量按文件数计；0 表示不限制（不建议）",
+                          hint: "全量校验会遍历 115 全部目录，请求量按媒体库文件数计算（可能上万次），因此限频。默认 7 天；0 表示不限制（不建议）",
                           "persistent-hint": ""
                         }, null, 8, ["modelValue"])
                       ]),
@@ -723,12 +866,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
+                  default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
                     _createTextVNode("mdi-view-dashboard-outline", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[36] || (_cache[36] = _createTextVNode(" 查看监控看板 ", -1))
+                _cache[39] || (_cache[39] = _createTextVNode(" 查看监控看板 ", -1))
               ]),
               _: 1
             }),
@@ -746,12 +889,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                  default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
                     _createTextVNode("mdi-content-save", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[38] || (_cache[38] = _createTextVNode(" 保存配置 ", -1))
+                _cache[41] || (_cache[41] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"])
@@ -766,6 +909,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-cec66fce"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-20bbd86f"]]);
 
 export { Config as default };

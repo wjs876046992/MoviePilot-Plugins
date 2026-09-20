@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.10</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.11</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -67,6 +67,13 @@
           </v-btn>
         </div>
 
+        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
+          为每个媒体库配置一对路径：<b>本地源目录</b> → <b>CD2 挂载的 115 目录</b>。
+          插件只同步这些映射内的文件，不会扫描其它位置。
+          <b>「同步所有文件类型」</b>关闭时只传视频与字幕（推荐），开启后连同 nfo、图片等一律上传；
+          文件类型由下方「同步的扩展名」统一控制。
+        </v-alert>
+
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
           <div v-for="(pair, idx) in config.sync_pairs" :key="idx" class="pair-card rounded-xl pa-4">
             <div class="d-flex align-center justify-space-between mb-3">
@@ -112,7 +119,7 @@
                 variant="outlined"
                 density="compact"
                 suffix="小时"
-                hint="媒体入库后等待 N 小时，留足外挂字幕下载与刮削时间，到期后才触发上传"
+                hint="媒体入库后等待 N 小时再上传，留足外挂字幕下载与刮削时间，避免抢先上传导致字幕丢失。设为 0 可关闭等待"
                 persistent-hint
               ></v-text-field>
             </v-col>
@@ -123,7 +130,7 @@
                 variant="outlined"
                 density="compact"
                 placeholder="0 */2 * * *"
-                hint="默认每 2 小时定时巡检一次达到冷却要求的就绪文件"
+                hint="多久巡检一次。到期文件会按上面的限流规则分批上传。补传队列未完成时优先续跑"
                 persistent-hint
               ></v-text-field>
             </v-col>
@@ -144,7 +151,7 @@
               <v-text-field v-model.number="config.task_timeout" label="单次任务最大超时 (秒)" type="number" variant="outlined" density="compact" hint="进程超过此时长强制杀死，彻底避免进程僵死" persistent-hint></v-text-field>
             </v-col>
             <v-col cols="12">
-              <v-textarea v-model="config.exclude_patterns" label="排除文件与目录规则 (每行一条，严格继承 sync_115.sh)" variant="outlined" density="compact" rows="3" hint="默认排除群晖元数据与系统废件" persistent-hint></v-textarea>
+              <v-textarea v-model="config.exclude_patterns" label="排除文件与目录规则 (每行一条，严格继承 sync_115.sh)" variant="outlined" density="compact" rows="3" hint="每行一条，命中即跳过。默认排除群晖元数据与系统临时文件；注意排除只作用于源端，无法清理 115 上已有的残留" persistent-hint></v-textarea>
             </v-col>
           </v-row>
         </div>
@@ -154,6 +161,18 @@
           <v-icon size="18" color="primary" class="mr-1">mdi-speedometer-slow</v-icon>
           上传限流与风控退避
         </div>
+
+        <!-- 通俗说明：为什么需要限流，用大白话讲清风控逻辑 -->
+        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-2 text-body-2">
+          <div class="font-weight-bold mb-1">为什么需要限流？</div>
+          115 网盘会统计<b>单位时间内上传的文件个数</b>。大量小文件（尤其是字幕、样张）
+          在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。
+          <br>
+          本插件用两层限制来避免：<b>单批上限</b>控制一次传输提交多少文件，
+          <b>窗口配额</b>控制一段时间内累计上传多少文件。超出的部分不会丢弃，
+          会在下一个窗口自动继续，直到全部传完。
+        </v-alert>
+
         <div class="settings-group-card rounded-xl overflow-hidden">
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
             <div>
@@ -161,6 +180,23 @@
               <div class="text-caption text-medium-emphasis">按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控</div>
             </div>
             <v-switch v-model="config.rate_limit_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+
+          <!-- 实时换算：把生硬的秒数/个数翻译成用户能直观判断的速率 -->
+          <div v-if="config.rate_limit_enabled" class="px-4 py-2 batch-bar">
+            <div class="d-flex align-center flex-wrap ga-2">
+              <v-chip size="small" color="primary" variant="tonal" class="font-weight-bold">
+                <v-icon start size="14">mdi-speedometer</v-icon>
+                当前速率约 {{ effectiveRateText }}
+              </v-chip>
+              <span class="text-caption text-medium-emphasis">
+                即每 {{ windowHumanText }} 最多上传
+                {{ config.upload_max_per_window || 0 }} 个文件
+              </span>
+            </div>
+            <div v-if="rateConfigWarnings.length" class="text-caption text-warning font-weight-medium mt-1">
+              <div v-for="(w, i) in rateConfigWarnings" :key="i">⚠️ {{ w }}</div>
+            </div>
           </div>
           <div class="px-4 py-3">
             <v-row density="compact">
@@ -172,7 +208,7 @@
                   variant="outlined"
                   density="compact"
                   :disabled="!config.rate_limit_enabled"
-                  hint="单次 rsync 最多处理多少个文件，超出部分留待下一轮"
+                  hint="一次传输最多提交多少个文件。宁小勿大：小文件扎堆时，大批量最容易触发风控。超出部分自动留到下一轮，不会丢失"
                   persistent-hint
                 ></v-text-field>
               </v-col>
@@ -184,7 +220,7 @@
                   variant="outlined"
                   density="compact"
                   :disabled="!config.rate_limit_enabled"
-                  hint="一个时间窗口内累计最多上传多少个文件"
+                  hint="一个窗口内累计最多上传多少个文件。这是防风控的主要闸门——115 按单位时间内的文件个数判定异常"
                   persistent-hint
                 ></v-text-field>
               </v-col>
@@ -196,7 +232,7 @@
                   variant="outlined"
                   density="compact"
                   :disabled="!config.rate_limit_enabled"
-                  hint="默认 1800 秒（30 分钟），窗口滚动后额度自动恢复"
+                  hint="默认 1800 秒（30 分钟）。窗口结束后额度自动重置，未传完的继续。窗口越短、峰值越高，建议不要低于 300 秒"
                   persistent-hint
                 ></v-text-field>
               </v-col>
@@ -208,7 +244,7 @@
                   variant="outlined"
                   density="compact"
                   :disabled="!config.rate_limit_enabled"
-                  hint="检测到限流特征后暂停上传的时长，默认 3600 秒"
+                  hint="一旦命中风控特征，暂停上传这么久再恢复，给 115 侧缓冲时间。默认 3600 秒（1 小时）"
                   persistent-hint
                 ></v-text-field>
               </v-col>
@@ -220,7 +256,7 @@
                   density="compact"
                   rows="3"
                   :disabled="!config.rate_limit_enabled"
-                  hint="从 rsync / CD2 错误输出中匹配，命中后立即暂停上传进入退避期"
+                  hint="从 rsync / CD2 的错误输出里匹配这些关键词，命中即暂停上传并进入退避。每行一条，不区分大小写"
                   persistent-hint
                 ></v-textarea>
               </v-col>
@@ -231,7 +267,7 @@
                   type="number"
                   variant="outlined"
                   density="compact"
-                  hint="全量校验会遍历 115 全目录，请求量按文件数计；0 表示不限制（不建议）"
+                  hint="全量校验会遍历 115 全部目录，请求量按媒体库文件数计算（可能上万次），因此限频。默认 7 天；0 表示不限制（不建议）"
                   persistent-hint
                 ></v-text-field>
               </v-col>
@@ -257,7 +293,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
 const props = defineProps({
   model: { type: Object, default: () => ({}) },
@@ -290,6 +326,68 @@ const config = ref({
   force_cooldown_days: 7,
 })
 
+// ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
+
+// 窗口时长的可读表述（秒 → 分钟/小时）
+const windowHumanText = computed(() => {
+  const s = Number(config.value.upload_window_secs) || 0
+  if (s <= 0) return '（未设置）'
+  if (s % 3600 === 0) return `${s / 3600} 小时`
+  if (s % 60 === 0) return `${s / 60} 分钟`
+  return `${s} 秒`
+})
+
+// 平均速率：每窗口配额 / 窗口时长，让用户直观看到“每分钟大概传几个”
+const effectiveRateText = computed(() => {
+  const n = Number(config.value.upload_max_per_window) || 0
+  const s = Number(config.value.upload_window_secs) || 0
+  if (n <= 0 || s <= 0) return '未启用'
+  const perMin = (n * 60) / s
+  if (perMin >= 10) return `${perMin.toFixed(0)} 个/分钟`
+  if (perMin >= 1) return `${perMin.toFixed(1)} 个/分钟`
+  return `${(perMin * 60).toFixed(0)} 个/小时`
+})
+
+// 参数合理性提醒：避免用户把限流调成“形同虚设”或“永远跑不完”
+const rateConfigWarnings = computed(() => {
+  const warns = []
+  const batch = Number(config.value.upload_batch_size) || 0
+  const quota = Number(config.value.upload_max_per_window) || 0
+  const win = Number(config.value.upload_window_secs) || 0
+  const backoff = Number(config.value.backoff_secs) || 0
+
+  if (quota <= 0) {
+    warns.push('单窗口配额为 0：限流将拦截全部上传，建议保持 500 或更高。')
+  }
+  if (batch <= 0) {
+    warns.push('单批上限为 0：单次将不处理任何文件。')
+  }
+  if (batch > 0 && quota > 0 && batch > quota) {
+    warns.push(
+      `单批上限（${batch}）大于窗口配额（${quota}）：单批就会耗尽整个窗口额度，` +
+      `建议把单批上限设为不高于窗口配额。`
+    )
+  }
+  if (win <= 0) {
+    warns.push('窗口时长需大于 0 秒，否则配额会立即失效。')
+  }
+  if (backoff > 0 && backoff < 60) {
+    warns.push(`退避时长仅 ${backoff} 秒：过短可能来不及让 115 侧恢复，建议至少 300 秒。`)
+  }
+  // 速率过高告警：这是最容易触发风控的配置，必须显式提示
+  if (quota > 0 && win > 0) {
+    const perMin = (quota * 60) / win
+    if (perMin > 60) {
+      warns.push(
+        `当前速率约 ${perMin.toFixed(0)} 个/分钟（超过每秒 1 个），触发 115 风控的风险很高。` +
+        `建议降低「单窗口上传文件数上限」或延长「限流窗口时长」。`
+      )
+    }
+  }
+  return warns
+})
+
+// 目录映射新增与限流换算无关，以下是原有逻辑
 function addPair() {
   config.value.sync_pairs.push({
     name: '',

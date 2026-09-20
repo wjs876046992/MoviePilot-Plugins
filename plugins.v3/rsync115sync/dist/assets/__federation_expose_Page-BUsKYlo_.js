@@ -17,7 +17,10 @@ const _hoisted_7 = { class: "stat-card stat-primary rounded-xl pa-3 text-center"
 const _hoisted_8 = { class: "text-h5 font-weight-black text-primary" };
 const _hoisted_9 = { class: "stat-card stat-error rounded-xl pa-3 text-center" };
 const _hoisted_10 = { class: "text-h5 font-weight-black text-error" };
-const _hoisted_11 = { key: 0 };
+const _hoisted_11 = {
+  key: 0,
+  class: "font-weight-medium"
+};
 const _hoisted_12 = { key: 1 };
 const _hoisted_13 = { class: "action-strip rounded-xl pa-3 mb-4" };
 const _hoisted_14 = { class: "d-flex align-center justify-space-between flex-wrap ga-2" };
@@ -580,10 +583,10 @@ return (_ctx, _cache) => {
                 }, {
                   default: _withCtx(() => [
                     (isThrottled.value)
-                      ? (_openBlock(), _createElementBlock("span", _hoisted_11, " ⏸ 已进入风控退避，约 " + _toDisplayString(blockedMinutes.value) + " 分钟后自动恢复上传。 ", 1))
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_11, " ⏸ 为避免触发 115 风控，上传已自动暂停，约 " + _toDisplayString(blockedMinutes.value) + " 分钟后恢复，无需手动操作。 ", 1))
                       : _createCommentVNode("", true),
                     (statusData.value.backfill_remaining)
-                      ? (_openBlock(), _createElementBlock("span", _hoisted_12, [
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_12, [
                           _cache[12] || (_cache[12] = _createTextVNode(" 存量补传进行中：剩余 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(statusData.value.backfill_remaining), 1),
                           (statusData.value.backfill_total)
@@ -591,7 +594,7 @@ return (_ctx, _cache) => {
                                 _createTextVNode(" / 共 " + _toDisplayString(statusData.value.backfill_total), 1)
                               ], 64))
                             : _createCommentVNode("", true),
-                          _createTextVNode(" 个， 按每窗口 " + _toDisplayString(statusData.value.upload_max_per_window) + " 个自动推进（本窗口已用 " + _toDisplayString(statusData.value.upload_window_count) + " 个）。 ", 1)
+                          _createTextVNode(" 个。 为防风控，每个时间窗口最多上传 " + _toDisplayString(statusData.value.upload_max_per_window) + " 个 （本窗口已用 " + _toDisplayString(statusData.value.upload_window_count) + " 个），未传完的会自动继续。 ", 1)
                         ]))
                       : _createCommentVNode("", true)
                   ]),
@@ -1230,6 +1233,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-94dc0d90"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-3b95b7bb"]]);
 
 export { App as default };

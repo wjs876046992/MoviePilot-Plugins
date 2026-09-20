@@ -24,34 +24,51 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.10"
+    plugin_version = "0.0.11"
     plugin_author = "HermanWu"
 
-    # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
-    #   0  成功
-    #   24 源文件在传输中消失——属正常波动，不计入失败
-    #   23 部分文件未传输——属可容忍告警，不计入失败
+    # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
+    # rsync exit-code semantics, aligned with _handle_rsync_exit in sync_115.sh:
+    #   0  Success / 成功
+    #   24 Source file vanished mid-transfer — normal fluctuation, not a failure
+    #      / 源文件在传输中消失，属正常波动，不计入失败
+    #   23 Some files not transferred — tolerable warning, not a failure
+    #      / 部分文件未传输，属可容忍告警，不计入失败
+    # Any other non-zero code is fatal: the whole run must be marked as failed,
+    # otherwise the plugin would falsely report "all files uploaded".
     # 其余非 0 码均视为致命错误，必须让本轮判定为失败，避免谎报“已完成”。
     _TOLERATED_EXIT_CODES = {0, 23, 24}
 
     # 伴生字幕扩展名：补传媒体文件时，同主名的这些文件一并纳入，
     # 因为实际入库单元是“整集”（媒体 + 外挂字幕）
+    # Sidecar subtitle extensions. When back-filling a media file, files sharing
+    # the same stem are included too, because a real ingest unit is a whole
+    # episode (video + external subtitles).
     _SIDECAR_EXTS = {"srt", "ass", "ssa", "sub", "idx", "sup", "vtt"}
 
-    # ---- 默认参数（与 sync_115.sh 对齐）----
+    # ---- 默认参数（与 sync_115.sh 对齐）/ Defaults, aligned with sync_115.sh ----
     # 同步扩展名：shell 侧含字幕与更多容器格式。字幕必须纳入，
     # 否则「留足外挂字幕下载时间」的冷却设计就失去意义。
+    # Sync extensions. The shell version includes subtitles and more container
+    # formats. Subtitles must be included, otherwise the very purpose of the
+    # cool-down period ("leave time for external subtitles to download") is lost.
     DEFAULT_MEDIA_EXTENSIONS = (
         "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass"
     )
     DEFAULT_EXCLUDE_PATTERNS = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
     # I/O 超时对齐 shell 的 IO_TIMEOUT=600：CD2 挂载下大文件单次 I/O
     # 超过 60 秒很常见，--timeout 只约束 I/O 无响应而非总时长
+    # I/O timeout aligned with IO_TIMEOUT=600 in the shell script: under a CD2
+    # mount a single large-file I/O can easily exceed 60s, and --timeout limits
+    # I/O inactivity only, not total duration.
     DEFAULT_RSYNC_TIMEOUT = 600
     DEFAULT_TASK_TIMEOUT = 3600
 
     # 历史默认值：用于把“从未改过配置”的老用户平滑迁移到新默认值。
     # 只有当前值恰好等于旧默认串时才替换，绝不覆盖用户自定义值。
+    # Legacy defaults, used to migrate users who never touched their config.
+    # A value is replaced only when it exactly equals the old default string,
+    # so a user's customised setting is never overwritten.
     _LEGACY_DEFAULTS = {
         "media_extensions": "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb",
         "exclude_patterns": "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store",
@@ -67,35 +84,55 @@ class Rsync115Sync(_PluginBase):
         self._cron: str = "0 */2 * * *"
 
         # 多目录映射对列表: [{"name": "电视剧", "src": "/path/TV", "dest": "/mnt/115/TV", "all_ext": False}]
+        # Directory mapping pairs. Each entry maps one local source root to one
+        # CD2-mounted 115 destination root; `all_ext` disables extension filtering.
         self._sync_pairs: List[Dict[str, Any]] = []
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
+        # Parameters strictly inherited from sync_115.sh.
+        # --inplace / --temp-dir / --partial are deliberately NEVER used, because
+        # 115's instant-upload (秒传) requires a complete file to hash.
         self._media_extensions: str = self.DEFAULT_MEDIA_EXTENSIONS
         self._exclude_patterns: str = self.DEFAULT_EXCLUDE_PATTERNS
         self._rsync_timeout: int = self.DEFAULT_RSYNC_TIMEOUT
         self._task_timeout: int = self.DEFAULT_TASK_TIMEOUT
 
         # ---- 上传限流与风控退避（防小文件高频上传触发 115 风控）----
+        # Upload throttling and anti-abuse back-off, protecting against 115's
+        # rate limiting triggered by bursts of small files.
         # 全局生效：ready / retry / force / 补传 共用同一套窗口计数。
+        # Applies globally: ready / retry / force / back-fill all share one
+        # window counter and one back-off state.
         # 单位时间是硬闸门，与“单次取多少文件”的分批参数正交，两者都需要。
+        # The time-based quota is a hard gate and is orthogonal to the per-run
+        # batch size — both are required, they solve different problems.
         self._rate_limit_enabled: bool = True
-        self._upload_batch_size: int = 200          # 单次 rsync 最多处理的文件数（分批）
-        self._upload_max_per_window: int = 500      # 单窗口最多上传文件数
-        self._upload_window_secs: int = 1800        # 计数窗口长度（秒）
-        self._backoff_secs: int = 3600              # 命中风控特征后的退避时长（秒）
+        self._upload_batch_size: int = 200          # 单批上限 / max files per rsync run
+        self._upload_max_per_window: int = 500      # 单窗口配额 / max files per window
+        self._upload_window_secs: int = 1800        # 窗口长度(秒) / window length in seconds
+        self._backoff_secs: int = 3600              # 退避时长(秒) / back-off duration
+        # 命中任一关键词即判定为风控 / any keyword hit is treated as rate limiting
         self._rate_limit_keywords: str = (
             "too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后"
         )
 
         # 限流运行时状态（持久化：窗口计数与退避必须跨重载、跨重启保留）
+        # Persisted throttling state. The window counter and back-off deadline
+        # must survive reloads and host restarts, otherwise a restart would
+        # silently reset the quota and let the next batch bypass the limiter.
         self._upload_window_start: float = 0.0
         self._upload_window_count: int = 0
         self._upload_blocked_until: float = 0.0
         # 当前批次实际提交给 rsync 的文件数，用于成功后扣减配额
+        # Files actually handed to rsync in the current batch, used to charge
+        # the quota before the transfer starts.
         self._current_batch_size: int = 0
 
         # 全量校验（force）冷却：该模式会遍历 115 挂载点全目录，
         # 请求量按媒体库文件数计，必须限频而非随意手动触发。
+        # Cool-down for the full-verification (force) mode. It walks the entire
+        # 115 mount, costing one request per file in the library, so it must be
+        # rate-limited rather than freely triggered by hand.
         self._force_cooldown_days: int = 7
         self._last_force_ts: float = 0.0
 
@@ -131,6 +168,14 @@ class Rsync115Sync(_PluginBase):
         }
 
     def init_plugin(self, config: dict = None):
+        """
+        初始化插件：读取配置并恢复持久化状态。
+
+        Initialise the plugin. Must be safely re-callable — the host invokes it on
+        every reload, restart and virtual-instance creation. Restores the
+        cool-down queue, anomaly lists, back-fill queue and throttle state
+        so no progress is lost across reloads.
+        """
         if config:
             self._enabled = config.get("enabled", False)
             self._listen_transfer = config.get("listen_transfer", True)
@@ -242,6 +287,13 @@ class Rsync115Sync(_PluginBase):
 
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
+        """
+        监听媒体转移入库事件，把新入库文件放入冷却队列。
+
+        Handle the media-transfer-complete event: enqueue newly ingested files
+        into the cool-down queue. The delay gives external subtitles time to
+        download before the initial upload happens.
+        """
         if not self._enabled or not self._listen_transfer:
             return
 
@@ -349,6 +401,12 @@ class Rsync115Sync(_PluginBase):
         ]
 
     def get_service(self) -> List[Dict[str, Any]]:
+        """
+        注册定时巡检服务（cron 可配置）。
+
+        Register the periodic inspection service. Each tick resumes an unfinished
+        back-fill queue first, otherwise runs a normal ready-sync.
+        """
         services = []
         if self._enabled and self._cron:
             try:
@@ -367,6 +425,12 @@ class Rsync115Sync(_PluginBase):
 
     @staticmethod
     def get_render_mode() -> Tuple[str, Optional[str]]:
+        """
+        声明使用 Vue 联邦组件渲染，产物目录为 dist/assets。
+
+        Declare Vue module-federation rendering; the built bundle lives in
+        dist/assets and is served by the host.
+        """
         return "vue", "dist/assets"
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -376,6 +440,12 @@ class Rsync115Sync(_PluginBase):
         return []
 
     def stop_service(self):
+        """
+        停止插件：终止在跑的 rsync 进程并复位运行标志。
+
+        Stop the plugin: kill any running rsync process and clear the running
+        flag, so a reload does not leave an orphan transfer behind.
+        """
         if self._current_process:
             try:
                 self._current_process.kill()
@@ -386,6 +456,12 @@ class Rsync115Sync(_PluginBase):
     # ================= Web API 接口 (支撑独立前端页面) =================
 
     def get_api(self) -> List[Dict[str, Any]]:
+        """
+        注册插件 HTTP API（供看板与配置页调用）。
+
+        Register the plugin HTTP API consumed by the dashboard and config page.
+        Paths are relative; the host mounts them under /plugin/Rsync115Sync/.
+        """
         return [
             {"path": "/status", "endpoint": self._api_get_status, "methods": ["GET"], "auth": "bear"},
             {"path": "/queue", "endpoint": self._api_get_queue, "methods": ["GET"], "auth": "bear"},
@@ -562,13 +638,23 @@ class Rsync115Sync(_PluginBase):
     # ================= 上传限流与风控退避 =================
 
     def _load_rate_limit_state(self):
-        """从插件数据目录恢复限流窗口与退避状态。"""
+        """
+        从插件数据目录恢复限流窗口与退避状态。
+
+        Restore window counter and back-off deadline from the plugin data
+        directory. Must run before any upload decision is made.
+        """
         self._upload_window_start = float(self.get_data("upload_window_start") or 0.0)
         self._upload_window_count = int(self.get_data("upload_window_count") or 0)
         self._upload_blocked_until = float(self.get_data("upload_blocked_until") or 0.0)
 
     def _persist_rate_limit_state(self):
-        """持久化限流状态。必须在首次计数前落盘，以关闭重启竞态窗口。"""
+        """
+        持久化限流状态。
+
+        Persist throttling state. Written before the first count is charged so
+        that a restart cannot open a race window that bypasses the limiter.
+        """
         self.save_data("upload_window_start", self._upload_window_start)
         self.save_data("upload_window_count", self._upload_window_count)
         self.save_data("upload_blocked_until", self._upload_blocked_until)
@@ -577,27 +663,32 @@ class Rsync115Sync(_PluginBase):
         """
         上传闸门：判断当前是否可以发起本批上传。
 
-        返回 (是否放行, 原因说明)。三层判定：
-          1) 退避期未过 → 拒绝；
-          2) 窗口已过期 → 计数归零并前移窗口；
-          3) 窗口内计数达上限 → 拒绝。
+        Upload gate: decide whether this batch may start uploading now.
+
+        返回 (是否放行, 原因说明)，原因用于回显给用户。
+        Returns (allowed, human_readable_reason); the reason is surfaced to the user.
+
+        三层判定 / three sequential checks:
+          1) 退避期未过 → 拒绝 / still inside back-off → deny
+          2) 窗口已过期 → 计数归零并前移窗口 / window expired → reset and roll forward
+          3) 窗口内计数达上限 → 拒绝 / quota exhausted → deny
         """
         if not self._rate_limit_enabled:
             return True, ""
 
         now_ts = time.time()
 
-        # 1) 风控退避期
+        # 1) 风控退避期 / back-off window
         if now_ts < self._upload_blocked_until:
             remain = int(self._upload_blocked_until - now_ts)
             return False, f"风控退避中，还需等待 {max(1, remain // 60)} 分钟"
 
-        # 2) 窗口滚动
+        # 2) 窗口滚动 / roll the counting window when it has elapsed
         if self._upload_window_start <= 0 or (now_ts - self._upload_window_start) >= self._upload_window_secs:
             self._upload_window_start = now_ts
             self._upload_window_count = 0
 
-        # 3) 窗口配额
+        # 3) 窗口配额 / per-window quota
         if self._upload_window_count >= self._upload_max_per_window:
             elapsed = int(now_ts - self._upload_window_start)
             remain = max(1, self._upload_window_secs - elapsed)
@@ -610,9 +701,16 @@ class Rsync115Sync(_PluginBase):
         """
         扣减配额：把本批实际上传的文件数并入窗口计数并落盘。
 
-        必须在 rsync 成功后立即调用，保证窗口计数不因进程重启而丢失，
-        否则重启会绕过限流直接放行下一批。
-        返回扣减后的窗口计数。
+        Charge the quota: add this batch's file count to the window counter and
+        persist it immediately.
+
+        调用时机是在 rsync 启动**之前**预留：若在传输过程中插件被重载，
+        已提交的文件数不会因内存状态丢失而让下一批绕过限流。
+        Called BEFORE rsync starts (pre-charged). If the plugin is reloaded while
+        a transfer is in flight, the already-committed count is not lost with the
+        in-memory state, so the next batch cannot bypass the limiter.
+
+        返回扣减后的窗口计数 / returns the updated window count.
         """
         if not self._rate_limit_enabled:
             return self._upload_window_count
@@ -626,7 +724,13 @@ class Rsync115Sync(_PluginBase):
         return self._upload_window_count
 
     def _detect_rate_limit_hit(self, stderr: str) -> bool:
-        """从 rsync 错误输出中识别 115 / CD2 的风控特征串。"""
+        """
+        从 rsync 错误输出中识别 115 / CD2 的风控特征串。
+
+        Detect 115 / CD2 rate-limiting signatures in rsync stderr. Matching is
+        case-insensitive and substring-based, so `429`, `too many requests`,
+        `rate limit` and similar messages all trigger a back-off.
+        """
         if not stderr:
             return False
         lowered = stderr.lower()
@@ -637,7 +741,12 @@ class Rsync115Sync(_PluginBase):
         return False
 
     def _trigger_backoff(self, reason: str):
-        """命中风控：进入退避期，后续批次在退避结束前一律不放行。"""
+        """
+        命中风控：进入退避期，后续批次在退避结束前一律不放行。
+
+        Enter back-off after a rate-limit hit. No batch is permitted until the
+        back-off deadline passes, giving 115's side time to settle.
+        """
         self._upload_blocked_until = time.time() + self._backoff_secs
         # 退避期间窗口计数一并归零，避免退避结束后立刻撞上配额上限
         self._upload_window_start = 0.0
@@ -650,12 +759,21 @@ class Rsync115Sync(_PluginBase):
         """
         把老用户的「旧默认值」平滑迁移到新默认值。
 
+        Migrate legacy defaults to the new ones for existing users.
+
         只在当前值**恰好等于旧默认串**时才替换——用户只要手工改过任何一个字符，
         就完全不动，绝不覆盖自定义配置。
+        A value is replaced ONLY when it exactly equals the old default string.
+        If the user changed even one character, nothing is touched — a customised
+        setting is never overwritten.
 
-        迁移后必须 update_config 固化：否则存在竞态（用户先打开配置页拿到旧值，
-        后端重载完成迁移，用户再保存时用旧值覆盖回去）。
-        幂等：迁移后值已等于新默认，不再匹配旧串。
+        迁移后必须 update_config 固化，否则存在竞态：用户先打开配置页拿到旧值，
+        后端重载完成迁移，用户再保存时又把旧值覆盖回去。
+        The result must be persisted via update_config, otherwise a race exists:
+        the user opens the form and holds the old values, a reload completes the
+        migration, then the user saves and writes the old values back.
+
+        幂等 / idempotent: 迁移后取值已等于新默认，不再匹配旧串，重复调用无副作用。
         """
         try:
             changed = {}
@@ -690,9 +808,16 @@ class Rsync115Sync(_PluginBase):
         """
         查找与某个媒体文件同主名的伴生字幕文件（本地扫描，不访问 115）。
 
-        例：`剧名/剧名 S01E01.mkv` → `剧名/剧名 S01E01.zh.srt`、`…S01E01.ass`
+        Find sidecar subtitle files sharing the stem of a media file.
+        Pure local scan — never touches the 115 mount.
+
+        例 / example: `剧名/剧名 S01E01.mkv` → `剧名/剧名 S01E01.zh.srt`、`…S01E01.ass`
+
         真实场景中入库的往往是整集（媒体 + 外挂字幕），若只同步媒体，
         字幕会被遗漏且永不触发同步。
+        A real ingest unit is a whole episode (video + external subtitles). If
+        only the media file is queued, the subtitles are missed and never get a
+        chance to sync.
         """
         src_f = os.path.join(src_dir, rel_media)
         parent_rel = os.path.dirname(rel_media)
@@ -723,13 +848,22 @@ class Rsync115Sync(_PluginBase):
         """
         扫描源端，构建“存量补传”候选清单。
 
+        Scan the source side and build the back-fill candidate list.
+
         全程只读源目录，不访问 115 挂载点，因此零 API 开销。
+        Read-only over local directories; the 115 mount is never touched, so this
+        costs ZERO API calls regardless of library size.
+
         候选口径：源端存在、且不在冷却队列、也不在异常清单中的文件
         （即本插件从未处理过的存量文件）。
+        Criteria: exists locally AND absent from the cool-down queue, the anomaly
+        lists and the ignore list — i.e. files this plugin has never handled.
 
         注意：无法在不访问 115 的前提下判断目标端是否已存在，
-        因此候选可能包含已同步过但从未入过队的文件；这些文件会被
-        rsync 的 --size-only 在传输阶段跳过（代价是每个文件一次 stat）。
+        therefore the list may include files that were synced before but never
+        queued. Those are skipped by rsync's --size-only at transfer time, at the
+        cost of one stat request per candidate.
+        注意：候选规模即用户点击补传的最小 API 代价，故 UI 先预览再确认。
         """
         candidates: List[str] = []
         seen = set()
@@ -766,6 +900,7 @@ class Rsync115Sync(_PluginBase):
                     seen.add(key)
                     candidates.append(key)
                     # 媒体文件带上同主名的伴生字幕一起补传
+                    # Attach same-stem sidecar subtitles to the media file
                     for sc in self._find_sidecar_files(src_dir, root_rel):
                         sc_key = f"{pair_name}:{sc}"
                         if sc_key not in seen and not self._is_ignored(sc_key):
@@ -774,7 +909,14 @@ class Rsync115Sync(_PluginBase):
         return candidates
 
     def _api_backfill_scan(self):
-        """预览补传候选数量与样例，供用户在触发前评估规模。"""
+        """
+        预览补传候选数量与样例，供用户在触发前评估规模。
+
+        Preview candidate count and a sample so the user can judge the cost
+        before committing. Because every candidate costs at least one target-side
+        stat, this preview is what keeps a single click from firing thousands of
+        requests unnoticed.
+        """
         candidates = self._build_backfill_candidates()
         sample = candidates[:20]
         return {
@@ -794,8 +936,17 @@ class Rsync115Sync(_PluginBase):
         """
         启动存量补传。
 
+        Start the back-fill run.
+
         只扫描源端（零 API），把候选写入独立的补传队列，
         随后由核心同步逻辑按批次上限与窗口配额逐步消费。
+        Scan the source only (zero API), store candidates in a dedicated queue,
+        then let the core sync loop drain it under the batch cap and window quota.
+
+        队列独立于 pending_queue：补传项不参与入库冷却计时，避免污染
+        “冷却中 / 已就绪”统计。
+        The queue is separate from pending_queue: back-fill entries do NOT take
+        part in cool-down timing, so the cooling/ready counters stay accurate.
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
@@ -821,7 +972,12 @@ class Rsync115Sync(_PluginBase):
         }
 
     def _api_backfill_clear(self):
-        """清空补传队列与进度。"""
+        """
+        清空补传队列与进度。
+
+        Clear the back-fill queue and its progress counters. Already-synced files
+        are unaffected; only the pending work list is discarded.
+        """
         self._backfill_queue = []
         self._backfill_total = 0
         self.save_data("backfill_queue", [])
@@ -851,7 +1007,12 @@ class Rsync115Sync(_PluginBase):
                        f"约 {hours} 小时后可用，最早 {next_ts.strftime('%Y-%m-%d %H:%M')}")
 
     def _mark_force_done(self):
-        """记录一次成功的全量校验，开始计算冷却。"""
+        """
+        记录一次成功的全量校验，开始计算冷却。
+
+        Record a successful full verification and start the cool-down clock.
+        Called only on success, so a failed run does not consume the allowance.
+        """
         self._last_force_ts = time.time()
         self.save_data("last_force_ts", self._last_force_ts)
 
@@ -877,6 +1038,13 @@ class Rsync115Sync(_PluginBase):
         return True
 
     def _scheduled_sync(self):
+        """
+        定时巡检入口：优先续跑未完成的补传队列，否则执行常规就绪同步。
+
+        Cron entry point. Only one mode runs per tick because both share the same
+        execution lock and window quota — launching both would make them contend
+        for the lock and the second one would silently do nothing.
+        """
         logger.info("[Rsync115Sync] 触发定时检查同步就绪媒体...")
         # 补传队列存在时优先续跑：队列有限且自终止，排空后自动恢复常规巡检。
         # 两种模式共用同一把执行锁与同一份窗口配额，故同一轮只启动其中一个。
@@ -885,9 +1053,43 @@ class Rsync115Sync(_PluginBase):
         self._start_sync_thread(mode="ready")
 
     def _start_sync_thread(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
+        """
+        在后台线程启动一次同步，避免阻塞宿主事件循环。
+
+        Run one sync in a background daemon thread so the host event loop is not
+        blocked. Execution is serialised by self._lock inside _execute_sync.
+        """
         threading.Thread(target=self._execute_sync, args=(mode, custom_files, channel_event), daemon=True).start()
 
     def _execute_sync(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
+        """
+        同步主流程：本插件唯一真正与 115 交互的地方。
+
+        Core sync routine — the single place that actually talks to the 115 mount.
+
+        三种模式 / three modes:
+          ready    — 处理冷却到期的入库文件，走 --files-from 定向传输
+                     sync files whose cool-down has elapsed (targeted via --files-from)
+          retry    — 处理异常清单或用户指定文件，同样走 --files-from
+                     retry the anomaly list or user-specified files, also --files-from
+          backfill — 处理存量补传队列，同样走 --files-from
+                     drain the back-fill queue, also --files-from
+          force    — 全量校验，遍历 115 全目录（最重，受 7 天冷却限制）
+                     full verification, walks the whole 115 tree (heaviest; gated
+                     by a 7-day cool-down)
+
+        防风控设计（贯穿全流程）/ anti-abuse design applied throughout:
+          1) 入口闸门：退避期或配额用尽时整轮直接返回，一次 API 都不发；
+             entry gate — return early on back-off or exhausted quota, zero API calls
+          2) 批次上限：单次 rsync 提交量有界，超出部分留待下轮；
+             per-run batch cap, remainder deferred to the next run
+          3) 配额预扣：启动 rsync 前先扣减并落盘，防止重载绕过；
+             quota pre-charged and persisted before rsync starts
+          4) stderr 风控检测：命中关键词立即退避并终止本轮；
+             stderr rate-limit detection aborts the run immediately
+          5) 配额中途耗尽：停止处理后续映射对。
+             stop before the next mapping pair once the quota is gone
+        """
         if not shutil.which("rsync"):
             self._post_reply(channel_event, "❌ 系统未安装 rsync 命令，请在终端执行: apt update && apt install -y rsync")
             return
@@ -921,6 +1123,9 @@ class Rsync115Sync(_PluginBase):
             logger.info("=" * 60)
 
             # ---- 上传闸门：退避期或配额用尽时整轮直接跳过，绝不触碰 115 ----
+            # Upload gate. On back-off or exhausted quota, skip the entire run
+            # without touching the 115 mount at all — not even one stat.
+            # 返回而非 break：本轮不产生任何 API 调用，等下一次 cron 再来。
             allowed, reason = self._rate_limit_allows()
             if not allowed:
                 logger.warning(f"[Rsync115Sync] ⏸ 本轮跳过（{reason}）")
@@ -977,6 +1182,11 @@ class Rsync115Sync(_PluginBase):
                 # 全量模式（force）没有 --files-from 清单，必须靠 include/exclude
                 # 过滤才能限定传输范围。rsync 规则按顺序首条匹配生效，因此
                 # --include 必须全部排在 --exclude 之前，且 --exclude="*" 放最后兜底。
+                # The force mode has no --files-from list, so include/exclude rules
+                # are the only thing bounding the transfer. rsync applies the FIRST
+                # matching rule, so every --include must precede --exclude and the
+                # catch-all --exclude="*" must come last. Ordering is load-bearing:
+                # swapping them would silently disable the whole filter.
                 if mode not in ("ready", "retry", "backfill"):
                     cmd.append("--include=*/")
                     if not all_ext:
@@ -1085,7 +1295,10 @@ class Rsync115Sync(_PluginBase):
                         continue
 
                     # ---- 批次上限：单次 rsync 处理量有界，避免命令行过长与瞬时峰值 ----
-                    # 裁剪掉的文件留在原队列/清单中，由下一轮 cron 或下次触发继续处理
+                    # Per-run batch cap: bound how much a single rsync handles, to
+                    # avoid an over-long command line and a burst of target-side
+                    # stat requests. Trimmed files stay in the source queue/list and
+                    # are picked up by the next cron tick or the next manual trigger.
                     deferred = 0
                     if len(pair_files) > self._upload_batch_size > 0:
                         deferred = len(pair_files) - self._upload_batch_size
@@ -1107,6 +1320,9 @@ class Rsync115Sync(_PluginBase):
                 rsync_start = time.time()
                 # 先预留本批配额并落盘：万一进程在传输中被重载，
                 # 已上传的文件数不会因为内存状态丢失而绕过限流
+                # Pre-charge the quota and persist it BEFORE launching rsync. If the
+                # plugin is reloaded mid-transfer, the committed count survives, so
+                # a restart cannot silently hand out a fresh allowance.
                 self._current_batch_size = len(pair_files)
                 if self._current_batch_size:
                     self._consume_upload_quota(f"（{pair_name} 预留）")
@@ -1163,12 +1379,18 @@ class Rsync115Sync(_PluginBase):
                         pass
 
                 # ---- 风控特征检测：stderr 命中限流关键词立刻进入退避并终止本轮 ----
+                # Rate-limit detection: a keyword hit in stderr triggers back-off
+                # and aborts the whole run immediately, instead of hammering 115
+                # with the remaining pairs.
                 if self._rate_limit_enabled and self._detect_rate_limit_hit(stderr):
                     self._trigger_backoff(f"[{pair_name}] rsync 输出命中限流特征")
                     self._post_reply(channel_event, "🚫 检测到 115/CD2 限流特征，已暂停上传并进入退避期。")
                     break
 
                 # ---- 配额中途耗尽：已完成本组，但不再继续下一组映射 ----
+                # Quota exhausted mid-run: this pair is done, stop before touching
+                # the next pair. Fixes the previous behaviour where a single run
+                # could scan every mapping pair back-to-back with no ceiling.
                 if (self._rate_limit_enabled
                         and self._upload_window_count >= self._upload_max_per_window):
                     logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
@@ -1206,6 +1428,9 @@ class Rsync115Sync(_PluginBase):
                 # 补传模式：无论本批成功与否都从补传队列移除
                 # （失败的会进入 missing/corrupt 清单，由 /rsync_retry 接手，
                 #   若留在补传队列会与异常清单重复处理）
+                # Back-fill: drain entries once attempted, regardless of outcome.
+                # Failures land in the missing/corrupt lists and are handled by
+                # /rsync_retry; keeping them queued would process them twice.
                 if mode == "backfill":
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
@@ -1215,7 +1440,9 @@ class Rsync115Sync(_PluginBase):
 
             self.save_data("pending_queue", self._pending_queue)
 
-            # 推进补传队列：移除本轮已处理的文件并落盘
+            # 推进补传队列：移除本轮已处理的文件并落盘，保证跨重载可续跑
+            # Advance the back-fill queue: drop processed keys and persist, so the
+            # run resumes exactly where it stopped after a reload or host restart.
             if mode == "backfill" and self._backfill_done_keys:
                 before = len(self._backfill_queue)
                 self._backfill_queue = [
@@ -1468,6 +1695,12 @@ class Rsync115Sync(_PluginBase):
 
     @eventmanager.register(EventType.PluginAction)
     def handle_command(self, event: Event):
+        """
+        处理 /rsync_* 远程指令的统一入口。
+
+        Single entry point for all /rsync_* remote commands. The action comes from
+        the command data registered in get_command().
+        """
         data = event.event_data or {}
         action = data.get("action")
         # 兼容 MoviePilot 的 arg_str 以及各类渠道传入的参数
