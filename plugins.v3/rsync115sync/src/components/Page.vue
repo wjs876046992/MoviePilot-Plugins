@@ -68,18 +68,65 @@
         </v-row>
 
         <!-- 快捷操作工具条 -->
-        <div class="action-strip d-flex align-center justify-space-between flex-wrap ga-2 rounded-xl pa-3 mb-4">
-          <div class="d-flex align-center ga-2">
-            <v-btn color="primary" variant="flat" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
-              <v-icon start size="16">mdi-play</v-icon>
-              同步已就绪媒体
-            </v-btn>
-            <v-btn color="warning" variant="tonal" size="small" rounded="lg" @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
-              <v-icon start size="16">mdi-refresh</v-icon>
-              定向重试失败文件
-            </v-btn>
+        <div class="action-strip rounded-xl pa-3 mb-4">
+          <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+            <div class="d-flex align-center ga-2">
+              <v-btn color="primary" variant="flat" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
+                <v-icon start size="16">mdi-play</v-icon>
+                同步已就绪媒体
+              </v-btn>
+              <v-btn color="warning" variant="tonal" size="small" rounded="lg" @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
+                <v-icon start size="16">mdi-refresh</v-icon>
+                定向重试失败文件
+              </v-btn>
+            </div>
+            <div class="d-flex align-center ga-2">
+              <div v-if="actionMsg" class="text-caption font-weight-bold text-primary mr-1">{{ actionMsg }}</div>
+              <!-- 批量选择模式开关 -->
+              <v-btn
+                v-if="currentTab !== 'ignored'"
+                size="small"
+                variant="tonal"
+                :color="selectMode ? 'error' : 'secondary'"
+                rounded="lg"
+                @click="toggleSelectMode"
+              >
+                <v-icon start size="16">{{ selectMode ? 'mdi-close' : 'mdi-checkbox-multiple-marked-outline' }}</v-icon>
+                {{ selectMode ? '退出批量' : '批量选择' }}
+              </v-btn>
+              <v-btn
+                v-if="selectMode"
+                size="small"
+                variant="flat"
+                color="primary"
+                rounded="lg"
+                :loading="batchSyncing"
+                :disabled="!selectedKeys.length || statusData.is_running"
+                @click="batchSyncSelected"
+              >
+                <v-icon start size="16">mdi-cloud-upload-outline</v-icon>
+                同步选中 ({{ selectedKeys.length }})
+              </v-btn>
+            </div>
           </div>
-          <div v-if="actionMsg" class="text-caption font-weight-bold text-primary">{{ actionMsg }}</div>
+
+          <!-- 批量操作辅助条 -->
+          <div v-if="selectMode" class="d-flex align-center flex-wrap ga-3 mt-2 pt-2 batch-bar">
+            <v-checkbox
+              :model-value="allSelected"
+              :indeterminate="selectedKeys.length > 0 && !allSelected"
+              density="compact"
+              hide-details
+              color="primary"
+              class="flex-shrink-0"
+              @update:model-value="toggleSelectAll"
+            >
+              <template #label>
+                <span class="text-caption font-weight-bold">全选本页 ({{ selectableItems.length }})</span>
+              </template>
+            </v-checkbox>
+            <span class="text-caption text-medium-emphasis">已选 {{ selectedKeys.length }} 项 · 可跨分组勾选后一次性上传统一触发</span>
+          </div>
         </div>
 
         <!-- 选项卡切换：冷却队列 vs 异常对账清单 vs 已忽略 -->
@@ -101,22 +148,51 @@
         <!-- 标签 1：延迟冷却队列 -->
         <div v-if="currentTab === 'queue'">
           <div v-if="queueList.length" class="d-flex flex-column ga-2">
-            <div v-for="(item, idx) in queueList" :key="idx" class="queue-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="overflow-hidden mr-3">
-                <div class="font-weight-bold text-body-2 text-truncate">{{ item.key }}</div>
-                <div class="text-caption text-medium-emphasis mt-0.5">
-                  入库时间: {{ item.enter_time }}
-                  <span v-if="!item.is_ready" class="ml-2 text-warning font-weight-medium">
-                    (还需冷却等待 {{ Math.ceil(item.remaining_seconds / 60) }} 分钟)
-                  </span>
-                  <span v-else class="ml-2 text-success font-weight-medium">
-                    (已达到冷却时间，随时可同步)
-                  </span>
+            <div v-for="(item, idx) in queueList" :key="'q-' + idx" class="queue-item-card d-flex align-center justify-space-between rounded-xl pa-3">
+              <div class="d-flex align-center overflow-hidden mr-3">
+                <v-checkbox
+                  v-if="selectMode"
+                  :model-value="selectedKeys.includes(item.key)"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  class="flex-shrink-0 mr-2"
+                  @update:model-value="toggleSelect(item.key)"
+                ></v-checkbox>
+                <div class="overflow-hidden">
+                  <div class="font-weight-bold text-body-2 text-truncate">{{ item.key }}</div>
+                  <div class="text-caption text-medium-emphasis mt-0.5">
+                    入库时间: {{ item.enter_time }}
+                    <span v-if="!item.is_ready" class="ml-2 text-warning font-weight-medium">
+                      (还需冷却等待 {{ Math.ceil(item.remaining_seconds / 60) }} 分钟)
+                    </span>
+                    <span v-else class="ml-2 text-success font-weight-medium">
+                      (已达到冷却时间，随时可同步)
+                    </span>
+                  </div>
                 </div>
               </div>
-              <v-chip size="x-small" :color="item.is_ready ? 'success' : 'warning'" variant="tonal" class="font-weight-bold flex-shrink-0">
-                {{ item.is_ready ? '已就绪' : '缓冲中' }}
-              </v-chip>
+              <div class="d-flex align-center ga-1 flex-shrink-0">
+                <v-chip size="x-small" :color="item.is_ready ? 'success' : 'warning'" variant="tonal" class="font-weight-bold">
+                  {{ item.is_ready ? '已就绪' : '缓冲中' }}
+                </v-chip>
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  rounded="lg"
+                  class="px-2"
+                  :loading="itemLoading === item.key"
+                  :disabled="statusData.is_running || (itemLoading && itemLoading !== item.key)"
+                  @click="syncSingle(item.key)"
+                >
+                  <v-icon start size="14">mdi-cloud-upload-outline</v-icon>
+                  立即同步
+                  <v-tooltip activator="parent" location="top">
+                    不等待冷却，立即定向同步此文件（会自动移出冷却队列）
+                  </v-tooltip>
+                </v-btn>
+              </div>
             </div>
           </div>
           <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
@@ -130,12 +206,37 @@
           <div v-if="failedCount" class="d-flex flex-column ga-2">
             <!-- 缺失未同步 -->
             <div v-for="(file, idx) in statusData.last_status?.missing_files || []" :key="'m-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="overflow-hidden mr-3">
-                <div class="font-weight-bold text-body-2 text-error text-truncate">{{ file }}</div>
-                <div class="text-caption text-medium-emphasis mt-0.5">本地已入库，但 115 网盘端尚未同步到位</div>
+              <div class="d-flex align-center overflow-hidden mr-3">
+                <v-checkbox
+                  v-if="selectMode"
+                  :model-value="selectedKeys.includes(file)"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  class="flex-shrink-0 mr-2"
+                  @update:model-value="toggleSelect(file)"
+                ></v-checkbox>
+                <div class="overflow-hidden">
+                  <div class="font-weight-bold text-body-2 text-error text-truncate">{{ file }}</div>
+                  <div class="text-caption text-medium-emphasis mt-0.5">本地已入库，但 115 网盘端尚未同步到位</div>
+                </div>
               </div>
               <div class="d-flex align-center ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="error" variant="flat" class="font-weight-bold">待同步</v-chip>
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  rounded="lg"
+                  class="px-2"
+                  :loading="itemLoading === file"
+                  :disabled="statusData.is_running || (itemLoading && itemLoading !== file)"
+                  @click="syncSingle(file)"
+                >
+                  <v-icon start size="14">mdi-refresh</v-icon>
+                  重试
+                  <v-tooltip activator="parent" location="top">立即定向重传此文件</v-tooltip>
+                </v-btn>
                 <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
                   <v-icon size="16">mdi-eye-off-outline</v-icon>
                   <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
@@ -144,12 +245,37 @@
             </div>
             <!-- 大小残缺 -->
             <div v-for="(file, idx) in statusData.last_status?.corrupt_files || []" :key="'c-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="overflow-hidden mr-3">
-                <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ file }}</div>
-                <div class="text-caption text-medium-emphasis mt-0.5">目标端大小不一致，传输中途断流</div>
+              <div class="d-flex align-center overflow-hidden mr-3">
+                <v-checkbox
+                  v-if="selectMode"
+                  :model-value="selectedKeys.includes(file)"
+                  density="compact"
+                  hide-details
+                  color="primary"
+                  class="flex-shrink-0 mr-2"
+                  @update:model-value="toggleSelect(file)"
+                ></v-checkbox>
+                <div class="overflow-hidden">
+                  <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ file }}</div>
+                  <div class="text-caption text-medium-emphasis mt-0.5">目标端大小不一致，传输中途断流</div>
+                </div>
               </div>
               <div class="d-flex align-center ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">文件残缺</v-chip>
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  rounded="lg"
+                  class="px-2"
+                  :loading="itemLoading === file"
+                  :disabled="statusData.is_running || (itemLoading && itemLoading !== file)"
+                  @click="syncSingle(file)"
+                >
+                  <v-icon start size="14">mdi-refresh</v-icon>
+                  重试
+                  <v-tooltip activator="parent" location="top">先清理目标端残缺文件，再重新上传</v-tooltip>
+                </v-btn>
                 <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
                   <v-icon size="16">mdi-eye-off-outline</v-icon>
                   <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
@@ -221,6 +347,12 @@ const statusData = ref({
 
 const ignoredList = ref([])
 
+// 批量选择 / 单条手动触发
+const selectMode = ref(false)
+const selectedKeys = ref([])
+const itemLoading = ref('')
+const batchSyncing = ref(false)
+
 const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +
   (statusData.value.last_status?.corrupt_files?.length || 0)
@@ -228,6 +360,92 @@ const failedCount = computed(() =>
 
 const queueList = ref([])
 let timer = null
+
+// 当前标签页可被勾选的条目 key 列表
+const selectableItems = computed(() => {
+  if (currentTab.value === 'queue') {
+    return queueList.value.map((it) => it.key)
+  }
+  if (currentTab.value === 'failed') {
+    return [
+      ...(statusData.value.last_status?.missing_files || []),
+      ...(statusData.value.last_status?.corrupt_files || []),
+    ]
+  }
+  return []
+})
+
+const allSelected = computed(
+  () =>
+    selectableItems.value.length > 0 &&
+    selectableItems.value.every((k) => selectedKeys.value.includes(k))
+)
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  if (!selectMode.value) selectedKeys.value = []
+}
+
+function toggleSelect(key) {
+  const i = selectedKeys.value.indexOf(key)
+  if (i >= 0) selectedKeys.value.splice(i, 1)
+  else selectedKeys.value.push(key)
+}
+
+// 全选/取消全选：仅作用于当前标签页的条目，不影响其它标签页已勾选的内容
+function toggleSelectAll(val) {
+  const current = selectableItems.value
+  if (val) {
+    const merged = new Set([...selectedKeys.value, ...current])
+    selectedKeys.value = Array.from(merged)
+  } else {
+    selectedKeys.value = selectedKeys.value.filter((k) => !current.includes(k))
+  }
+}
+
+// 单条手动触发同步（不等冷却，立即定向上传）
+async function syncSingle(key) {
+  if (!key || statusData.value.is_running) return
+  itemLoading.value = key
+  actionMsg.value = `正在触发同步: ${key}`
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/sync_item', { key })
+    if (res && res.success) {
+      actionMsg.value = res.message || `已触发同步: ${key}`
+      // 从选中列表移除，避免重复提交
+      const i = selectedKeys.value.indexOf(key)
+      if (i >= 0) selectedKeys.value.splice(i, 1)
+    } else {
+      actionMsg.value = res?.message || '触发同步失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '触发同步出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
+  }
+}
+
+// 批量触发选中条目
+async function batchSyncSelected() {
+  if (!selectedKeys.value.length || statusData.value.is_running) return
+  batchSyncing.value = true
+  actionMsg.value = `正在批量触发 ${selectedKeys.value.length} 个文件...`
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/sync_item', { keys: [...selectedKeys.value] })
+    if (res && res.success) {
+      actionMsg.value = res.message || '已批量触发同步'
+      selectedKeys.value = []
+    } else {
+      actionMsg.value = res?.message || '批量触发失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '批量触发出错: ' + e.message
+  } finally {
+    batchSyncing.value = false
+  }
+}
 
 function notifyClose() {
   emit('close')
@@ -251,6 +469,15 @@ async function fetchStatus() {
     const iRes = await props.api.get('plugin/Rsync115Sync/ignored')
     if (iRes && iRes.success && iRes.data) {
       ignoredList.value = iRes.data
+    }
+    // 清理已不存在条目的勾选状态，避免提交到已消失的文件
+    if (selectedKeys.value.length) {
+      const alive = new Set([
+        ...queueList.value.map((it) => it.key),
+        ...(statusData.value.last_status?.missing_files || []),
+        ...(statusData.value.last_status?.corrupt_files || []),
+      ])
+      selectedKeys.value = selectedKeys.value.filter((k) => alive.has(k))
     }
   } catch (e) {
     console.error('获取状态失败:', e)
@@ -353,6 +580,9 @@ onUnmounted(() => {
 .queue-item-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+}
+.batch-bar {
+  border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
 }
 .failed-item-card {
   background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
