@@ -1,17 +1,17 @@
 
-.plugin-page[data-v-bfceeb75] {
+.plugin-page[data-v-9bff9b0d] {
   width: 100%;
   box-sizing: border-box;
   padding: 16px 20px !important;
 }
-.page-main-card[data-v-bfceeb75] {
+.page-main-card[data-v-9bff9b0d] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-bfceeb75] {
+.header-surface[data-v-9bff9b0d] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
 }
-.header-icon-box[data-v-bfceeb75] {
+.header-icon-box[data-v-9bff9b0d] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -20,27 +20,27 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.stat-card[data-v-bfceeb75] {
+.stat-card[data-v-9bff9b0d] {
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.stat-info[data-v-bfceeb75] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+.stat-info[data-v-9bff9b0d] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
 }
-.stat-primary[data-v-bfceeb75] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+.stat-primary[data-v-9bff9b0d] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
 }
-.stat-error[data-v-bfceeb75] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+.stat-error[data-v-9bff9b0d] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
 }
-.action-strip[data-v-bfceeb75] {
+.action-strip[data-v-9bff9b0d] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
-.queue-item-card[data-v-bfceeb75] {
+.queue-item-card[data-v-9bff9b0d] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.failed-item-card[data-v-bfceeb75] {
+.failed-item-card[data-v-9bff9b0d] {
   background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
   border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
 }
-.empty-box[data-v-bfceeb75] {
+.empty-box[data-v-9bff9b0d] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }

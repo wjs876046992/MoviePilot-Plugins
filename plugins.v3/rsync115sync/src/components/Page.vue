@@ -82,7 +82,7 @@
           <div v-if="actionMsg" class="text-caption font-weight-bold text-primary">{{ actionMsg }}</div>
         </div>
 
-        <!-- 选项卡切换：冷却队列 vs 异常对账清单 -->
+        <!-- 选项卡切换：冷却队列 vs 异常对账清单 vs 已忽略 -->
         <v-tabs v-model="currentTab" color="primary" density="compact" class="mb-3 border-b">
           <v-tab value="queue">
             <v-icon start size="16">mdi-timer-sand</v-icon>
@@ -90,7 +90,11 @@
           </v-tab>
           <v-tab value="failed">
             <v-icon start size="16">mdi-alert-circle-outline</v-icon>
-            对账异常清单 ({{ (statusData.last_status?.missing_files?.length || 0) + (statusData.last_status?.corrupt_files?.length || 0) }})
+            对账异常清单 ({{ failedCount }})
+          </v-tab>
+          <v-tab value="ignored">
+            <v-icon start size="16">mdi-eye-off-outline</v-icon>
+            已忽略 ({{ ignoredList.length }})
           </v-tab>
         </v-tabs>
 
@@ -123,14 +127,20 @@
 
         <!-- 标签 2：对账异常与失败清单 -->
         <div v-if="currentTab === 'failed'">
-          <div v-if="(statusData.last_status?.missing_files?.length || 0) + (statusData.last_status?.corrupt_files?.length || 0)" class="d-flex flex-column ga-2">
-            <!-- 彻底缺失 -->
+          <div v-if="failedCount" class="d-flex flex-column ga-2">
+            <!-- 缺失未同步 -->
             <div v-for="(file, idx) in statusData.last_status?.missing_files || []" :key="'m-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
               <div class="overflow-hidden mr-3">
                 <div class="font-weight-bold text-body-2 text-error text-truncate">{{ file }}</div>
-                <div class="text-caption text-medium-emphasis mt-0.5">两端均无对应文件或目标端未创建成功</div>
+                <div class="text-caption text-medium-emphasis mt-0.5">本地已入库，但 115 网盘端尚未同步到位</div>
               </div>
-              <v-chip size="x-small" color="error" variant="flat" class="font-weight-bold flex-shrink-0">彻底缺失</v-chip>
+              <div class="d-flex align-center ga-1 flex-shrink-0">
+                <v-chip size="x-small" color="error" variant="flat" class="font-weight-bold">待同步</v-chip>
+                <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
+                  <v-icon size="16">mdi-eye-off-outline</v-icon>
+                  <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
+                </v-btn>
+              </div>
             </div>
             <!-- 大小残缺 -->
             <div v-for="(file, idx) in statusData.last_status?.corrupt_files || []" :key="'c-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
@@ -138,12 +148,45 @@
                 <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ file }}</div>
                 <div class="text-caption text-medium-emphasis mt-0.5">目标端大小不一致，传输中途断流</div>
               </div>
-              <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold flex-shrink-0">文件残缺</v-chip>
+              <div class="d-flex align-center ga-1 flex-shrink-0">
+                <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">文件残缺</v-chip>
+                <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
+                  <v-icon size="16">mdi-eye-off-outline</v-icon>
+                  <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
+                </v-btn>
+              </div>
             </div>
           </div>
           <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
-            <div class="text-caption font-weight-bold text-medium-emphasis">两端文件经对账完全一致，零缺失零残缺！</div>
+            <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
+          </div>
+        </div>
+
+        <!-- 标签 3：已忽略清单 -->
+        <div v-if="currentTab === 'ignored'">
+          <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
+            <div v-for="(rule, idx) in ignoredList" :key="'i-' + idx" class="queue-item-card d-flex align-center justify-space-between rounded-xl pa-3">
+              <div class="overflow-hidden mr-3">
+                <div class="font-weight-bold text-body-2 text-truncate">{{ rule.rule }}</div>
+                <div class="text-caption text-medium-emphasis mt-0.5">
+                  {{ rule.match === 'exact' ? '精确匹配' : '包含匹配' }}
+                  · 加入于 {{ rule.created_at }}
+                  <span v-if="rule.created_by"> · 操作人 {{ rule.created_by }}</span>
+                </div>
+              </div>
+              <div class="d-flex align-center ga-1 flex-shrink-0">
+                <v-chip size="x-small" color="secondary" variant="tonal" class="font-weight-bold">已忽略</v-chip>
+                <v-btn icon size="x-small" variant="text" color="success" @click="removeIgnore(idx)">
+                  <v-icon size="16">mdi-restore</v-icon>
+                  <v-tooltip activator="parent" location="top">恢复对账</v-tooltip>
+                </v-btn>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+            <v-icon size="32" color="primary" class="mb-2">mdi-eye-off-outline</v-icon>
+            <div class="text-caption font-weight-bold text-medium-emphasis">当前没有忽略任何文件</div>
           </div>
         </div>
       </v-card-text>
@@ -152,7 +195,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
   model: { type: Object, default: () => ({}) },
@@ -176,6 +219,13 @@ const statusData = ref({
   sync_pairs_count: 0,
 })
 
+const ignoredList = ref([])
+
+const failedCount = computed(() =>
+  (statusData.value.last_status?.missing_files?.length || 0) +
+  (statusData.value.last_status?.corrupt_files?.length || 0)
+)
+
 const queueList = ref([])
 let timer = null
 
@@ -198,10 +248,34 @@ async function fetchStatus() {
     if (qRes && qRes.success && qRes.data) {
       queueList.value = qRes.data
     }
+    const iRes = await props.api.get('plugin/Rsync115Sync/ignored')
+    if (iRes && iRes.success && iRes.data) {
+      ignoredList.value = iRes.data
+    }
   } catch (e) {
     console.error('获取状态失败:', e)
   } finally {
     loading.value = false
+  }
+}
+
+async function ignoreFile(file, match = 'exact') {
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/ignore', { rule: file, match })
+    actionMsg.value = res?.message || '已加入忽略清单'
+    fetchStatus()
+  } catch (e) {
+    actionMsg.value = '忽略失败: ' + e.message
+  }
+}
+
+async function removeIgnore(index) {
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/unignore', { index })
+    actionMsg.value = res?.message || '已恢复对账'
+    fetchStatus()
+  } catch (e) {
+    actionMsg.value = '恢复失败: ' + e.message
   }
 }
 

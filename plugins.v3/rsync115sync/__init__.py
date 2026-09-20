@@ -18,7 +18,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.2"
+    plugin_version = "0.0.1"
     plugin_author = "HermanWu"
 
     def __init__(self):
@@ -49,6 +49,10 @@ class Rsync115Sync(_PluginBase):
         # 待确认的交互重试列表（关键字查找结果）：[{"key": "...", "path": "..."}]
         self._waiting_confirm_retries: List[str] = []
 
+        # 忽略规则清单（结构化方案 B）
+        # [ { "rule": str, "match": "exact"|"contains", "created_at": str, "created_by": str, "source": "chat"|"web" } ]
+        self._ignored_rules: List[Dict[str, Any]] = []
+
         self._last_status: Dict[str, Any] = {
             "state": "idle",
             "start_time": None,
@@ -78,9 +82,71 @@ class Rsync115Sync(_PluginBase):
             self._pending_queue = saved_queue
         self._last_status["missing_files"] = self.get_data("missing_files") or []
         self._last_status["corrupt_files"] = self.get_data("corrupt_files") or []
+        saved_ignored = self.get_data("ignored_files") or []
+        if isinstance(saved_ignored, list):
+            self._ignored_rules = saved_ignored
 
     def get_state(self) -> bool:
         return self._enabled
+
+    def _is_ignored(self, key: str) -> bool:
+        """检查某个文件 key 是否命中了忽略规则（大小写不敏感）"""
+        if not key or not self._ignored_rules:
+            return False
+        k_lower = key.lower()
+        for r in self._ignored_rules:
+            rule_str = (r.get("rule") or "").lower().strip()
+            if not rule_str:
+                continue
+            match_mode = r.get("match", "contains")
+            if match_mode == "exact":
+                if k_lower == rule_str:
+                    return True
+            else:
+                if rule_str in k_lower:
+                    return True
+        return False
+
+    def _add_ignore_rule(self, rule: str, match: str = "contains", created_by: str = "", source: str = "chat") -> bool:
+        """添加一条忽略规则，并同步剔除已存在于缺失/残缺清单里的项"""
+        rule = rule.strip()
+        if not rule:
+            return False
+        # 去重
+        for item in self._ignored_rules:
+            if item.get("rule", "").lower() == rule.lower() and item.get("match") == match:
+                return False
+        entry = {
+            "rule": rule,
+            "match": match,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "created_by": created_by,
+            "source": source,
+        }
+        self._ignored_rules.append(entry)
+        self.save_data("ignored_files", self._ignored_rules)
+
+        # 立即联动剔除已有的 missing/corrupt
+        self._last_status["missing_files"] = [k for k in self._last_status.get("missing_files", []) if not self._is_ignored(k)]
+        self._last_status["corrupt_files"] = [k for k in self._last_status.get("corrupt_files", []) if not self._is_ignored(k)]
+        self.save_data("missing_files", self._last_status["missing_files"])
+        self.save_data("corrupt_files", self._last_status["corrupt_files"])
+        return True
+
+    def _remove_ignore_rule(self, index_or_rule: Any) -> bool:
+        """移除指定忽略规则"""
+        removed = False
+        if isinstance(index_or_rule, int) and 0 <= index_or_rule < len(self._ignored_rules):
+            self._ignored_rules.pop(index_or_rule)
+            removed = True
+        elif isinstance(index_or_rule, str):
+            target = index_or_rule.strip().lower()
+            orig_len = len(self._ignored_rules)
+            self._ignored_rules = [r for r in self._ignored_rules if (r.get("rule") or "").lower() != target]
+            removed = len(self._ignored_rules) < orig_len
+        if removed:
+            self.save_data("ignored_files", self._ignored_rules)
+        return removed
 
     # ================= 监听 MoviePilot 媒体转移完成事件 =================
 
@@ -168,6 +234,13 @@ class Rsync115Sync(_PluginBase):
                 "desc": "查看当前115同步进度与冷却/待重试队列",
                 "category": "工具",
                 "data": {"action": "status"}
+            },
+            {
+                "cmd": "/rsync_ignore",
+                "event": EventType.PluginAction,
+                "desc": "忽略指定文件不再报警 (例: /rsync_ignore 剧名 或 /rsync_ignore list/clear)",
+                "category": "工具",
+                "data": {"action": "ignore"}
             }
         ]
 
@@ -215,8 +288,31 @@ class Rsync115Sync(_PluginBase):
             {"path": "/config", "endpoint": self._api_get_config, "methods": ["GET"], "auth": "bear"},
             {"path": "/config", "endpoint": self._api_save_config, "methods": ["POST"], "auth": "bear"},
             {"path": "/sync", "endpoint": self._api_trigger_sync, "methods": ["POST"], "auth": "bear"},
-            {"path": "/retry", "endpoint": self._api_trigger_retry, "methods": ["POST"], "auth": "bear"}
+            {"path": "/retry", "endpoint": self._api_trigger_retry, "methods": ["POST"], "auth": "bear"},
+            {"path": "/ignored", "endpoint": self._api_get_ignored, "methods": ["GET"], "auth": "bear"},
+            {"path": "/ignore", "endpoint": self._api_add_ignore, "methods": ["POST"], "auth": "bear"},
+            {"path": "/unignore", "endpoint": self._api_remove_ignore, "methods": ["POST"], "auth": "bear"},
         ]
+
+    def _api_get_ignored(self):
+        return {"success": True, "data": self._ignored_rules}
+
+    def _api_add_ignore(self, body: Dict[str, Any]):
+        rule = (body or {}).get("rule", "").strip()
+        match = (body or {}).get("match", "contains")
+        if not rule:
+            return {"success": False, "message": "规则不能为空"}
+        ok = self._add_ignore_rule(rule=rule, match=match, created_by="Web", source="web")
+        return {"success": ok, "message": "已加入忽略清单" if ok else "规则已存在或添加失败"}
+
+    def _api_remove_ignore(self, body: Dict[str, Any]):
+        idx = (body or {}).get("index")
+        rule = (body or {}).get("rule")
+        target = idx if isinstance(idx, int) else rule
+        if target is None:
+            return {"success": False, "message": "缺少指定索引或规则"}
+        ok = self._remove_ignore_rule(target)
+        return {"success": ok, "message": "已从忽略清单移除" if ok else "未找到匹配规则"}
 
     def _api_get_config(self):
         return {
@@ -332,6 +428,12 @@ class Rsync115Sync(_PluginBase):
             has_error = False
             total_missing = []
             total_corrupt = []
+            synced_count = 0
+            # 本轮实际核对过的文件 key 集合（增量模式下用于与历史结果合并，避免误清空）
+            audited_keys = set()
+            # 本轮开始前的异常集合快照，用于判断是否发生变化、抑制重复告警
+            prev_anomaly_set = set(self._last_status.get("missing_files", []) or []) | \
+                set(self._last_status.get("corrupt_files", []) or [])
 
             for idx, pair in enumerate(self._sync_pairs):
                 src = (pair.get("src") or "").strip().rstrip("/")
@@ -381,24 +483,40 @@ class Rsync115Sync(_PluginBase):
 
                 elif mode == "retry":
                     # 重试模式：若指定了 custom_files 优先按 custom_files 重试，否则按历史异常文件重试
-                    target_keys = custom_files or list(set(self._last_status.get("missing_files", []) + self._last_status.get("corrupt_files", [])))
+                    raw_target_keys = custom_files or list(set(self._last_status.get("missing_files", []) + self._last_status.get("corrupt_files", [])))
+                    target_keys = [k for k in raw_target_keys if not self._is_ignored(k)]
+
                     for key in target_keys:
+                        # 兼容处理前缀匹配：
+                        # 格式 A: "任务备注名:相对路径"
+                        # 格式 B: "相对路径"（当无任务名前缀时）
+                        rel_p = None
                         if key.startswith(f"{pair_name}:"):
                             rel_p = key.split(f"{pair_name}:", 1)[1]
-                            pair_files.append(rel_p)
-                            # 重传前若目标端有大小不一致的残缺文件，先清理确保全新上传秒传
-                            dest_f = os.path.join(dest, rel_p)
-                            src_f = os.path.join(src, rel_p)
-                            if os.path.exists(dest_f) and os.path.exists(src_f):
-                                if os.path.getsize(dest_f) != os.path.getsize(src_f):
-                                    try:
-                                        os.remove(dest_f)
-                                    except Exception:
-                                        pass
+                        elif not any(key.startswith(f"{(p.get('name') or p.get('src') or '').strip().rstrip('/')}:") for p in self._sync_pairs):
+                            # key 没有任何已知映射前缀，检查文件是否落在当前 src 下
+                            if os.path.exists(os.path.join(src, key)):
+                                rel_p = key
+
+                        if rel_p:
+                            rel_p = rel_p.lstrip("/")
+                            # 确保源端文件确实存在才加入传输列表
+                            if os.path.exists(os.path.join(src, rel_p)):
+                                pair_files.append(rel_p)
+                                # 重传前若目标端有大小不一致的残缺文件，先清理确保全新上传秒传
+                                dest_f = os.path.join(dest, rel_p)
+                                src_f = os.path.join(src, rel_p)
+                                if os.path.exists(dest_f) and os.path.exists(src_f):
+                                    if os.path.getsize(dest_f) != os.path.getsize(src_f):
+                                        try:
+                                            os.remove(dest_f)
+                                        except Exception:
+                                            pass
 
                 # 生成 --files-from 清单文件
                 if mode in ["ready", "retry"]:
                     if not pair_files:
+                        # 本次没有需要处理的文件，跳过该目录（不做全盘对账，避免历史存量文件误报）
                         continue
                     temp_list_file = f"/tmp/rsync_files_{int(time.time())}_{idx}.txt"
                     with open(temp_list_file, "w", encoding="utf-8") as f:
@@ -408,7 +526,7 @@ class Rsync115Sync(_PluginBase):
 
                 cmd.extend([f"{src}/", dest])
 
-                logger.info(f"[Rsync115Sync] [{pair_name}] 执行: {' '.join(cmd[:12])}...")
+                logger.info(f"[Rsync115Sync] [{pair_name}] 执行 ({len(pair_files)} 个文件): {' '.join(cmd[:10])}...")
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
                 self._current_process = process
 
@@ -422,14 +540,28 @@ class Rsync115Sync(_PluginBase):
                     exit_code = -9
                     has_error = True
 
+                # 记录 rsync 关键输出，便于排查传输失败原因
+                if exit_code != 0:
+                    err_tail = (stderr or "").strip().splitlines()[-3:]
+                    logger.error(f"[Rsync115Sync] [{pair_name}] rsync 退出码 {exit_code}: {' | '.join(err_tail)}")
+                elif mode == "force":
+                    logger.info(f"[Rsync115Sync] [{pair_name}] 全量同步完成")
+
                 if temp_list_file and os.path.exists(temp_list_file):
                     try:
                         os.remove(temp_list_file)
                     except Exception:
                         pass
 
-                # 双向对账审计
-                m_list, c_list = self._audit_files_integrity(src, dest, pair_name, all_ext)
+                # 双向对账审计：ready/retry 仅核对本次同步的文件；force 才做全量扫描
+                if mode == "force":
+                    m_list, c_list = self._audit_files_integrity(src, dest, pair_name, all_ext, rel_paths=None)
+                else:
+                    if not pair_files:
+                        continue
+                    synced_count += len(pair_files)
+                    audited_keys.update(f"{pair_name}:{p}" for p in pair_files)
+                    m_list, c_list = self._audit_files_integrity(src, dest, pair_name, all_ext, rel_paths=pair_files)
                 total_missing.extend(m_list)
                 total_corrupt.extend(c_list)
 
@@ -441,10 +573,32 @@ class Rsync115Sync(_PluginBase):
                             self._pending_queue.pop(k, None)
 
             self.save_data("pending_queue", self._pending_queue)
-            self._last_status["missing_files"] = total_missing
-            self._last_status["corrupt_files"] = total_corrupt
-            self.save_data("missing_files", total_missing)
-            self.save_data("corrupt_files", total_corrupt)
+
+            # 结果合并：
+            # - force 全量模式：以本轮全盘扫描结果为准，直接替换。
+            # - ready/retry 增量模式：本轮"已核对且恢复正常"的文件移出清单；
+            #   本轮未涉及的历史异常项予以保留，避免因为增量对账而误清空。
+            if mode == "force":
+                final_missing = list(dict.fromkeys(total_missing))
+                final_corrupt = list(dict.fromkeys(total_corrupt))
+            else:
+                prev_missing = self._last_status.get("missing_files", []) or []
+                prev_corrupt = self._last_status.get("corrupt_files", []) or []
+                # 保留：未被本轮核对过的历史项
+                kept_missing = [k for k in prev_missing if k not in audited_keys]
+                kept_corrupt = [k for k in prev_corrupt if k not in audited_keys]
+                final_missing = list(dict.fromkeys(kept_missing + total_missing))
+                final_corrupt = list(dict.fromkeys(kept_corrupt + total_corrupt))
+
+            # 忽略清单内的条目一律不进入异常列表
+            final_missing = [k for k in final_missing if not self._is_ignored(k)]
+            final_corrupt = [k for k in final_corrupt if not self._is_ignored(k)]
+
+            self._last_status["missing_files"] = final_missing
+            self._last_status["corrupt_files"] = final_corrupt
+            self.save_data("missing_files", final_missing)
+            self.save_data("corrupt_files", final_corrupt)
+            total_missing, total_corrupt = final_missing, final_corrupt
 
             end_time = datetime.now()
             duration = int((end_time - start_time).total_seconds())
@@ -453,22 +607,63 @@ class Rsync115Sync(_PluginBase):
             is_success = (not has_error and not total_missing and not total_corrupt)
             self._last_status["success"] = is_success
 
+            # 判断异常集合是否发生变化（用于抑制重复告警）
+            anomaly_now = set(total_missing) | set(total_corrupt)
+            anomaly_changed = (anomaly_now != prev_anomaly_set)
+
             if is_success:
                 self._last_status["state"] = "completed"
-                msg = f"🎉 115网盘同步与对账完成！\n耗时: {duration} 秒\n所有文件均完整上传到位。"
+                if mode == "force":
+                    msg = f"🎉 115网盘全量同步与对账完成！\n耗时: {duration} 秒\n未发现任何缺失或残缺文件。"
+                    should_notify = True
+                elif synced_count == 0:
+                    # 定时巡检空转：没有任何文件需要处理，无需打扰用户
+                    msg = f"✅ 本轮无需同步（暂无冷却就绪或待重试文件）\n耗时: {duration} 秒\n冷却队列与异常清单均为空。"
+                    should_notify = False
+                else:
+                    msg = f"🎉 115网盘同步与对账完成！\n耗时: {duration} 秒\n本次处理 {synced_count} 个文件，全部完整上传到位。"
+                    should_notify = True
             else:
                 self._last_status["state"] = "failed"
-                msg = (
-                    f"⚠️ 115同步存在未完成项！\n"
-                    f"耗时: {duration} 秒\n"
-                    f"🔍 缺失未同步: {len(total_missing)} 个\n"
-                    f"🔍 大小残缺: {len(total_corrupt)} 个\n"
-                    f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！"
-                )
+                if synced_count > 0:
+                    # 有实际传输动作，但仍有未完成项 → 必须报告
+                    msg = (
+                        f"⚠️ 115同步存在未完成项！\n"
+                        f"耗时: {duration} 秒\n"
+                        f"📤 本次传输: {synced_count} 个\n"
+                        f"🔍 缺失未同步: {len(total_missing)} 个\n"
+                        f"🔍 大小残缺: {len(total_corrupt)} 个\n"
+                        f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"
+                        f"💡 如为不想同步的存量文件，可发送 /rsync_ignore 剧名 忽略。"
+                    )
+                    should_notify = True
+                elif anomaly_changed:
+                    # 定时巡检发现异常项有变化 → 报告
+                    msg = (
+                        f"⚠️ 115同步异常清单有更新！\n"
+                        f"耗时: {duration} 秒\n"
+                        f"🔍 缺失未同步: {len(total_missing)} 个\n"
+                        f"🔍 大小残缺: {len(total_corrupt)} 个\n"
+                        f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"
+                        f"💡 如为不想同步的存量文件，可发送 /rsync_ignore 剧名 忽略。"
+                    )
+                    should_notify = True
+                else:
+                    # 定时巡检：异常清单与上次完全一致，且本轮无任何传输动作 → 静默，不打扰用户
+                    msg = (
+                        f"ℹ️ 115定时巡检完成，异常清单无变化\n"
+                        f"耗时: {duration} 秒\n"
+                        f"🔍 仍待处理: 缺失 {len(total_missing)} 个 / 残缺 {len(total_corrupt)} 个"
+                    )
+                    should_notify = False
 
-            self._post_reply(channel_event, msg)
-            if self._notify and not channel_event:
+            # 用户主动发起的命令：无论结果都必须回复
+            if channel_event:
+                self._post_reply(channel_event, msg)
+            elif self._notify and should_notify:
                 self.post_message(title="115网盘同步报告", text=msg)
+            else:
+                logger.info(f"[Rsync115Sync] {msg.replace(chr(10), ' | ')}")
 
         except Exception as e:
             logger.error(f"[Rsync115Sync] 同步过程发生异常: {e}")
@@ -478,12 +673,47 @@ class Rsync115Sync(_PluginBase):
             self._current_process = None
             self._lock.release()
 
-    def _audit_files_integrity(self, source_dir: str, target_dir: str, pair_name: str, all_ext: bool) -> Tuple[List[str], List[str]]:
+    def _audit_files_integrity(self, source_dir: str, target_dir: str, pair_name: str,
+                               all_ext: bool, rel_paths: Optional[List[str]] = None) -> Tuple[List[str], List[str]]:
+        """
+        对账审计（增量模式）。
+
+        rel_paths 不为 None 时：仅核对本次实际参与同步的文件（冷却就绪 / 定向重试），
+        不再全盘 os.walk 整个媒体库，避免历史存量文件被反复误报为缺失。
+        rel_paths 为 None 时：执行全量扫描（仅供 force 强制全量模式使用）。
+        """
         missing, corrupt = [], []
         if not os.path.exists(source_dir) or not os.path.exists(target_dir):
             return missing, corrupt
 
         valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
+
+        if rel_paths is not None:
+            # ---- 增量对账：只检查指定文件 ----
+            for rel_f in rel_paths:
+                rel_f = (rel_f or "").lstrip("/")
+                if not rel_f:
+                    continue
+                src_f = os.path.join(source_dir, rel_f)
+                dest_f = os.path.join(target_dir, rel_f)
+                key = f"{pair_name}:{rel_f}"
+
+                if self._is_ignored(key) or not os.path.exists(src_f):
+                    continue
+
+                if not os.path.exists(dest_f):
+                    missing.append(key)
+                    continue
+
+                try:
+                    if os.path.getsize(src_f) != os.path.getsize(dest_f):
+                        corrupt.append(key)
+                except Exception:
+                    corrupt.append(key)
+
+            return missing, corrupt
+
+        # ---- 全量对账：force 模式专用 ----
         now_ts = time.time()
         cooling_seconds = self._delay_hours * 3600
 
@@ -501,7 +731,11 @@ class Rsync115Sync(_PluginBase):
                 dest_f = os.path.join(target_dir, rel_f)
                 key = f"{pair_name}:{rel_f}"
 
-                # 关键过滤：若该文件仍在冷却缓冲倒计时内，属于正常等待调度，不计入缺失/待重试
+                # 忽略清单中的文件不参与对账
+                if self._is_ignored(key):
+                    continue
+
+                # 冷却期内的文件属于正常等待调度，不计入缺失/待重试
                 if key in self._pending_queue:
                     enter_ts = self._pending_queue[key]
                     if (now_ts - enter_ts) < cooling_seconds:
@@ -683,7 +917,98 @@ class Rsync115Sync(_PluginBase):
             if len(st.get('missing_files', [])) + len(st.get('corrupt_files', [])) > 0:
                 reply += "💡 发送 /rsync_retry 即可立即定向补传异常文件！\n"
             reply += "💡 支持发送 /rsync_search <剧名/电影名> 查找并确认重传指定媒体。"
+            if self._ignored_rules:
+                reply += f"\n🚫 已忽略规则: {len(self._ignored_rules)} 条 (/rsync_ignore list 查看)"
             self._post_reply(event, reply)
+
+        elif action == "ignore":
+            operator = str(data.get("user") or "")
+            arg_lower = text_arg.lower()
+
+            # 查看忽略清单
+            if arg_lower in ("list", "ls", "列表", ""):
+                if not self._ignored_rules:
+                    self._post_reply(event, "📋 当前没有任何忽略规则。\n发送 /rsync_ignore <剧名> 即可忽略指定媒体的报警。")
+                    return
+                lines = [
+                    f"{i+1}. [{r.get('match', 'contains')}] {r.get('rule')}  (加入于 {r.get('created_at', '-')})"
+                    for i, r in enumerate(self._ignored_rules)
+                ]
+                reply = (
+                    f"📋 当前共 {len(self._ignored_rules)} 条忽略规则：\n"
+                    f"--------------------------------\n"
+                    + "\n".join(lines) +
+                    f"\n--------------------------------\n"
+                    f"• 移除指定规则: /rsync_ignore remove 1\n"
+                    f"• 清空全部规则: /rsync_ignore clear"
+                )
+                self._post_reply(event, reply)
+                return
+
+            # 清空忽略清单
+            if arg_lower in ("clear", "清空", "reset"):
+                count = len(self._ignored_rules)
+                self._ignored_rules = []
+                self.save_data("ignored_files", self._ignored_rules)
+                self._post_reply(event, f"✅ 已清空全部 {count} 条忽略规则，相关文件将重新纳入对账。")
+                return
+
+            # 移除指定规则
+            if arg_lower.startswith("remove") or arg_lower.startswith("del"):
+                parts = text_arg.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    idx = int(parts[1]) - 1
+                    if 0 <= idx < len(self._ignored_rules):
+                        removed = self._ignored_rules.pop(idx)
+                        self.save_data("ignored_files", self._ignored_rules)
+                        self._post_reply(event, f"✅ 已移除忽略规则：{removed.get('rule')}")
+                    else:
+                        self._post_reply(event, f"⚠️ 序号超出范围，当前共 {len(self._ignored_rules)} 条规则。")
+                else:
+                    self._post_reply(event, "⚠️ 用法：/rsync_ignore remove 1")
+                return
+
+            # 若输入为纯数字：必须配合搜索结果才按序号精确忽略
+            if text_arg.isdigit():
+                if not self._waiting_confirm_retries:
+                    self._post_reply(
+                        event,
+                        "⚠️ 纯数字需要在搜索结果上下文中使用。\n"
+                        "请先发送 /rsync_search <剧名> 获取列表，再发送 /rsync_ignore 序号。\n"
+                        "若想按关键字忽略，请使用剧名而非数字（避免误伤含数字的其它文件）。"
+                    )
+                    return
+                idx = int(text_arg) - 1
+                if 0 <= idx < len(self._waiting_confirm_retries):
+                    target_key = self._waiting_confirm_retries[idx]
+                    ok = self._add_ignore_rule(target_key, match="exact", created_by=operator, source="chat")
+                    self._post_reply(
+                        event,
+                        f"✅ 已忽略：{target_key}" if ok else "⚠️ 该规则已存在。"
+                    )
+                    return
+                self._post_reply(event, f"⚠️ 序号超出范围（1~{len(self._waiting_confirm_retries)}）。")
+                return
+
+            # 安全护栏：过短的包含规则极易误伤，要求至少 2 个字符
+            if len(text_arg) < 2:
+                self._post_reply(event, "⚠️ 忽略关键字过短，请至少输入 2 个字符，以免误伤其它文件。")
+                return
+
+            # 关键字忽略（子串包含）
+            ok = self._add_ignore_rule(text_arg, match="contains", created_by=operator, source="chat")
+            # 若已有搜索结果，提示可精确忽略
+            hint = ""
+            if self._waiting_confirm_retries:
+                hint = f"\n💡 也可用序号精确忽略: /rsync_ignore 1 (对应上一条搜索结果)"
+            if ok:
+                self._post_reply(
+                    event,
+                    f"✅ 已加入忽略清单（包含匹配）：\n• {text_arg}\n"
+                    f"后续该范围文件不再计入缺失、不再触发重试提醒。{hint}"
+                )
+            else:
+                self._post_reply(event, f"⚠️ 规则「{text_arg}」已存在，无需重复添加。")
 
     def _post_reply(self, event: Optional[Event], text: str):
         if not event:

@@ -50,14 +50,30 @@ const _hoisted_23 = {
 };
 const _hoisted_24 = { class: "overflow-hidden mr-3" };
 const _hoisted_25 = { class: "font-weight-bold text-body-2 text-error text-truncate" };
-const _hoisted_26 = { class: "overflow-hidden mr-3" };
-const _hoisted_27 = { class: "font-weight-bold text-body-2 text-warning text-truncate" };
-const _hoisted_28 = {
+const _hoisted_26 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_27 = { class: "overflow-hidden mr-3" };
+const _hoisted_28 = { class: "font-weight-bold text-body-2 text-warning text-truncate" };
+const _hoisted_29 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_30 = {
+  key: 1,
+  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
+};
+const _hoisted_31 = { key: 2 };
+const _hoisted_32 = {
+  key: 0,
+  class: "d-flex flex-column ga-2"
+};
+const _hoisted_33 = { class: "overflow-hidden mr-3" };
+const _hoisted_34 = { class: "font-weight-bold text-body-2 text-truncate" };
+const _hoisted_35 = { class: "text-caption text-medium-emphasis mt-0.5" };
+const _hoisted_36 = { key: 0 };
+const _hoisted_37 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_38 = {
   key: 1,
   class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
 };
 
-const {ref,onMounted,onUnmounted} = await importShared('vue');
+const {ref,computed,onMounted,onUnmounted} = await importShared('vue');
 
 
 
@@ -89,6 +105,13 @@ const statusData = ref({
   sync_pairs_count: 0,
 });
 
+const ignoredList = ref([]);
+
+const failedCount = computed(() =>
+  (statusData.value.last_status?.missing_files?.length || 0) +
+  (statusData.value.last_status?.corrupt_files?.length || 0)
+);
+
 const queueList = ref([]);
 let timer = null;
 
@@ -111,10 +134,34 @@ async function fetchStatus() {
     if (qRes && qRes.success && qRes.data) {
       queueList.value = qRes.data;
     }
+    const iRes = await props.api.get('plugin/Rsync115Sync/ignored');
+    if (iRes && iRes.success && iRes.data) {
+      ignoredList.value = iRes.data;
+    }
   } catch (e) {
     console.error('获取状态失败:', e);
   } finally {
     loading.value = false;
+  }
+}
+
+async function ignoreFile(file, match = 'exact') {
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/ignore', { rule: file, match });
+    actionMsg.value = res?.message || '已加入忽略清单';
+    fetchStatus();
+  } catch (e) {
+    actionMsg.value = '忽略失败: ' + e.message;
+  }
+}
+
+async function removeIgnore(index) {
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/unignore', { index });
+    actionMsg.value = res?.message || '已恢复对账';
+    fetchStatus();
+  } catch (e) {
+    actionMsg.value = '恢复失败: ' + e.message;
   }
 }
 
@@ -427,7 +474,22 @@ return (_ctx, _cache) => {
                       ]))]),
                       _: 1
                     }),
-                    _createTextVNode(" 对账异常清单 (" + _toDisplayString((statusData.value.last_status?.missing_files?.length || 0) + (statusData.value.last_status?.corrupt_files?.length || 0)) + ") ", 1)
+                    _createTextVNode(" 对账异常清单 (" + _toDisplayString(failedCount.value) + ") ", 1)
+                  ]),
+                  _: 1
+                }),
+                _createVNode(_component_v_tab, { value: "ignored" }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_icon, {
+                      start: "",
+                      size: "16"
+                    }, {
+                      default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                        _createTextVNode("mdi-eye-off-outline", -1)
+                      ]))]),
+                      _: 1
+                    }),
+                    _createTextVNode(" 已忽略 (" + _toDisplayString(ignoredList.value.length) + ") ", 1)
                   ]),
                   _: 1
                 })
@@ -472,18 +534,18 @@ return (_ctx, _cache) => {
                           color: "primary",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                          default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
                             _createTextVNode("mdi-check-circle-outline", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[19] || (_cache[19] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
+                        _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
                       ]))
                 ]))
               : _createCommentVNode("", true),
             (currentTab.value === 'failed')
               ? (_openBlock(), _createElementBlock("div", _hoisted_22, [
-                  ((statusData.value.last_status?.missing_files?.length || 0) + (statusData.value.last_status?.corrupt_files?.length || 0))
+                  (failedCount.value)
                     ? (_openBlock(), _createElementBlock("div", _hoisted_23, [
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(statusData.value.last_status?.missing_files || [], (file, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
@@ -492,19 +554,47 @@ return (_ctx, _cache) => {
                           }, [
                             _createElementVNode("div", _hoisted_24, [
                               _createElementVNode("div", _hoisted_25, _toDisplayString(file), 1),
-                              _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "两端均无对应文件或目标端未创建成功", -1))
+                              _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "本地已入库，但 115 网盘端尚未同步到位", -1))
                             ]),
-                            _createVNode(_component_v_chip, {
-                              size: "x-small",
-                              color: "error",
-                              variant: "flat",
-                              class: "font-weight-bold flex-shrink-0"
-                            }, {
-                              default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
-                                _createTextVNode("彻底缺失", -1)
-                              ]))]),
-                              _: 1
-                            })
+                            _createElementVNode("div", _hoisted_26, [
+                              _createVNode(_component_v_chip, {
+                                size: "x-small",
+                                color: "error",
+                                variant: "flat",
+                                class: "font-weight-bold"
+                              }, {
+                                default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
+                                  _createTextVNode("待同步", -1)
+                                ]))]),
+                                _: 1
+                              }),
+                              _createVNode(_component_v_btn, {
+                                icon: "",
+                                size: "x-small",
+                                variant: "text",
+                                color: "primary",
+                                onClick: $event => (ignoreFile(file, 'exact'))
+                              }, {
+                                default: _withCtx(() => [
+                                  _createVNode(_component_v_icon, { size: "16" }, {
+                                    default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                                      _createTextVNode("mdi-eye-off-outline", -1)
+                                    ]))]),
+                                    _: 1
+                                  }),
+                                  _createVNode(_component_v_tooltip, {
+                                    activator: "parent",
+                                    location: "top"
+                                  }, {
+                                    default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                                      _createTextVNode("忽略此项（不再报警）", -1)
+                                    ]))]),
+                                    _: 1
+                                  })
+                                ]),
+                                _: 1
+                              }, 8, ["onClick"])
+                            ])
                           ]))
                         }), 128)),
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(statusData.value.last_status?.corrupt_files || [], (file, idx) => {
@@ -512,36 +602,139 @@ return (_ctx, _cache) => {
                             key: 'c-' + idx,
                             class: "failed-item-card d-flex align-center justify-space-between rounded-xl pa-3"
                           }, [
-                            _createElementVNode("div", _hoisted_26, [
-                              _createElementVNode("div", _hoisted_27, _toDisplayString(file), 1),
-                              _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "目标端大小不一致，传输中途断流", -1))
+                            _createElementVNode("div", _hoisted_27, [
+                              _createElementVNode("div", _hoisted_28, _toDisplayString(file), 1),
+                              _cache[25] || (_cache[25] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-0.5" }, "目标端大小不一致，传输中途断流", -1))
                             ]),
-                            _createVNode(_component_v_chip, {
-                              size: "x-small",
-                              color: "warning",
-                              variant: "flat",
-                              class: "font-weight-bold flex-shrink-0"
-                            }, {
-                              default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
-                                _createTextVNode("文件残缺", -1)
-                              ]))]),
-                              _: 1
-                            })
+                            _createElementVNode("div", _hoisted_29, [
+                              _createVNode(_component_v_chip, {
+                                size: "x-small",
+                                color: "warning",
+                                variant: "flat",
+                                class: "font-weight-bold"
+                              }, {
+                                default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
+                                  _createTextVNode("文件残缺", -1)
+                                ]))]),
+                                _: 1
+                              }),
+                              _createVNode(_component_v_btn, {
+                                icon: "",
+                                size: "x-small",
+                                variant: "text",
+                                color: "primary",
+                                onClick: $event => (ignoreFile(file, 'exact'))
+                              }, {
+                                default: _withCtx(() => [
+                                  _createVNode(_component_v_icon, { size: "16" }, {
+                                    default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                                      _createTextVNode("mdi-eye-off-outline", -1)
+                                    ]))]),
+                                    _: 1
+                                  }),
+                                  _createVNode(_component_v_tooltip, {
+                                    activator: "parent",
+                                    location: "top"
+                                  }, {
+                                    default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+                                      _createTextVNode("忽略此项（不再报警）", -1)
+                                    ]))]),
+                                    _: 1
+                                  })
+                                ]),
+                                _: 1
+                              }, 8, ["onClick"])
+                            ])
                           ]))
                         }), 128))
                       ]))
-                    : (_openBlock(), _createElementBlock("div", _hoisted_28, [
+                    : (_openBlock(), _createElementBlock("div", _hoisted_30, [
                         _createVNode(_component_v_icon, {
                           size: "32",
                           color: "success",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                          default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                             _createTextVNode("mdi-shield-check", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[25] || (_cache[25] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "两端文件经对账完全一致，零缺失零残缺！", -1))
+                        _cache[30] || (_cache[30] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "冷却队列与待重试文件经对账全部一致，零缺失零残缺！", -1))
+                      ]))
+                ]))
+              : _createCommentVNode("", true),
+            (currentTab.value === 'ignored')
+              ? (_openBlock(), _createElementBlock("div", _hoisted_31, [
+                  (ignoredList.value.length)
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_32, [
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(ignoredList.value, (rule, idx) => {
+                          return (_openBlock(), _createElementBlock("div", {
+                            key: 'i-' + idx,
+                            class: "queue-item-card d-flex align-center justify-space-between rounded-xl pa-3"
+                          }, [
+                            _createElementVNode("div", _hoisted_33, [
+                              _createElementVNode("div", _hoisted_34, _toDisplayString(rule.rule), 1),
+                              _createElementVNode("div", _hoisted_35, [
+                                _createTextVNode(_toDisplayString(rule.match === 'exact' ? '精确匹配' : '包含匹配') + " · 加入于 " + _toDisplayString(rule.created_at) + " ", 1),
+                                (rule.created_by)
+                                  ? (_openBlock(), _createElementBlock("span", _hoisted_36, " · 操作人 " + _toDisplayString(rule.created_by), 1))
+                                  : _createCommentVNode("", true)
+                              ])
+                            ]),
+                            _createElementVNode("div", _hoisted_37, [
+                              _createVNode(_component_v_chip, {
+                                size: "x-small",
+                                color: "secondary",
+                                variant: "tonal",
+                                class: "font-weight-bold"
+                              }, {
+                                default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                                  _createTextVNode("已忽略", -1)
+                                ]))]),
+                                _: 1
+                              }),
+                              _createVNode(_component_v_btn, {
+                                icon: "",
+                                size: "x-small",
+                                variant: "text",
+                                color: "success",
+                                onClick: $event => (removeIgnore(idx))
+                              }, {
+                                default: _withCtx(() => [
+                                  _createVNode(_component_v_icon, { size: "16" }, {
+                                    default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                                      _createTextVNode("mdi-restore", -1)
+                                    ]))]),
+                                    _: 1
+                                  }),
+                                  _createVNode(_component_v_tooltip, {
+                                    activator: "parent",
+                                    location: "top"
+                                  }, {
+                                    default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+                                      _createTextVNode("恢复对账", -1)
+                                    ]))]),
+                                    _: 1
+                                  })
+                                ]),
+                                _: 1
+                              }, 8, ["onClick"])
+                            ])
+                          ]))
+                        }), 128))
+                      ]))
+                    : (_openBlock(), _createElementBlock("div", _hoisted_38, [
+                        _createVNode(_component_v_icon, {
+                          size: "32",
+                          color: "primary",
+                          class: "mb-2"
+                        }, {
+                          default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
+                            _createTextVNode("mdi-eye-off-outline", -1)
+                          ]))]),
+                          _: 1
+                        }),
+                        _cache[35] || (_cache[35] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "当前没有忽略任何文件", -1))
                       ]))
                 ]))
               : _createCommentVNode("", true)
@@ -556,6 +749,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bfceeb75"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9bff9b0d"]]);
 
 export { App as default };
