@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.5</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.7</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -148,6 +148,85 @@
             </v-col>
           </v-row>
         </div>
+
+        <!-- 模块 5：上传限流与风控退避 -->
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4">
+          <v-icon size="18" color="primary" class="mr-1">mdi-speedometer-slow</v-icon>
+          上传限流与风控退避
+        </div>
+        <div class="settings-group-card rounded-xl overflow-hidden">
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">启用上传限流</div>
+              <div class="text-caption text-medium-emphasis">按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控</div>
+            </div>
+            <v-switch v-model="config.rate_limit_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+          <div class="px-4 py-3">
+            <v-row density="compact">
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model.number="config.upload_batch_size"
+                  label="单批文件数上限"
+                  type="number"
+                  variant="outlined"
+                  density="compact"
+                  :disabled="!config.rate_limit_enabled"
+                  hint="单次 rsync 最多处理多少个文件，超出部分留待下一轮"
+                  persistent-hint
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model.number="config.upload_max_per_window"
+                  label="单窗口上传文件数上限"
+                  type="number"
+                  variant="outlined"
+                  density="compact"
+                  :disabled="!config.rate_limit_enabled"
+                  hint="一个时间窗口内累计最多上传多少个文件"
+                  persistent-hint
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model.number="config.upload_window_secs"
+                  label="限流窗口时长 (秒)"
+                  type="number"
+                  variant="outlined"
+                  density="compact"
+                  :disabled="!config.rate_limit_enabled"
+                  hint="默认 1800 秒（30 分钟），窗口滚动后额度自动恢复"
+                  persistent-hint
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model.number="config.backoff_secs"
+                  label="命中风控后退避时长 (秒)"
+                  type="number"
+                  variant="outlined"
+                  density="compact"
+                  :disabled="!config.rate_limit_enabled"
+                  hint="检测到限流特征后暂停上传的时长，默认 3600 秒"
+                  persistent-hint
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12">
+                <v-textarea
+                  v-model="config.rate_limit_keywords"
+                  label="风控特征关键词 (每行一条，命中即退避)"
+                  variant="outlined"
+                  density="compact"
+                  rows="3"
+                  :disabled="!config.rate_limit_enabled"
+                  hint="从 rsync / CD2 错误输出中匹配，命中后立即暂停上传进入退避期"
+                  persistent-hint
+                ></v-textarea>
+              </v-col>
+            </v-row>
+          </div>
+        </div>
       </v-card-text>
 
       <!-- 底部操作按钮 -->
@@ -191,6 +270,12 @@ const config = ref({
   exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store',
   rsync_timeout: 60,
   task_timeout: 3600,
+  rate_limit_enabled: true,
+  upload_batch_size: 200,
+  upload_max_per_window: 500,
+  upload_window_secs: 1800,
+  backoff_secs: 3600,
+  rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
 })
 
 function addPair() {

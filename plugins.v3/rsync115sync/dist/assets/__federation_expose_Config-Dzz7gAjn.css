@@ -1,20 +1,20 @@
 
-.plugin-config[data-v-450e14be] {
+.plugin-config[data-v-da7aa2b6] {
   width: 100%;
   box-sizing: border-box;
   padding: 16px 20px !important;
 }
-.config-main-card[data-v-450e14be] {
+.config-main-card[data-v-da7aa2b6] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-450e14be] {
+.header-surface[data-v-da7aa2b6] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-450e14be] {
+.header-card-item .header-subtitle[data-v-da7aa2b6] {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
@@ -22,10 +22,10 @@
    padding 永远会被该 !important 覆盖，只有 margin 不受影响。
    此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
    故直接按内容区类名设置，保证提示条出现时间距依然稳定 */
-.config-body[data-v-450e14be] {
+.config-body[data-v-da7aa2b6] {
   margin-top: 16px;
 }
-.header-icon-box[data-v-450e14be] {
+.header-icon-box[data-v-da7aa2b6] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -34,14 +34,14 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.settings-group-card[data-v-450e14be] {
+.settings-group-card[data-v-da7aa2b6] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.pair-card[data-v-450e14be] {
+.pair-card[data-v-da7aa2b6] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.empty-hint-box[data-v-450e14be] {
+.empty-hint-box[data-v-da7aa2b6] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }

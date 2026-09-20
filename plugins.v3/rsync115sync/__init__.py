@@ -24,7 +24,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.6"
+    plugin_version = "0.0.7"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
@@ -50,6 +50,25 @@ class Rsync115Sync(_PluginBase):
         self._exclude_patterns: str = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
         self._rsync_timeout: int = 60
         self._task_timeout: int = 3600
+
+        # ---- 上传限流与风控退避（防小文件高频上传触发 115 风控）----
+        # 全局生效：ready / retry / force / 补传 共用同一套窗口计数。
+        # 单位时间是硬闸门，与“单次取多少文件”的分批参数正交，两者都需要。
+        self._rate_limit_enabled: bool = True
+        self._upload_batch_size: int = 200          # 单次 rsync 最多处理的文件数（分批）
+        self._upload_max_per_window: int = 500      # 单窗口最多上传文件数
+        self._upload_window_secs: int = 1800        # 计数窗口长度（秒）
+        self._backoff_secs: int = 3600              # 命中风控特征后的退避时长（秒）
+        self._rate_limit_keywords: str = (
+            "too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后"
+        )
+
+        # 限流运行时状态（持久化：窗口计数与退避必须跨重载、跨重启保留）
+        self._upload_window_start: float = 0.0
+        self._upload_window_count: int = 0
+        self._upload_blocked_until: float = 0.0
+        # 当前批次实际提交给 rsync 的文件数，用于成功后扣减配额
+        self._current_batch_size: int = 0
 
         # 锁与运行时状态
         self._lock = threading.Lock()
@@ -88,6 +107,17 @@ class Rsync115Sync(_PluginBase):
             self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
             self._rsync_timeout = int(config.get("rsync_timeout") or 60)
             self._task_timeout = int(config.get("task_timeout") or 3600)
+            # 上传限流配置：允许用户按自己的风控容忍度调整
+            self._rate_limit_enabled = bool(config.get("rate_limit_enabled", True))
+            self._upload_batch_size = max(0, int(config.get("upload_batch_size") or 200))
+            self._upload_max_per_window = max(0, int(config.get("upload_max_per_window") or 500))
+            self._upload_window_secs = max(1, int(config.get("upload_window_secs") or 1800))
+            self._backoff_secs = max(1, int(config.get("backoff_secs") or 3600))
+            if config.get("rate_limit_keywords"):
+                self._rate_limit_keywords = config.get("rate_limit_keywords")
+
+        # 恢复限流窗口与退避状态（必须早于任何上传判定）
+        self._load_rate_limit_state()
 
         # 恢复持久化数据
         saved_queue = self.get_data("pending_queue") or {}
@@ -342,6 +372,12 @@ class Rsync115Sync(_PluginBase):
                 "exclude_patterns": self._exclude_patterns,
                 "rsync_timeout": self._rsync_timeout,
                 "task_timeout": self._task_timeout,
+                "rate_limit_enabled": self._rate_limit_enabled,
+                "upload_batch_size": self._upload_batch_size,
+                "upload_max_per_window": self._upload_max_per_window,
+                "upload_window_secs": self._upload_window_secs,
+                "backoff_secs": self._backoff_secs,
+                "rate_limit_keywords": self._rate_limit_keywords,
             }
         }
 
@@ -358,6 +394,14 @@ class Rsync115Sync(_PluginBase):
         self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
         self._rsync_timeout = int(config.get("rsync_timeout") or 60)
         self._task_timeout = int(config.get("task_timeout") or 3600)
+        # 上传限流配置：允许用户按自己的风控容忍度调整
+        self._rate_limit_enabled = bool(config.get("rate_limit_enabled", True))
+        self._upload_batch_size = max(0, int(config.get("upload_batch_size") or 200))
+        self._upload_max_per_window = max(0, int(config.get("upload_max_per_window") or 500))
+        self._upload_window_secs = max(1, int(config.get("upload_window_secs") or 1800))
+        self._backoff_secs = max(1, int(config.get("backoff_secs") or 3600))
+        if config.get("rate_limit_keywords"):
+            self._rate_limit_keywords = config.get("rate_limit_keywords")
         self.update_config(config)
         return {"success": True, "message": "配置保存成功"}
 
@@ -440,6 +484,93 @@ class Rsync115Sync(_PluginBase):
         self._start_sync_thread(mode="retry", custom_files=keys)
         return {"success": True, "message": f"已触发同步：{len(keys)} 个文件"}
 
+    # ================= 上传限流与风控退避 =================
+
+    def _load_rate_limit_state(self):
+        """从插件数据目录恢复限流窗口与退避状态。"""
+        self._upload_window_start = float(self.get_data("upload_window_start") or 0.0)
+        self._upload_window_count = int(self.get_data("upload_window_count") or 0)
+        self._upload_blocked_until = float(self.get_data("upload_blocked_until") or 0.0)
+
+    def _persist_rate_limit_state(self):
+        """持久化限流状态。必须在首次计数前落盘，以关闭重启竞态窗口。"""
+        self.save_data("upload_window_start", self._upload_window_start)
+        self.save_data("upload_window_count", self._upload_window_count)
+        self.save_data("upload_blocked_until", self._upload_blocked_until)
+
+    def _rate_limit_allows(self) -> Tuple[bool, str]:
+        """
+        上传闸门：判断当前是否可以发起本批上传。
+
+        返回 (是否放行, 原因说明)。三层判定：
+          1) 退避期未过 → 拒绝；
+          2) 窗口已过期 → 计数归零并前移窗口；
+          3) 窗口内计数达上限 → 拒绝。
+        """
+        if not self._rate_limit_enabled:
+            return True, ""
+
+        now_ts = time.time()
+
+        # 1) 风控退避期
+        if now_ts < self._upload_blocked_until:
+            remain = int(self._upload_blocked_until - now_ts)
+            return False, f"风控退避中，还需等待 {max(1, remain // 60)} 分钟"
+
+        # 2) 窗口滚动
+        if self._upload_window_start <= 0 or (now_ts - self._upload_window_start) >= self._upload_window_secs:
+            self._upload_window_start = now_ts
+            self._upload_window_count = 0
+
+        # 3) 窗口配额
+        if self._upload_window_count >= self._upload_max_per_window:
+            elapsed = int(now_ts - self._upload_window_start)
+            remain = max(1, self._upload_window_secs - elapsed)
+            return False, (f"本窗口配额已用尽（{self._upload_window_count}/{self._upload_max_per_window}），"
+                           f"约 {max(1, remain // 60)} 分钟后继续")
+
+        return True, ""
+
+    def _consume_upload_quota(self, batch_info: str = "") -> int:
+        """
+        扣减配额：把本批实际上传的文件数并入窗口计数并落盘。
+
+        必须在 rsync 成功后立即调用，保证窗口计数不因进程重启而丢失，
+        否则重启会绕过限流直接放行下一批。
+        返回扣减后的窗口计数。
+        """
+        if not self._rate_limit_enabled:
+            return self._upload_window_count
+        count = self._current_batch_size
+        if count <= 0:
+            return self._upload_window_count
+        self._upload_window_count += count
+        self._persist_rate_limit_state()
+        logger.info(f"[Rsync115Sync] 🚦 上传配额扣减 {count} 个{batch_info}，"
+                    f"本窗口累计 {self._upload_window_count}/{self._upload_max_per_window}")
+        return self._upload_window_count
+
+    def _detect_rate_limit_hit(self, stderr: str) -> bool:
+        """从 rsync 错误输出中识别 115 / CD2 的风控特征串。"""
+        if not stderr:
+            return False
+        lowered = stderr.lower()
+        for kw in self._rate_limit_keywords.splitlines():
+            kw = kw.strip().lower()
+            if kw and kw in lowered:
+                return True
+        return False
+
+    def _trigger_backoff(self, reason: str):
+        """命中风控：进入退避期，后续批次在退避结束前一律不放行。"""
+        self._upload_blocked_until = time.time() + self._backoff_secs
+        # 退避期间窗口计数一并归零，避免退避结束后立刻撞上配额上限
+        self._upload_window_start = 0.0
+        self._upload_window_count = 0
+        self._persist_rate_limit_state()
+        logger.warning(f"[Rsync115Sync] 🚫 触发风控退避：{reason}，"
+                       f"暂停上传 {self._backoff_secs // 60} 分钟")
+
     # ================= 核心同步执行逻辑 (严格对齐 sync_115.sh) =================
 
     def _scheduled_sync(self):
@@ -481,6 +612,15 @@ class Rsync115Sync(_PluginBase):
             if custom_files:
                 logger.info(f"[Rsync115Sync] 本次指定文件 {len(custom_files)} 个: {custom_files}")
             logger.info("=" * 60)
+
+            # ---- 上传闸门：退避期或配额用尽时整轮直接跳过，绝不触碰 115 ----
+            allowed, reason = self._rate_limit_allows()
+            if not allowed:
+                logger.warning(f"[Rsync115Sync] ⏸ 本轮跳过（{reason}）")
+                self._last_status["state"] = "throttled"
+                self._post_reply(channel_event, f"⏸ 已暂停本轮同步：{reason}")
+                return
+
             self._post_reply(channel_event, f"🚀 开始执行115同步任务 (模式: {mode}，共 {total_pairs} 个映射)...")
 
             has_error = False
@@ -608,6 +748,16 @@ class Rsync115Sync(_PluginBase):
                         # 本次没有需要处理的文件，跳过该目录（不做全盘对账，避免历史存量文件误报）
                         logger.info(f"[Rsync115Sync] [{pair_name}] 本组无待传输文件，跳过（不做全量对账，避免历史存量误报）")
                         continue
+
+                    # ---- 批次上限：单次 rsync 处理量有界，避免命令行过长与瞬时峰值 ----
+                    # 裁剪掉的文件留在原队列/清单中，由下一轮 cron 或下次触发继续处理
+                    deferred = 0
+                    if len(pair_files) > self._upload_batch_size > 0:
+                        deferred = len(pair_files) - self._upload_batch_size
+                        pair_files = pair_files[:self._upload_batch_size]
+                        logger.info(f"[Rsync115Sync] [{pair_name}] ✂ 本批受批次上限限制，"
+                                    f"本次处理 {len(pair_files)} 个，剩余 {deferred} 个留待下轮")
+
                     logger.info(f"[Rsync115Sync] [{pair_name}] 待传输 {len(pair_files)} 个文件:")
                     for _p in pair_files:
                         logger.info(f"[Rsync115Sync] [{pair_name}]   - {_p}")
@@ -620,6 +770,12 @@ class Rsync115Sync(_PluginBase):
                 cmd.extend([f"{src}/", dest])
 
                 rsync_start = time.time()
+                # 先预留本批配额并落盘：万一进程在传输中被重载，
+                # 已上传的文件数不会因为内存状态丢失而绕过限流
+                self._current_batch_size = len(pair_files)
+                if self._current_batch_size:
+                    self._consume_upload_quota(f"（{pair_name} 预留）")
+
                 logger.info(f"[Rsync115Sync] [{pair_name}] ▶ 启动 rsync (模式 {mode}，{len(pair_files)} 个文件)")
                 logger.debug(f"[Rsync115Sync] [{pair_name}] 完整命令: {' '.join(shlex.quote(c) for c in cmd)}")
 
@@ -670,6 +826,20 @@ class Rsync115Sync(_PluginBase):
                         os.remove(temp_list_file)
                     except Exception:
                         pass
+
+                # ---- 风控特征检测：stderr 命中限流关键词立刻进入退避并终止本轮 ----
+                if self._rate_limit_enabled and self._detect_rate_limit_hit(stderr):
+                    self._trigger_backoff(f"[{pair_name}] rsync 输出命中限流特征")
+                    self._post_reply(channel_event, "🚫 检测到 115/CD2 限流特征，已暂停上传并进入退避期。")
+                    break
+
+                # ---- 配额中途耗尽：已完成本组，但不再继续下一组映射 ----
+                if (self._rate_limit_enabled
+                        and self._upload_window_count >= self._upload_max_per_window):
+                    logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
+                                   f"（{self._upload_window_count}/{self._upload_max_per_window}），"
+                                   f"剩余映射留待下一轮")
+                    break
 
                 # 双向对账审计：ready/retry 仅核对本次同步的文件；force 才做全量扫描
                 if mode == "force":

@@ -32,6 +32,10 @@ const _hoisted_13 = { class: "font-weight-bold text-subtitle-2 d-flex align-cent
 const _hoisted_14 = { class: "settings-group-card rounded-xl overflow-hidden pa-4 mb-4" };
 const _hoisted_15 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
 const _hoisted_16 = { class: "settings-group-card rounded-xl overflow-hidden pa-4" };
+const _hoisted_17 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
+const _hoisted_18 = { class: "settings-group-card rounded-xl overflow-hidden" };
+const _hoisted_19 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
+const _hoisted_20 = { class: "px-4 py-3" };
 
 const {ref,onMounted} = await importShared('vue');
 
@@ -65,6 +69,12 @@ const config = ref({
   exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store',
   rsync_timeout: 60,
   task_timeout: 3600,
+  rate_limit_enabled: true,
+  upload_batch_size: 200,
+  upload_max_per_window: 500,
+  upload_window_secs: 1800,
+  backoff_secs: 3600,
+  rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
 });
 
 function addPair() {
@@ -154,7 +164,7 @@ return (_ctx, _cache) => {
                 color: "primary",
                 size: "22"
               }, {
-                default: _withCtx(() => [...(_cache[9] || (_cache[9] = [
+                default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
                   _createTextVNode("mdi-cloud-sync", -1)
                 ]))]),
                 _: 1
@@ -171,7 +181,7 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { size: "18" }, {
-                  default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
+                  default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
                     _createTextVNode("mdi-close", -1)
                   ]))]),
                   _: 1
@@ -180,7 +190,7 @@ return (_ctx, _cache) => {
                   activator: "parent",
                   location: "bottom"
                 }, {
-                  default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                  default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
                     _createTextVNode("关闭配置", -1)
                   ]))]),
                   _: 1
@@ -193,22 +203,22 @@ return (_ctx, _cache) => {
             _createElementVNode("div", null, [
               _createVNode(_component_v_card_title, { class: "text-subtitle-1 font-weight-bold pa-0 d-flex align-center" }, {
                 default: _withCtx(() => [
-                  _cache[11] || (_cache[11] = _createTextVNode(" 115 网盘同步配置 ", -1)),
+                  _cache[17] || (_cache[17] = _createTextVNode(" 115 网盘同步配置 ", -1)),
                   _createVNode(_component_v_chip, {
                     size: "x-small",
                     color: "primary",
                     variant: "tonal",
                     class: "ml-2 font-weight-bold"
                   }, {
-                    default: _withCtx(() => [...(_cache[10] || (_cache[10] = [
-                      _createTextVNode("v0.0.5", -1)
+                    default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                      _createTextVNode("v0.0.7", -1)
                     ]))]),
                     _: 1
                   })
                 ]),
                 _: 1
               }),
-              _cache[12] || (_cache[12] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
+              _cache[18] || (_cache[18] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
             ])
           ]),
           _: 1
@@ -251,7 +261,7 @@ return (_ctx, _cache) => {
           default: _withCtx(() => [
             _createElementVNode("div", _hoisted_4, [
               _createElementVNode("div", _hoisted_5, [
-                _cache[15] || (_cache[15] = _createElementVNode("div", null, [
+                _cache[21] || (_cache[21] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用同步助手"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "总控主开关，开启后生效定时轮询与事件监听")
                 ], -1)),
@@ -265,7 +275,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_6, [
-                _cache[16] || (_cache[16] = _createElementVNode("div", null, [
+                _cache[22] || (_cache[22] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "监听媒体转移入库事件"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "下载与刮削转移完成后自动纳入延迟冷却队列")
                 ], -1)),
@@ -286,7 +296,7 @@ return (_ctx, _cache) => {
                   color: "primary",
                   class: "mr-1"
                 }, {
-                  default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+                  default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
                     _createTextVNode("mdi-folder-swap-outline", -1)
                   ]))]),
                   _: 1
@@ -305,12 +315,12 @@ return (_ctx, _cache) => {
                     start: "",
                     size: "16"
                   }, {
-                    default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                    default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
                       _createTextVNode("mdi-plus", -1)
                     ]))]),
                     _: 1
                   }),
-                  _cache[19] || (_cache[19] = _createTextVNode(" 添加目录映射 ", -1))
+                  _cache[25] || (_cache[25] = _createTextVNode(" 添加目录映射 ", -1))
                 ]),
                 _: 1
               })
@@ -333,7 +343,7 @@ return (_ctx, _cache) => {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, { size: "18" }, {
-                              default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+                              default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
                                 _createTextVNode("mdi-trash-can-outline", -1)
                               ]))]),
                               _: 1
@@ -418,12 +428,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+                default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
                   _createTextVNode("mdi-timer-sand", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[22] || (_cache[22] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
+              _cache[28] || (_cache[28] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
             _createElementVNode("div", _hoisted_14, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
@@ -478,12 +488,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                   _createTextVNode("mdi-shield-check-outline", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[24] || (_cache[24] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
+              _cache[30] || (_cache[30] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
             ]),
             _createElementVNode("div", _hoisted_16, [
               _createVNode(_component_v_row, { density: "compact" }, {
@@ -544,6 +554,138 @@ return (_ctx, _cache) => {
                 ]),
                 _: 1
               })
+            ]),
+            _createElementVNode("div", _hoisted_17, [
+              _createVNode(_component_v_icon, {
+                size: "18",
+                color: "primary",
+                class: "mr-1"
+              }, {
+                default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                  _createTextVNode("mdi-speedometer-slow", -1)
+                ]))]),
+                _: 1
+              }),
+              _cache[32] || (_cache[32] = _createTextVNode(" 上传限流与风控退避 ", -1))
+            ]),
+            _createElementVNode("div", _hoisted_18, [
+              _createElementVNode("div", _hoisted_19, [
+                _cache[33] || (_cache[33] = _createElementVNode("div", null, [
+                  _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
+                  _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
+                ], -1)),
+                _createVNode(_component_v_switch, {
+                  modelValue: config.value.rate_limit_enabled,
+                  "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((config.value.rate_limit_enabled) = $event)),
+                  color: "primary",
+                  inset: "",
+                  "hide-details": "",
+                  density: "compact"
+                }, null, 8, ["modelValue"])
+              ]),
+              _createElementVNode("div", _hoisted_20, [
+                _createVNode(_component_v_row, { density: "compact" }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_col, {
+                      cols: "12",
+                      sm: "6"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_text_field, {
+                          modelValue: config.value.upload_batch_size,
+                          "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.value.upload_batch_size) = $event)),
+                          modelModifiers: { number: true },
+                          label: "单批文件数上限",
+                          type: "number",
+                          variant: "outlined",
+                          density: "compact",
+                          disabled: !config.value.rate_limit_enabled,
+                          hint: "单次 rsync 最多处理多少个文件，超出部分留待下一轮",
+                          "persistent-hint": ""
+                        }, null, 8, ["modelValue", "disabled"])
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_col, {
+                      cols: "12",
+                      sm: "6"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_text_field, {
+                          modelValue: config.value.upload_max_per_window,
+                          "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((config.value.upload_max_per_window) = $event)),
+                          modelModifiers: { number: true },
+                          label: "单窗口上传文件数上限",
+                          type: "number",
+                          variant: "outlined",
+                          density: "compact",
+                          disabled: !config.value.rate_limit_enabled,
+                          hint: "一个时间窗口内累计最多上传多少个文件",
+                          "persistent-hint": ""
+                        }, null, 8, ["modelValue", "disabled"])
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_col, {
+                      cols: "12",
+                      sm: "6"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_text_field, {
+                          modelValue: config.value.upload_window_secs,
+                          "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.value.upload_window_secs) = $event)),
+                          modelModifiers: { number: true },
+                          label: "限流窗口时长 (秒)",
+                          type: "number",
+                          variant: "outlined",
+                          density: "compact",
+                          disabled: !config.value.rate_limit_enabled,
+                          hint: "默认 1800 秒（30 分钟），窗口滚动后额度自动恢复",
+                          "persistent-hint": ""
+                        }, null, 8, ["modelValue", "disabled"])
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_col, {
+                      cols: "12",
+                      sm: "6"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_text_field, {
+                          modelValue: config.value.backoff_secs,
+                          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.value.backoff_secs) = $event)),
+                          modelModifiers: { number: true },
+                          label: "命中风控后退避时长 (秒)",
+                          type: "number",
+                          variant: "outlined",
+                          density: "compact",
+                          disabled: !config.value.rate_limit_enabled,
+                          hint: "检测到限流特征后暂停上传的时长，默认 3600 秒",
+                          "persistent-hint": ""
+                        }, null, 8, ["modelValue", "disabled"])
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_col, { cols: "12" }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_textarea, {
+                          modelValue: config.value.rate_limit_keywords,
+                          "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((config.value.rate_limit_keywords) = $event)),
+                          label: "风控特征关键词 (每行一条，命中即退避)",
+                          variant: "outlined",
+                          density: "compact",
+                          rows: "3",
+                          disabled: !config.value.rate_limit_enabled,
+                          hint: "从 rsync / CD2 错误输出中匹配，命中后立即暂停上传进入退避期",
+                          "persistent-hint": ""
+                        }, null, 8, ["modelValue", "disabled"])
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                })
+              ])
             ])
           ]),
           _: 1
@@ -561,12 +703,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+                  default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
                     _createTextVNode("mdi-view-dashboard-outline", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[26] || (_cache[26] = _createTextVNode(" 查看监控看板 ", -1))
+                _cache[35] || (_cache[35] = _createTextVNode(" 查看监控看板 ", -1))
               ]),
               _: 1
             }),
@@ -584,12 +726,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                  default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
                     _createTextVNode("mdi-content-save", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[28] || (_cache[28] = _createTextVNode(" 保存配置 ", -1))
+                _cache[37] || (_cache[37] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"])
@@ -604,6 +746,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-450e14be"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-da7aa2b6"]]);
 
 export { Config as default };
