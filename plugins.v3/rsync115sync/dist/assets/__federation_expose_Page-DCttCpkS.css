@@ -1,0 +1,68 @@
+
+.plugin-page[data-v-453702d6] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px 20px !important;
+}
+.page-main-card[data-v-453702d6] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  width: 100%;
+}
+.header-surface[data-v-453702d6] {
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
+}
+/* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
+   保证 12px 中文文本的可读性 */
+.header-card-item .header-subtitle[data-v-453702d6] {
+  margin-top: 6px;
+}
+/* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
+   宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
+   内容区顶部内边距被强制归零，看板首行三个数据卡片的顶部圆角因此被裁掉（实测缺 radius）。
+   故此处：padding-block-start 显式归一化，间距则由 margin-top 提供
+   （margin 不受该 padding !important 约束，是稳定生效的方案）。
+
+   注意：padding-block-start: unset 一行系在真实页面调试后加入。
+   按级联规则（重要度 > 权重 > 源码顺序），非 !important 声明无法覆盖宿主的 !important，
+   且该属性非继承、unset 求值等同 initial(0px)，理论上不改变结果；
+   但真实宿主下加入后圆角恢复正常，故按实测保留，勿凭理论删除。 */
+.header-card-item + .v-card-text[data-v-453702d6] {
+  padding-block-start: unset;
+  margin-top: 16px;
+}
+.header-icon-box[data-v-453702d6] {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+}
+.stat-card[data-v-453702d6] {
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+.stat-info[data-v-453702d6] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+}
+.stat-primary[data-v-453702d6] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+}
+.stat-error[data-v-453702d6] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+}
+.action-strip[data-v-453702d6] {
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
+}
+.queue-item-card[data-v-453702d6] {
+  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+}
+.batch-bar[data-v-453702d6] {
+  border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
+}
+.failed-item-card[data-v-453702d6] {
+  background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
+  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
+}
+.empty-box[data-v-453702d6] {
+  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}

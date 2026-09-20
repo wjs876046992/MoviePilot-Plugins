@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.11</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.12</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -463,11 +463,15 @@ onMounted(() => {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
-   宿主对 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
-   padding 永远会被该 !important 覆盖，只有 margin 不受影响。
+   宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
+   内容区顶部内边距被强制归零，与看板同源，故同样归一化顶部内边距，
+   间距由 margin-top 提供（margin 不受该 padding !important 约束）。
    此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
-   故直接按内容区类名设置，保证提示条出现时间距依然稳定 */
+   故直接按内容区类名设置，保证提示条出现时间距依然稳定。
+
+   注意：padding-block-start: unset 系看板页面实测修复项，同步到本页保持一致，勿凭理论删除。 */
 .config-body {
+  padding-block-start: unset;
   margin-top: 16px;
 }
 .header-icon-box {

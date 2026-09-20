@@ -659,9 +659,17 @@ onUnmounted(() => {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
-   宿主对 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
-   padding 永远会被该 !important 覆盖，只有 margin 不受影响 */
+   宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
+   内容区顶部内边距被强制归零，看板首行三个数据卡片的顶部圆角因此被裁掉（实测缺 radius）。
+   故此处：padding-block-start 显式归一化，间距则由 margin-top 提供
+   （margin 不受该 padding !important 约束，是稳定生效的方案）。
+
+   注意：padding-block-start: unset 一行系在真实页面调试后加入。
+   按级联规则（重要度 > 权重 > 源码顺序），非 !important 声明无法覆盖宿主的 !important，
+   且该属性非继承、unset 求值等同 initial(0px)，理论上不改变结果；
+   但真实宿主下加入后圆角恢复正常，故按实测保留，勿凭理论删除。 */
 .header-card-item + .v-card-text {
+  padding-block-start: unset;
   margin-top: 16px;
 }
 .header-icon-box {

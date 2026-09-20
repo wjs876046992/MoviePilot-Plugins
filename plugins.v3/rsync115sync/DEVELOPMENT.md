@@ -2,7 +2,7 @@
 
 > 使用说明见 [USAGE.md](./USAGE.md)，待办事项见 [TODO.md](./TODO.md)。
 >
-> 本文记录本轮迭代（v0.0.4 → v0.0.11）的设计决策、发现的问题与遗留风险，
+> 本文记录本轮迭代（v0.0.4 → v0.0.12）的设计决策、发现的问题与遗留风险，
 > 供后续迭代参考。
 
 ---
@@ -100,6 +100,29 @@ is_success = (not has_error and not total_missing and not total_corrupt)
 README 声称「默认启用 `--inplace --size-only --modify-window=2`」，但代码明确
 「绝不使用 `--inplace`」（为了兼容 115 秒传）；且宣传的 `/rsync_clean` 命令
 **从未实现**。已订正，并补全实际支持的 9 条指令。
+
+### 3.6 P1 — 看板首行圆角被裁（v0.0.5 / v0.0.12 补注）
+
+**现象**：看板页面首行三个数据卡片顶部圆角显示不全，视觉上"缺了 radius"。
+
+**根因**：宿主默认给 `.v-card-item + .v-card-text` 设置了
+
+```css
+padding-block-start: 0 !important;
+```
+
+内容区顶部内边距被强制归零，首行数据卡片紧贴卡片上沿，其顶部圆角落入父级
+`.page-main-card` 的 `overflow-hidden` 裁剪范围内，因而被切掉。
+
+**修复**：在内容区显式写 `padding-block-start: unset` 归一化顶部内边距，
+并用 `margin-top: 16px` 提供标题与内容的间距 —— margin 不受该 padding
+`!important` 约束，是稳定生效的方案。
+
+> ⚠️ **维护提醒**：`padding-block-start: unset` 一行是在**真实宿主页面调试后**加入的。
+> 按标准级联规则（重要度 > 权重 > 源码顺序），非 `!important` 声明无法覆盖宿主的
+> `!important`；且该属性非继承，`unset` 求值等同 `initial`（0px），理论上不改变结果。
+> 但实测加入后圆角恢复正常。**请勿凭理论推导删除该行** —— 它经过真实环境验证，
+> 而当时的理论推导没有。
 
 ---
 
@@ -217,6 +240,7 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 | v0.0.9 | feat | force 7 天冷却 + include/exclude 过滤 |
 | v0.0.10 | chore | 默认参数对齐 shell + 老配置迁移 |
 | v0.0.11 | docs | 中英双语注释 + 配置页说明改进 |
+| v0.0.12 | fix | 看板首行圆角被裁（`padding-block-start: unset`）+ 版本号统一 |
 
 ---
 
