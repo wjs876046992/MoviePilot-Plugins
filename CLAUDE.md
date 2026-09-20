@@ -4,108 +4,182 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repository Is
 
-MoviePilot-Plugins is the official plugin repository for MoviePilot—a media automation platform. This repo contains plugin source code, market index files, icons, tests, and documentation. It is **not** a standalone runtime; plugins run inside the MoviePilot host process (`jxxghp/MoviePilot`), sharing its Python environment and dependencies.
+MoviePilot-Plugins is the official plugin repository for MoviePilot (a media automation platform):
+plugin sources, market index files, icons, tests, docs, and the release workflow. It is **not** a
+standalone runtime — plugins load into the same Python process and shared dependency environment as
+the MoviePilot host (`jxxghp/MoviePilot`, branch `v3`). The host owns plugin loading/lifecycle, event
+dispatch, API/services/data, workflows, and the Agent runtime; `MoviePilot-Frontend` owns config
+pages, dashboards, and Vue federated component rendering.
 
-The host handles plugin loading, event dispatch, API, services, data, workflows, and Agent runtime. The frontend repo (`MoviePilot-Frontend`) handles config pages, dashboard, and Vue federated components.
+Because plugins share the host process, treat third-party dependencies, background threads, module
+globals, and import-time side effects as process-wide concerns.
 
-## Directory Layout
+## Generations and Directory Layout
 
-Three plugin generations coexist; **V3 is the current development target**:
+Three plugin generations coexist; **V3 is the only target for new work**:
 
-- `plugins.v3/` — New V3-only plugins (use this for all new plugins)
-- `plugins.v2/` — Historical V2-only implementations
-- `plugins/` — Even older or cross-version legacy implementations
-- `package.v3.json`, `package.v2.json`, `package.json` — Market index files for each generation
-- `tests/v3/`, `tests/v2/`, `tests/v1/` — Plugin tests (one subdirectory per plugin ID)
-- `tests/ci/` — Repository tooling and CI gate tests
-- `docs/` — Development guides, migration docs, FAQ
-- `icons/` — Plugin icons
-- `scripts/` — CI helper scripts
+- `plugins.v3/` — new V3-only plugins; index `package.v3.json`
+- `plugins.v2/` — historical V2-only implementations; index `package.v2.json`
+- `plugins/` — older/cross-version legacy; index `package.json`
+- `tests/v1|v2|v3/<plugin_id>/` — tests, one subdirectory per plugin ID
+- `tests/ci/` — repository tooling and CI gate tests (no backend runtime)
+- `docs/`, `docs/faq/` — guides, migration docs, scenario FAQ
+- `.github/scripts/`, `scripts/` — CI gate implementations
 
-## Plugin Structure (V3)
+Naming/identity rules (all three must agree):
 
-```
-plugins.v3/<plugin_id_lowercase>/
-    __init__.py          # Main class lives here
-    pyproject.toml       # Optional: extra Python dependencies
-    README.md            # Recommended
-    models.py            # Optional: data models
-```
-
-Naming rules:
-- Plugin directory name = plugin main class name in lowercase (e.g., class `BrushFlow` → `plugins.v3/brushflow/`)
-- Main class must be defined in `__init__.py` and extend `_PluginBase`
-- Market index key in `package.v3.json` uses the class name (e.g., `"BrushFlow"`)
+- Plugin main class `Foo` → directory `plugins.v3/foo/`, class defined in `__init__.py`
+- Index key in `package.v3.json` is the **class name** (`Foo`), not the directory name
+- `plugin_version` (in the class), the index `version`, and the newest `history` entry must match
+- `history` is newest-first, semantic-version descending
 
 ## Commands
 
-### Run all tests (CI entry point — runs ci, v3, v2 generations in separate subprocesses)
+Tests need the MoviePilot backend. Default location is a sibling directory `../MoviePilot` (workspace
+layout) or set `MOVIEPILOT_BACKEND_PATH`. Always use the backend's venv interpreter
+(`../MoviePilot/.venv/bin/python`) — never a separate environment.
 
 ```bash
-<MoviePilot-backend-venv>/bin/python tests/run.py
-```
+# Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point)
+../MoviePilot/.venv/bin/python tests/run.py
 
-### Run tests for a single generation
+# One generation (never mix generations in one pytest process — same-named plugin packages collide)
+../MoviePilot/.venv/bin/python -m pytest tests/v3
+../MoviePilot/.venv/bin/python -m pytest tests/v2
 
-```bash
-<MoviePilot-backend-venv>/bin/python -m pytest tests/v3
-<MoviePilot-backend-venv>/bin/python -m pytest tests/v2
-```
+# Single plugin, or a single test
+../MoviePilot/.venv/bin/python -m pytest tests/v3/rsync115sync
+../MoviePilot/.venv/bin/python -m pytest tests/v3/rsync115sync/test_plugin.py::test_name
 
-### Run tests for a single plugin
+# Fast syntax-only check (works without the backend, plain python3 is fine)
+python3 -m py_compile plugins.v3/<plugin_id>/__init__.py
+python3 -m compileall plugins.v3/<plugin_id>
 
-```bash
-<MoviePilot-backend-venv>/bin/python -m pytest tests/v3/<plugin_id>
-```
+# Version gate: index version vs plugin_version across all three indexes
+python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 
-### Check V3 dependency install across platforms
+# Federated component CSS gate (required after building Vue frontend artifacts)
+python3 .github/scripts/check_federation_css.py
 
-```bash
+# New-plugin test gate: every new plugins.v3/ dir needs a tests/v3/<id>/ dir
+python3 scripts/check_new_plugin_tests.py --base-ref origin/main
+
+# V3 dependency install gate (per platform; manifest-declared platform subsets supported)
 uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py --python 3.14 --platform linux-x64
+
+# Vue federated frontend (inside a plugin that ships one)
+yarn typecheck && yarn build     # build output goes to dist/assets/
+
+git diff --check                 # whitespace check, part of the pre-commit routine
 ```
 
-### Syntax compile check (fast, no runtime)
+`.githooks/pre-push` runs the version gate and the federation CSS gate on every push. Enable it with
+`git config core.hooksPath .githooks` if it is not already active.
 
-```bash
-python -m py_compile plugins.v3/<plugin_id>/__init__.py
-```
-
-Tests require the MoviePilot backend to be present at `../MoviePilot` relative to this repo (or set `MOVIEPILOT_BACKEND_PATH`). Use the backend's venv interpreter, not a separate environment.
+Note: the backend may not exist locally. `py_compile`, the version gate, `check_federation_css.py`,
+and the standalone scripts under `scripts/` and `.github/scripts/` run without it. Any pytest run
+does not: `tests/conftest.py` imports `tests/_bootstrap.py`, which resolves the backend path at
+import time and raises `RuntimeError` before collection — this applies to `tests/ci` too.
 
 ## Test Conventions
 
-- Tests go in `tests/v3/<plugin_id>/test_*.py`, **never inside the plugin source directory** (plugins are copied whole during market sync; test files would be distributed to users)
-- Import plugins via production namespace: `from app.plugins.<plugin_id> import <ClassName>`
-- Use pytest style (functions or classes, `assert` statements); do not add `unittest.TestCase` or `unittest.main()`
-- Prefer `object.__new__(<ClassName>)` to bypass `__init__` and test pure logic without the full runtime
-- New V3 plugins **must** include corresponding tests; the CI enforces this
+- Tests live at `tests/<gen>/<plugin_id>/test_*.py`, **never inside the plugin source directory** —
+  market sync copies plugin directories wholesale (`shutil.copytree`), so bundled tests ship to users.
+- Import plugins through the production namespace: `from app.plugins.<plugin_id> import <ClassName>`.
+  Never add the plugin directory to `sys.path` or use a top-level package name; dual module identity
+  duplicates event subscriptions, class state, and plugin instances.
+- `tests/_bootstrap.py` is a thin shim that locates the backend and delegates to the host's
+  `app.testing.bootstrap`; `tests/conftest.py` picks the generation from the pytest target paths and
+  bootstraps the matching plugin directory. This is why generations cannot share one process, and why
+  the backend must provide `app/testing/bootstrap`.
+- pytest style only: functions or classes, `assert` statements. No `unittest.TestCase`,
+  `unittest.main()`, or `if __name__ == "__main__"` entry points (`unittest.mock` is still fine).
+- Prefer `object.__new__(<ClassName>)` to bypass `__init__` and test pure logic without the runtime.
+- New V3 plugins must ship matching tests; CI enforces it.
 
-## Key Rules for Plugin Development
+## Plugin Architecture (V3)
 
-- Use `app.sdk` stable imports (`app.sdk.config`, `app.sdk.media`, `app.sdk.events`, `app.sdk.logging`, `app.sdk.network`, `app.sdk.services`, `app.sdk.utilities`) rather than reaching into host internals
-- Access host data through `Oper`, `Chain`, or stable SDK; do not directly manipulate host Models or hold raw `SessionFactory`
-- Database transaction decorators are only for plugin-owned tables
-- `plugin_version`, the index `version`, and the latest `history` entry must all match
-- Version history entries are listed newest-first, in semantic version descending order
-- Plugin runtime data goes into the plugin data directory, not the source directory
-- V3 extra dependencies go in the plugin's `pyproject.toml` `[project].dependencies`; do not commit plugin-level lock files
-- Third-party dependencies install in the host shared environment; they must not downgrade or override MoviePilot core dependencies
-- Before committing: run Python compile, version gate checks, relevant tests, and `git diff --check`
+Entry points on `_PluginBase` — the ones that matter most:
+
+- Required lifecycle: `init_plugin(config)` (must be safely re-callable), `get_state()`,
+  `get_api()`, `get_form()`, `get_page()`, `stop_service()`
+- Optional: `get_command()` (remote commands), `get_service()` (scheduled/periodic jobs),
+  `get_dashboard()` / `get_dashboard_meta()`, `get_render_mode()`, `get_sidebar_nav()`,
+  `get_actions()` (workflow actions)
+- `get_render_mode()` returns `("vuetify", None)` or `("vue", "dist/assets")`; Vue-mode plugins ship
+  a module-federated build under `dist/assets/` (`remoteEntry.js` + `__federation_expose_*`) and keep
+  their frontend sources (`src/`, `vite.config.js`, `package.json`, lockfile) in the plugin directory.
+  The `../rsync115sync` plugin is the working reference for this layout.
+
+Host access boundaries:
+
+- Use stable SDK imports: `app.sdk.config`, `app.sdk.media`, `app.sdk.events`, `app.sdk.logging`,
+  `app.sdk.network`, `app.sdk.services`, `app.sdk.utilities`.
+- Host data goes through Oper / Chain / SDK. Do not import `app.db.models.*` host models, and do not
+  import or hold `SessionFactory` / `AsyncSessionFactory` / `ScopedSession`.
+- Choose storage by responsibility: `get_config()`/`update_config()` for user settings,
+  `save_data()`/`get_data()`/`del_data()` for small serializable state, `get_data_path()` for files
+  and large objects. Only build a plugin-owned table (SQLAlchemy 2.0 `Mapped`,
+  `Base`, `db_query`/`db_update`, `ensure_table()` called from `init_plugin()`) when indexing or
+  volume demands it. Transaction decorators are for plugin-owned tables only.
+- Plugin runtime data goes to the plugin data directory, never back into the source directory.
+- Async HTTP goes through `app.sdk.network.AsyncRequestUtils`, which uses HTTPX2 — catch
+  `httpx2.RequestError`, not `httpx.RequestError`, and never call `httpx2.alias_httpx()`.
+- V3 media identity is the pair `media_source` + `media_id`; do not rely on bare IDs.
+
+Dependencies: V3 extra dependencies go in the plugin's `pyproject.toml`
+(`[project].dependencies`, `dynamic = ["version"]`, real version stays in the plugin class). Do not
+commit plugin-level lockfiles (`uv.lock`); V1/V2 keep `requirements.txt`. Dependencies install into
+the host shared environment and must not downgrade or override MoviePilot core dependencies. Declare
+a dependency-gate platform subset with:
+
+```toml
+[tool.moviepilot.dependency-gate]
+platforms = ["linux-x64"]
+```
+
+Federated CSS is a hard constraint: never bundle global Vuetify/MDI styles into a remote component.
+Share `vuetify` and `vuetify/styles` with `generate: false`, strip `node_modules/vuetify` and
+`node_modules/@mdi` CSS in PostCSS, and never commit `__federation_shared_vuetify/styles-*.css` —
+remote CSS lands in the host `document` and leaks into the whole UI. Run
+`python .github/scripts/check_federation_css.py` after any frontend build.
+
+## Index Files and Version Selection
+
+MoviePilot resolves a plugin by generation: it checks the current generation's index first, then falls
+back to non-excluded legacy entries. `"v3": false` on an entry blocks V3 fallback to that
+implementation (set it when a V3-specific copy exists or the old contract is incompatible). `"v2":
+true` in `package.json` marks a default entry usable under V2. `system_version` (pip-style range,
+e.g. `">=3.0.0,<3"`) gates install/update/load against the host version — V3-specific implementations
+declare `">=3.0.0"`.
+
+When copying a V2 plugin into a V3-specific implementation, bump `x.y.z -> (x+1).0.0` (a generation
+contract change is not a patch), add the `package.v3.json` entry, and set `"v3": false` on the old
+entry.
 
 ## CI Gates (PR to main)
 
-- **Plugin version gate**: verifies version consistency across `package.json`, `package.v2.json`, `package.v3.json`
-- **New plugin test gate**: new `plugins.v3/` directories must have matching `tests/v3/<id>/`
-- **Federation CSS gate**: checks federated component CSS
-- **Plugin test gate**: full test suite via `tests/run.py` against MoviePilot V3 backend
-- **Dependency install gate**: installs V3 plugin dependencies in isolated environments across Linux x64, Linux arm64, Windows x64, macOS Intel, macOS ARM
+- Plugin version gate — index `version` vs class `plugin_version` (`check_plugin_versions.py`)
+- New plugin test gate — new `plugins.v3/` dirs need `tests/v3/<id>/`
+- Federation CSS gate
+- Plugin test gate — `tests/run.py` against the MoviePilot V3 backend
+- Dependency install gate — isolated install + `uv pip check` on Linux x64/arm64, Windows x64,
+  macOS Intel/ARM (only runs when `plugins.v3/*/pyproject.toml` or the gate itself changes)
+
+## Release
+
+`.github/workflows/release.yml` triggers on any `package*.json` change. Only entries with
+`"release": true` are packaged; the workflow maps each index to its directory
+(`package.v3.json` → `plugins.v3/`). Tag format `PluginID_vVersion`, asset
+`<plugin_dir_lower>_v<version>.zip`, skipped when the plugin directory is unchanged since the last
+tag of the same plugin.
 
 ## Documentation
 
-- `docs/Plugin_Development.md` — **Primary guide** for new V3 plugin development
-- `docs/V3_Plugin_Adaptation.md` — Migrating V2 plugins to V3
-- `docs/V3_API_Response_Adaptation.md` — Backend API, Vue federated components
-- `docs/Repository_Guide.md` — Index files, versioning, CI, releases
-- `docs/FAQ.md` — Common issues by scenario
-- `docs/V2_Plugin_Development.md` — Historical V2 reference only
-- `tests/README.md` — Test infrastructure details
+- `docs/Plugin_Development.md` — primary V3 plugin development guide (read first)
+- `docs/V3_Plugin_Adaptation.md` — migrating V2 plugins to V3 (imports, media identity, transactions)
+- `docs/V3_API_Response_Adaptation.md` — plugin API and host API response contract
+- `docs/Repository_Guide.md` — indexes, versioning, CI, releases, repo boundaries
+- `docs/FAQ.md` + `docs/faq/` — one doc per extension scenario (commands, services, dashboards, agents)
+- `tests/README.md` — test infrastructure details
+- `docs/Development_Log.md` — narrative log of significant plugin changes
