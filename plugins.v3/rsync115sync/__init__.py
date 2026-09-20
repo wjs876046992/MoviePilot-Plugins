@@ -24,7 +24,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.7"
+    plugin_version = "0.0.8"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
@@ -33,6 +33,10 @@ class Rsync115Sync(_PluginBase):
     #   23 部分文件未传输——属可容忍告警，不计入失败
     # 其余非 0 码均视为致命错误，必须让本轮判定为失败，避免谎报“已完成”。
     _TOLERATED_EXIT_CODES = {0, 23, 24}
+
+    # 伴生字幕扩展名：补传媒体文件时，同主名的这些文件一并纳入，
+    # 因为实际入库单元是“整集”（媒体 + 外挂字幕）
+    _SIDECAR_EXTS = {"srt", "ass", "ssa", "sub", "idx", "sup", "vtt"}
 
     def __init__(self):
         super().__init__()
@@ -47,7 +51,7 @@ class Rsync115Sync(_PluginBase):
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
         self._media_extensions: str = "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-        self._exclude_patterns: str = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
+        self._exclude_patterns: str = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
         self._rsync_timeout: int = 60
         self._task_timeout: int = 3600
 
@@ -81,6 +85,12 @@ class Rsync115Sync(_PluginBase):
         # 待确认的交互重试列表（关键字查找结果）：[{"key": "...", "path": "..."}]
         self._waiting_confirm_retries: List[str] = []
 
+        # 存量补传队列（独立于 pending_queue，不参与冷却计时）
+        # 条目格式与其它清单一致："任务名:相对路径"
+        self._backfill_queue: List[str] = []
+        # 补传进度快照，用于看板/指令回显
+        self._backfill_total: int = 0
+
         # 忽略规则清单（结构化方案 B）
         # [ { "rule": str, "match": "exact"|"contains", "created_at": str, "created_by": str, "source": "chat"|"web" } ]
         self._ignored_rules: List[Dict[str, Any]] = []
@@ -104,7 +114,7 @@ class Rsync115Sync(_PluginBase):
             self._cron = config.get("cron", "0 */2 * * *")
             self._sync_pairs = config.get("sync_pairs") or []
             self._media_extensions = config.get("media_extensions") or "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-            self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
+            self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
             self._rsync_timeout = int(config.get("rsync_timeout") or 60)
             self._task_timeout = int(config.get("task_timeout") or 3600)
             # 上传限流配置：允许用户按自己的风控容忍度调整
@@ -128,6 +138,14 @@ class Rsync115Sync(_PluginBase):
         saved_ignored = self.get_data("ignored_files") or []
         if isinstance(saved_ignored, list):
             self._ignored_rules = saved_ignored
+        # 恢复未完成的补传队列，保证跨重载/重启继续推进
+        saved_backfill = self.get_data("backfill_queue") or []
+        if isinstance(saved_backfill, list):
+            self._backfill_queue = saved_backfill
+        self._backfill_total = int(self.get_data("backfill_total") or 0)
+        if self._backfill_queue:
+            logger.info(f"[Rsync115Sync] 📦 已恢复存量补传队列：剩余 {len(self._backfill_queue)} 个"
+                        f"（原始 {self._backfill_total} 个），将由定时巡检继续推进")
 
     def get_state(self) -> bool:
         return self._enabled
@@ -284,6 +302,20 @@ class Rsync115Sync(_PluginBase):
                 "desc": "忽略指定文件不再报警 (例: /rsync_ignore 剧名 或 /rsync_ignore list/clear)",
                 "category": "工具",
                 "data": {"action": "ignore"}
+            },
+            {
+                "cmd": "/rsync_backfill",
+                "event": EventType.PluginAction,
+                "desc": "补传存量媒体（含同名字幕），受限流分批推进",
+                "category": "工具",
+                "data": {"action": "backfill"}
+            },
+            {
+                "cmd": "/rsync_backfill_clear",
+                "event": EventType.PluginAction,
+                "desc": "清空存量补传队列",
+                "category": "工具",
+                "data": {"action": "backfill_clear"}
             }
         ]
 
@@ -336,6 +368,9 @@ class Rsync115Sync(_PluginBase):
             {"path": "/ignored", "endpoint": self._api_get_ignored, "methods": ["GET"], "auth": "bear"},
             {"path": "/ignore", "endpoint": self._api_add_ignore, "methods": ["POST"], "auth": "bear"},
             {"path": "/unignore", "endpoint": self._api_remove_ignore, "methods": ["POST"], "auth": "bear"},
+            {"path": "/backfill_scan", "endpoint": self._api_backfill_scan, "methods": ["GET"], "auth": "bear"},
+            {"path": "/backfill_start", "endpoint": self._api_backfill_start, "methods": ["POST"], "auth": "bear"},
+            {"path": "/backfill_clear", "endpoint": self._api_backfill_clear, "methods": ["POST"], "auth": "bear"},
         ]
 
     def _api_get_ignored(self):
@@ -391,7 +426,7 @@ class Rsync115Sync(_PluginBase):
         self._cron = config.get("cron", "0 */2 * * *")
         self._sync_pairs = config.get("sync_pairs") or []
         self._media_extensions = config.get("media_extensions") or "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb"
-        self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store"
+        self._exclude_patterns = config.get("exclude_patterns") or "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
         self._rsync_timeout = int(config.get("rsync_timeout") or 60)
         self._task_timeout = int(config.get("task_timeout") or 3600)
         # 上传限流配置：允许用户按自己的风控容忍度调整
@@ -418,7 +453,14 @@ class Rsync115Sync(_PluginBase):
                 "cooling_count": cooling_count,
                 "delay_hours": self._delay_hours,
                 "last_status": self._last_status,
-                "sync_pairs_count": len(self._sync_pairs)
+                "sync_pairs_count": len(self._sync_pairs),
+                # 补传进度与限流状态，供看板展示
+                "backfill_remaining": len(self._backfill_queue),
+                "backfill_total": self._backfill_total,
+                "rate_limit_enabled": self._rate_limit_enabled,
+                "upload_window_count": self._upload_window_count,
+                "upload_max_per_window": self._upload_max_per_window,
+                "upload_blocked_until": self._upload_blocked_until,
             }
         }
 
@@ -571,10 +613,179 @@ class Rsync115Sync(_PluginBase):
         logger.warning(f"[Rsync115Sync] 🚫 触发风控退避：{reason}，"
                        f"暂停上传 {self._backoff_secs // 60} 分钟")
 
+    # ================= 存量媒体补传（零 API 本地扫描） =================
+
+    def _find_sidecar_files(self, src_dir: str, rel_media: str) -> List[str]:
+        """
+        查找与某个媒体文件同主名的伴生字幕文件（本地扫描，不访问 115）。
+
+        例：`剧名/剧名 S01E01.mkv` → `剧名/剧名 S01E01.zh.srt`、`…S01E01.ass`
+        真实场景中入库的往往是整集（媒体 + 外挂字幕），若只同步媒体，
+        字幕会被遗漏且永不触发同步。
+        """
+        src_f = os.path.join(src_dir, rel_media)
+        parent_rel = os.path.dirname(rel_media)
+        parent_abs = os.path.dirname(src_f)
+        stem = os.path.splitext(os.path.basename(rel_media))[0]
+        if not os.path.isdir(parent_abs):
+            return []
+
+        sidecars: List[str] = []
+        prefix = f"{stem}."
+        try:
+            for name in os.listdir(parent_abs):
+                if name == os.path.basename(rel_media):
+                    continue
+                # 仅认“主名 + 附加标记 + 字幕扩展名”，避免误纳同剧其它剧集
+                if not name.startswith(prefix):
+                    continue
+                if os.path.splitext(name)[-1].lstrip(".").lower() not in self._SIDECAR_EXTS:
+                    continue
+                if not os.path.isfile(os.path.join(parent_abs, name)):
+                    continue
+                sidecars.append(f"{parent_rel}/{name}" if parent_rel else name)
+        except OSError as e:
+            logger.debug(f"[Rsync115Sync] 扫描伴生字幕失败 {rel_media}: {e}")
+        return sidecars
+
+    def _build_backfill_candidates(self) -> List[str]:
+        """
+        扫描源端，构建“存量补传”候选清单。
+
+        全程只读源目录，不访问 115 挂载点，因此零 API 开销。
+        候选口径：源端存在、且不在冷却队列、也不在异常清单中的文件
+        （即本插件从未处理过的存量文件）。
+
+        注意：无法在不访问 115 的前提下判断目标端是否已存在，
+        因此候选可能包含已同步过但从未入过队的文件；这些文件会被
+        rsync 的 --size-only 在传输阶段跳过（代价是每个文件一次 stat）。
+        """
+        candidates: List[str] = []
+        seen = set()
+        valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
+        # 只按扩展名过滤候选，范围由每个映射对的 all_ext 决定
+        for pair in self._sync_pairs:
+            src_dir = (pair.get("src") or "").strip().rstrip("/")
+            pair_name = pair.get("name") or src_dir
+            if not src_dir or not os.path.isdir(src_dir):
+                continue
+            all_ext = pair.get("all_ext", False)
+            for root, dirs, files in os.walk(src_dir):
+                # 就地裁剪排除目录，避免无谓 descend
+                dirs[:] = [d for d in dirs if f"{d}/" not in self._exclude_patterns]
+                for f in files:
+                    if f.startswith("._") or f == ".DS_Store":
+                        continue
+                    ext = os.path.splitext(f)[-1].lstrip(".").lower()
+                    if not all_ext and ext not in valid_exts:
+                        continue
+                    root_rel = os.path.relpath(os.path.join(root, f), src_dir)
+                    key = f"{pair_name}:{root_rel}"
+                    if key in seen:
+                        continue
+                    # 已在冷却队列或异常清单中的文件不属于“存量补传”
+                    if key in self._pending_queue:
+                        continue
+                    if key in (self._last_status.get("missing_files") or []):
+                        continue
+                    if key in (self._last_status.get("corrupt_files") or []):
+                        continue
+                    if self._is_ignored(key):
+                        continue
+                    seen.add(key)
+                    candidates.append(key)
+                    # 媒体文件带上同主名的伴生字幕一起补传
+                    for sc in self._find_sidecar_files(src_dir, root_rel):
+                        sc_key = f"{pair_name}:{sc}"
+                        if sc_key not in seen and not self._is_ignored(sc_key):
+                            seen.add(sc_key)
+                            candidates.append(sc_key)
+        return candidates
+
+    def _api_backfill_scan(self):
+        """预览补传候选数量与样例，供用户在触发前评估规模。"""
+        candidates = self._build_backfill_candidates()
+        sample = candidates[:20]
+        return {
+            "success": True,
+            "data": {
+                "count": len(candidates),
+                "sample": sample,
+                "batch_size": self._upload_batch_size,
+                "windows_needed": (
+                    (len(candidates) + self._upload_max_per_window - 1) // self._upload_max_per_window
+                    if self._upload_max_per_window > 0 else 0
+                ),
+            }
+        }
+
+    def _api_backfill_start(self, body: Dict[str, Any]):
+        """
+        启动存量补传。
+
+        只扫描源端（零 API），把候选写入独立的补传队列，
+        随后由核心同步逻辑按批次上限与窗口配额逐步消费。
+        """
+        if self._is_running:
+            return {"success": False, "message": "已有任务正在运行，请稍后再试"}
+
+        candidates = self._build_backfill_candidates()
+        if not candidates:
+            return {"success": True, "message": "没有需要补传的存量文件"}
+
+        # 整体替换：每次触发都以当前源端实际状态为准
+        self._backfill_queue = candidates
+        self._backfill_total = len(candidates)
+        self.save_data("backfill_queue", self._backfill_queue)
+        self.save_data("backfill_total", self._backfill_total)
+
+        logger.info(f"[Rsync115Sync] 📦 已建立存量补传队列：{len(candidates)} 个文件"
+                    f"（其中含伴生字幕），按每批 {self._upload_batch_size} 个、"
+                    f"每窗口 {self._upload_max_per_window} 个推进")
+        self._start_sync_thread(mode="backfill", custom_files=list(candidates))
+        return {
+            "success": True,
+            "message": f"已启动存量补传：{len(candidates)} 个文件，"
+                       f"受批次与限流约束将分多轮完成",
+        }
+
+    def _api_backfill_clear(self):
+        """清空补传队列与进度。"""
+        self._backfill_queue = []
+        self._backfill_total = 0
+        self.save_data("backfill_queue", [])
+        self.save_data("backfill_total", 0)
+        return {"success": True, "message": "已清空存量补传队列"}
+
     # ================= 核心同步执行逻辑 (严格对齐 sync_115.sh) =================
+
+    def _resume_backfill_if_pending(self) -> bool:
+        """
+        定时巡检时自动续跑未完成的补传队列。
+
+        补传受“单批上限”与“窗口配额”约束，一次通常跑不完全部候选；
+        未完成的队列在此自动续跑，配额用尽则本轮跳过、等下一窗口继续，
+        无需用户重复点击。
+
+        返回是否已占用本轮（同一次 cron 只跑一种模式，避免线程争抢同一把锁）。
+        """
+        if not self._backfill_queue:
+            return False
+        allowed, reason = self._rate_limit_allows()
+        if not allowed:
+            logger.info(f"[Rsync115Sync] 📦 补传队列剩余 {len(self._backfill_queue)} 个，"
+                        f"本轮暂缓（{reason}）")
+            return False
+        logger.info(f"[Rsync115Sync] 📦 续跑存量补传队列，剩余 {len(self._backfill_queue)} 个")
+        self._start_sync_thread(mode="backfill", custom_files=list(self._backfill_queue))
+        return True
 
     def _scheduled_sync(self):
         logger.info("[Rsync115Sync] 触发定时检查同步就绪媒体...")
+        # 补传队列存在时优先续跑：队列有限且自终止，排空后自动恢复常规巡检。
+        # 两种模式共用同一把执行锁与同一份窗口配额，故同一轮只启动其中一个。
+        if self._resume_backfill_if_pending():
+            return
         self._start_sync_thread(mode="ready")
 
     def _start_sync_thread(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
@@ -626,6 +837,8 @@ class Rsync115Sync(_PluginBase):
             has_error = False
             # 记录致命退出码，便于在通知里给出可定位的失败原因
             fatal_exit_codes = []
+            # 本轮补传已处理的文件（用于推进补传队列进度）
+            self._backfill_done_keys: set = set()
             total_missing = []
             total_corrupt = []
             synced_count = 0
@@ -685,11 +898,22 @@ class Rsync115Sync(_PluginBase):
                             else:
                                 self._pending_queue.pop(key, None)
 
-                elif mode == "retry":
-                    # 重试模式：若指定了 custom_files 优先按 custom_files 重试，否则按历史异常文件重试
-                    raw_target_keys = custom_files or list(set(self._last_status.get("missing_files", []) + self._last_status.get("corrupt_files", [])))
-                    logger.info(f"[Rsync115Sync] [{pair_name}] 重试候选 {len(raw_target_keys)} 个"
-                                f"{'（来自用户指定）' if custom_files else '（来自历史异常清单）'}")
+                elif mode in ("retry", "backfill"):
+                    # 重试/补传模式：若指定了 custom_files 优先按其处理，
+                    # 否则 retry 回退到历史异常清单（backfill 不自动回退，
+                    # 其候选由 _api_backfill_start 显式传入）
+                    if custom_files:
+                        raw_target_keys = custom_files
+                    elif mode == "backfill":
+                        raw_target_keys = []
+                    else:
+                        raw_target_keys = list(set(
+                            (self._last_status.get("missing_files") or [])
+                            + (self._last_status.get("corrupt_files") or [])
+                        ))
+                    origin = ("（来自用户指定）" if custom_files
+                              else ("（补传模式，无候选）" if mode == "backfill" else "（来自历史异常清单）"))
+                    logger.info(f"[Rsync115Sync] [{pair_name}] 候选 {len(raw_target_keys)} 个{origin}")
 
                     ignored_cnt = 0
                     target_keys = []
@@ -743,7 +967,9 @@ class Rsync115Sync(_PluginBase):
                             logger.info(f"[Rsync115Sync] [{pair_name}] 🆕 目标端不存在，执行首次上传: {rel_p}")
 
                 # 生成 --files-from 清单文件
-                if mode in ["ready", "retry"]:
+                # 关键：ready/retry/backfill 一律走 --files-from，只让 rsync 处理
+                # 指定文件，绝不整目录遍历 115 挂载点（那是风控的主要来源）
+                if mode in ["ready", "retry", "backfill"]:
                     if not pair_files:
                         # 本次没有需要处理的文件，跳过该目录（不做全盘对账，避免历史存量文件误报）
                         logger.info(f"[Rsync115Sync] [{pair_name}] 本组无待传输文件，跳过（不做全量对账，避免历史存量误报）")
@@ -868,7 +1094,27 @@ class Rsync115Sync(_PluginBase):
                             self._pending_queue.pop(k, None)
                             logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
 
+                # 补传模式：无论本批成功与否都从补传队列移除
+                # （失败的会进入 missing/corrupt 清单，由 /rsync_retry 接手，
+                #   若留在补传队列会与异常清单重复处理）
+                if mode == "backfill":
+                    for rel_p in pair_files:
+                        k = f"{pair_name}:{rel_p}"
+                        if k in self._backfill_done_keys:
+                            continue
+                        self._backfill_done_keys.add(k)
+
             self.save_data("pending_queue", self._pending_queue)
+
+            # 推进补传队列：移除本轮已处理的文件并落盘
+            if mode == "backfill" and self._backfill_done_keys:
+                before = len(self._backfill_queue)
+                self._backfill_queue = [
+                    k for k in self._backfill_queue if k not in self._backfill_done_keys
+                ]
+                self.save_data("backfill_queue", self._backfill_queue)
+                logger.info(f"[Rsync115Sync] 📦 补传队列推进：{before} → {len(self._backfill_queue)}"
+                            f"（本轮处理 {len(self._backfill_done_keys)} 个）")
 
             # 结果合并：
             # - force 全量模式：以本轮全盘扫描结果为准，直接替换。
@@ -1216,6 +1462,40 @@ class Rsync115Sync(_PluginBase):
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中。")
             else:
                 self._start_sync_thread(mode="retry", channel_event=event)
+
+        elif action == "backfill":
+            # 只扫源端（零 API），再按批次与限流配额分多轮推进
+            if self._is_running:
+                self._post_reply(event, "⚠️ 当前同步任务正在运行中，请稍后再试。")
+                return
+            self._post_reply(event, "🔍 正在扫描本地入库文件（不访问 115）...")
+            candidates = self._build_backfill_candidates()
+            if not candidates:
+                self._post_reply(event, "✅ 没有需要补传的存量文件。")
+                return
+            self._backfill_queue = candidates
+            self._backfill_total = len(candidates)
+            self.save_data("backfill_queue", self._backfill_queue)
+            self.save_data("backfill_total", self._backfill_total)
+            self._post_reply(
+                event,
+                f"📦 已建立补传队列：{len(candidates)} 个文件（含同名字幕）\n"
+                f"受批次上限 {self._upload_batch_size} 个与限流配额 "
+                f"{self._upload_max_per_window} 个/{self._upload_window_secs // 60} 分钟约束，\n"
+                f"将分多轮自动推进，可发送 /rsync_status 查看进度。"
+            )
+            self._start_sync_thread(mode="backfill", custom_files=list(candidates),
+                                    channel_event=event)
+
+        elif action == "backfill_clear":
+            if self._is_running:
+                self._post_reply(event, "⚠️ 当前同步任务正在运行中，请稍后再试。")
+                return
+            self._backfill_queue = []
+            self._backfill_total = 0
+            self.save_data("backfill_queue", [])
+            self.save_data("backfill_total", 0)
+            self._post_reply(event, "✅ 已清空存量补传队列。")
 
         elif action == "status":
             st = self._last_status

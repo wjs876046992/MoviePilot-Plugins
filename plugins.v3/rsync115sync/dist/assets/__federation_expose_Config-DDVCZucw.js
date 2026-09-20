@@ -66,7 +66,7 @@ const config = ref({
   cron: '0 */2 * * *',
   sync_pairs: [],
   media_extensions: 'mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb',
-  exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store',
+  exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*',
   rsync_timeout: 60,
   task_timeout: 3600,
   rate_limit_enabled: true,
@@ -211,7 +211,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
-                      _createTextVNode("v0.0.7", -1)
+                      _createTextVNode("v0.0.8", -1)
                     ]))]),
                     _: 1
                   })
@@ -746,6 +746,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-da7aa2b6"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-85fcfed8"]]);
 
 export { Config as default };

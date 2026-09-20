@@ -67,6 +67,24 @@
           </v-col>
         </v-row>
 
+        <!-- 补传 / 限流进度提示 -->
+        <v-alert
+          v-if="statusData.backfill_remaining || isThrottled"
+          :type="isThrottled ? 'warning' : 'info'"
+          variant="tonal"
+          density="compact"
+          class="rounded-lg mb-3 text-body-2"
+        >
+          <span v-if="isThrottled">
+            ⏸ 已进入风控退避，约 {{ blockedMinutes }} 分钟后自动恢复上传。
+          </span>
+          <span v-if="statusData.backfill_remaining">
+            存量补传进行中：剩余 <strong>{{ statusData.backfill_remaining }}</strong>
+            <template v-if="statusData.backfill_total"> / 共 {{ statusData.backfill_total }}</template> 个，
+            按每窗口 {{ statusData.upload_max_per_window }} 个自动推进（本窗口已用 {{ statusData.upload_window_count }} 个）。
+          </span>
+        </v-alert>
+
         <!-- 快捷操作工具条 -->
         <div class="action-strip rounded-xl pa-3 mb-4">
           <div class="d-flex align-center justify-space-between flex-wrap ga-2">
@@ -78,6 +96,17 @@
               <v-btn color="warning" variant="tonal" size="small" rounded="lg" @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
                 <v-icon start size="16">mdi-refresh</v-icon>
                 定向重试失败文件
+              </v-btn>
+              <v-btn color="info" variant="tonal" size="small" rounded="lg" @click="scanBackfill" :loading="backfillScanning" :disabled="statusData.is_running">
+                <v-icon start size="16">mdi-database-arrow-up-outline</v-icon>
+                补传存量媒体
+                <v-tooltip activator="parent" location="top">
+                  扫描本地存量媒体（含同名字幕）并分批补传；只读源端目录，不遍历 115
+                </v-tooltip>
+              </v-btn>
+              <v-btn v-if="statusData.backfill_remaining" color="error" variant="text" size="small" rounded="lg" @click="clearBackfill" :disabled="statusData.is_running">
+                <v-icon start size="16">mdi-cancel</v-icon>
+                取消补传
               </v-btn>
             </div>
             <div class="d-flex align-center ga-2">
@@ -343,6 +372,13 @@ const statusData = ref({
   delay_hours: 2.0,
   last_status: {},
   sync_pairs_count: 0,
+  backfill_remaining: 0,
+  backfill_total: 0,
+  rate_limit_enabled: true,
+  upload_window_count: 0,
+  upload_max_per_window: 500,
+  upload_window_secs: 1800,
+  upload_blocked_until: 0,
 })
 
 const ignoredList = ref([])
@@ -352,10 +388,20 @@ const selectMode = ref(false)
 const selectedKeys = ref([])
 const itemLoading = ref('')
 const batchSyncing = ref(false)
+// 存量补传：扫描中状态
+const backfillScanning = ref(false)
 
 const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +
   (statusData.value.last_status?.corrupt_files?.length || 0)
+)
+
+// 是否处于风控退避期（时间戳为未来时刻）
+const isThrottled = computed(
+  () => (statusData.value.upload_blocked_until || 0) * 1000 > Date.now()
+)
+const blockedMinutes = computed(() =>
+  Math.max(1, Math.ceil(((statusData.value.upload_blocked_until || 0) * 1000 - Date.now()) / 60000))
 )
 
 const queueList = ref([])
@@ -423,6 +469,55 @@ async function syncSingle(key) {
     actionMsg.value = '触发同步出错: ' + e.message
   } finally {
     itemLoading.value = ''
+  }
+}
+
+// 补传存量媒体：先本地扫描预览规模，用户确认后再启动
+async function scanBackfill() {
+  if (statusData.value.is_running) return
+  backfillScanning.value = true
+  actionMsg.value = '正在扫描本地存量媒体（不访问 115）...'
+  try {
+    const res = await props.api.get('plugin/Rsync115Sync/backfill_scan')
+    if (!res || !res.success) {
+      actionMsg.value = res?.message || '扫描失败'
+      return
+    }
+    const { count, batch_size: batch, windows_needed: windows } = res.data || {}
+    if (!count) {
+      actionMsg.value = '没有需要补传的存量文件'
+      return
+    }
+    // 明确告知代价：候选数 = 至少这么多次目标端 stat
+    const ok = window.confirm(
+      `发现 ${count} 个待补传文件（含同名字幕）。\n\n` +
+      `补传将按每批 ${batch} 个、每个限流窗口分多轮自动推进，` +
+      `预计需要约 ${windows} 个窗口（${windows} × ${Math.round((statusData.value.upload_window_secs || 1800) / 60)} 分钟）。\n\n` +
+      `注意：每个候选文件至少产生一次 115 端校验请求，已存在的文件会被跳过而不会重传。\n\n` +
+      `确定开始补传吗？`
+    )
+    if (!ok) {
+      actionMsg.value = '已取消补传'
+      return
+    }
+    const start = await props.api.post('plugin/Rsync115Sync/backfill_start', {})
+    actionMsg.value = start?.message || '已启动补传'
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '补传出错: ' + e.message
+  } finally {
+    backfillScanning.value = false
+  }
+}
+
+// 清空补传队列
+async function clearBackfill() {
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/backfill_clear', {})
+    actionMsg.value = res?.message || '已取消补传'
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '取消失败: ' + e.message
   }
 }
 
