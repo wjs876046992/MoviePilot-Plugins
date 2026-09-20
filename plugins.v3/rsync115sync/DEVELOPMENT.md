@@ -2,7 +2,7 @@
 
 > 使用说明见 [USAGE.md](./USAGE.md)，待办事项见 [TODO.md](./TODO.md)。
 >
-> 本文记录本轮迭代（v0.0.4 → v0.1.0）的设计决策、发现的问题与遗留风险，
+> 本文记录本轮迭代（v0.0.4 → v0.1.1）的设计决策、发现的问题与遗留风险，
 > 供后续迭代参考。
 
 ---
@@ -269,7 +269,7 @@ deliver=((lambda: publish(event_payload)) if settlement is None and publish is n
 事件会进入有限重试；超过重试上限即永久丢失。事件机制本身无法兜住这一点，
 故提供了源端扫描作为可选兜底（默认关闭，原因见 4.4）。
 
-### 3.9 P2 — 文件列表分页（alpha，未发布）
+### 3.9 P2 — 文件列表分页（v0.1.1）
 
 **背景**：冷却队列可能积累上百条，一次全渲染既卡顿又难浏览。
 
@@ -291,8 +291,8 @@ deliver=((lambda: publish(event_payload)) if settlement is None and publish is n
 **实现位置**：`Page.vue` 的 `paginate()` 为三标签共用的切片助手，
 返回 `{ total, pages, page, pageRef, slice }`，其中 `pageRef` 供模板翻页按钮绑定。
 
-> ⚠️ **发布前必做**：本次改动只提交了源码，`dist/` **未重建**（alpha 不构建）。
-> 正式发版前必须执行 `vite build`，否则线上仍是旧前端。
+> ✅ v0.1.1 正式发布时已执行 `vite build` 并提交重建后的 `dist/`。
+> 注意：alpha 期间 `dist/` 与源码会短暂不一致，属预期（alpha 不构建）。
 
 ### 3.7 P1 — 移动端布局溢出（v0.0.12）
 
@@ -500,6 +500,7 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 | v0.0.9 | feat | force 7 天冷却 + include/exclude 过滤 |
 | v0.0.10 | chore | 默认参数对齐 shell + 老配置迁移 |
 | v0.0.11 | docs | 中英双语注释 + 配置页说明改进 |
+| v0.1.1 | feat | 列表分页（每页 15 条）；路径回退链补全；事件异常兜底；事件日志含路径 |
 | v0.1.0 | fix | 入库事件漏听（字幕/音频不入队）+ 源端补齐扫描 + 映射归属误判 |
 | v0.0.13 | fix | 移动端适配（按钮溢出/文字挤压/间距收紧）；间距修复补 !important |
 | v0.0.12 | fix | 看板首行圆角被裁（`padding-block-start: unset`）+ 版本号统一 |
