@@ -211,6 +211,10 @@ class Rsync115Sync(_PluginBase):
         self._lock = threading.Lock()
         self._is_running: bool = False
         self._current_process: Optional[subprocess.Popen] = None
+        # 补传扫描互斥锁：防止用户连点按钮触发多次并发的全库目录遍历
+        # 与上面的 _lock 分开：扫描是只读的，不应阻塞（也不应被）同步任务占用，
+        # 但必须与其他扫描互斥
+        self._backfill_scan_lock = threading.Lock()
 
         # 冷却队列: { "任务名:相对路径": 入库时间戳 float }
         self._pending_queue: Dict[str, float] = {}
@@ -1209,7 +1213,31 @@ class Rsync115Sync(_PluginBase):
 
     # ================= 存量媒体补传（零 API 本地扫描） =================
 
-    def _find_sidecar_files(self, src_dir: str, rel_media: str) -> List[str]:
+    @staticmethod
+    def _list_dir_cached(cache: Dict[str, Optional[List[str]]], abs_dir: str) -> Optional[List[str]]:
+        """
+        带缓存的目录列举：同一次补传扫描内，每个目录只真正 listdir 一次。
+
+        Cached directory listing: each directory is listed at most once per scan.
+
+        为什么需要：`_find_sidecar_files` 会对**每个媒体文件**调用一次，
+        若同一季目录下有 24 集，就会对同一个目录重复 listdir 24 次。
+        一个 50 季的库会产生上万次重复系统调用（纯本地 IO，不碰 115，
+        但足以让扫描明显变慢）。缓存后每个目录只列一次。
+        Without this, a season directory with 24 episodes gets listed 24 times;
+        a 50-season library wastes thousands of redundant syscalls.
+        """
+        if abs_dir in cache:
+            return cache[abs_dir]
+        try:
+            entries = os.listdir(abs_dir)
+        except OSError:
+            entries = None          # 目录不存在或无权限：缓存失败结果，避免反复重试
+        cache[abs_dir] = entries
+        return entries
+
+    def _find_sidecar_files(self, src_dir: str, rel_media: str,
+                            cache: Optional[Dict[str, Optional[List[str]]]] = None) -> List[str]:
         """
         查找与某个媒体文件同主名的伴生字幕文件（本地扫描，不访问 115）。
 
@@ -1223,30 +1251,38 @@ class Rsync115Sync(_PluginBase):
         A real ingest unit is a whole episode (video + external subtitles). If
         only the media file is queued, the subtitles are missed and never get a
         chance to sync.
+
+        :param cache: 可选的目录列举缓存，批量扫描时由调用方传入以消除重复 listdir
         """
         src_f = os.path.join(src_dir, rel_media)
         parent_rel = os.path.dirname(rel_media)
         parent_abs = os.path.dirname(src_f)
         stem = os.path.splitext(os.path.basename(rel_media))[0]
-        if not os.path.isdir(parent_abs):
+
+        names = self._list_dir_cached(cache, parent_abs) if cache is not None \
+            else self._list_dir_cached({}, parent_abs)
+        if names is None:
             return []
 
         sidecars: List[str] = []
         prefix = f"{stem}."
-        try:
-            for name in os.listdir(parent_abs):
-                if name == os.path.basename(rel_media):
-                    continue
-                # 仅认“主名 + 附加标记 + 字幕扩展名”，避免误纳同剧其它剧集
-                if not name.startswith(prefix):
-                    continue
-                if os.path.splitext(name)[-1].lstrip(".").lower() not in self._SIDECAR_EXTS:
-                    continue
-                if not os.path.isfile(os.path.join(parent_abs, name)):
-                    continue
-                sidecars.append(f"{parent_rel}/{name}" if parent_rel else name)
-        except OSError as e:
-            logger.debug(f"[Rsync115Sync] 扫描伴生字幕失败 {rel_media}: {e}")
+        base_name = os.path.basename(rel_media)
+        for name in names:
+            if name == base_name:
+                continue
+            # 仅认“主名 + 附加标记 + 字幕扩展名”，避免误纳同剧其它剧集
+            if not name.startswith(prefix):
+                continue
+            if os.path.splitext(name)[-1].lstrip(".").lower() not in self._SIDECAR_EXTS:
+                continue
+            # 保留 isfile 校验：listdir 返回的可能是子目录，若其名字恰好以字幕
+            # 扩展名结尾（如名为 "S01E01.srt" 的目录）会被误当字幕加入候选，
+            # rsync 随后会因「文件不存在」报错。
+            # 该 stat 只在「名字已匹配主名 + 扩展名」时才执行，是极小的子集，
+            # 与缓存带来的收益相比可以忽略。
+            if not os.path.isfile(os.path.join(parent_abs, name)):
+                continue
+            sidecars.append(f"{parent_rel}/{name}" if parent_rel else name)
         return sidecars
 
     def _build_backfill_candidates(self) -> List[str]:
@@ -1272,6 +1308,8 @@ class Rsync115Sync(_PluginBase):
         """
         candidates: List[str] = []
         seen = set()
+        # 目录列举缓存：整个扫描过程共用，避免同一季目录被反复 listdir
+        dir_cache: Dict[str, Optional[List[str]]] = {}
         valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
         # 只按扩展名过滤候选，范围由每个映射对的 all_ext 决定
         for pair in self._sync_pairs:
@@ -1306,7 +1344,7 @@ class Rsync115Sync(_PluginBase):
                     candidates.append(key)
                     # 媒体文件带上同主名的伴生字幕一起补传
                     # Attach same-stem sidecar subtitles to the media file
-                    for sc in self._find_sidecar_files(src_dir, root_rel):
+                    for sc in self._find_sidecar_files(src_dir, root_rel, dir_cache):
                         sc_key = f"{pair_name}:{sc}"
                         if sc_key not in seen and not self._is_ignored(sc_key):
                             seen.add(sc_key)
@@ -1321,8 +1359,25 @@ class Rsync115Sync(_PluginBase):
         before committing. Because every candidate costs at least one target-side
         stat, this preview is what keeps a single click from firing thousands of
         requests unnoticed.
+
+        并发保护：扫描会遍历全部映射的源目录，大库下耗时可达数十秒。
+        若同一时刻已有扫描在跑，直接拒绝而不是排队 —— 重复扫描结果完全一致，
+        让它们叠加只会白白占用磁盘 IO。
+        Concurrency guard: a large library scan can take tens of seconds.
+        A second concurrent scan is rejected outright (results would be identical).
         """
-        candidates = self._build_backfill_candidates()
+        if self._is_running:
+            return {"success": False,
+                    "message": "已有同步任务正在运行，扫描结果可能不完整，请稍后再试"}
+        if not self._backfill_scan_lock.acquire(blocking=False):
+            return {"success": False,
+                    "message": "已有一次补传扫描正在进行，请等待其完成（结果相同，无需重复触发）"}
+        try:
+            candidates = self._build_backfill_candidates()
+        finally:
+            # 必须在 finally 中释放：扫描抛异常若不释放，之后所有扫描与补传
+            # 都会被这个锁永久挡住（重启插件才能恢复）
+            self._backfill_scan_lock.release()
         sample = candidates[:20]
         return {
             "success": True,
@@ -1355,8 +1410,19 @@ class Rsync115Sync(_PluginBase):
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
-
-        candidates = self._build_backfill_candidates()
+        # 扫描互斥：本接口内部同样会全库扫描。若此刻已有扫描在跑
+        # （例如用户先点了预览还没结束就点了确认），两个扫描会同时遍历磁盘；
+        # 更糟的是确认框展示的候选数与最终写入队列的候选数将来自两次不同扫描，
+        # 与用户确认的内容不一致。
+        # Also guards the case where a preview scan is still running while the user
+        # confirms: the confirmed count would otherwise come from a different scan.
+        if not self._backfill_scan_lock.acquire(blocking=False):
+            return {"success": False,
+                    "message": "有一次扫描正在进行（可能是刚才的预览），请等它结束后重试"}
+        try:
+            candidates = self._build_backfill_candidates()
+        finally:
+            self._backfill_scan_lock.release()
         if not candidates:
             return {"success": True, "message": "没有需要补传的存量文件"}
 
