@@ -50,6 +50,29 @@ def _transfer_success_events() -> List[Any]:
 # 模块级常量：装饰器在类体执行时求值，故必须在类定义前构造好
 _TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
 
+# 日志里最多列出几个路径，以及单个路径的显示长度上限。
+# 目的：让日志能直接看出「是哪个文件」，同时避免超长路径/大批量把日志撑爆。
+# 此前只打计数，用户无法判断具体是哪个文件对不上，是排查效率低下的主因。
+_MAX_LOGGED_PATHS = 5
+_MAX_PATH_CHARS = 160
+
+
+def _brief_paths(paths: List[str]) -> str:
+    """
+    把路径列表压缩成适合写进单行日志的短串。
+
+    Compact a path list into a single-line log fragment: cap the number of
+    entries and truncate each path, so logs stay readable and bounded.
+    """
+    shown = []
+    for path in paths[:_MAX_LOGGED_PATHS]:
+        text = str(path)
+        if len(text) > _MAX_PATH_CHARS:
+            text = "…" + text[-_MAX_PATH_CHARS:]
+        shown.append(text)
+    suffix = f" 等共 {len(paths)} 个" if len(paths) > _MAX_LOGGED_PATHS else ""
+    return "; ".join(shown) + suffix
+
 
 class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
@@ -197,18 +220,18 @@ class Rsync115Sync(_PluginBase):
 
         # 冷却队列等待期错过的入库事件：{"任务名:相对路径": 首次错过时间戳}
         #
-        # 为什么需要它：宿主只在「整理批次收尾」时广播 TransferComplete，
-        # 而广播那一刻插件可能恰好不可用（正在同步触发重载、或事件发出时
-        # 这批整理还没结束）。这类事件无法在事件到达时补捕，只能在每轮同步
-        # 开头扫一次源端目录、拿文件 mtime 与本队列比对来补齐。
+        # 为什么需要它：事件走 durable outbox（at-least-once），投递时若插件不可用
+        # 会进入有限重试，**超过重试上限即永久丢失**。事件一旦错过就不会重放，
+        # 只能在每轮同步开头扫一次源端目录、拿文件 mtime 与本队列比对来补齐。
+        #
+        # （早期注释称「宿主只在整理批次收尾时广播」，该说法已撤回，见 3.8.1：
+        #  事件是**按文件即时发布**的，与按批次合并的用户通知是两条独立路径。）
         #
         # 注意这些条目**不参与冷却计时**：冷却的目的是「等外挂字幕下载完
         # 再上传」，而这些文件已经比原计划多等了很久，再等一轮毫无意义。
-        # Keys missed while the plugin was unavailable. The host only broadcasts
-        # TransferComplete when a whole transfer batch finishes, so a broadcast can
-        # be lost if the plugin happens to be reloading at that moment. Such misses
-        # cannot be recovered at event time; instead each sync run scans the source
-        # roots once and compares file mtimes against this queue.
+        # Missed events cannot be replayed, so each sync run may scan the source
+        # roots and compare file mtimes against this queue.
+        # (The earlier "batch-finalisation broadcast" rationale was retracted.)
         # These entries intentionally do NOT take part in cool-down timing.
         self._missed_queue: Dict[str, float] = {}
         # 上次源端补齐扫描的成果，供看板与指令回显（0 表示尚未扫描过）
@@ -428,17 +451,21 @@ class Rsync115Sync(_PluginBase):
         file_list = getattr(transfer_info, "file_list_new", []) or []
         fallback_used = False
 
-        # 回退取路径：宿主对**字幕/音频**文件不填 file_list_new
-        # （只有主要媒体文件才有目标路径，见 settlement.py 的
-        #  `target_files = transferinfo.file_list_new`），而字幕事件同样需要入队。
-        # 此时改用 payload 里的 fileitem.path。
+        # 路径为空时的防御性回退：改用 payload 里的 fileitem.path。
+        #
+        # ⚠️ 关于触发条件：此处不必、也无法断言具体原因。曾有结论称
+        # 「宿主对字幕/音频文件不填 file_list_new」，但该结论**缺乏代码依据，已撤回**——
+        # transhandler.py 全部 4 处 file_list_new 赋值都是单文件整理时填当前文件路径，
+        # 不存在按文件类型判断的逻辑。真实为空的原因未知（可能是目标文件已不存在等）。
+        # 详见 DEVELOPMENT.md 3.8.1。
+        #
         # 注意语义差别：fileitem.path 是**下载器源路径**，而 file_list_new 是
         # **整理后的库内路径**。源路径通常不在映射内，故后续可能匹配不到映射——
-        # 匹配不到只会记 debug 日志，不会错误入队。
-        # Fallback path source. The host leaves file_list_new empty for
-        # subtitle/audio files, so fall back to fileitem.path — which is the
-        # *downloader source* path, not the library path, hence may not match
-        # any mapping. A miss is logged, never enqueued wrongly.
+        # 匹配不到只会记日志，不会错误入队。
+        #
+        # Defensive fallback only — the original rationale was retracted as unsupported.
+        # Note fileitem.path is the *downloader source* path, not the library path,
+        # so it may not match any mapping; a miss is logged, never enqueued wrongly.
         if not file_list:
             file_item = event_data.get("fileitem")
             fallback_path = getattr(file_item, "path", None) if file_item else None
@@ -451,10 +478,15 @@ class Rsync115Sync(_PluginBase):
         skipped_count = 0
         unmatched_count = 0
         duplicate_count = 0
+        added_paths: List[str] = []
+        skipped_paths: List[str] = []
+        unmatched_paths: List[str] = []
 
         for file_path in file_list:
             if not file_path or not os.path.exists(file_path):
                 skipped_count += 1
+                if file_path:
+                    skipped_paths.append(file_path)
                 continue
 
             matched_pair = False
@@ -491,9 +523,11 @@ class Rsync115Sync(_PluginBase):
                     # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
                     self._missed_queue.pop(queue_key, None)
                     added_count += 1
+                    added_paths.append(rel_path)
                     break
             if not matched_pair:
                 unmatched_count += 1
+                unmatched_paths.append(file_path)
 
         event_value = getattr(event.event_type, "value", event.event_type)
         if added_count > 0:
@@ -503,22 +537,31 @@ class Rsync115Sync(_PluginBase):
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 监听到 {added_count} 个新入库文件"
                         f"（事件={event_value}"
                         f"{'，路径来自 fileitem 回退' if fallback_used else ''}"
-                        f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}），"
-                        f"已加入 {self._delay_hours}h 延迟冷却队列")
+                        f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}）"
+                        f"，已加入 {self._delay_hours}h 延迟冷却队列: "
+                        f"{_brief_paths(added_paths)}")
         elif duplicate_count:
             # 重复投递不是问题（幂等已处理），但值得留痕，否则会误判成「没监听」
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 事件中的 {duplicate_count} 个文件"
                         f"已在冷却队列中，未刷新其冷却计时"
                         f"（事件={event_value}，队列共 {len(self._pending_queue)} 条）")
+        elif skipped_paths and not unmatched_paths:
+            # 文件路径存在但磁盘上已不存在：最常见的成因是**同一事件被重复投递**，
+            # 而目标文件在首次整理后已被移走/删除。这属于正常现象，故降为 debug
+            # 并去重，避免每 5 分钟刷一条 INFO 把日志淹没。
+            # Missing file on disk: usually a redelivered event whose target has
+            # already been moved away. Normal, so demote to debug.
+            logger.debug(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件跳过"
+                         f"（事件={event_value}，目标文件已不存在 {len(skipped_paths)} 个）: "
+                         f"{_brief_paths(skipped_paths)}")
         else:
-            # 每个事件都留一条 INFO：此前每批次只打一条 INFO，用户从日志里
-            # 看不出各文件分别发生了什么，无从排查「数量对不上」。
-            # 提示：若计数长期对不上，优先怀疑插件版本 —— 用 vX.Y.Z 开头即可确认。
+            # 需要用户行动的情况（路径不在任何映射内 = 配置问题），保持 INFO
+            # 并给出具体路径 —— 此前只打计数，用户无从判断是哪个文件。
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
                         f"（事件={event_value}，共 {len(file_list)} 个路径："
                         f"不存在/为空 {skipped_count}，不在任何映射内 {unmatched_count}"
                         f"{'，已启用 fileitem 回退' if fallback_used else ''}）"
-                        f"；若频繁出现请检查目录映射是否覆盖该路径")
+                        f"，请检查目录映射是否覆盖: {_brief_paths(skipped_paths + unmatched_paths)}")
 
     def _scan_missed_ingest(self) -> int:
         """
@@ -527,10 +570,10 @@ class Rsync115Sync(_PluginBase):
         Reconcile the queue with the source roots: pick up ingest events that were
         missed while the plugin was unavailable.
 
-        为什么不能在事件里补：宿主**只在整理批次收尾时**才广播 TransferComplete，
-        而广播那一刻插件可能正好在重载（被同步触发）。事件一旦错过就不会重放。
-        因此只能反过来查：每轮同步开头扫一次源端目录，用文件 mtime 与
-        「上次扫描时间」比对，把新出现的文件补进队列。
+        为什么不能在事件里补：事件走 durable outbox，投递时插件若不可用会进入有限
+        重试，超过上限即永久丢失；事件错过不会重放。因此只能反过来查：
+        每轮同步开头扫一次源端目录，用文件 mtime 与「上次扫描时间」比对，
+        把新出现的文件补进队列。（早期此处称「宿主只在批次收尾广播」，已撤回，见 3.8.1。）
 
         成本：每轮同步**每映射一次** os.walk —— 全部是本地目录遍历，
         不触碰 115 挂载点，因此不产生 115 API 请求、不触发风控。
@@ -1569,9 +1612,8 @@ class Rsync115Sync(_PluginBase):
                                 self._pending_queue.pop(key, None)
 
                     # 补齐清单：这些文件是在插件不可用期间错过的入库事件
-                    # （宿主只在整理批次收尾广播一次，错过不重放），
-                    # 已通过源端扫描补回。它们已经等得够久了，
-                    # **不再走冷却判定**，直接纳入本轮同步。
+                    # （事件错过不重放，已通过源端扫描补回）。
+                    # 它们已经等得够久了，**不再走冷却判定**，直接纳入本轮同步。
                     # Missed-ingest entries: recovered by scanning the source
                     # roots. They have already waited long enough, so they skip
                     # the cool-down check and sync in this run.
