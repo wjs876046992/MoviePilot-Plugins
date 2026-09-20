@@ -505,56 +505,75 @@ class Rsync115Sync(_PluginBase):
         skipped_count = 0
         unmatched_count = 0
         duplicate_count = 0
+        # 按原因分类收集，便于日志给出可行动结论。
+        # ⚠️ 关键：**先判映射归属，再判文件是否存在**。
+        # 原实现先判存在、不存在就 continue，导致「不在任何映射内」这个计数
+        # 永远为 0 —— 不是真的匹配上了，而是根本没走到映射判断。
+        # 这会掩盖病因：分不清「宿主给的库路径与你配置的源目录不一致」
+        # （改配置即可）与「路径对但容器里读不到」（挂载/映射问题）。
+        # Classify by cause, and evaluate mapping membership BEFORE existence,
+        # so the two diagnoses stay distinguishable in the log.
         added_paths: List[str] = []
-        skipped_paths: List[str] = []
-        unmatched_paths: List[str] = []
+        missing_paths: List[str] = []      # 归属某映射，但文件在容器内不存在
+        unmatched_paths: List[str] = []    # 不属于任何映射（含配置为空的场景）
 
         for file_path in file_list:
-            if not file_path or not os.path.exists(file_path):
+            if not file_path:
                 skipped_count += 1
-                if file_path:
-                    skipped_paths.append(file_path)
                 continue
 
-            matched_pair = False
+            # 第一步：判定映射归属。这一步必须独立于文件是否存在 ——
+            # 否则无法区分「路径不属于任何映射」与「路径属于映射但读不到」。
+            own_pair = None
             for pair in self._sync_pairs:
                 src_root = (pair.get("src") or "").strip().rstrip("/")
-                pair_name = pair.get("name") or src_root
+                if not src_root:
+                    continue
                 # 必须按路径分隔符判定归属，否则 "/media/TV" 会误匹配
                 # "/media/TV2/x.mkv"，把文件挂到错误的映射上。
                 # Match on a path boundary: plain startswith would let "/media/TV"
                 # swallow "/media/TV2/...", attributing files to the wrong mapping.
-                if src_root and (file_path == src_root
-                                 or file_path.startswith(src_root + os.sep)):
-                    matched_pair = True
-                    if not pair.get("all_ext", False):
-                        ext = os.path.splitext(file_path)[-1].lstrip(".").lower()
-                        valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
-                        if ext not in valid_exts:
-                            continue
-
-                    rel_path = os.path.relpath(file_path, src_root)
-                    queue_key = f"{pair_name}:{rel_path}"
-                    # 幂等：已在队列中的条目**保留原入库时间**，不刷新时间戳。
-                    # 宿主的整理事件走 durable outbox（at-least-once），同一事件可能
-                    # 被重复投递；若无条件覆盖时间戳，每次重投都会把冷却重新计时，
-                    # 表现为「明明是 1 小时前入库的文件，冷却永远走不完」。
-                    # Idempotent: keep the original timestamp instead of refreshing it.
-                    # The host's durable outbox gives at-least-once delivery, so an
-                    # unconditional overwrite would restart the cool-down on every
-                    # redelivery and the file would never become ready.
-                    if queue_key in self._pending_queue:
-                        duplicate_count += 1
-                        break
-                    self._pending_queue[queue_key] = now_ts
-                    # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
-                    self._missed_queue.pop(queue_key, None)
-                    added_count += 1
-                    added_paths.append(rel_path)
+                if file_path == src_root or file_path.startswith(src_root + os.sep):
+                    own_pair = pair
                     break
-            if not matched_pair:
+
+            if own_pair is None:
                 unmatched_count += 1
                 unmatched_paths.append(file_path)
+                continue
+
+            src_root = (own_pair.get("src") or "").strip().rstrip("/")
+            pair_name = own_pair.get("name") or src_root
+
+            # 扩展名过滤（映射配了 all_ext 则不过滤）
+            if not own_pair.get("all_ext", False):
+                ext = os.path.splitext(file_path)[-1].lstrip(".").lower()
+                valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
+                if ext not in valid_exts:
+                    skipped_count += 1
+                    continue
+
+            # 第二步：归属已确定，此时才检查文件在容器内是否可见。
+            # 明确归入「缺失」而不是笼统的「跳过」—— 这条最能定位挂载/路径映射问题。
+            if not os.path.exists(file_path):
+                missing_paths.append(file_path)
+                continue
+
+            rel_path = os.path.relpath(file_path, src_root)
+            queue_key = f"{pair_name}:{rel_path}"
+            # 幂等：已在队列中的条目**保留原入库时间**，不刷新时间戳。
+            # 宿主的整理事件走 durable outbox（at-least-once），同一事件可能
+            # 被重复投递；若无条件覆盖时间戳，每次重投都会把冷却重新计时，
+            # 表现为「明明是 1 小时前入库的文件，冷却永远走不完」。
+            # Idempotent: keep the original timestamp instead of refreshing it.
+            if queue_key in self._pending_queue:
+                duplicate_count += 1
+                continue
+            self._pending_queue[queue_key] = now_ts
+            # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
+            self._missed_queue.pop(queue_key, None)
+            added_count += 1
+            added_paths.append(rel_path)
 
         event_value = getattr(event.event_type, "value", event.event_type)
         if added_count > 0:
@@ -572,23 +591,33 @@ class Rsync115Sync(_PluginBase):
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 事件中的 {duplicate_count} 个文件"
                         f"已在冷却队列中，未刷新其冷却计时"
                         f"（事件={event_value}，队列共 {len(self._pending_queue)} 条）")
-        elif skipped_paths and not unmatched_paths:
-            # 文件路径存在但磁盘上已不存在：最常见的成因是**同一事件被重复投递**，
-            # 而目标文件在首次整理后已被移走/删除。这属于正常现象，故降为 debug
-            # 并去重，避免每 5 分钟刷一条 INFO 把日志淹没。
-            # Missing file on disk: usually a redelivered event whose target has
-            # already been moved away. Normal, so demote to debug.
-            logger.debug(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件跳过"
-                         f"（事件={event_value}，目标文件已不存在 {len(skipped_paths)} 个）: "
-                         f"{_brief_paths(skipped_paths)}")
+        elif missing_paths and not unmatched_paths:
+            # 归属映射明确、但容器内读不到该文件。
+            # ⚠️ 这是**最值得警惕**的一类：若路径前缀与你的映射一致却读不到，
+            # 说明宿主机路径与容器内挂载不一致（或文件已被移动/删除）。
+            # 保持 INFO 并给出完整路径，这是定位挂载问题的关键证据。
+            # Owned by a mapping but unreadable inside the container — the most
+            # important case: the prefix matches, so this points at a host/container
+            # path-mapping mismatch (or the file having moved).
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 入库事件路径在本容器内不可见"
+                        f"（事件={event_value}，共 {len(missing_paths)} 个；"
+                        f"路径前缀与映射一致但读不到，请检查宿主机目录是否已映射进容器）: "
+                        f"{_brief_paths(missing_paths)}")
+        elif unmatched_paths:
+            # 路径不属于任何映射 —— 配置问题，给出现有映射便于对照
+            mapping_desc = ", ".join(
+                (p.get("src") or "?") for p in self._sync_pairs
+            ) or "（尚未配置任何映射）"
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 入库事件路径不在任何映射内"
+                        f"（事件={event_value}，共 {len(unmatched_paths)} 个）: "
+                        f"{_brief_paths(unmatched_paths)}"
+                        f"；当前映射的源目录: {mapping_desc}")
         else:
-            # 需要用户行动的情况（路径不在任何映射内 = 配置问题），保持 INFO
-            # 并给出具体路径 —— 此前只打计数，用户无从判断是哪个文件。
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
-                        f"（事件={event_value}，共 {len(file_list)} 个路径："
-                        f"不存在/为空 {skipped_count}，不在任何映射内 {unmatched_count}"
-                        f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}）"
-                        f"，请检查目录映射是否覆盖: {_brief_paths(skipped_paths + unmatched_paths)}")
+            # 其余情况（路径为空、扩展名被过滤等）无需用户行动，降为 debug
+            logger.debug(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
+                         f"（事件={event_value}，共 {len(file_list)} 个路径："
+                         f"空路径/扩展名被过滤 {skipped_count}"
+                         f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}）")
 
     def _scan_missed_ingest(self) -> int:
         """
