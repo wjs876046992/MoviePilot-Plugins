@@ -14,12 +14,17 @@ from app.plugins import _PluginBase
 from app.sdk.logging import logger
 from apscheduler.triggers.cron import CronTrigger
 
+try:
+    from app.schemas.types import MessageType
+except Exception:  # pragma: no cover - 兼容不同版本宿主
+    MessageType = None
+
 
 class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.2"
+    plugin_version = "0.0.3"
     plugin_author = "HermanWu"
 
     def __init__(self):
@@ -762,11 +767,14 @@ class Rsync115Sync(_PluginBase):
             logger.info(f"[Rsync115Sync] ⏹ 任务结束 (模式 {mode}，耗时 {duration} 秒，传输 {synced_count} 个，"
                         f"状态 {'成功' if is_success else '存在异常'}，通知 {'发送' if (channel_event or (self._notify and should_notify)) else '静默'})")
 
-            # 用户主动发起的命令：无论结果都必须回复
+            # 用户主动发起的命令：无论结果都必须回复给发起人
             if channel_event:
                 self._post_reply(channel_event, msg)
             elif self._notify and should_notify:
-                self.post_message(title="115网盘同步报告", text=msg)
+                # 定时任务没有发起人，必须带上 mtype 才能交由宿主按「通知场景开关」
+                # 路由受众。不带 mtype 时 check_message 会跳过范围校验，消息将
+                # 广播给所有渠道的所有用户；带 mtype 后默认按「插件」场景 = 仅管理员。
+                self.post_message(mtype=self._plugin_mtype(), title="115网盘同步报告", text=msg)
             else:
                 logger.info(f"[Rsync115Sync] {msg.replace(chr(10), ' | ')}")
 
@@ -1115,15 +1123,39 @@ class Rsync115Sync(_PluginBase):
             else:
                 self._post_reply(event, f"⚠️ 规则「{text_arg}」已存在，无需重复添加。")
 
+    @staticmethod
+    def _plugin_mtype():
+        """
+        返回插件通知使用的消息类型。
+
+        使用「插件」场景：宿主据此读取系统「通知场景开关」里配置的受众范围，
+        默认 admin，即只发给各渠道管理员，而不再广播给全部用户。
+        """
+        if MessageType is None:
+            return None
+        for attr in ("Plugin", "Other"):
+            mtype = getattr(MessageType, attr, None)
+            if mtype is not None:
+                return mtype
+        return None
+
     def _post_reply(self, event: Optional[Event], text: str):
+        """
+        回复用户主动发起的命令。
+
+        必须使用 userid 参数指定接收者：post_message 的形参名为 userid，
+        若误传 user，该字段会被 Message 模型丢弃，导致 userid 为空，
+        消息降级为“广播给所有渠道”，每个用户都会收到本条回复。
+        """
         if not event:
             return
         try:
+            data = event.event_data or {}
             self.post_message(
-                channel=event.event_data.get("channel"),
-                user=event.event_data.get("user"),
+                channel=data.get("channel"),
+                userid=data.get("user"),
                 title="115网盘同步助手",
-                text=text
+                text=text,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 命令回复发送失败: {e}")
