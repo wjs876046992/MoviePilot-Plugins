@@ -375,3 +375,10 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
    v0.0.13 之前已发布的版本号保持原样，规则自 v0.1.0 起生效。
    五处需同步：插件类 `plugin_version`、`package.json`、配置页版本徽标（硬编码在
    `Config.vue`）、索引 `version`、`history` 首项。
+9. **alpha 版本：部署前必须先向用户确认，且 alpha 标记不得写进版本号字段**
+   （预发布形式记为 `x.y.z-alpha.n`，各段同样受单数字约束）。
+   若确认为 alpha：**只提交代码，不 build、不 deploy、不触发 Plugin Release**。
+   alpha 标记只出现在提交信息与文档里，三个版本字段始终保持纯 `x.y.z`。
+   原因：`check_plugin_versions.py` 不接受 `-alpha.n` 后缀，会报「不是合法语义版本」，
+   而该门禁同时跑在 `plugin-gate.yml`、`release.yml` 与本仓 pre-push 钩子里，
+   写进版本字段会直接卡住推送与 CI。**已决定不放宽门禁**，请勿改动它去接受预发布后缀。
