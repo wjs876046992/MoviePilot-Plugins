@@ -40,6 +40,24 @@ semantic-versioning reading of those numbers (e.g. a carry out of patch does *no
 release). Versions already published under the old scheme are left alone — the rule applies to
 versions created from now on.
 
+Alpha versions — the pre-release form is `x.y.z-alpha.n`, and **the same single-digit rule applies
+to every segment of it, including `n`** (so `0.1.0-alpha.10` is forbidden, use `0.1.0-alpha.1` …
+`0.1.0-alpha.9` then `0.2.0-alpha.0`).
+
+**Before deploying, always ask the user whether this is an alpha version — do not infer it.** If it
+is alpha: commit the code but do **not** build (`vite build` / `dist/`), do **not** deploy, and do
+**not** dispatch the `Plugin Release` workflow.
+
+⚠️ Known blocker for alpha releases: the version gate
+(`.github/scripts/check_plugin_versions.py`) matches versions with
+`re.fullmatch(r"v?(\d+(?:\.\d+)*)")`, which **rejects any `-alpha.n` suffix**. A version string like
+`0.2.0-alpha.1` fails with "不是合法语义版本", and the gate runs in `plugin-gate.yml`, `release.yml`
+**and** the `.githooks/pre-push` hook. So do not write an `-alpha.n` string into `package.v3.json` /
+`plugin_version` / `package.json` unless the gate is first relaxed to accept pre-release suffixes
+(and the CSS gate's release-contract check reviewed alongside it). Until then, treat `-alpha.n` as a
+label recorded in docs/commit messages only, and keep the three version fields on a plain `x.y.z`.
+Ask the user which they prefer if the distinction matters for a given change.
+
 ## Commands
 
 Tests need the MoviePilot backend. Default location is a sibling directory `../MoviePilot` (workspace
