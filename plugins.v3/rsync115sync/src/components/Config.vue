@@ -53,6 +53,24 @@
             </div>
             <v-switch v-model="config.listen_transfer" color="primary" inset hide-details density="compact"></v-switch>
           </div>
+
+          <!-- 源端补齐扫描：默认关闭，仅在确实频繁丢事件时才建议开启 -->
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+            <div>
+              <div class="font-weight-bold text-body-2">
+                源端补齐扫描（默认关闭）
+                <v-chip size="x-small" color="warning" variant="tonal" class="ml-1 font-weight-bold">谨慎</v-chip>
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                每轮同步前遍历本地源目录，把「插件忙时错过的入库事件」补回来。
+                它靠文件修改时间判断新增，<strong>无法区分「真的新入库」和「老文件被重新写入」</strong>
+                （刮削写 nfo、下载器续传、套件刷新时间戳都会命中），
+                开启后可能把很久以前就入库的文件反复当成新文件补进队列，且这类补入不等待冷却。
+                只有在确认经常丢事件时才开启。
+              </div>
+            </div>
+            <v-switch v-model="config.missed_scan_enabled" color="warning" inset hide-details density="compact"></v-switch>
+          </div>
         </div>
 
         <!-- 模块 2：同步目录映射列表 -->
@@ -309,6 +327,8 @@ const successMessage = ref(null)
 const config = ref({
   enabled: false,
   listen_transfer: true,
+  // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
+  missed_scan_enabled: false,
   notify: true,
   delay_hours: 2.0,
   cron: '0 */2 * * *',

@@ -111,10 +111,22 @@ class Rsync115Sync(_PluginBase):
     # Minimum interval between source-root reconciliation scans, in seconds.
     _MISSED_SCAN_INTERVAL = 1800
 
+    # 源端补齐扫描总开关。默认**关闭**，因为它的判据（文件 mtime 变新）无法区分
+    # 「真的新入库」与「老文件被重新 touch」：刮削写 nfo、下载器续传、套件定期
+    # 刷时间戳等都会让同一个个老文件每轮被重复判为「新入库」，表现为「每隔几分钟
+    # 冒出一个其实 1 小时前就入库的文件、且立刻同步（不受冷却约束）」。
+    # 只有确实频繁遇到「插件重载期间丢事件」的用户才建议开启。
+    # Master switch for the source-root reconciliation scan. OFF by default: its
+    # signal (file mtime became newer) cannot distinguish a genuine new ingest
+    # from an old file merely being touched, which would re-enqueue the same old
+    # file every round and bypass the cool-down.
+    _MISSED_SCAN_ENABLED_DEFAULT = False
+
     def __init__(self):
         super().__init__()
         self._enabled: bool = False
         self._listen_transfer: bool = True
+        self._missed_scan_enabled: bool = self._MISSED_SCAN_ENABLED_DEFAULT
         self._notify: bool = True
         self._delay_hours: float = 2.0
         self._cron: str = "0 */2 * * *"
@@ -234,6 +246,9 @@ class Rsync115Sync(_PluginBase):
         if config:
             self._enabled = config.get("enabled", False)
             self._listen_transfer = config.get("listen_transfer", True)
+            self._missed_scan_enabled = bool(
+                config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
+            )
             self._notify = config.get("notify", True)
             self._delay_hours = float(config.get("delay_hours", 2.0))
             self._cron = config.get("cron", "0 */2 * * *")
@@ -284,6 +299,33 @@ class Rsync115Sync(_PluginBase):
         if self._backfill_queue:
             logger.info(f"[Rsync115Sync] 📦 已恢复存量补传队列：剩余 {len(self._backfill_queue)} 个"
                         f"（原始 {self._backfill_total} 个），将由定时巡检继续推进")
+
+        # 启动摘要：此前 init_plugin 一条日志都没有，导致用户无法从日志判断
+        # 到底装的是哪个版本、事件是否已注册、映射是否读到 —— 排查「入库数量对不上」
+        # 时只能靠猜。这里把关键状态一次性打出来，版本号放在最前面便于核对。
+        # Startup summary. Without it there was no way to tell from the logs which
+        # version was actually loaded, which made version mix-ups undiagnosable.
+        try:
+            event_names = ",".join(
+                str(getattr(e, "value", e)) for e in _TRANSFER_SUCCESS_EVENTS
+            )
+            pair_summary = ", ".join(
+                f"{(p.get('name') or p.get('src') or '?')}=>{(p.get('dest') or '?')}"
+                for p in self._sync_pairs
+            ) or "（无）"
+            logger.info(
+                f"[Rsync115Sync] v{self.plugin_version} 初始化完成 | "
+                f"启用={self._enabled} 监听入库={self._listen_transfer} | "
+                f"冷却={self._delay_hours}h 定时={self._cron} | "
+                f"监听事件={event_names} | "
+                f"映射 {len(self._sync_pairs)} 组: {pair_summary} | "
+                f"队列: 冷却 {len(self._pending_queue)} / 补传 {len(self._backfill_queue)}"
+                f" / 待补扫 {len(self._missed_queue)} | "
+                f"限流={'开' if self._rate_limit_enabled else '关'}"
+                f"({self._upload_batch_size}/批, {self._upload_max_per_window}/窗口)"
+            )
+        except Exception as log_err:  # 摘要日志失败绝不能影响插件加载
+            logger.warning(f"[Rsync115Sync] 初始化摘要日志输出失败（已忽略）: {log_err}")
 
     def get_state(self) -> bool:
         return self._enabled
@@ -379,18 +421,43 @@ class Rsync115Sync(_PluginBase):
         event_data = event.event_data or {}
         transfer_info = event_data.get("transferinfo")
         if not transfer_info:
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 收到整理完成事件但缺少 transferinfo，已忽略"
+                        f"（事件={getattr(event.event_type, 'value', event.event_type)}）")
             return
 
         file_list = getattr(transfer_info, "file_list_new", []) or []
+        fallback_used = False
+
+        # 回退取路径：宿主对**字幕/音频**文件不填 file_list_new
+        # （只有主要媒体文件才有目标路径，见 settlement.py 的
+        #  `target_files = transferinfo.file_list_new`），而字幕事件同样需要入队。
+        # 此时改用 payload 里的 fileitem.path。
+        # 注意语义差别：fileitem.path 是**下载器源路径**，而 file_list_new 是
+        # **整理后的库内路径**。源路径通常不在映射内，故后续可能匹配不到映射——
+        # 匹配不到只会记 debug 日志，不会错误入队。
+        # Fallback path source. The host leaves file_list_new empty for
+        # subtitle/audio files, so fall back to fileitem.path — which is the
+        # *downloader source* path, not the library path, hence may not match
+        # any mapping. A miss is logged, never enqueued wrongly.
+        if not file_list:
+            file_item = event_data.get("fileitem")
+            fallback_path = getattr(file_item, "path", None) if file_item else None
+            if fallback_path:
+                file_list = [fallback_path]
+                fallback_used = True
+
         now_ts = time.time()
         added_count = 0
         skipped_count = 0
+        unmatched_count = 0
+        duplicate_count = 0
 
         for file_path in file_list:
             if not file_path or not os.path.exists(file_path):
                 skipped_count += 1
                 continue
 
+            matched_pair = False
             for pair in self._sync_pairs:
                 src_root = (pair.get("src") or "").strip().rstrip("/")
                 pair_name = pair.get("name") or src_root
@@ -400,6 +467,7 @@ class Rsync115Sync(_PluginBase):
                 # swallow "/media/TV2/...", attributing files to the wrong mapping.
                 if src_root and (file_path == src_root
                                  or file_path.startswith(src_root + os.sep)):
+                    matched_pair = True
                     if not pair.get("all_ext", False):
                         ext = os.path.splitext(file_path)[-1].lstrip(".").lower()
                         valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
@@ -408,26 +476,49 @@ class Rsync115Sync(_PluginBase):
 
                     rel_path = os.path.relpath(file_path, src_root)
                     queue_key = f"{pair_name}:{rel_path}"
+                    # 幂等：已在队列中的条目**保留原入库时间**，不刷新时间戳。
+                    # 宿主的整理事件走 durable outbox（at-least-once），同一事件可能
+                    # 被重复投递；若无条件覆盖时间戳，每次重投都会把冷却重新计时，
+                    # 表现为「明明是 1 小时前入库的文件，冷却永远走不完」。
+                    # Idempotent: keep the original timestamp instead of refreshing it.
+                    # The host's durable outbox gives at-least-once delivery, so an
+                    # unconditional overwrite would restart the cool-down on every
+                    # redelivery and the file would never become ready.
+                    if queue_key in self._pending_queue:
+                        duplicate_count += 1
+                        break
                     self._pending_queue[queue_key] = now_ts
                     # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
                     self._missed_queue.pop(queue_key, None)
                     added_count += 1
                     break
+            if not matched_pair:
+                unmatched_count += 1
 
+        event_value = getattr(event.event_type, "value", event.event_type)
         if added_count > 0:
             self.save_data("pending_queue", self._pending_queue)
             if self._missed_queue:
                 self.save_data("missed_queue", self._missed_queue)
-            logger.info(f"[Rsync115Sync] 监听到 {added_count} 个新入库文件"
-                        f"（事件={getattr(event.event_type, 'value', event.event_type)}），"
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 监听到 {added_count} 个新入库文件"
+                        f"（事件={event_value}"
+                        f"{'，路径来自 fileitem 回退' if fallback_used else ''}"
+                        f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}），"
                         f"已加入 {self._delay_hours}h 延迟冷却队列")
+        elif duplicate_count:
+            # 重复投递不是问题（幂等已处理），但值得留痕，否则会误判成「没监听」
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 事件中的 {duplicate_count} 个文件"
+                        f"已在冷却队列中，未刷新其冷却计时"
+                        f"（事件={event_value}，队列共 {len(self._pending_queue)} 条）")
         else:
-            # 事件本身是有效的，只是这批文件不在任何映射内 / 扩展名被过滤 /
-            # 或路径在容器内不可见。全部静默会让「没监听」无从排查，故留痕。
-            logger.debug(f"[Rsync115Sync] 整理完成事件未产生入队："
-                         f"file_list_new={len(file_list)} 个，"
-                         f"其中跳过（路径不存在或为空）{skipped_count} 个，"
-                         f"事件={getattr(event.event_type, 'value', event.event_type)}")
+            # 每个事件都留一条 INFO：此前每批次只打一条 INFO，用户从日志里
+            # 看不出各文件分别发生了什么，无从排查「数量对不上」。
+            # 提示：若计数长期对不上，优先怀疑插件版本 —— 用 vX.Y.Z 开头即可确认。
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
+                        f"（事件={event_value}，共 {len(file_list)} 个路径："
+                        f"不存在/为空 {skipped_count}，不在任何映射内 {unmatched_count}"
+                        f"{'，已启用 fileitem 回退' if fallback_used else ''}）"
+                        f"；若频繁出现请检查目录映射是否覆盖该路径")
 
     def _scan_missed_ingest(self) -> int:
         """
@@ -689,6 +780,7 @@ class Rsync115Sync(_PluginBase):
             "data": {
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
+                "missed_scan_enabled": self._missed_scan_enabled,
                 "notify": self._notify,
                 "delay_hours": self._delay_hours,
                 "cron": self._cron,
@@ -712,6 +804,9 @@ class Rsync115Sync(_PluginBase):
             return {"success": False, "message": "配置数据为空"}
         self._enabled = config.get("enabled", False)
         self._listen_transfer = config.get("listen_transfer", True)
+        self._missed_scan_enabled = bool(
+            config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
+        )
         self._notify = config.get("notify", True)
         self._delay_hours = float(config.get("delay_hours", 2.0))
         self._cron = config.get("cron", "0 */2 * * *")
@@ -732,17 +827,71 @@ class Rsync115Sync(_PluginBase):
         self.update_config(config)
         return {"success": True, "message": "配置保存成功"}
 
+    def _count_queue(self, now_ts: float, threshold: float) -> Tuple[int, int, int]:
+        """
+        统计冷却队列：返回 (就绪数, 冷却中数, 已失效数)。
+
+        Count the cool-down queue as (ready, cooling, stale).
+
+        为什么需要第三个数字：入库文件在冷却途中被删除后，队列条目要等冷却到期、
+        下一轮同步才会被清理。若只按时间戳统计，这些「文件已不存在」的条目会被
+        算进冷却中甚至就绪数，看板就会出现「冷却要 2 小时、却有一批 1 小时前的
+        条目迟迟不就绪」这类误导信息。
+        宿主没有「媒体库文件被删除」事件（只有下载器/订阅/站点的删除事件），
+        因此无法在删除时即时移除，只能在**展示时**用存在性过滤，不改动持久化队列
+        （避免为了显示而增加热路径开销）。真正清理由同步轮次负责。
+        Stale entries are those whose file is already gone. The host emits no
+        "library file deleted" event, so removal cannot be event-driven; we filter
+        them at display time only and let the sync run do the actual pruning.
+        """
+        ready_count = 0
+        cooling_count = 0
+        stale_count = 0
+        for key, ts in self._pending_queue.items():
+            if not self._queue_key_exists(key):
+                stale_count += 1
+                continue
+            if now_ts - ts >= threshold:
+                ready_count += 1
+            else:
+                cooling_count += 1
+        return ready_count, cooling_count, stale_count
+
+    def _queue_key_exists(self, key: str) -> bool:
+        """
+        判断队列条目对应的源端文件是否仍然存在。
+
+        Whether the source file behind a queue key still exists.
+
+        key 形如 "任务名:相对路径"，需用映射的 src 还原绝对路径。任务名与 src
+        都可能被用户改名，因此无法纯靠解析 key 得出路径；这里按前缀匹配所有映射，
+        逐个还原。解析不出时不视为失效（宁可当作存在，避免误报）。
+        """
+        direct = os.path.isabs(key) and key != ""
+        if direct:
+            return os.path.exists(key)
+        for pair in self._sync_pairs:
+            pair_name = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
+            src_root = (pair.get("src") or "").strip().rstrip("/")
+            if not src_root or not pair_name:
+                continue
+            if key.startswith(f"{pair_name}:"):
+                rel_p = key.split(f"{pair_name}:", 1)[1]
+                return os.path.exists(os.path.join(src_root, rel_p))
+        return True  # 无法归属任何映射，不判定为失效
+
     def _api_get_status(self):
         now_ts = time.time()
         threshold = self._delay_hours * 3600
-        ready_count = sum(1 for ts in self._pending_queue.values() if now_ts - ts >= threshold)
-        cooling_count = len(self._pending_queue) - ready_count
+        ready_count, cooling_count, stale_count = self._count_queue(now_ts, threshold)
         return {
             "success": True,
             "data": {
                 "is_running": self._is_running,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,
+                # 源端文件已不存在、等待同步轮清理的条目数（不计入上面两个数字）
+                "stale_count": stale_count,
                 "delay_hours": self._delay_hours,
                 "last_status": self._last_status,
                 "sync_pairs_count": len(self._sync_pairs),
@@ -753,6 +902,7 @@ class Rsync115Sync(_PluginBase):
                 # 已由源端扫描补回、将在下轮同步（不参与冷却）
                 "missed_count": len(self._missed_queue),
                 "missed_last_scan": self._missed_last_scan,
+                "missed_scan_enabled": self._missed_scan_enabled,
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
@@ -1343,7 +1493,7 @@ class Rsync115Sync(_PluginBase):
             # retry/backfill 处理的是更早的存量，与新鲜入库无关。
             # Source-root reconciliation for missed ingest events. Local-only walk,
             # no 115 mount access. Only needed in ready mode.
-            if mode == "ready":
+            if mode == "ready" and self._missed_scan_enabled:
                 try:
                     self._scan_missed_ingest()
                 except Exception as scan_err:
@@ -2089,8 +2239,7 @@ class Rsync115Sync(_PluginBase):
             state = "正在同步 ⏳" if self._is_running else ("同步完成 ✅" if st.get("success") else "有文件缺失/异常 ⚠️")
             now_ts = time.time()
             threshold = self._delay_hours * 3600
-            ready_count = sum(1 for ts in self._pending_queue.values() if now_ts - ts >= threshold)
-            cooling_count = len(self._pending_queue) - ready_count
+            ready_count, cooling_count, stale_count = self._count_queue(now_ts, threshold)
 
             reply = (
                 f"📊 115网盘同步状态报告\n"
@@ -2100,6 +2249,9 @@ class Rsync115Sync(_PluginBase):
                 f"彻底缺失文件: {len(st.get('missing_files', []))} 个\n"
                 f"残缺不全文件: {len(st.get('corrupt_files', []))} 个\n"
             )
+            if stale_count:
+                reply += (f"🗑️ 源端已删除待清理: {stale_count} 个"
+                          f"（文件已不在本地，将在下轮同步时移出队列，不计入上方计数）\n")
             if self._missed_queue:
                 reply += (f"🕳️ 错过入库待补扫: {len(self._missed_queue)} 个"
                           f"（插件重载期间丢失事件，已由源端扫描补回，下轮同步自动带上）\n")

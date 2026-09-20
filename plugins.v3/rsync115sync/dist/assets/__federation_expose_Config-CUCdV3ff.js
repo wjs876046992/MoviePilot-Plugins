@@ -13,36 +13,38 @@ const _hoisted_3 = {
 const _hoisted_4 = { class: "settings-group-card rounded-xl overflow-hidden mb-4" };
 const _hoisted_5 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
 const _hoisted_6 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
-const _hoisted_7 = { class: "section-header d-flex align-center justify-space-between mb-2" };
-const _hoisted_8 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
-const _hoisted_9 = {
+const _hoisted_7 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
+const _hoisted_8 = { class: "font-weight-bold text-body-2" };
+const _hoisted_9 = { class: "section-header d-flex align-center justify-space-between mb-2" };
+const _hoisted_10 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
+const _hoisted_11 = {
   key: 0,
   class: "d-flex flex-column ga-3 mb-4"
 };
-const _hoisted_10 = { class: "d-flex align-center justify-space-between mb-3" };
-const _hoisted_11 = { class: "font-weight-bold text-body-2 text-primary" };
-const _hoisted_12 = {
+const _hoisted_12 = { class: "d-flex align-center justify-space-between mb-3" };
+const _hoisted_13 = { class: "font-weight-bold text-body-2 text-primary" };
+const _hoisted_14 = {
   key: 1,
   class: "empty-hint-box text-center py-6 rounded-xl mb-4 text-caption text-disabled"
 };
-const _hoisted_13 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_14 = { class: "settings-group-card rounded-xl overflow-hidden pa-4 mb-4" };
 const _hoisted_15 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_16 = { class: "settings-group-card rounded-xl overflow-hidden pa-4" };
-const _hoisted_17 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
-const _hoisted_18 = { class: "settings-group-card rounded-xl overflow-hidden" };
-const _hoisted_19 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
-const _hoisted_20 = {
+const _hoisted_16 = { class: "settings-group-card rounded-xl overflow-hidden pa-4 mb-4" };
+const _hoisted_17 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
+const _hoisted_18 = { class: "settings-group-card rounded-xl overflow-hidden pa-4" };
+const _hoisted_19 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
+const _hoisted_20 = { class: "settings-group-card rounded-xl overflow-hidden" };
+const _hoisted_21 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
+const _hoisted_22 = {
   key: 0,
   class: "px-4 py-2 batch-bar"
 };
-const _hoisted_21 = { class: "d-flex align-center flex-wrap ga-2" };
-const _hoisted_22 = { class: "text-caption text-medium-emphasis" };
-const _hoisted_23 = {
+const _hoisted_23 = { class: "d-flex align-center flex-wrap ga-2" };
+const _hoisted_24 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_25 = {
   key: 0,
   class: "text-caption text-warning font-weight-medium mt-1"
 };
-const _hoisted_24 = { class: "px-4 py-3" };
+const _hoisted_26 = { class: "px-4 py-3" };
 
 const {ref,computed,onMounted} = await importShared('vue');
 
@@ -68,6 +70,8 @@ const successMessage = ref(null);
 const config = ref({
   enabled: false,
   listen_transfer: true,
+  // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
+  missed_scan_enabled: false,
   notify: true,
   delay_hours: 2.0,
   cron: '0 */2 * * *',
@@ -234,7 +238,7 @@ return (_ctx, _cache) => {
                 color: "primary",
                 size: "22"
               }, {
-                default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
                   _createTextVNode("mdi-cloud-sync", -1)
                 ]))]),
                 _: 1
@@ -251,7 +255,7 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { size: "18" }, {
-                  default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+                  default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
                     _createTextVNode("mdi-close", -1)
                   ]))]),
                   _: 1
@@ -260,7 +264,7 @@ return (_ctx, _cache) => {
                   activator: "parent",
                   location: "bottom"
                 }, {
-                  default: _withCtx(() => [...(_cache[21] || (_cache[21] = [
+                  default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
                     _createTextVNode("关闭配置", -1)
                   ]))]),
                   _: 1
@@ -273,14 +277,14 @@ return (_ctx, _cache) => {
             _createElementVNode("div", null, [
               _createVNode(_component_v_card_title, { class: "text-subtitle-1 font-weight-bold pa-0 d-flex align-center" }, {
                 default: _withCtx(() => [
-                  _cache[18] || (_cache[18] = _createTextVNode(" 115 网盘同步配置 ", -1)),
+                  _cache[19] || (_cache[19] = _createTextVNode(" 115 网盘同步配置 ", -1)),
                   _createVNode(_component_v_chip, {
                     size: "x-small",
                     color: "primary",
                     variant: "tonal",
                     class: "ml-2 font-weight-bold"
                   }, {
-                    default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
+                    default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
                       _createTextVNode("v0.1.0", -1)
                     ]))]),
                     _: 1
@@ -288,7 +292,7 @@ return (_ctx, _cache) => {
                 ]),
                 _: 1
               }),
-              _cache[19] || (_cache[19] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
+              _cache[20] || (_cache[20] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
             ])
           ]),
           _: 1
@@ -331,7 +335,7 @@ return (_ctx, _cache) => {
           default: _withCtx(() => [
             _createElementVNode("div", _hoisted_4, [
               _createElementVNode("div", _hoisted_5, [
-                _cache[22] || (_cache[22] = _createElementVNode("div", null, [
+                _cache[23] || (_cache[23] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用同步助手"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "总控主开关，开启后生效定时轮询与事件监听")
                 ], -1)),
@@ -345,7 +349,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_6, [
-                _cache[23] || (_cache[23] = _createElementVNode("div", null, [
+                _cache[24] || (_cache[24] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "监听媒体转移入库事件"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "下载与刮削转移完成后自动纳入延迟冷却队列")
                 ], -1)),
@@ -357,16 +361,47 @@ return (_ctx, _cache) => {
                   "hide-details": "",
                   density: "compact"
                 }, null, 8, ["modelValue"])
+              ]),
+              _createElementVNode("div", _hoisted_7, [
+                _createElementVNode("div", null, [
+                  _createElementVNode("div", _hoisted_8, [
+                    _cache[26] || (_cache[26] = _createTextVNode(" 源端补齐扫描（默认关闭） ", -1)),
+                    _createVNode(_component_v_chip, {
+                      size: "x-small",
+                      color: "warning",
+                      variant: "tonal",
+                      class: "ml-1 font-weight-bold"
+                    }, {
+                      default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+                        _createTextVNode("谨慎", -1)
+                      ]))]),
+                      _: 1
+                    })
+                  ]),
+                  _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
+                    _createTextVNode(" 每轮同步前遍历本地源目录，把「插件忙时错过的入库事件」补回来。 它靠文件修改时间判断新增，"),
+                    _createElementVNode("strong", null, "无法区分「真的新入库」和「老文件被重新写入」"),
+                    _createTextVNode(" （刮削写 nfo、下载器续传、套件刷新时间戳都会命中）， 开启后可能把很久以前就入库的文件反复当成新文件补进队列，且这类补入不等待冷却。 只有在确认经常丢事件时才开启。 ")
+                  ], -1))
+                ]),
+                _createVNode(_component_v_switch, {
+                  modelValue: config.value.missed_scan_enabled,
+                  "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((config.value.missed_scan_enabled) = $event)),
+                  color: "warning",
+                  inset: "",
+                  "hide-details": "",
+                  density: "compact"
+                }, null, 8, ["modelValue"])
               ])
             ]),
-            _createElementVNode("div", _hoisted_7, [
-              _createElementVNode("div", _hoisted_8, [
+            _createElementVNode("div", _hoisted_9, [
+              _createElementVNode("div", _hoisted_10, [
                 _createVNode(_component_v_icon, {
                   size: "18",
                   color: "primary",
                   class: "mr-1"
                 }, {
-                  default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                  default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
                     _createTextVNode("mdi-folder-swap-outline", -1)
                   ]))]),
                   _: 1
@@ -385,12 +420,12 @@ return (_ctx, _cache) => {
                     start: "",
                     size: "16"
                   }, {
-                    default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+                    default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                       _createTextVNode("mdi-plus", -1)
                     ]))]),
                     _: 1
                   }),
-                  _cache[26] || (_cache[26] = _createTextVNode(" 添加目录映射 ", -1))
+                  _cache[30] || (_cache[30] = _createTextVNode(" 添加目录映射 ", -1))
                 ]),
                 _: 1
               })
@@ -401,7 +436,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-3 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+              default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
                 _createTextVNode(" 为每个媒体库配置一对路径：", -1),
                 _createElementVNode("b", null, "本地源目录", -1),
                 _createTextVNode(" → ", -1),
@@ -413,14 +448,14 @@ return (_ctx, _cache) => {
               _: 1
             }),
             (config.value.sync_pairs.length)
-              ? (_openBlock(), _createElementBlock("div", _hoisted_9, [
+              ? (_openBlock(), _createElementBlock("div", _hoisted_11, [
                   (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(config.value.sync_pairs, (pair, idx) => {
                     return (_openBlock(), _createElementBlock("div", {
                       key: idx,
                       class: "pair-card rounded-xl pa-4"
                     }, [
-                      _createElementVNode("div", _hoisted_10, [
-                        _createElementVNode("span", _hoisted_11, "映射任务 #" + _toDisplayString(idx + 1), 1),
+                      _createElementVNode("div", _hoisted_12, [
+                        _createElementVNode("span", _hoisted_13, "映射任务 #" + _toDisplayString(idx + 1), 1),
                         _createVNode(_component_v_btn, {
                           icon: "",
                           size: "x-small",
@@ -430,7 +465,7 @@ return (_ctx, _cache) => {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, { size: "18" }, {
-                              default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+                              default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
                                 _createTextVNode("mdi-trash-can-outline", -1)
                               ]))]),
                               _: 1
@@ -508,21 +543,21 @@ return (_ctx, _cache) => {
                     ]))
                   }), 128))
                 ]))
-              : (_openBlock(), _createElementBlock("div", _hoisted_12, " 暂未配置任何目录映射，点击上方按钮添加你的本地媒体目录与 CD2 挂载路径 ")),
-            _createElementVNode("div", _hoisted_13, [
+              : (_openBlock(), _createElementBlock("div", _hoisted_14, " 暂未配置任何目录映射，点击上方按钮添加你的本地媒体目录与 CD2 挂载路径 ")),
+            _createElementVNode("div", _hoisted_15, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
+                default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
                   _createTextVNode("mdi-timer-sand", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[30] || (_cache[30] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
+              _cache[34] || (_cache[34] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
-            _createElementVNode("div", _hoisted_14, [
+            _createElementVNode("div", _hoisted_16, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_col, {
@@ -532,7 +567,7 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.delay_hours,
-                        "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((config.value.delay_hours) = $event)),
+                        "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((config.value.delay_hours) = $event)),
                         modelModifiers: { number: true },
                         label: "入库冷却延迟时长 (小时)",
                         type: "number",
@@ -554,7 +589,7 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.cron,
-                        "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((config.value.cron) = $event)),
+                        "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((config.value.cron) = $event)),
                         label: "定时检查 Cron 规则",
                         variant: "outlined",
                         density: "compact",
@@ -569,20 +604,20 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
-            _createElementVNode("div", _hoisted_15, [
+            _createElementVNode("div", _hoisted_17, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
                   _createTextVNode("mdi-shield-check-outline", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[32] || (_cache[32] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
+              _cache[36] || (_cache[36] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
             ]),
-            _createElementVNode("div", _hoisted_16, [
+            _createElementVNode("div", _hoisted_18, [
               _createVNode(_component_v_row, { density: "compact" }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_col, {
@@ -592,7 +627,7 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.rsync_timeout,
-                        "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((config.value.rsync_timeout) = $event)),
+                        "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((config.value.rsync_timeout) = $event)),
                         modelModifiers: { number: true },
                         label: "rsync I/O 超时 (秒)",
                         type: "number",
@@ -611,7 +646,7 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.task_timeout,
-                        "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((config.value.task_timeout) = $event)),
+                        "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((config.value.task_timeout) = $event)),
                         modelModifiers: { number: true },
                         label: "单次任务最大超时 (秒)",
                         type: "number",
@@ -627,7 +662,7 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _createVNode(_component_v_textarea, {
                         modelValue: config.value.exclude_patterns,
-                        "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((config.value.exclude_patterns) = $event)),
+                        "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((config.value.exclude_patterns) = $event)),
                         label: "排除文件与目录规则 (每行一条，严格继承 sync_115.sh)",
                         variant: "outlined",
                         density: "compact",
@@ -642,18 +677,18 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
-            _createElementVNode("div", _hoisted_17, [
+            _createElementVNode("div", _hoisted_19, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+                default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
                   _createTextVNode("mdi-speedometer-slow", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[34] || (_cache[34] = _createTextVNode(" 上传限流与风控退避 ", -1))
+              _cache[38] || (_cache[38] = _createTextVNode(" 上传限流与风控退避 ", -1))
             ]),
             _createVNode(_component_v_alert, {
               type: "info",
@@ -661,7 +696,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-2 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
+              default: _withCtx(() => [...(_cache[39] || (_cache[39] = [
                 _createElementVNode("div", { class: "font-weight-bold mb-1" }, "为什么需要限流？", -1),
                 _createTextVNode(" 115 网盘会统计", -1),
                 _createElementVNode("b", null, "单位时间内上传的文件个数", -1),
@@ -675,15 +710,15 @@ return (_ctx, _cache) => {
               ]))]),
               _: 1
             }),
-            _createElementVNode("div", _hoisted_18, [
-              _createElementVNode("div", _hoisted_19, [
-                _cache[36] || (_cache[36] = _createElementVNode("div", null, [
+            _createElementVNode("div", _hoisted_20, [
+              _createElementVNode("div", _hoisted_21, [
+                _cache[40] || (_cache[40] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
                 ], -1)),
                 _createVNode(_component_v_switch, {
                   modelValue: config.value.rate_limit_enabled,
-                  "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((config.value.rate_limit_enabled) = $event)),
+                  "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.value.rate_limit_enabled) = $event)),
                   color: "primary",
                   inset: "",
                   "hide-details": "",
@@ -691,8 +726,8 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               (config.value.rate_limit_enabled)
-                ? (_openBlock(), _createElementBlock("div", _hoisted_20, [
-                    _createElementVNode("div", _hoisted_21, [
+                ? (_openBlock(), _createElementBlock("div", _hoisted_22, [
+                    _createElementVNode("div", _hoisted_23, [
                       _createVNode(_component_v_chip, {
                         size: "small",
                         color: "primary",
@@ -704,7 +739,7 @@ return (_ctx, _cache) => {
                             start: "",
                             size: "14"
                           }, {
-                            default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                            default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
                               _createTextVNode("mdi-speedometer", -1)
                             ]))]),
                             _: 1
@@ -713,10 +748,10 @@ return (_ctx, _cache) => {
                         ]),
                         _: 1
                       }),
-                      _createElementVNode("span", _hoisted_22, " 即每 " + _toDisplayString(windowHumanText.value) + " 最多上传 " + _toDisplayString(config.value.upload_max_per_window || 0) + " 个文件 ", 1)
+                      _createElementVNode("span", _hoisted_24, " 即每 " + _toDisplayString(windowHumanText.value) + " 最多上传 " + _toDisplayString(config.value.upload_max_per_window || 0) + " 个文件 ", 1)
                     ]),
                     (rateConfigWarnings.value.length)
-                      ? (_openBlock(), _createElementBlock("div", _hoisted_23, [
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_25, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(rateConfigWarnings.value, (w, i) => {
                             return (_openBlock(), _createElementBlock("div", { key: i }, "⚠️ " + _toDisplayString(w), 1))
                           }), 128))
@@ -724,7 +759,7 @@ return (_ctx, _cache) => {
                       : _createCommentVNode("", true)
                   ]))
                 : _createCommentVNode("", true),
-              _createElementVNode("div", _hoisted_24, [
+              _createElementVNode("div", _hoisted_26, [
                 _createVNode(_component_v_row, { density: "compact" }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_col, {
@@ -734,7 +769,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_batch_size,
-                          "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.value.upload_batch_size) = $event)),
+                          "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((config.value.upload_batch_size) = $event)),
                           modelModifiers: { number: true },
                           label: "单批文件数上限",
                           type: "number",
@@ -754,7 +789,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_max_per_window,
-                          "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((config.value.upload_max_per_window) = $event)),
+                          "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.value.upload_max_per_window) = $event)),
                           modelModifiers: { number: true },
                           label: "单窗口上传文件数上限",
                           type: "number",
@@ -774,7 +809,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_window_secs,
-                          "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.value.upload_window_secs) = $event)),
+                          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.value.upload_window_secs) = $event)),
                           modelModifiers: { number: true },
                           label: "限流窗口时长 (秒)",
                           type: "number",
@@ -794,7 +829,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.backoff_secs,
-                          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.value.backoff_secs) = $event)),
+                          "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((config.value.backoff_secs) = $event)),
                           modelModifiers: { number: true },
                           label: "命中风控后退避时长 (秒)",
                           type: "number",
@@ -811,7 +846,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_textarea, {
                           modelValue: config.value.rate_limit_keywords,
-                          "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((config.value.rate_limit_keywords) = $event)),
+                          "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((config.value.rate_limit_keywords) = $event)),
                           label: "风控特征关键词 (每行一条，命中即退避)",
                           variant: "outlined",
                           density: "compact",
@@ -830,7 +865,7 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.force_cooldown_days,
-                          "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((config.value.force_cooldown_days) = $event)),
+                          "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((config.value.force_cooldown_days) = $event)),
                           modelModifiers: { number: true },
                           label: "全量校验冷却 (天)",
                           type: "number",
@@ -863,12 +898,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
+                  default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
                     _createTextVNode("mdi-view-dashboard-outline", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[39] || (_cache[39] = _createTextVNode(" 查看监控看板 ", -1))
+                _cache[43] || (_cache[43] = _createTextVNode(" 查看监控看板 ", -1))
               ]),
               _: 1
             }),
@@ -886,12 +921,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
+                  default: _withCtx(() => [...(_cache[44] || (_cache[44] = [
                     _createTextVNode("mdi-content-save", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[41] || (_cache[41] = _createTextVNode(" 保存配置 ", -1))
+                _cache[45] || (_cache[45] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"])
@@ -906,6 +941,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-fc4c5c13"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-666c2203"]]);
 
 export { Config as default };
