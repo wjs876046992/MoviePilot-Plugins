@@ -417,6 +417,27 @@ class Rsync115Sync(_PluginBase):
     @eventmanager.register(_TRANSFER_SUCCESS_EVENTS)
     def on_transfer_complete(self, event: Event):
         """
+        事件入口：仅做异常兜底，业务逻辑见 _handle_transfer_event。
+
+        Event entry point. Only guards against exceptions — the actual work lives
+        in _handle_transfer_event.
+
+        为什么要拆这两层：宿主把事件处理器丢到线程池执行，**未捕获的异常会被
+        记为「插件错误」**（官方事件说明明确指出「异常要自己捕获」）。
+        入库排队涉及文件系统探测与状态落盘，任何意外都不该污染宿主错误统计，
+        更不该因为一个文件出问题就中断整批事件处理。
+        兜底后仅记日志：单个事件失败不影响其余事件，也不影响插件运行。
+        """
+        try:
+            self._handle_transfer_event(event)
+        except Exception as err:
+            # 记完整堆栈便于定位；不 re-raise，避免被宿主记为插件错误
+            logger.error(f"[Rsync115Sync] v{self.plugin_version} 处理整理事件时异常"
+                         f"（已兜底，不影响其它事件）: {err}")
+            logger.debug(f"[Rsync115Sync] 事件处理异常堆栈:\n{traceback.format_exc()}")
+
+    def _handle_transfer_event(self, event: Event):
+        """
         监听媒体转移/字幕/音频整理完成事件，把新入库文件放入冷却队列。
 
         Handle the media-transfer-complete event: enqueue newly ingested files
@@ -430,13 +451,10 @@ class Rsync115Sync(_PluginBase):
             字幕文件     → SubtitleTransferComplete
             音频文件     → AudioTransferComplete
         此前只注册了 TransferComplete，于是**字幕与音频文件完全不会入队**。
-        「46 个只听到 3 个」正是这个原因的典型表现 —— 那些剧集每集除视频外
-        还带若干外挂字幕，字幕（以及可能的音轨）全部被漏掉。
 
-        The host splits transfer results into three event types by **file kind**
-        (see _durable_transfer_event in app/chain/transfer/settlement.py).
-        Registering only TransferComplete silently drops every subtitle and audio
-        file, which is exactly the "46 files but only 3 events" symptom.
+        The host splits transfer results into three event types by file kind
+        (see _durable_transfer_event). Registering only TransferComplete silently
+        drops every subtitle and audio file.
         """
         if not self._enabled or not self._listen_transfer:
             return
@@ -448,30 +466,35 @@ class Rsync115Sync(_PluginBase):
                         f"（事件={getattr(event.event_type, 'value', event.event_type)}）")
             return
 
-        file_list = getattr(transfer_info, "file_list_new", []) or []
-        fallback_used = False
-
-        # 路径为空时的防御性回退：改用 payload 里的 fileitem.path。
+        # 路径来源按可靠性降级：file_list_new（实际落库路径，最可靠）
+        #                     → file_list（整理前的全部文件）
+        #                     → payload 里的 fileitem.path（源文件，兜底）
         #
-        # ⚠️ 关于触发条件：此处不必、也无法断言具体原因。曾有结论称
-        # 「宿主对字幕/音频文件不填 file_list_new」，但该结论**缺乏代码依据，已撤回**——
-        # transhandler.py 全部 4 处 file_list_new 赋值都是单文件整理时填当前文件路径，
-        # 不存在按文件类型判断的逻辑。真实为空的原因未知（可能是目标文件已不存在等）。
-        # 详见 DEVELOPMENT.md 3.8.1。
+        # 为什么要回退：`file_list_new` 的模型默认值是空 list，宿主**28 个
+        # TransferInfo 构造点里有 25 个不显式赋值**（多为失败分支/中间态，
+        # 见 DEVELOPMENT.md 3.8.2）。因此该字段为空是**真实存在的情况**。
+        # （注意：这是「可能为空」，**不是**「按文件类型刻意置空」——后者查无依据。）
         #
-        # 注意语义差别：fileitem.path 是**下载器源路径**，而 file_list_new 是
-        # **整理后的库内路径**。源路径通常不在映射内，故后续可能匹配不到映射——
-        # 匹配不到只会记日志，不会错误入队。
+        # 语义差别要留意：fileitem.path 是**下载器源路径**，而 file_list_new 是
+        # **整理后的库内路径**。源路径通常不在媒体库映射内，故可能匹配不到映射；
+        # 匹配不到只记日志，绝不错误入队。
         #
-        # Defensive fallback only — the original rationale was retracted as unsupported.
-        # Note fileitem.path is the *downloader source* path, not the library path,
-        # so it may not match any mapping; a miss is logged, never enqueued wrongly.
+        # Path source, most to least reliable. file_list_new can legitimately be
+        # empty (25 of 28 constructor sites rely on the default), so fall back.
+        # Note fileitem.path is the downloader source path, not the library path.
+        file_list = list(getattr(transfer_info, "file_list_new", []) or [])
+        path_source = "file_list_new"
+        if not file_list:
+            file_list = list(getattr(transfer_info, "file_list", []) or [])
+            if file_list:
+                path_source = "file_list"
         if not file_list:
             file_item = event_data.get("fileitem")
             fallback_path = getattr(file_item, "path", None) if file_item else None
             if fallback_path:
                 file_list = [fallback_path]
-                fallback_used = True
+                path_source = "fileitem.path"
+        fallback_used = path_source != "file_list_new"
 
         now_ts = time.time()
         added_count = 0
@@ -536,7 +559,7 @@ class Rsync115Sync(_PluginBase):
                 self.save_data("missed_queue", self._missed_queue)
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 监听到 {added_count} 个新入库文件"
                         f"（事件={event_value}"
-                        f"{'，路径来自 fileitem 回退' if fallback_used else ''}"
+                        f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}"
                         f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}）"
                         f"，已加入 {self._delay_hours}h 延迟冷却队列: "
                         f"{_brief_paths(added_paths)}")
@@ -560,7 +583,7 @@ class Rsync115Sync(_PluginBase):
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
                         f"（事件={event_value}，共 {len(file_list)} 个路径："
                         f"不存在/为空 {skipped_count}，不在任何映射内 {unmatched_count}"
-                        f"{'，已启用 fileitem 回退' if fallback_used else ''}）"
+                        f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}）"
                         f"，请检查目录映射是否覆盖: {_brief_paths(skipped_paths + unmatched_paths)}")
 
     def _scan_missed_ingest(self) -> int:
