@@ -24,8 +24,15 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.5"
+    plugin_version = "0.0.6"
     plugin_author = "HermanWu"
+
+    # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）：
+    #   0  成功
+    #   24 源文件在传输中消失——属正常波动，不计入失败
+    #   23 部分文件未传输——属可容忍告警，不计入失败
+    # 其余非 0 码均视为致命错误，必须让本轮判定为失败，避免谎报“已完成”。
+    _TOLERATED_EXIT_CODES = {0, 23, 24}
 
     def __init__(self):
         super().__init__()
@@ -477,6 +484,8 @@ class Rsync115Sync(_PluginBase):
             self._post_reply(channel_event, f"🚀 开始执行115同步任务 (模式: {mode}，共 {total_pairs} 个映射)...")
 
             has_error = False
+            # 记录致命退出码，便于在通知里给出可定位的失败原因
+            fatal_exit_codes = []
             total_missing = []
             total_corrupt = []
             synced_count = 0
@@ -637,8 +646,21 @@ class Rsync115Sync(_PluginBase):
                         logger.info(f"[Rsync115Sync] [{pair_name}]   ⇪ {ln}")
                     if len(up_files) > 20:
                         logger.info(f"[Rsync115Sync] [{pair_name}]   ... 其余 {len(up_files) - 20} 条已省略")
+                elif exit_code in self._TOLERATED_EXIT_CODES:
+                    # 23=部分未传输、24=源文件消失，属可容忍告警：记录但不判定整轮失败
+                    logger.warning(f"[Rsync115Sync] [{pair_name}] ⚠ rsync 退出码 {exit_code}"
+                                   f"（{'源文件传输中消失' if exit_code == 24 else '部分文件未传输'}），"
+                                   f"耗时 {rsync_cost} 秒，按可容忍处理")
+                    warn_tail = (stderr or "").strip().splitlines()[-5:]
+                    for ln in warn_tail:
+                        logger.warning(f"[Rsync115Sync] [{pair_name}]   ⚠ {ln}")
                 else:
-                    logger.error(f"[Rsync115Sync] [{pair_name}] ❌ rsync 失败，退出码 {exit_code}，耗时 {rsync_cost} 秒")
+                    # 致命退出码：必须置位 has_error，否则增量对账恰好无缺失时
+                    # 会被误判为成功并推送“全部完整上传到位”的错误通知
+                    has_error = True
+                    fatal_exit_codes.append(f"{pair_name}={exit_code}")
+                    logger.error(f"[Rsync115Sync] [{pair_name}] ❌ rsync 失败，退出码 {exit_code}，"
+                                 f"耗时 {rsync_cost} 秒（判定为致命错误）")
                     warn_tail = (stderr or "").strip().splitlines()[-5:]
                     for ln in warn_tail:
                         logger.error(f"[Rsync115Sync] [{pair_name}]   ✗ {ln}")
@@ -732,11 +754,17 @@ class Rsync115Sync(_PluginBase):
                     should_notify = True
             else:
                 self._last_status["state"] = "failed"
+                # rsync 致命退出码优先说明：此时退出码才是根因，
+                # 缺失/残缺计数可能只是它的次生结果
+                code_hint = ""
+                if fatal_exit_codes:
+                    code_hint = f"❌ rsync 失败: {', '.join(fatal_exit_codes)}\n"
                 if synced_count > 0:
                     # 有实际传输动作，但仍有未完成项 → 必须报告
                     msg = (
                         f"⚠️ 115同步存在未完成项！\n"
                         f"耗时: {duration} 秒\n"
+                        f"{code_hint}"
                         f"📤 本次传输: {synced_count} 个\n"
                         f"🔍 缺失未同步: {len(total_missing)} 个\n"
                         f"🔍 大小残缺: {len(total_corrupt)} 个\n"
@@ -744,11 +772,13 @@ class Rsync115Sync(_PluginBase):
                         f"💡 如为不想同步的存量文件，可发送 /rsync_ignore 剧名 忽略。"
                     )
                     should_notify = True
-                elif anomaly_changed:
-                    # 定时巡检发现异常项有变化 → 报告
+                elif anomaly_changed or fatal_exit_codes:
+                    # 异常项有变化，或 rsync 以致命退出码失败 → 报告
+                    # （后者即使异常清单无变化也必须上报，否则失败被静默吞掉）
                     msg = (
                         f"⚠️ 115同步异常清单有更新！\n"
                         f"耗时: {duration} 秒\n"
+                        f"{code_hint}"
                         f"🔍 缺失未同步: {len(total_missing)} 个\n"
                         f"🔍 大小残缺: {len(total_corrupt)} 个\n"
                         f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"
