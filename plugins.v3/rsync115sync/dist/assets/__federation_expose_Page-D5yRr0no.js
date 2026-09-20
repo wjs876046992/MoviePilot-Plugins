@@ -1076,6 +1076,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9860e776"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-7d9b6915"]]);
 
 export { App as default };

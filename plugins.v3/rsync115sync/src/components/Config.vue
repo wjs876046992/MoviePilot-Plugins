@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.4</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.5</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -262,11 +262,18 @@ onMounted(() => {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-/* 顶栏标题与副标题：宿主渲染器可能改变标题行高，这里显式补足间距，
-   避免 PopUp 内 Title 与下方 Content 贴得过近。仅调整外边距，
-   不覆盖 text-caption 的小字号行高，保证 12px 文本的可读性 */
+/* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
+   保证 12px 中文文本的可读性 */
 .header-card-item .header-subtitle {
   margin-top: 6px;
+}
+/* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
+   宿主对 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
+   padding 永远会被该 !important 覆盖，只有 margin 不受影响。
+   此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
+   故直接按内容区类名设置，保证提示条出现时间距依然稳定 */
+.config-body {
+  margin-top: 16px;
 }
 .header-icon-box {
   width: 36px;

@@ -557,11 +557,16 @@ onUnmounted(() => {
 .header-surface {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
 }
-/* 顶栏标题与副标题：宿主渲染器可能改变标题行高，这里显式补足间距，
-   避免 PopUp 内 Title 与下方 Content 贴得过近。仅调整外边距，
-   不覆盖 text-caption 的小字号行高，保证 12px 文本的可读性 */
+/* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
+   保证 12px 中文文本的可读性 */
 .header-card-item .header-subtitle {
   margin-top: 6px;
+}
+/* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
+   宿主对 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
+   padding 永远会被该 !important 覆盖，只有 margin 不受影响 */
+.header-card-item + .v-card-text {
+  margin-top: 16px;
 }
 .header-icon-box {
   width: 36px;
