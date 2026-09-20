@@ -20,11 +20,42 @@ except Exception:  # pragma: no cover - 兼容不同版本宿主
     MessageType = None
 
 
+def _transfer_success_events() -> List[Any]:
+    """
+    返回「整理成功」需要监听的全部事件类型。
+
+    All event types that signal a successful transfer/ingest.
+
+    宿主按**文件类型**把整理结果拆成三个事件（app/chain/transfer/settlement.py
+    的 _durable_transfer_event）：
+        主要媒体文件 → TransferComplete
+        字幕文件     → SubtitleTransferComplete
+        音频文件     → AudioTransferComplete
+
+    只监听 TransferComplete 会**静默丢掉所有字幕与音频**，表现为「入库很多、
+    却只监听到很少」。这里按存在性动态收集，兼容尚未提供后两者的旧宿主。
+
+    The host splits transfer results into three event types by file kind.
+    Listening to TransferComplete alone silently drops every subtitle and audio
+    file. Types are collected defensively so older hosts still work.
+    """
+    types: List[Any] = [EventType.TransferComplete]
+    for name in ("SubtitleTransferComplete", "AudioTransferComplete"):
+        extra = getattr(EventType, name, None)
+        if extra is not None and extra not in types:
+            types.append(extra)
+    return types
+
+
+# 模块级常量：装饰器在类体执行时求值，故必须在类定义前构造好
+_TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
+
+
 class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.0.13"
+    plugin_version = "0.1.0"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
@@ -74,6 +105,11 @@ class Rsync115Sync(_PluginBase):
         "exclude_patterns": "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store",
         "rsync_timeout": 60,
     }
+
+    # 源端补齐扫描的最小间隔（秒）。事件丢失（插件重载期间）是低频问题，
+    # 没必要每轮同步都整树遍历一次本地媒体库。
+    # Minimum interval between source-root reconciliation scans, in seconds.
+    _MISSED_SCAN_INTERVAL = 1800
 
     def __init__(self):
         super().__init__()
@@ -147,6 +183,25 @@ class Rsync115Sync(_PluginBase):
         # 待确认的交互重试列表（关键字查找结果）：[{"key": "...", "path": "..."}]
         self._waiting_confirm_retries: List[str] = []
 
+        # 冷却队列等待期错过的入库事件：{"任务名:相对路径": 首次错过时间戳}
+        #
+        # 为什么需要它：宿主只在「整理批次收尾」时广播 TransferComplete，
+        # 而广播那一刻插件可能恰好不可用（正在同步触发重载、或事件发出时
+        # 这批整理还没结束）。这类事件无法在事件到达时补捕，只能在每轮同步
+        # 开头扫一次源端目录、拿文件 mtime 与本队列比对来补齐。
+        #
+        # 注意这些条目**不参与冷却计时**：冷却的目的是「等外挂字幕下载完
+        # 再上传」，而这些文件已经比原计划多等了很久，再等一轮毫无意义。
+        # Keys missed while the plugin was unavailable. The host only broadcasts
+        # TransferComplete when a whole transfer batch finishes, so a broadcast can
+        # be lost if the plugin happens to be reloading at that moment. Such misses
+        # cannot be recovered at event time; instead each sync run scans the source
+        # roots once and compares file mtimes against this queue.
+        # These entries intentionally do NOT take part in cool-down timing.
+        self._missed_queue: Dict[str, float] = {}
+        # 上次源端补齐扫描的成果，供看板与指令回显（0 表示尚未扫描过）
+        self._missed_last_scan: int = 0
+
         # 存量补传队列（独立于 pending_queue，不参与冷却计时）
         # 条目格式与其它清单一致："任务名:相对路径"
         self._backfill_queue: List[str] = []
@@ -212,6 +267,15 @@ class Rsync115Sync(_PluginBase):
         saved_ignored = self.get_data("ignored_files") or []
         if isinstance(saved_ignored, list):
             self._ignored_rules = saved_ignored
+        # 恢复「冷却期错过的入库事件」待补扫队列
+        saved_missed = self.get_data("missed_queue") or {}
+        if isinstance(saved_missed, dict):
+            self._missed_queue = saved_missed
+        self._missed_last_scan = int(self.get_data("missed_last_scan") or 0)
+        if self._missed_queue:
+            logger.info(f"[Rsync115Sync] 🕳️ 已恢复错过的入库待补扫清单：{len(self._missed_queue)} 个"
+                        f"（将在每轮同步开头扫描源端目录补齐）")
+
         # 恢复未完成的补传队列，保证跨重载/重启继续推进
         saved_backfill = self.get_data("backfill_queue") or []
         if isinstance(saved_backfill, list):
@@ -285,14 +349,29 @@ class Rsync115Sync(_PluginBase):
 
     # ================= 监听 MoviePilot 媒体转移完成事件 =================
 
-    @eventmanager.register(EventType.TransferComplete)
+    @eventmanager.register(_TRANSFER_SUCCESS_EVENTS)
     def on_transfer_complete(self, event: Event):
         """
-        监听媒体转移入库事件，把新入库文件放入冷却队列。
+        监听媒体转移/字幕/音频整理完成事件，把新入库文件放入冷却队列。
 
         Handle the media-transfer-complete event: enqueue newly ingested files
         into the cool-down queue. The delay gives external subtitles time to
         download before the initial upload happens.
+
+        ⚠️ 必须同时监听字幕与音频事件（2026-09 修复的一起「46 个只监听到 3 个」）：
+        宿主按**文件类型**把整理完成结果拆成三个事件（见 app/chain/transfer/
+        settlement.py 的 _durable_transfer_event）：
+            主要媒体文件 → TransferComplete
+            字幕文件     → SubtitleTransferComplete
+            音频文件     → AudioTransferComplete
+        此前只注册了 TransferComplete，于是**字幕与音频文件完全不会入队**。
+        「46 个只听到 3 个」正是这个原因的典型表现 —— 那些剧集每集除视频外
+        还带若干外挂字幕，字幕（以及可能的音轨）全部被漏掉。
+
+        The host splits transfer results into three event types by **file kind**
+        (see _durable_transfer_event in app/chain/transfer/settlement.py).
+        Registering only TransferComplete silently drops every subtitle and audio
+        file, which is exactly the "46 files but only 3 events" symptom.
         """
         if not self._enabled or not self._listen_transfer:
             return
@@ -305,15 +384,22 @@ class Rsync115Sync(_PluginBase):
         file_list = getattr(transfer_info, "file_list_new", []) or []
         now_ts = time.time()
         added_count = 0
+        skipped_count = 0
 
         for file_path in file_list:
             if not file_path or not os.path.exists(file_path):
+                skipped_count += 1
                 continue
 
             for pair in self._sync_pairs:
                 src_root = (pair.get("src") or "").strip().rstrip("/")
                 pair_name = pair.get("name") or src_root
-                if src_root and file_path.startswith(src_root):
+                # 必须按路径分隔符判定归属，否则 "/media/TV" 会误匹配
+                # "/media/TV2/x.mkv"，把文件挂到错误的映射上。
+                # Match on a path boundary: plain startswith would let "/media/TV"
+                # swallow "/media/TV2/...", attributing files to the wrong mapping.
+                if src_root and (file_path == src_root
+                                 or file_path.startswith(src_root + os.sep)):
                     if not pair.get("all_ext", False):
                         ext = os.path.splitext(file_path)[-1].lstrip(".").lower()
                         valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
@@ -323,12 +409,111 @@ class Rsync115Sync(_PluginBase):
                     rel_path = os.path.relpath(file_path, src_root)
                     queue_key = f"{pair_name}:{rel_path}"
                     self._pending_queue[queue_key] = now_ts
+                    # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
+                    self._missed_queue.pop(queue_key, None)
                     added_count += 1
                     break
 
         if added_count > 0:
             self.save_data("pending_queue", self._pending_queue)
-            logger.info(f"[Rsync115Sync] 监听到 {added_count} 个新入库媒体，已加入 {self._delay_hours}h 延迟冷却队列")
+            if self._missed_queue:
+                self.save_data("missed_queue", self._missed_queue)
+            logger.info(f"[Rsync115Sync] 监听到 {added_count} 个新入库文件"
+                        f"（事件={getattr(event.event_type, 'value', event.event_type)}），"
+                        f"已加入 {self._delay_hours}h 延迟冷却队列")
+        else:
+            # 事件本身是有效的，只是这批文件不在任何映射内 / 扩展名被过滤 /
+            # 或路径在容器内不可见。全部静默会让「没监听」无从排查，故留痕。
+            logger.debug(f"[Rsync115Sync] 整理完成事件未产生入队："
+                         f"file_list_new={len(file_list)} 个，"
+                         f"其中跳过（路径不存在或为空）{skipped_count} 个，"
+                         f"事件={getattr(event.event_type, 'value', event.event_type)}")
+
+    def _scan_missed_ingest(self) -> int:
+        """
+        扫描各映射的源端目录，补齐「冷却等待期间错过的入库事件」。
+
+        Reconcile the queue with the source roots: pick up ingest events that were
+        missed while the plugin was unavailable.
+
+        为什么不能在事件里补：宿主**只在整理批次收尾时**才广播 TransferComplete，
+        而广播那一刻插件可能正好在重载（被同步触发）。事件一旦错过就不会重放。
+        因此只能反过来查：每轮同步开头扫一次源端目录，用文件 mtime 与
+        「上次扫描时间」比对，把新出现的文件补进队列。
+
+        成本：每轮同步**每映射一次** os.walk —— 全部是本地目录遍历，
+        不触碰 115 挂载点，因此不产生 115 API 请求、不触发风控。
+        这与补传前置扫描（_api_backfill_scan）的成本性质相同。
+
+        Cost: one os.walk per mapping per sync run, purely over local source
+        directories. It never touches the 115 mount, so it costs no 115 API
+        requests and cannot trigger rate limiting.
+
+        :return: 本次新补入的文件数 / number of files newly enqueued
+        """
+        now_ts = time.time()
+        # 首轮没有基准时间：只建立基准，避免把存量媒体整库灌进队列
+        if not self._missed_last_scan:
+            self._missed_last_scan = now_ts
+            self.save_data("missed_last_scan", self._missed_last_scan)
+            logger.info("[Rsync115Sync] 首次源端补齐扫描：仅建立时间基准，本次不入队")
+            return 0
+
+        # 扫描间隔下限：媒体库很大时，每轮同步都整树遍历代价过高
+        # （冷启动、频繁手动同步、补传连跑等场景）。事件丢失是低频问题，
+        # 隔一段时间扫一次已足够，且漏掉的事件在下次扫描仍会被 mtime 捞出来。
+        # Throttle: a full tree walk on every run is too costly for large
+        # libraries. Missed events are low-frequency and stay discoverable by
+        # mtime, so an interval floor loses nothing but wasted I/O.
+        if now_ts - self._missed_last_scan < self._MISSED_SCAN_INTERVAL:
+            return 0
+
+        since = self._missed_last_scan
+        added = 0
+        for pair in self._sync_pairs:
+            src_root = (pair.get("src") or "").strip().rstrip("/")
+            pair_name = pair.get("name") or src_root
+            if not src_root or not os.path.isdir(src_root):
+                continue
+            valid_exts = None
+            if not pair.get("all_ext", False):
+                valid_exts = {x.strip().lower() for x in self._media_extensions.split(",") if x.strip()}
+
+            for dirpath, dirnames, filenames in os.walk(src_root):
+                # 跳过被排除的目录，避免遍历群晖元数据目录
+                dirnames[:] = [d for d in dirnames if d not in ("@eaDir", "#recycle", "@__thumb")]
+                for fn in filenames:
+                    if valid_exts is not None:
+                        ext = os.path.splitext(fn)[-1].lstrip(".").lower()
+                        if ext not in valid_exts:
+                            continue
+                    full = os.path.join(dirpath, fn)
+                    try:
+                        mtime = os.path.getmtime(full)
+                    except OSError:
+                        continue
+                    if mtime <= since:
+                        continue
+                    rel_path = os.path.relpath(full, src_root)
+                    queue_key = f"{pair_name}:{rel_path}"
+                    # 已在冷却队列或已在待补扫清单中的都不重复计入，
+                    # 否则每轮扫描都会重复“发现 N 个遗漏”并刷警告
+                    if queue_key in self._pending_queue or queue_key in self._missed_queue:
+                        continue
+                    # 补入的条目按「首次错过时间」计时，但同步筛选时走 missed 通道
+                    # 不参与冷却，见 _collect_ready 的说明
+                    self._missed_queue[queue_key] = now_ts
+                    added += 1
+
+        self._missed_last_scan = now_ts
+        self.save_data("missed_last_scan", self._missed_last_scan)
+        if added:
+            self.save_data("missed_queue", self._missed_queue)
+            logger.warning(f"[Rsync115Sync] 🕳️ 源端补齐扫描发现 {added} 个可能错过事件的入库文件，"
+                           f"已加入待同步清单（不参与冷却，下轮直接同步）")
+        else:
+            logger.info("[Rsync115Sync] 源端补齐扫描完成：无遗漏")
+        return added
 
     # ================= 远程命令定义 =================
 
@@ -564,6 +749,10 @@ class Rsync115Sync(_PluginBase):
                 # 补传进度与限流状态，供看板展示
                 "backfill_remaining": len(self._backfill_queue),
                 "backfill_total": self._backfill_total,
+                # 错过入库事件的待补扫清单：数字大于 0 说明有事件在插件不可用期间丢失，
+                # 已由源端扫描补回、将在下轮同步（不参与冷却）
+                "missed_count": len(self._missed_queue),
+                "missed_last_scan": self._missed_last_scan,
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
@@ -1149,6 +1338,18 @@ class Rsync115Sync(_PluginBase):
             prev_anomaly_set = set(self._last_status.get("missing_files", []) or []) | \
                 set(self._last_status.get("corrupt_files", []) or [])
 
+            # 源端补齐扫描：只走本地目录遍历（不触碰 115 挂载点，零 API 开销），
+            # 用于兜住「插件重载期间错过的入库事件」。仅 ready 模式需要——
+            # retry/backfill 处理的是更早的存量，与新鲜入库无关。
+            # Source-root reconciliation for missed ingest events. Local-only walk,
+            # no 115 mount access. Only needed in ready mode.
+            if mode == "ready":
+                try:
+                    self._scan_missed_ingest()
+                except Exception as scan_err:
+                    # 补齐失败不能影响正常同步
+                    logger.warning(f"[Rsync115Sync] 源端补齐扫描异常（已忽略，不影响本轮同步）: {scan_err}")
+
             for idx, pair in enumerate(self._sync_pairs):
                 src = (pair.get("src") or "").strip().rstrip("/")
                 dest = (pair.get("dest") or "").strip().rstrip("/")
@@ -1216,6 +1417,36 @@ class Rsync115Sync(_PluginBase):
                                 pair_files.append(rel_p)
                             else:
                                 self._pending_queue.pop(key, None)
+
+                    # 补齐清单：这些文件是在插件不可用期间错过的入库事件
+                    # （宿主只在整理批次收尾广播一次，错过不重放），
+                    # 已通过源端扫描补回。它们已经等得够久了，
+                    # **不再走冷却判定**，直接纳入本轮同步。
+                    # Missed-ingest entries: recovered by scanning the source
+                    # roots. They have already waited long enough, so they skip
+                    # the cool-down check and sync in this run.
+                    missed_here = [k for k in list(self._missed_queue.keys())
+                                   if k.startswith(f"{pair_name}:")]
+                    missed_taken = 0
+                    for key in missed_here:
+                        rel_p = key.split(f"{pair_name}:", 1)[1]
+                        if os.path.exists(os.path.join(src, rel_p)):
+                            if rel_p not in pair_files:
+                                pair_files.append(rel_p)
+                            # 仅在**确实纳入本轮**时才移出清单：
+                            # 若本轮批次上限/配额已满、该文件不会真正被处理，
+                            # 提前移除会让它彻底丢失（既不在冷却队列，也不在补齐清单）
+                            if rel_p in pair_files:
+                                self._missed_queue.pop(key, None)
+                                missed_taken += 1
+                        else:
+                            # 文件已不在源端（被删除/移动），清掉避免长期堆积
+                            self._missed_queue.pop(key, None)
+                    if missed_taken:
+                        # 立即落盘，避免记录只在内存里、重载即丢
+                        self.save_data("missed_queue", self._missed_queue)
+                        logger.info(f"[Rsync115Sync] [{pair_name}] 🕳️ 本轮纳入 {missed_taken} 个"
+                                    f"错过的入库文件（含字幕等，不参与冷却）")
 
                 elif mode in ("retry", "backfill"):
                     # 重试/补传模式：若指定了 custom_files 优先按其处理，
@@ -1869,6 +2100,9 @@ class Rsync115Sync(_PluginBase):
                 f"彻底缺失文件: {len(st.get('missing_files', []))} 个\n"
                 f"残缺不全文件: {len(st.get('corrupt_files', []))} 个\n"
             )
+            if self._missed_queue:
+                reply += (f"🕳️ 错过入库待补扫: {len(self._missed_queue)} 个"
+                          f"（插件重载期间丢失事件，已由源端扫描补回，下轮同步自动带上）\n")
             if len(st.get('missing_files', [])) + len(st.get('corrupt_files', [])) > 0:
                 reply += "💡 发送 /rsync_retry 即可立即定向补传异常文件！\n"
             reply += "💡 支持发送 /rsync_search <剧名/电影名> 查找并确认重传指定媒体。"

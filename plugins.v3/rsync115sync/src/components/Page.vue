@@ -67,9 +67,9 @@
           </v-col>
         </v-row>
 
-        <!-- 补传 / 限流进度提示：用通俗文字说明“为什么慢、还要多久” -->
+        <!-- 补传 / 限流 / 遗漏补齐提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.missed_count"
           :type="isThrottled ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
@@ -83,6 +83,10 @@
             <template v-if="statusData.backfill_total"> / 共 {{ statusData.backfill_total }}</template> 个。
             为防风控，每个时间窗口最多上传 {{ statusData.upload_max_per_window }} 个
             （本窗口已用 {{ statusData.upload_window_count }} 个），未传完的会自动继续。
+          </div>
+          <div v-if="statusData.missed_count">
+            🕳️ 检测到 <strong>{{ statusData.missed_count }}</strong> 个文件可能因插件重载错过了入库事件，
+            已由源端扫描补回，将在下次同步时一并上传（这些文件不再等待冷却）。
           </div>
         </v-alert>
 
@@ -374,6 +378,8 @@ const statusData = ref({
   last_status: {},
   sync_pairs_count: 0,
   backfill_remaining: 0,
+  missed_count: 0,
+  missed_last_scan: 0,
   backfill_total: 0,
   rate_limit_enabled: true,
   upload_window_count: 0,
