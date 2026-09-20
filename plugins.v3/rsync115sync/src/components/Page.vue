@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-page" style="padding: 18px 22px !important; box-sizing: border-box; width: 100%;">
+  <div class="plugin-page">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->
@@ -24,7 +24,7 @@
           <div class="header-subtitle text-caption text-medium-emphasis">监控入库延迟冷却进度、双向对账异常与一键快速定向重试</div>
         </div>
         <template #append>
-          <div class="d-flex align-center ga-1">
+          <div class="d-flex align-center flex-wrap justify-end ga-1 header-append">
             <v-btn icon variant="tonal" color="primary" size="small" class="rounded-lg mr-1" @click="fetchStatus" :loading="loading">
               <v-icon size="18">mdi-refresh</v-icon>
               <v-tooltip activator="parent" location="bottom">刷新状态</v-tooltip>
@@ -88,8 +88,8 @@
 
         <!-- 快捷操作工具条 -->
         <div class="action-strip rounded-xl pa-3 mb-4">
-          <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-            <div class="d-flex align-center ga-2">
+          <div class="action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2">
+            <div class="action-group d-flex align-center flex-wrap ga-2">
               <v-btn color="primary" variant="flat" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-play</v-icon>
                 同步已就绪媒体
@@ -110,8 +110,8 @@
                 取消补传
               </v-btn>
             </div>
-            <div class="d-flex align-center ga-2">
-              <div v-if="actionMsg" class="text-caption font-weight-bold text-primary mr-1">{{ actionMsg }}</div>
+            <div class="action-group d-flex align-center flex-wrap ga-2">
+              <div v-if="actionMsg" class="text-caption font-weight-bold text-primary mr-1 action-msg">{{ actionMsg }}</div>
               <!-- 批量选择模式开关 -->
               <v-btn
                 v-if="currentTab !== 'ignored'"
@@ -155,12 +155,12 @@
                 <span class="text-caption font-weight-bold">全选本页 ({{ selectableItems.length }})</span>
               </template>
             </v-checkbox>
-            <span class="text-caption text-medium-emphasis">已选 {{ selectedKeys.length }} 项 · 可跨分组勾选后一次性上传统一触发</span>
+            <span class="text-caption text-medium-emphasis batch-hint">已选 {{ selectedKeys.length }} 项 · 可跨分组勾选后一次性上传统一触发</span>
           </div>
         </div>
 
         <!-- 选项卡切换：冷却队列 vs 异常对账清单 vs 已忽略 -->
-        <v-tabs v-model="currentTab" color="primary" density="compact" class="mb-3 border-b">
+        <v-tabs v-model="currentTab" color="primary" density="compact" show-arrows class="mb-3 border-b">
           <v-tab value="queue">
             <v-icon start size="16">mdi-timer-sand</v-icon>
             入库延迟冷却队列 ({{ queueList.length }})
@@ -178,8 +178,8 @@
         <!-- 标签 1：延迟冷却队列 -->
         <div v-if="currentTab === 'queue'">
           <div v-if="queueList.length" class="d-flex flex-column ga-2">
-            <div v-for="(item, idx) in queueList" :key="'q-' + idx" class="queue-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="d-flex align-center overflow-hidden mr-3">
+            <div v-for="(item, idx) in queueList" :key="'q-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
                   :model-value="selectedKeys.includes(item.key)"
@@ -202,7 +202,7 @@
                   </div>
                 </div>
               </div>
-              <div class="d-flex align-center ga-1 flex-shrink-0">
+              <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                 <v-chip size="x-small" :color="item.is_ready ? 'success' : 'warning'" variant="tonal" class="font-weight-bold">
                   {{ item.is_ready ? '已就绪' : '缓冲中' }}
                 </v-chip>
@@ -235,8 +235,8 @@
         <div v-if="currentTab === 'failed'">
           <div v-if="failedCount" class="d-flex flex-column ga-2">
             <!-- 缺失未同步 -->
-            <div v-for="(file, idx) in statusData.last_status?.missing_files || []" :key="'m-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="d-flex align-center overflow-hidden mr-3">
+            <div v-for="(file, idx) in statusData.last_status?.missing_files || []" :key="'m-' + idx" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
                   :model-value="selectedKeys.includes(file)"
@@ -251,7 +251,7 @@
                   <div class="text-caption text-medium-emphasis mt-0.5">本地已入库，但 115 网盘端尚未同步到位</div>
                 </div>
               </div>
-              <div class="d-flex align-center ga-1 flex-shrink-0">
+              <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="error" variant="flat" class="font-weight-bold">待同步</v-chip>
                 <v-btn
                   size="x-small"
@@ -274,8 +274,8 @@
               </div>
             </div>
             <!-- 大小残缺 -->
-            <div v-for="(file, idx) in statusData.last_status?.corrupt_files || []" :key="'c-' + idx" class="failed-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="d-flex align-center overflow-hidden mr-3">
+            <div v-for="(file, idx) in statusData.last_status?.corrupt_files || []" :key="'c-' + idx" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
                   :model-value="selectedKeys.includes(file)"
@@ -290,7 +290,7 @@
                   <div class="text-caption text-medium-emphasis mt-0.5">目标端大小不一致，传输中途断流</div>
                 </div>
               </div>
-              <div class="d-flex align-center ga-1 flex-shrink-0">
+              <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">文件残缺</v-chip>
                 <v-btn
                   size="x-small"
@@ -322,8 +322,8 @@
         <!-- 标签 3：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
-            <div v-for="(rule, idx) in ignoredList" :key="'i-' + idx" class="queue-item-card d-flex align-center justify-space-between rounded-xl pa-3">
-              <div class="overflow-hidden mr-3">
+            <div v-for="(rule, idx) in ignoredList" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div class="list-row-main overflow-hidden mr-sm-3 mr-0">
                 <div class="font-weight-bold text-body-2 text-truncate">{{ rule.rule }}</div>
                 <div class="text-caption text-medium-emphasis mt-0.5">
                   {{ rule.match === 'exact' ? '精确匹配' : '包含匹配' }}
@@ -331,7 +331,7 @@
                   <span v-if="rule.created_by"> · 操作人 {{ rule.created_by }}</span>
                 </div>
               </div>
-              <div class="d-flex align-center ga-1 flex-shrink-0">
+              <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="secondary" variant="tonal" class="font-weight-bold">已忽略</v-chip>
                 <v-btn icon size="x-small" variant="text" color="success" @click="removeIgnore(idx)">
                   <v-icon size="16">mdi-restore</v-icon>
@@ -644,7 +644,9 @@ onUnmounted(() => {
 .plugin-page {
   width: 100%;
   box-sizing: border-box;
-  padding: 16px 20px !important;
+  /* 桌面端外边距。原为内联 style 且带 !important，
+     导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
+  padding: 18px 22px !important;
 }
 .page-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
@@ -661,15 +663,17 @@ onUnmounted(() => {
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
    宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
    内容区顶部内边距被强制归零，看板首行三个数据卡片的顶部圆角因此被裁掉（实测缺 radius）。
-   故此处：padding-block-start 显式归一化，间距则由 margin-top 提供
-   （margin 不受该 padding !important 约束，是稳定生效的方案）。
+   故此处：padding-block-start 显式归一化，间距则由 margin-top 提供。
 
-   注意：padding-block-start: unset 一行系在真实页面调试后加入。
-   按级联规则（重要度 > 权重 > 源码顺序），非 !important 声明无法覆盖宿主的 !important，
-   且该属性非继承、unset 求值等同 initial(0px)，理论上不改变结果；
-   但真实宿主下加入后圆角恢复正常，故按实测保留，勿凭理论删除。 */
+   为什么必须带 !important：宿主该声明本身即 !important，级联顺序是
+   重要度 > 权重 > 源码顺序，普通声明无论权重多高都赢不了 !important，
+   必须同样以 !important + 更高权重才能覆盖。
+   又因该属性非继承、unset 对非继承属性求值等同 initial(0px)，
+   在本页显示效果上通常与宿主一致；但显式声明可避免宿主后续调整该值
+   （如改成非 0）时圆角问题复现，属稳定性加固。
+   经真实页面调试确认，勿凭「理论等价」删除。 */
 .header-card-item + .v-card-text {
-  padding-block-start: unset;
+  padding-block-start: unset !important;
   margin-top: 16px;
 }
 .header-icon-box {
@@ -705,5 +709,71 @@ onUnmounted(() => {
 }
 .empty-box {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+
+/* ===== 移动端适配 =====
+   宿主移动端可用宽度很窄，且卡片内还有 pa-3/pa-4 内边距，
+   原先一排横向按钮必然溢出到卡片外。以下按「窄屏纵向堆叠、宽屏恢复横排」处理，
+   断点沿用 Vuetify 的 sm（600px），与模板里的 flex-sm-row 保持一致。 */
+@media (max-width: 599.98px) {
+  /* 移动端收窄外层留白，把宽度还给内容（外层 + 卡片内层共省下约 36px） */
+  .plugin-page {
+    padding: 10px 12px !important;
+  }
+  /* 顶栏按钮"超出范围"的根因在这里：
+     Vuetify 的 .v-card-item 是 grid 布局，列宽为 max-content auto max-content，
+     append 列固定按 max-content 计算、不会收缩，窄屏下右侧按钮组被顶出卡片，
+     再由外层 .page-main-card 的 overflow-hidden 裁掉，看起来就是按钮超出了范围。
+     把 append 列改成 minmax(0, max-content)：优先按内容宽度，宽度不足时允许收缩，
+     收缩后按钮组依 .header-append 的 flex-wrap 换行，从而始终留在卡片内。
+     必须用 :deep()：.v-card-item__append 由 Vuetify 组件渲染，scoped 选择器匹配不到 */
+  :deep(.v-card-item) {
+    grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
+  }
+  :deep(.v-card-item__content) {
+    min-width: 0;
+  }
+  .body-surface {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+  }
+  /* 顶栏右侧按钮组：允许换行并右对齐，避免刷新/配置/关闭三个按钮挤出卡片 */
+  .header-append {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  /* 操作工具条：按钮组纵向铺满，按钮本身在窄屏下占满整行更好点按 */
+  .action-strip-row {
+    align-items: stretch;
+  }
+  .action-group {
+    width: 100%;
+  }
+  .action-group > .v-btn {
+    flex: 1 1 auto;
+  }
+  /* 操作反馈文字可能很长（含文件数），允许换行而不是把同行按钮顶出去 */
+  .action-msg {
+    width: 100%;
+    margin-right: 0 !important;
+    white-space: normal;
+    word-break: break-word;
+  }
+  /* 列表行在窄屏改为纵向堆叠后，左侧信息区需占满整行 */
+  .list-row-main {
+    width: 100%;
+  }
+  /* 右侧操作区占满整行并允许换行；
+     注：flex-shrink 在纵向堆叠下作用于纵轴，此处无需覆盖，保持工具类的 flex-shrink-0 即可 */
+  .list-row-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  /* 批量辅助条说明文字：占满剩余宽度并允许折行 */
+  .batch-hint {
+    width: 100%;
+    white-space: normal;
+    word-break: break-word;
+  }
 }
 </style>

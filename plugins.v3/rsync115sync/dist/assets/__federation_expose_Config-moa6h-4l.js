@@ -4,10 +4,7 @@ import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
-const _hoisted_1 = {
-  class: "plugin-config",
-  style: {"padding":"18px 22px !important","box-sizing":"border-box","width":"100%"}
-};
+const _hoisted_1 = { class: "plugin-config" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = {
   key: 0,
@@ -16,7 +13,7 @@ const _hoisted_3 = {
 const _hoisted_4 = { class: "settings-group-card rounded-xl overflow-hidden mb-4" };
 const _hoisted_5 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
 const _hoisted_6 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
-const _hoisted_7 = { class: "d-flex align-center justify-space-between mb-2" };
+const _hoisted_7 = { class: "section-header d-flex align-center justify-space-between mb-2" };
 const _hoisted_8 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
 const _hoisted_9 = {
   key: 0,
@@ -284,7 +281,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
-                      _createTextVNode("v0.0.12", -1)
+                      _createTextVNode("v0.0.13", -1)
                     ]))]),
                     _: 1
                   })
@@ -853,7 +850,7 @@ return (_ctx, _cache) => {
           ]),
           _: 1
         }),
-        _createVNode(_component_v_card_actions, { class: "px-5 py-3 border-t bg-surface" }, {
+        _createVNode(_component_v_card_actions, { class: "config-actions px-5 py-3 border-t bg-surface" }, {
           default: _withCtx(() => [
             _createVNode(_component_v_btn, {
               variant: "tonal",
@@ -909,6 +906,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b70c56ac"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-71c97a0e"]]);
 
 export { Config as default };

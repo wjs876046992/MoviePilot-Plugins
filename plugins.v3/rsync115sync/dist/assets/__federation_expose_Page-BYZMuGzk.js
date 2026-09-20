@@ -4,12 +4,9 @@ import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createElementBlock:_createElementBlock,createCommentVNode:_createCommentVNode,Fragment:_Fragment,createBlock:_createBlock,renderList:_renderList} = await importShared('vue');
 
 
-const _hoisted_1 = {
-  class: "plugin-page",
-  style: {"padding":"18px 22px !important","box-sizing":"border-box","width":"100%"}
-};
+const _hoisted_1 = { class: "plugin-page" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
-const _hoisted_3 = { class: "d-flex align-center ga-1" };
+const _hoisted_3 = { class: "d-flex align-center flex-wrap justify-end ga-1 header-append" };
 const _hoisted_4 = { class: "stat-card stat-info rounded-xl pa-3 text-center" };
 const _hoisted_5 = { class: "text-h5 font-weight-black text-info" };
 const _hoisted_6 = { class: "text-caption text-medium-emphasis mt-1" };
@@ -23,25 +20,25 @@ const _hoisted_11 = {
 };
 const _hoisted_12 = { key: 1 };
 const _hoisted_13 = { class: "action-strip rounded-xl pa-3 mb-4" };
-const _hoisted_14 = { class: "d-flex align-center justify-space-between flex-wrap ga-2" };
-const _hoisted_15 = { class: "d-flex align-center ga-2" };
-const _hoisted_16 = { class: "d-flex align-center ga-2" };
+const _hoisted_14 = { class: "action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2" };
+const _hoisted_15 = { class: "action-group d-flex align-center flex-wrap ga-2" };
+const _hoisted_16 = { class: "action-group d-flex align-center flex-wrap ga-2" };
 const _hoisted_17 = {
   key: 0,
-  class: "text-caption font-weight-bold text-primary mr-1"
+  class: "text-caption font-weight-bold text-primary mr-1 action-msg"
 };
 const _hoisted_18 = {
   key: 0,
   class: "d-flex align-center flex-wrap ga-3 mt-2 pt-2 batch-bar"
 };
 const _hoisted_19 = { class: "text-caption font-weight-bold" };
-const _hoisted_20 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_20 = { class: "text-caption text-medium-emphasis batch-hint" };
 const _hoisted_21 = { key: 1 };
 const _hoisted_22 = {
   key: 0,
   class: "d-flex flex-column ga-2"
 };
-const _hoisted_23 = { class: "d-flex align-center overflow-hidden mr-3" };
+const _hoisted_23 = { class: "list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0" };
 const _hoisted_24 = { class: "overflow-hidden" };
 const _hoisted_25 = { class: "font-weight-bold text-body-2 text-truncate" };
 const _hoisted_26 = { class: "text-caption text-medium-emphasis mt-0.5" };
@@ -53,7 +50,7 @@ const _hoisted_28 = {
   key: 1,
   class: "ml-2 text-success font-weight-medium"
 };
-const _hoisted_29 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_29 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
 const _hoisted_30 = {
   key: 1,
   class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
@@ -63,14 +60,14 @@ const _hoisted_32 = {
   key: 0,
   class: "d-flex flex-column ga-2"
 };
-const _hoisted_33 = { class: "d-flex align-center overflow-hidden mr-3" };
+const _hoisted_33 = { class: "list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0" };
 const _hoisted_34 = { class: "overflow-hidden" };
 const _hoisted_35 = { class: "font-weight-bold text-body-2 text-error text-truncate" };
-const _hoisted_36 = { class: "d-flex align-center ga-1 flex-shrink-0" };
-const _hoisted_37 = { class: "d-flex align-center overflow-hidden mr-3" };
+const _hoisted_36 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
+const _hoisted_37 = { class: "list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0" };
 const _hoisted_38 = { class: "overflow-hidden" };
 const _hoisted_39 = { class: "font-weight-bold text-body-2 text-warning text-truncate" };
-const _hoisted_40 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_40 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
 const _hoisted_41 = {
   key: 1,
   class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
@@ -80,11 +77,11 @@ const _hoisted_43 = {
   key: 0,
   class: "d-flex flex-column ga-2"
 };
-const _hoisted_44 = { class: "overflow-hidden mr-3" };
+const _hoisted_44 = { class: "list-row-main overflow-hidden mr-sm-3 mr-0" };
 const _hoisted_45 = { class: "font-weight-bold text-body-2 text-truncate" };
 const _hoisted_46 = { class: "text-caption text-medium-emphasis mt-0.5" };
 const _hoisted_47 = { key: 0 };
-const _hoisted_48 = { class: "d-flex align-center ga-1 flex-shrink-0" };
+const _hoisted_48 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
 const _hoisted_49 = {
   key: 1,
   class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
@@ -789,6 +786,7 @@ return (_ctx, _cache) => {
               "onUpdate:modelValue": _cache[0] || (_cache[0] = $event => ((currentTab).value = $event)),
               color: "primary",
               density: "compact",
+              "show-arrows": "",
               class: "mb-3 border-b"
             }, {
               default: _withCtx(() => [
@@ -847,7 +845,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(queueList.value, (item, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'q-' + idx,
-                            class: "queue-item-card d-flex align-center justify-space-between rounded-xl pa-3"
+                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_23, [
                               (selectMode.value)
@@ -942,7 +940,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(statusData.value.last_status?.missing_files || [], (file, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'm-' + idx,
-                            class: "failed-item-card d-flex align-center justify-space-between rounded-xl pa-3"
+                            class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_33, [
                               (selectMode.value)
@@ -1038,7 +1036,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(statusData.value.last_status?.corrupt_files || [], (file, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'c-' + idx,
-                            class: "failed-item-card d-flex align-center justify-space-between rounded-xl pa-3"
+                            class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_37, [
                               (selectMode.value)
@@ -1154,7 +1152,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(ignoredList.value, (rule, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'i-' + idx,
-                            class: "queue-item-card d-flex align-center justify-space-between rounded-xl pa-3"
+                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_44, [
                               _createElementVNode("div", _hoisted_45, _toDisplayString(rule.rule), 1),
@@ -1233,6 +1231,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-453702d6"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-20408afa"]]);
 
 export { App as default };

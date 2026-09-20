@@ -1,5 +1,5 @@
 <template>
-  <div class="plugin-config" style="padding: 18px 22px !important; box-sizing: border-box; width: 100%;">
+  <div class="plugin-config">
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.12</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.0.13</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -56,7 +56,7 @@
         </div>
 
         <!-- 模块 2：同步目录映射列表 -->
-        <div class="d-flex align-center justify-space-between mb-2">
+        <div class="section-header d-flex align-center justify-space-between mb-2">
           <div class="font-weight-bold text-subtitle-2 d-flex align-center">
             <v-icon size="18" color="primary" class="mr-1">mdi-folder-swap-outline</v-icon>
             同步目录映射对 ({{ config.sync_pairs.length }})
@@ -277,7 +277,7 @@
       </v-card-text>
 
       <!-- 底部操作按钮 -->
-      <v-card-actions class="px-5 py-3 border-t bg-surface">
+      <v-card-actions class="config-actions px-5 py-3 border-t bg-surface">
         <v-btn variant="tonal" rounded="lg" color="primary" @click="notifySwitch">
           <v-icon start size="16">mdi-view-dashboard-outline</v-icon>
           查看监控看板
@@ -447,7 +447,9 @@ onMounted(() => {
 .plugin-config {
   width: 100%;
   box-sizing: border-box;
-  padding: 16px 20px !important;
+  /* 桌面端外边距。原为内联 style 且带 !important，
+     导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
+  padding: 18px 22px !important;
 }
 .config-main-card {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
@@ -465,13 +467,15 @@ onMounted(() => {
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
    宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
    内容区顶部内边距被强制归零，与看板同源，故同样归一化顶部内边距，
-   间距由 margin-top 提供（margin 不受该 padding !important 约束）。
+   间距由 margin-top 提供。
+   !important 是必需的：宿主该声明本身即 !important，级联顺序为
+   重要度 > 权重 > 源码顺序，普通声明权重再高也覆盖不了 !important。
    此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
    故直接按内容区类名设置，保证提示条出现时间距依然稳定。
 
-   注意：padding-block-start: unset 系看板页面实测修复项，同步到本页保持一致，勿凭理论删除。 */
+   注意：padding-block-start: unset 系看板真实页面调试所得，同步到本页保持一致，勿凭理论删除。 */
 .config-body {
-  padding-block-start: unset;
+  padding-block-start: unset !important;
   margin-top: 16px;
 }
 .header-icon-box {
@@ -493,5 +497,51 @@ onMounted(() => {
 }
 .empty-hint-box {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+
+/* ===== 移动端适配 =====
+   设置页每行都是「左说明 + 右控件（开关/按钮）」的 justify-space-between 横排，
+   窄屏下右侧控件会被挤出卡片；底部操作条的两个按钮同理。
+   断点沿用 Vuetify 的 sm（600px）。 */
+@media (max-width: 599.98px) {
+  /* 移动端收窄外层留白，把宽度还给表单内容 */
+  .plugin-config {
+    padding: 10px 12px !important;
+  }
+  /* 同看板：.v-card-item 的 append 列按 max-content 固定宽度、不会收缩，
+     窄屏下关闭按钮会被顶出卡片并被 overflow-hidden 裁掉。
+     改为 minmax(0, max-content)，允许在宽度不足时收缩。 */
+  :deep(.v-card-item) {
+    grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
+  }
+  :deep(.v-card-item__content) {
+    min-width: 0;
+  }
+  /* 开关类设置行：改为纵向排列，控件左对齐，避免被挤出右边界 */
+  .setting-row {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 8px;
+  }
+  .setting-row > .v-switch {
+    margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
+  }
+  /* 模块标题行（标题 + 右侧操作按钮）：标题允许收缩换行，按钮不被迫溢出 */
+  .section-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .section-header > div {
+    min-width: 0;
+  }
+  /* 底部操作条：查看看板 / 保存配置 两个按钮在窄屏各占一行 */
+  .config-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .config-actions .v-btn {
+    flex: 1 1 100%;
+    margin-left: 0 !important;
+  }
 }
 </style>
