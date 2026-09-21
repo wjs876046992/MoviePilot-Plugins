@@ -364,6 +364,10 @@ class Rsync115Sync(_PluginBase):
         saved_suspects = self.get_data("strm_suspects") or {}
         if isinstance(saved_suspects, dict):
             self._strm_suspects = self._migrate_strm_suspects(saved_suspects)
+            # 载入即清洗历史脏数据（非视频 / 已忽略 / 源端已删 / 映射取消验证）。
+            # 放在这里而不是只在写入时过滤：写入过滤拦不住升级前已落盘的坏条目，
+            # 用户会看到一堆永远处理不掉的东西，只能手工改数据文件。
+            self._prune_invalid_strm_suspects()
         self._strm_notified = bool(self.get_data("strm_notified") or False)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
@@ -846,7 +850,7 @@ class Rsync115Sync(_PluginBase):
             {
                 "cmd": "/rsync_strm",
                 "event": EventType.PluginAction,
-                "desc": "扫描缺 strm 的媒体文件（或 /rsync_strm <文件名> 只查指定文件）",
+                "desc": "扫描缺 strm 的媒体文件（<文件名> 只查指定文件 / clear 清空清单 / prune 清理无效项）",
                 "category": "工具",
                 "data": {"action": "strm"}
             },
@@ -940,6 +944,8 @@ class Rsync115Sync(_PluginBase):
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
         ]
 
@@ -2414,6 +2420,60 @@ class Rsync115Sync(_PluginBase):
             migrated[str(key)] = {"ts": ts, "origin": _strm.ORIGIN_WATCH}
         return migrated
 
+    def _prune_invalid_strm_suspects(self) -> int:
+        """
+        清洗疑似清单里**无效**的条目，返回清理数量。
+
+        Prune suspects that can no longer be valid; returns how many were removed.
+
+        哪些属于无效（每条都对应一个真实产生过脏数据的缺陷）：
+          1. **非视频文件** —— v0.1.7 的主动扫描把 jpg/nfo/海报也扫了进来，
+             而 strm 插件只为视频生成指针文件，这些条目永远不会恢复正常，
+             会永久留在清单里。用户实测反馈过。
+          2. **已命中忽略规则的文件** —— 忽略即「不再报警」，不应占着清单，
+             还会被「全部删旧重传」波及。
+          3. **源端文件已不存在** —— 无从重传，留着重传只会失败。
+          4. **所属映射已取消 strm_dir 或已删除** —— 验证前提消失，
+             与 _strm_check 的 NO_STRM_DIR 出口同一判据。
+
+        为什么在**载入时**清洗而不只在写入时过滤：写入时过滤只能拦住新数据，
+        升级前已经落盘的脏条目会一直留着，用户看到一堆永远处理不掉的条目，
+        只能靠手工改插件数据文件。载入时清洗让升级本身就把历史问题一起解决。
+        Pruning at load time (not only at write time) is what lets an upgrade clean
+        up entries written by earlier, buggy versions.
+        """
+        removed = 0
+        video_exts = self._strm_video_exts()
+        for key in list(self._strm_suspects.keys()):
+            reason = None
+
+            rel = key.split(":", 1)[1] if ":" in key else key
+            ext = os.path.splitext(rel)[-1].lstrip(".").lower()
+            if ext not in video_exts:
+                reason = f"非视频文件（.{ext} 不会生成 strm）"
+            elif self._is_ignored(key):
+                reason = "已命中忽略规则"
+            elif self._strm_expected_path(key) is None:
+                reason = "所属映射未配置 strm 目录"
+            else:
+                src_root = _strm.source_root_of(key, self._sync_pairs)
+                if src_root and not os.path.exists(os.path.join(src_root, rel)):
+                    reason = "源端文件已不存在"
+
+            if reason:
+                self._strm_suspects.pop(key, None)
+                removed += 1
+                logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 疑似条目（{reason}）: {key}")
+
+        if removed:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 疑似条目"
+                           f"（非视频 / 已忽略 / 源端已删 / 映射已取消验证），剩余 "
+                           f"{len(self._strm_suspects)} 个")
+            # 清单可能因此清空，重置通知闩锁（与其它收尾路径一致）
+            self._reset_strm_notified_if_clear()
+        return removed
+
     def _strm_expected_path(self, key: str) -> Optional[str]:
         """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
         return _strm.expected_path(key, self._sync_pairs)
@@ -2777,6 +2837,41 @@ class Rsync115Sync(_PluginBase):
             lines.append("💡 可能是「从未上传」或「上传了但 CD2 假成功」。")
             lines.append("   已在看板「对账异常清单」的 strm 疑似区，可勾选批量「删旧重传」。")
         self._post_reply(event, "\n".join(lines))
+
+    def _api_strm_clear(self) -> Dict[str, Any]:
+        """
+        清空 strm 疑似清单（含待观察清单）。
+
+        Clear the strm suspect list (and the pending watch list).
+
+        为什么提供「全清」而不是只清无效项：清洗只能识别**结构性**无效
+        （非视频/已忽略/源端已删），而用户可能因为 strm 插件本身配置错误
+        而积累了一批误报 —— 那些条目在结构上完全合法，只能整体清空重来。
+        清空后下次同步/扫描会重新建立清单。
+        Structural pruning cannot detect "the whole strm plugin was misconfigured",
+        so a full reset must remain available.
+        """
+        suspects = len(self._strm_suspects)
+        watching = len(self._strm_watch)
+        self._strm_suspects = {}
+        self._strm_watch = {}
+        self.save_data("strm_suspects", self._strm_suspects)
+        self.save_data("strm_watch", self._strm_watch)
+        self._reset_strm_notified_if_clear()
+        logger.info(f"[Rsync115Sync] 🧹 已清空 strm 清单：疑似 {suspects} 个 / 待观察 {watching} 个")
+        return {"success": True,
+                "message": f"已清空 strm 疑似清单（{suspects} 个）与待观察清单（{watching} 个）。"
+                           f"下次同步或扫描会重新建立。"}
+
+    def _api_strm_prune(self) -> Dict[str, Any]:
+        """只清理无效条目（非视频 / 已忽略 / 源端已删 / 映射取消验证）。"""
+        removed = self._prune_invalid_strm_suspects()
+        if removed:
+            msg = f"已清理 {removed} 个无效条目，剩余 {len(self._strm_suspects)} 个。"
+        else:
+            msg = f"没有发现无效条目（当前 {len(self._strm_suspects)} 个）。"
+        return {"success": True, "message": msg,
+                "data": {"removed": removed, "remaining": len(self._strm_suspects)}}
 
     def _api_strm_scan(self) -> Dict[str, Any]:
         """
@@ -3216,6 +3311,8 @@ class Rsync115Sync(_PluginBase):
         elif action == "strm":
             # /rsync_strm         → 全量主动扫描
             # /rsync_strm <关键字> → 只查指定文件（不遍历整库）
+            # /rsync_strm clear   → 清空疑似与待观察清单
+            # /rsync_strm prune   → 只清理无效条目
             #
             # 两种模式并存的原因：全量扫描是「我不知道哪些文件有问题」的答案，
             # 但当用户**已经明确知道**是哪个文件时（例如在 115 云端看到残留），
@@ -3232,6 +3329,15 @@ class Rsync115Sync(_PluginBase):
                 )
                 return
 
+            arg_lower = (text_arg or "").lower()
+            if arg_lower in ("clear", "清空", "reset"):
+                result = self._api_strm_clear()
+                self._post_reply(event, "🧹 " + result["message"])
+                return
+            if arg_lower in ("prune", "清理"):
+                result = self._api_strm_prune()
+                self._post_reply(event, "🧹 " + result["message"])
+                return
             if text_arg:
                 self._reply_strm_keyword(event, text_arg)
                 return

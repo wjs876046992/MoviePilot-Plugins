@@ -208,3 +208,241 @@ def test_add_rule_also_purges_missing_and_corrupt():
     plugin._add_ignore_rule("a.mkv")
     assert plugin._last_status["missing_files"] == ["电视剧:b.mkv"]
     assert plugin._last_status["corrupt_files"] == []
+
+
+# --------------------------------------------------------------------------
+# 清洗历史脏条目（用户实测：上次扫描出的非视频文件还在清单里）
+# --------------------------------------------------------------------------
+
+def test_prune_removes_non_video_entries():
+    """
+    用户实测场景：v0.1.7 的扫描把 jpg/nfo 写进了疑似清单，修复过滤后
+    **旧条目仍在**（写入时过滤拦不住已落盘的数据）。载入清洗必须移除它们。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {
+        "电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},        # 视频，保留
+        "电视剧:poster.jpg": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},   # 图片，清
+        "电视剧:tvshow.nfo": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},   # 元数据，清
+        "电视剧:a.zh.srt": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},     # 字幕，清
+    }
+
+    removed = plugin._prune_invalid_strm_suspects()
+
+    assert removed == 3
+    assert list(plugin._strm_suspects) == ["电视剧:a.mkv"]
+
+
+def test_prune_removes_ignored_entries():
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv", "b.mkv"])
+    plugin = _plugin(root, rules=[_rule("a.mkv")])
+    plugin._strm_suspects = {
+        "电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+        "电视剧:b.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+    }
+    assert plugin._prune_invalid_strm_suspects() == 1
+    assert list(plugin._strm_suspects) == ["电视剧:b.mkv"]
+
+
+def test_prune_removes_entries_whose_source_is_gone():
+    """源端已删除的条目无从重传，留着只会让重传失败。"""
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {
+        "电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+        "电视剧:deleted.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+    }
+    assert plugin._prune_invalid_strm_suspects() == 1
+    assert list(plugin._strm_suspects) == ["电视剧:a.mkv"]
+
+
+def test_prune_removes_entries_without_strm_dir():
+    """映射取消 strm 目录后，验证前提消失，条目应清理。"""
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._sync_pairs[0]["strm_dir"] = ""
+    plugin._strm_suspects = {"电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN}}
+    assert plugin._prune_invalid_strm_suspects() == 1
+    assert plugin._strm_suspects == {}
+
+
+def test_prune_keeps_legitimate_suspects():
+    """真正有问题的条目必须保留 —— 清洗不能变成变相清空。"""
+    root = tempfile.mkdtemp()
+    _make_src(root, ["bad.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {"电视剧:bad.mkv": {"ts": 1.0, "origin": strm.ORIGIN_WATCH}}
+    assert plugin._prune_invalid_strm_suspects() == 0
+    assert list(plugin._strm_suspects) == ["电视剧:bad.mkv"]
+
+
+def test_prune_is_idempotent():
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {"电视剧:poster.jpg": {"ts": 1.0, "origin": strm.ORIGIN_SCAN}}
+    assert plugin._prune_invalid_strm_suspects() == 1
+    assert plugin._prune_invalid_strm_suspects() == 0
+
+
+# --------------------------------------------------------------------------
+# 手动清空
+# --------------------------------------------------------------------------
+
+def test_clear_empties_both_lists():
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {"电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN}}
+    plugin._strm_watch = {"电视剧:b.mkv": 1.0}
+
+    result = plugin._api_strm_clear()
+
+    assert result["success"] is True
+    assert plugin._strm_suspects == {}
+    assert plugin._strm_watch == {}
+    assert "strm_suspects" in plugin.saved and "strm_watch" in plugin.saved
+
+
+def test_prune_api_reports_counts():
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {
+        "电视剧:a.mkv": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+        "电视剧:poster.jpg": {"ts": 1.0, "origin": strm.ORIGIN_SCAN},
+    }
+    result = plugin._api_strm_prune()
+    assert result["data"]["removed"] == 1
+    assert result["data"]["remaining"] == 1
+
+
+# --------------------------------------------------------------------------
+# 覆盖「真正会跑的路径」：载入自动清洗 + 指令清空（变异测试发现的缺口）
+# --------------------------------------------------------------------------
+
+def test_prune_runs_automatically_on_plugin_load():
+    """
+    载入时必须**自动**清洗，而不是只提供一个手动入口。
+
+    **这条用例是被变异测试逼出来的**：最初只测 `_prune_invalid_strm_suspects`
+    本身，因此把 init_plugin 里那行调用删掉时测试**依然全绿** —— 用户升级后
+    旧脏条目照样留着，正是本次要解决的问题。必须走完整载入路径才拦得住。
+    """
+    import importlib
+    import tempfile
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    for name in ("bad.mkv", "poster.jpg"):
+        with open(os.path.join(src, name), "wb") as fh:
+            fh.write(b"x")
+
+    stored = {
+        # 模拟升级前落盘的脏数据：jpg 被判成疑似
+        "strm_suspects": {
+            "电视剧:bad.mkv": {"ts": 1.0, "origin": "scan"},
+            "电视剧:poster.jpg": {"ts": 1.0, "origin": "scan"},
+        },
+    }
+    saved = {}
+
+    plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
+    plugin._sync_pairs = [{
+        "name": "电视剧", "src": src, "dest": "/115/TV",
+        "strm_dir": os.path.join(root, "strm"), "all_ext": False,
+    }]
+    plugin._exclude_patterns = "@eaDir/"
+    plugin._media_extensions = "mkv,srt"
+    plugin._ignored_rules = []
+    plugin._notify = False
+    plugin._strm_notified = False
+    plugin._strm_watch = {}
+    plugin._strm_suspects = {}
+    plugin._strm_grace_hours = 6.0
+    plugin._strm_check_enabled = True
+    plugin._strm_last_check = 0.0
+    plugin._enabled = True
+    plugin._listen_transfer = True
+    plugin._delay_hours = 2.0
+    plugin._cron = "0 */2 * * *"
+    plugin._media_extensions = "mkv,srt"
+    plugin._rsync_timeout = 600
+    plugin._task_timeout = 3600
+    plugin._rate_limit_enabled = True
+    plugin._upload_batch_size = 200
+    plugin._upload_max_per_window = 500
+    plugin._upload_window_secs = 1800
+    plugin._backoff_secs = 3600
+    plugin._rate_limit_keywords = "429"
+    plugin._force_cooldown_days = 7
+    plugin._pending_queue = {}
+    plugin._backfill_queue = []
+    plugin._missed_queue = {}
+    plugin._last_status = {}
+    plugin.get_data = lambda k: stored.get(k)
+    plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]
+    plugin.update_config = lambda c: True
+
+    plugin.init_plugin({"enabled": True, "sync_pairs": plugin._sync_pairs})
+
+    assert "电视剧:poster.jpg" not in plugin._strm_suspects, (
+        "载入时未自动清洗历史脏条目 —— init_plugin 里的 _prune_invalid_strm_suspects 调用可能被移除"
+    )
+    assert "电视剧:bad.mkv" in plugin._strm_suspects
+
+
+def test_strm_command_clear_and_prune_modes():
+    """/rsync_strm clear 与 prune 必须真的生效（而非落到搜索分支）。"""
+    import importlib
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    with open(os.path.join(src, "a.mkv"), "wb") as fh:
+        fh.write(b"x")
+
+    plugin = _plugin(root)
+    plugin._strm_suspects = {"电视剧:a.mkv": {"ts": 1.0, "origin": "scan"}}
+    plugin._strm_watch = {"电视剧:a.mkv": 1.0}
+    replies = []
+    plugin._post_reply = lambda ev, text: replies.append(text)
+
+    class _Ev:
+        event_data = {"action": "strm", "arg_str": "clear"}
+
+    plugin.handle_command(_Ev())
+
+    assert plugin._strm_suspects == {} and plugin._strm_watch == {}
+    assert any("清空" in r for r in replies)
+
+
+def test_strm_command_prune_mode():
+    import importlib
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv"])
+    plugin = _plugin(root)
+    plugin._strm_suspects = {
+        "电视剧:a.mkv": {"ts": 1.0, "origin": "scan"},
+        "电视剧:poster.jpg": {"ts": 1.0, "origin": "scan"},
+    }
+    replies = []
+    plugin._post_reply = lambda ev, text: replies.append(text)
+
+    class _Ev:
+        event_data = {"action": "strm", "arg_str": "prune"}
+
+    plugin.handle_command(_Ev())
+
+    assert list(plugin._strm_suspects) == ["电视剧:a.mkv"]
+    assert any("清理" in r for r in replies)

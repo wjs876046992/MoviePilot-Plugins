@@ -379,6 +379,25 @@
                 <v-icon start size="14">mdi-magnify-scan</v-icon>
                 扫描缺 strm 的文件
               </v-btn>
+              <!-- 清理无效条目：非视频 / 已忽略 / 源端已删 / 映射取消验证。
+                   历史版本产生过一批永远处理不掉的脏条目（例如 jpg/nfo 被判成疑似），
+                   靠它一次性清掉，不必手工改插件数据文件 -->
+              <v-btn
+                v-if="strmSuspectCount"
+                size="x-small"
+                variant="text"
+                color="secondary"
+                rounded="lg"
+                :loading="itemLoading === 'strm:prune'"
+                @click="pruneStrmSuspects"
+              >
+                <v-icon start size="14">mdi-broom</v-icon>
+                清理无效项
+                <v-tooltip activator="parent" location="top">
+                  移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、
+                  已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证
+                </v-tooltip>
+              </v-btn>
               <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
               <v-btn
                 v-if="strmSuspectCount"
@@ -897,6 +916,22 @@ async function scanStrm() {
     strmScanMsg.value = '扫描出错: ' + e.message
   } finally {
     strmScanning.value = false
+  }
+}
+
+// 清理无效的 strm 疑似条目（非视频 / 已忽略 / 源端已删 / 映射取消验证）。
+// 与「清空」不同：它只删那些**结构上已不可能恢复正常**的条目，保留真问题。
+async function pruneStrmSuspects() {
+  if (itemLoading.value === 'strm:prune') return
+  itemLoading.value = 'strm:prune'
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_prune', {})
+    strmScanMsg.value = res?.message || (res?.success ? '已清理无效条目' : '清理失败')
+    await fetchStatus()
+  } catch (e) {
+    strmScanMsg.value = '清理出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
   }
 }
 
