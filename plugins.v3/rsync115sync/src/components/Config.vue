@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.1.4</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.1.5</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -112,6 +112,17 @@
               </v-col>
               <v-col cols="12">
                 <v-checkbox v-model="pair.all_ext" label="同步所有文件类型 (默认仅同步视频，勾选后将同步字幕与元数据等全部格式)" density="compact" hide-details color="primary"></v-checkbox>
+              </v-col>
+              <v-col cols="12">
+                <v-text-field
+                  v-model="pair.strm_dir"
+                  label="strm 目录（可选，用于上传结果交叉验证）"
+                  variant="outlined"
+                  density="compact"
+                  placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"
+                  hint="若你用 strm 类插件在本地生成指针文件，且 strm 文件名与整理后文件同名，填写其根目录。同步成功后进入观察期（默认 6 小时），到期仍未生成对应 .strm 会标记为「疑似上传异常」，可在看板一键删旧重传。纯本地检查，零 115 API。"
+                  persistent-hint
+                ></v-text-field>
               </v-col>
             </v-row>
           </div>
@@ -414,6 +425,7 @@ function addPair() {
     src: '',
     dest: '',
     all_ext: false,
+    strm_dir: '',
   })
 }
 

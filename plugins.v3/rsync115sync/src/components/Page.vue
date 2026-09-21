@@ -338,6 +338,48 @@
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
           </div>
+
+          <!-- strm 交叉验证：疑似上传异常（独立于对账，来自 strm 插件视角） -->
+          <div v-if="strmSuspectCount" class="mt-4">
+            <div class="d-flex align-center flex-wrap ga-2 mb-2">
+              <v-icon size="18" color="warning">mdi-television-classic-off</v-icon>
+              <span class="font-weight-bold text-body-2">strm 疑似上传异常 ({{ strmSuspectCount }})</span>
+              <span class="text-caption text-medium-emphasis">
+                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 插件本身正常
+              </span>
+            </div>
+            <div class="d-flex flex-column ga-2">
+              <div v-for="key in strmSuspectKeys" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+                <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
+                  <div class="overflow-hidden">
+                    <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ key }}</div>
+                    <div class="text-caption text-medium-emphasis mt-0.5">
+                      同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
+                    </div>
+                  </div>
+                </div>
+                <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
+                  <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">疑似异常</v-chip>
+                  <v-btn
+                    size="x-small"
+                    variant="tonal"
+                    color="warning"
+                    rounded="lg"
+                    class="px-2"
+                    :loading="itemLoading === 'strm:' + key"
+                    :disabled="statusData.is_running"
+                    @click="retryStrmSuspect(key)"
+                  >
+                    <v-icon start size="14">mdi-delete-restore</v-icon>
+                    删旧重传
+                    <v-tooltip activator="parent" location="top">
+                      删除 115 端该文件后立即重传（先删再传，绕过 CD2 视图假成功）
+                    </v-tooltip>
+                  </v-btn>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 标签 3：已忽略清单 -->
@@ -420,6 +462,9 @@ const statusData = ref({
   missed_last_scan: 0,
   missed_scan_enabled: false,
   stale_count: 0,
+  strm_suspects: {},
+  strm_watching: 0,
+  strm_grace_hours: 6,
   backfill_total: 0,
   rate_limit_enabled: true,
   upload_window_count: 0,
@@ -451,6 +496,10 @@ const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +
   (statusData.value.last_status?.corrupt_files?.length || 0)
 )
+
+// strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
+const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspects || {}).length)
+const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}))
 
 // 是否处于风控退避期（时间戳为未来时刻）
 const isThrottled = computed(
@@ -607,6 +656,28 @@ async function clearBackfill() {
     await fetchStatus()
   } catch (e) {
     actionMsg.value = '取消失败: ' + e.message
+  }
+}
+
+// strm 疑似异常：确认后删旧重传（删除是破坏性操作，先弹确认框）
+async function retryStrmSuspect(key) {
+  const ok = window.confirm(
+    `将对以下文件执行「删旧重传」：\n\n${key}\n\n` +
+    `1. 先删除 115 端该文件（经挂载点删除，云端状态一并纠正）\n` +
+    `2. 立即定向重传\n` +
+    `3. 传完后自动复核 strm 是否生成\n\n` +
+    `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`
+  )
+  if (!ok) return
+  itemLoading.value = 'strm:' + key
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys: [key] })
+    actionMsg.value = res?.message || (res?.success ? '已开始删旧重传' : '操作失败')
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '重传出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
   }
 }
 

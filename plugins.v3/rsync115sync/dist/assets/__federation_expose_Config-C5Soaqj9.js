@@ -157,6 +157,7 @@ function addPair() {
     src: '',
     dest: '',
     all_ext: false,
+    strm_dir: '',
   });
 }
 
@@ -285,7 +286,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
-                      _createTextVNode("v0.1.4", -1)
+                      _createTextVNode("v0.1.5", -1)
                     ]))]),
                     _: 1
                   })
@@ -533,6 +534,21 @@ return (_ctx, _cache) => {
                                 density: "compact",
                                 "hide-details": "",
                                 color: "primary"
+                              }, null, 8, ["modelValue", "onUpdate:modelValue"])
+                            ]),
+                            _: 2
+                          }, 1024),
+                          _createVNode(_component_v_col, { cols: "12" }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_v_text_field, {
+                                modelValue: pair.strm_dir,
+                                "onUpdate:modelValue": $event => ((pair.strm_dir) = $event),
+                                label: "strm 目录（可选，用于上传结果交叉验证）",
+                                variant: "outlined",
+                                density: "compact",
+                                placeholder: "例如 /vol1/strm/TV —— 留空则不启用该映射的验证",
+                                hint: "若你用 strm 类插件在本地生成指针文件，且 strm 文件名与整理后文件同名，填写其根目录。同步成功后进入观察期（默认 6 小时），到期仍未生成对应 .strm 会标记为「疑似上传异常」，可在看板一键删旧重传。纯本地检查，零 115 API。",
+                                "persistent-hint": ""
                               }, null, 8, ["modelValue", "onUpdate:modelValue"])
                             ]),
                             _: 2
@@ -941,6 +957,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d8162fc6"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d2b83a2a"]]);
 
 export { Config as default };

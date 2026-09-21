@@ -59,6 +59,9 @@ _MAX_PATH_CHARS = 160
 # retry 是「删除目标端 + 重传」，超限宁可直接拒绝也不要大范围误操作；
 # search 是只读的，可以全量收集后仅截断展示。
 _RETRY_KEYWORD_LIMIT = 15
+# strm 交叉验证巡检的最小间隔。strm 生成是分钟级过程，没必要每次同步都查。
+# Minimum interval between strm cross-validation sweeps.
+_STRM_CHECK_INTERVAL = 1800
 
 
 def _brief_paths(paths: List[str]) -> str:
@@ -82,7 +85,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.1.4"
+    plugin_version = "0.1.5"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
@@ -158,10 +161,40 @@ class Rsync115Sync(_PluginBase):
         self._delay_hours: float = 2.0
         self._cron: str = "0 */2 * * *"
 
-        # 多目录映射对列表: [{"name": "电视剧", "src": "/path/TV", "dest": "/mnt/115/TV", "all_ext": False}]
+        # 多目录映射对列表:
+        # [{"name": "电视剧", "src": "/path/TV", "dest": "/mnt/115/TV", "all_ext": False,
+        #   "strm_dir": "/path/strm/TV" 或 ""}]
         # Directory mapping pairs. Each entry maps one local source root to one
         # CD2-mounted 115 destination root; `all_ext` disables extension filtering.
+        # `strm_dir`（可选，与 src 不同根、由用户配置）启用 strm 交叉验证：
+        # 同步成功后观察对应 strm 是否在宽限期内生成，未生成即疑似上传异常。
+        # Optional per-pair strm root (different root, user-configured). When set,
+        # a successful sync arms a watch: if the matching .strm never appears within
+        # the grace window, the file is flagged as a suspected upload failure.
         self._sync_pairs: List[Dict[str, Any]] = []
+
+        # ---- strm 交叉验证（利用 strm 插件生成的本地 .strm 作为独立见证）----
+        # ---- Strm cross-validation ----
+        #
+        # 为什么需要它：CD2 改名失败后，挂载视图显示"文件存在且正常"，插件的
+        # 对账与 --size-only 都会被蒙蔽（见 DEVELOPMENT.md 3.11）。而 strm 插件
+        # 生成 .strm 的依据与 CD2 视图无关 —— 它是第三方视角的独立见证人，
+        # 且读取它只是本地文件系统操作，零 115 API。
+        #
+        # 三态生命周期（_strm_watch：待观察 → _strm_suspects：疑似异常）：
+        #   待观察：同步成功后登记，宽限期内不报警（strm 生成不实时，
+        #           可能还在上传/刮削中）；
+        #   疑似异常：宽限期到期仍未生成 → 入清单、看板展示、可推送通知，
+        #           用户提供处理按钮（删旧重传），**不做无确认的自动重传**
+        #           —— strm 插件自身漏生成（媒体不识别/开关关闭）也会表现
+        #           为"该有而没有"，与真异常不可区分，误报源无法排除；
+        #   解除：重传成功或 strm 已生成 → 移出清单。
+        self._strm_watch: Dict[str, float] = {}        # key → 同步成功时间戳
+        self._strm_suspects: Dict[str, float] = {}     # key → 首次疑似时间戳
+        self._strm_grace_hours: float = 6.0            # 宽限期（小时），可配置
+        self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
+        self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
+        self._strm_notified: bool = False              # 疑似清单是否已推送过通知（防重复打扰）
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
         # Parameters strictly inherited from sync_115.sh.
@@ -297,6 +330,9 @@ class Rsync115Sync(_PluginBase):
             if config.get("rate_limit_keywords"):
                 self._rate_limit_keywords = config.get("rate_limit_keywords")
             self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
+            # strm 交叉验证配置（总开关与宽限期；每映射的 strm_dir 在 sync_pairs 内）
+            self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
+            self._strm_grace_hours = max(0.5, float(config.get("strm_grace_hours") or 6.0))
             # 老配置迁移：把「从未调整过」的旧默认值平滑升到新默认值
             self._migrate_legacy_defaults(config)
 
@@ -330,6 +366,18 @@ class Rsync115Sync(_PluginBase):
         if self._backfill_queue:
             logger.info(f"[Rsync115Sync] 📦 已恢复存量补传队列：剩余 {len(self._backfill_queue)} 个"
                         f"（原始 {self._backfill_total} 个），将由定时巡检继续推进")
+
+        # 恢复 strm 交叉验证状态（待观察清单必须跨重载延续，否则宽限期重新计时）
+        saved_watch = self.get_data("strm_watch") or {}
+        if isinstance(saved_watch, dict):
+            self._strm_watch = saved_watch
+        saved_suspects = self.get_data("strm_suspects") or {}
+        if isinstance(saved_suspects, dict):
+            self._strm_suspects = saved_suspects
+        self._strm_notified = bool(self.get_data("strm_notified") or False)
+        if self._strm_watch or self._strm_suspects:
+            logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
+                        f"待观察 {len(self._strm_watch)} / 疑似异常 {len(self._strm_suspects)}")
 
         # 启动摘要：此前 init_plugin 一条日志都没有，导致用户无法从日志判断
         # 到底装的是哪个版本、事件是否已注册、映射是否读到 —— 排查「入库数量对不上」
@@ -902,6 +950,8 @@ class Rsync115Sync(_PluginBase):
             {"path": "/backfill_scan", "endpoint": self._api_backfill_scan, "methods": ["GET"], "auth": "bear"},
             {"path": "/backfill_start", "endpoint": self._api_backfill_start, "methods": ["POST"], "auth": "bear"},
             {"path": "/backfill_clear", "endpoint": self._api_backfill_clear, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_suspects", "endpoint": self._api_strm_suspects, "methods": ["GET"], "auth": "bear"},
+            {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
         ]
 
     def _api_get_ignored(self):
@@ -931,6 +981,8 @@ class Rsync115Sync(_PluginBase):
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
                 "missed_scan_enabled": self._missed_scan_enabled,
+                "strm_check_enabled": self._strm_check_enabled,
+                "strm_grace_hours": self._strm_grace_hours,
                 "notify": self._notify,
                 "delay_hours": self._delay_hours,
                 "cron": self._cron,
@@ -974,6 +1026,9 @@ class Rsync115Sync(_PluginBase):
         if config.get("rate_limit_keywords"):
             self._rate_limit_keywords = config.get("rate_limit_keywords")
         self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
+        # strm 交叉验证配置（与 init_plugin 保持一致）
+        self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
+        self._strm_grace_hours = max(0.5, float(config.get("strm_grace_hours") or 6.0))
         self.update_config(config)
         return {"success": True, "message": "配置保存成功"}
 
@@ -1053,6 +1108,11 @@ class Rsync115Sync(_PluginBase):
                 "missed_count": len(self._missed_queue),
                 "missed_last_scan": self._missed_last_scan,
                 "missed_scan_enabled": self._missed_scan_enabled,
+                # strm 交叉验证状态（看板展示与重传操作的数据源）
+                "strm_suspects": self._strm_suspects,
+                "strm_watching": len(self._strm_watch),
+                "strm_grace_hours": self._strm_grace_hours,
+                "strm_check_enabled": self._strm_check_enabled,
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
@@ -1597,6 +1657,12 @@ class Rsync115Sync(_PluginBase):
         for the lock and the second one would silently do nothing.
         """
         logger.info("[Rsync115Sync] 触发定时检查同步就绪媒体...")
+        # strm 交叉验证巡检：纯本地文件系统操作（零 115 API），
+        # 在任何同步启动前顺带执行；内部自带节流（30 分钟）与异常兜底
+        try:
+            self._strm_check()
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] strm 交叉验证巡检异常（已忽略，不影响本轮同步）: {e}")
         # 补传队列存在时优先续跑：队列有限且自终止，排空后自动恢复常规巡检。
         # 两种模式共用同一把执行锁与同一份窗口配额，故同一轮只启动其中一个。
         if self._resume_backfill_if_pending():
@@ -2011,18 +2077,33 @@ class Rsync115Sync(_PluginBase):
 
                 # 同步成功则将已完成的文件移除出冷却队列
                 if exit_code == 0 and mode == "ready":
+                    succeeded_keys = []
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
                         if k not in m_list and k not in c_list:
                             self._pending_queue.pop(k, None)
+                            succeeded_keys.append(k)
                             logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
+                    # strm 交叉验证：登记待观察（有 strm_dir 的映射才实际生效）
+                    if succeeded_keys:
+                        armed = self._strm_arm_watch(succeeded_keys)
+                        if armed:
+                            logger.info(f"[Rsync115Sync] [{pair_name}] 📺 已登记 {armed} 个文件进入 "
+                                        f"strm 观察期（{self._strm_grace_hours}h 内未生成 strm 将标记疑似异常）")
+
+                # 重试模式成功：同样登记 strm 观察（重传后自动复核 strm 是否生成，
+                # 生成即自动解除疑点，无需用户再确认）
+                if exit_code == 0 and mode == "retry":
+                    succeeded_retry = [f"{pair_name}:{rel_p}" for rel_p in pair_files
+                                       if f"{pair_name}:{rel_p}" not in m_list
+                                       and f"{pair_name}:{rel_p}" not in c_list]
+                    if succeeded_retry:
+                        self._strm_arm_watch(succeeded_retry)
 
                 # 补传模式：无论本批成功与否都从补传队列移除
                 # （失败的会进入 missing/corrupt 清单，由 /rsync_retry 接手，
                 #   若留在补传队列会与异常清单重复处理）
                 # Back-fill: drain entries once attempted, regardless of outcome.
-                # Failures land in the missing/corrupt lists and are handled by
-                # /rsync_retry; keeping them queued would process them twice.
                 if mode == "backfill":
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
@@ -2249,6 +2330,161 @@ class Rsync115Sync(_PluginBase):
                     corrupt.append(key)
 
         return missing, corrupt
+
+    # ================= strm 交叉验证 =================
+
+    def _strm_expected_path(self, key: str) -> Optional[str]:
+        """
+        由队列 key 推导该文件「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。
+
+        Derive the expected .strm path for a queue key; None when the pair has no
+        strm root configured.
+
+        映射规则（用户确认的设计）：strm 目录与源目录**不同根**、由用户在映射里
+        配置 strm_dir；文件名与整理后文件**同名**（仅扩展名换成 .strm）。
+        因此相对路径完全沿用：src 下 A/B/剧名 S01E03.mkv
+        → strm_dir 下 A/B/剧名 S01E03.strm。
+        """
+        for pair in self._sync_pairs:
+            pn = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
+            if key.startswith(f"{pn}:"):
+                strm_dir = (pair.get("strm_dir") or "").strip().rstrip("/")
+                if not strm_dir:
+                    return None
+                rel_p = key.split(f"{pn}:", 1)[1]
+                stem, _ = os.path.splitext(rel_p)
+                return os.path.join(strm_dir, stem + ".strm")
+        return None
+
+    def _strm_arm_watch(self, keys: List[str]) -> int:
+        """
+        同步成功后把文件登记进「待观察」清单（宽限期从现在起算）。
+
+        Arm a strm watch for successfully synced files. Already-suspect keys are
+        removed from the suspect list on success (the re-transfer cleared it).
+        """
+        armed = 0
+        now_ts = time.time()
+        for k in keys:
+            if self._strm_expected_path(k) is None:
+                continue
+            self._strm_watch[k] = now_ts
+            # 重传成功即解除疑点
+            if k in self._strm_suspects:
+                self._strm_suspects.pop(k, None)
+                self.save_data("strm_suspects", self._strm_suspects)
+            armed += 1
+        if armed:
+            self.save_data("strm_watch", self._strm_watch)
+        return armed
+
+    def _strm_check(self) -> Dict[str, Any]:
+        """
+        strm 交叉验证巡检：宽限期到期的待观察项按 strm 是否生成分类流转。
+
+        Strm cross-validation sweep: settle expired watches by whether the
+        expected .strm has appeared.
+
+        三个出口：
+        - strm 已生成 → 移出待观察（正常）；
+        - 宽限期到期仍未生成 → 移入疑似异常清单（看板/通知/手动处理）；
+        - 宽限期未到 → 保留观察。
+        源端文件已消失的待观察项直接清理（对应源都没了，验证无意义）。
+        纯本地文件系统操作，零 115 API；由定时巡检调用（每轮同步后顺带执行），
+        内部再按 30 分钟节流，避免频繁扫描。
+        """
+        now_ts = time.time()
+        # 巡检节流：strm 生成是分钟级的事，没必要每次同步都查一遍
+        if now_ts - self._strm_last_check < self._STRM_CHECK_INTERVAL:
+            return {"checked": 0, "ok": 0, "new_suspects": 0}
+        self._strm_last_check = now_ts
+
+        if not self._strm_check_enabled or not self._strm_watch:
+            return {"checked": 0, "ok": 0, "new_suspects": 0}
+
+        grace_secs = self._strm_grace_hours * 3600
+        settled_ok: List[str] = []
+        new_suspects: List[str] = []
+        dropped: List[str] = []
+
+        for key, synced_ts in list(self._strm_watch.items()):
+            expected = self._strm_expected_path(key)
+            if expected is None:
+                # 映射被改成无 strm_dir：观察项失效，直接清理
+                dropped.append(key)
+                continue
+            # 源端已消失：无从验证也无从重传，清理
+            src_root = None
+            for pair in self._sync_pairs:
+                pn = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
+                if key.startswith(f"{pn}:"):
+                    src_root = (pair.get("src") or "").strip().rstrip("/")
+                    break
+            if src_root and not os.path.exists(os.path.join(src_root, key.split(":", 1)[1])):
+                dropped.append(key)
+                continue
+
+            if os.path.exists(expected):
+                settled_ok.append(key)
+                continue
+            if now_ts - synced_ts >= grace_secs:
+                new_suspects.append(key)
+
+        for k in settled_ok + dropped:
+            self._strm_watch.pop(k, None)
+        for k in new_suspects:
+            self._strm_watch.pop(k, None)
+            self._strm_suspects[k] = now_ts
+
+        if settled_ok or dropped or new_suspects:
+            self.save_data("strm_watch", self._strm_watch)
+            self.save_data("strm_suspects", self._strm_suspects)
+            if new_suspects:
+                logger.warning(f"[Rsync115Sync] 📺 strm 交叉验证发现 {len(new_suspects)} 个疑似上传异常"
+                               f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成）: "
+                               f"{_brief_paths(new_suspects)}")
+            elif settled_ok:
+                logger.debug(f"[Rsync115Sync] strm 交叉验证：{len(settled_ok)} 个文件 strm 已生成，正常")
+
+        return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
+                "ok": len(settled_ok), "new_suspects": len(new_suspects)}
+
+    def _api_strm_suspects(self) -> Dict[str, Any]:
+        """返回当前 strm 疑似异常清单（看板用）。"""
+        return {"success": True, "data": {"suspects": self._strm_suspects,
+                                          "watching": len(self._strm_watch),
+                                          "grace_hours": self._strm_grace_hours}}
+
+    def _api_strm_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        确认后对疑似异常执行「删旧重传」（复用 v0.1.4 的删旧通道）。
+
+        Confirmed re-transfer for strm suspects, reusing the delete-then-sync path.
+        不做无确认的自动重传：strm 插件自身漏生成也会表现为"该有而没有"，
+        误报源无法排除，删除是破坏性操作，必须用户确认。
+        """
+        if self._is_running:
+            return {"success": False, "message": "已有任务正在运行，请稍后再试"}
+        keys = body.get("keys") or []
+        if not keys:
+            return {"success": False, "message": "未指定要重传的文件"}
+        # 只允许对疑似清单里的 key 操作，防止越权构造任意路径
+        allowed = [k for k in keys if k in self._strm_suspects]
+        not_allowed = [k for k in keys if k not in self._strm_suspects]
+        if not_allowed:
+            logger.warning(f"[Rsync115Sync] strm 重传请求含非疑似清单条目，已忽略: {not_allowed[:3]}")
+        if not allowed:
+            return {"success": False, "message": "所选文件不在疑似异常清单中"}
+
+        deleted, undeletable = self._delete_dest_files_for_retry(allowed)
+        if undeletable:
+            return {"success": False,
+                    "message": f"{len(undeletable)} 个文件目标端删除失败（挂载点可能未就绪），请稍后重试"}
+        # 重传期间仍留在疑似清单（失败会被同步流程记入异常清单）；
+        # 成功后由 _strm_arm_watch 解除
+        self._start_sync_thread(mode="retry", custom_files=deleted)
+        return {"success": True,
+                "message": f"已删除 {len(deleted)} 个文件并开始定向重传，完成后自动复核 strm"}
 
     def _search_target_files(self, keyword: str) -> Dict[str, Any]:
         """
