@@ -69,7 +69,7 @@
 
         <!-- 补传 / 限流 / 遗漏补齐提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled || statusData.missed_count || statusData.stale_count"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.missed_count || statusData.stale_count || statusData.strm_watching"
           :type="isThrottled ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
@@ -91,6 +91,11 @@
           <div v-if="statusData.missed_count">
             🕳️ 检测到 <strong>{{ statusData.missed_count }}</strong> 个文件可能因插件重载错过了入库事件，
             已由源端扫描补回，将在下次同步时一并上传（这些文件不再等待冷却）。
+          </div>
+          <div v-if="statusData.strm_watching">
+            📺 strm 交叉验证进行中：<strong>{{ statusData.strm_watching }}</strong> 个文件处于观察期，
+            {{ statusData.strm_grace_hours }} 小时内未生成对应 .strm 才会被标记为「疑似上传异常」，
+            属正常等待，无需处理。
           </div>
         </v-alert>
 
@@ -136,14 +141,18 @@
                 v-if="selectMode"
                 size="small"
                 variant="flat"
-                color="primary"
+                :color="selectedStrmOnly ? 'warning' : 'primary'"
                 rounded="lg"
                 :loading="batchSyncing"
                 :disabled="!selectedKeys.length || statusData.is_running"
                 @click="batchSyncSelected"
               >
-                <v-icon start size="16">mdi-cloud-upload-outline</v-icon>
-                同步选中 ({{ selectedKeys.length }})
+                <v-icon start size="16">{{ selectedStrmOnly ? 'mdi-delete-restore' : 'mdi-cloud-upload-outline' }}</v-icon>
+                {{ selectedStrmOnly ? `删旧重传 (${selectedKeys.length})` : `同步选中 (${selectedKeys.length})` }}
+                <v-tooltip v-if="selectedStrmOnly" activator="parent" location="top">
+                  选中项全部来自 strm 疑似异常清单：先删除 115 端旧文件再重传，
+                  以绕过 CD2 挂载视图「看起来正常」的假成功
+                </v-tooltip>
               </v-btn>
             </div>
           </div>
@@ -163,7 +172,13 @@
                 <span class="text-caption font-weight-bold">全选本页 ({{ selectableItems.length }})</span>
               </template>
             </v-checkbox>
-            <span class="text-caption text-medium-emphasis batch-hint">已选 {{ selectedKeys.length }} 项 · 可跨分组勾选后一次性上传统一触发</span>
+            <span class="text-caption text-medium-emphasis batch-hint">
+              已选 {{ selectedKeys.length }} 项 · 可跨分组勾选后一次性触发
+              <template v-if="selectedStrmOnly">（全部为 strm 疑似异常，将执行「删旧重传」）</template>
+              <template v-else-if="strmSelectedCount">
+                （其中 {{ strmSelectedCount }} 项为 strm 疑似异常，将只做定向重传，不删旧）
+              </template>
+            </span>
           </div>
         </div>
 
@@ -347,10 +362,33 @@
               <span class="text-caption text-medium-emphasis">
                 观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 插件本身正常
               </span>
+              <v-spacer></v-spacer>
+              <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
+              <v-btn
+                size="x-small"
+                variant="tonal"
+                color="warning"
+                rounded="lg"
+                :loading="itemLoading === 'strm:all'"
+                :disabled="statusData.is_running"
+                @click="retryAllStrmSuspects"
+              >
+                <v-icon start size="14">mdi-delete-restore</v-icon>
+                全部删旧重传 ({{ strmSuspectCount }})
+              </v-btn>
             </div>
             <div class="d-flex flex-column ga-2">
-              <div v-for="key in strmSuspectKeys" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div v-for="key in strmPaged.slice" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
                 <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
+                  <v-checkbox
+                    v-if="selectMode"
+                    :model-value="selectedKeys.includes(key)"
+                    density="compact"
+                    hide-details
+                    color="warning"
+                    class="flex-shrink-0 mr-2"
+                    @update:model-value="toggleSelect(key)"
+                  ></v-checkbox>
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ key }}</div>
                     <div class="text-caption text-medium-emphasis mt-0.5">
@@ -378,6 +416,28 @@
                   </v-btn>
                 </div>
               </div>
+            </div>
+            <!-- strm 疑似清单独立分页：与上方对账清单数据源不同、长度也不同，
+                 共用页码会让两边互相串位，故单独维护 pageStrm -->
+            <div v-if="strmPaged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+              <v-btn
+                size="small" variant="text" rounded="lg" class="pager-btn"
+                :disabled="strmPaged.page <= 1"
+                @click="strmPaged.pageRef.value = strmPaged.page - 1"
+              >
+                <v-icon start size="16">mdi-chevron-left</v-icon>上一页
+              </v-btn>
+              <span class="text-caption text-medium-emphasis">
+                第 <strong>{{ strmPaged.page }}</strong> / {{ strmPaged.pages }} 页 ·
+                共 {{ strmPaged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+              </span>
+              <v-btn
+                size="small" variant="text" rounded="lg" class="pager-btn"
+                :disabled="strmPaged.page >= strmPaged.pages"
+                @click="strmPaged.pageRef.value = strmPaged.page + 1"
+              >
+                下一页<v-icon end size="16">mdi-chevron-right</v-icon>
+              </v-btn>
             </div>
           </div>
         </div>
@@ -483,6 +543,8 @@ const PAGE_SIZE = 15
 const pageQueue = ref(1)
 const pageFailed = ref(1)
 const pageIgnored = ref(1)
+// strm 疑似清单与「对账异常」标签同屏，但数据源与长度都不同，页码必须独立
+const pageStrm = ref(1)
 
 // 批量选择 / 单条手动触发
 const selectMode = ref(false)
@@ -500,6 +562,17 @@ const failedCount = computed(() =>
 // strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
 const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspects || {}).length)
 const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}))
+
+// 选中项中有多少属于 strm 疑似清单。
+// 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，
+// 因此批量按钮必须按选中项的成分决定走哪条通道，不能只看当前在哪个标签页
+// （勾选状态是跨分组保留的，用户可以在对账清单里勾选、再翻到别的分组）。
+const strmSelectedCount = computed(
+  () => selectedKeys.value.filter((k) => k in (statusData.value.strm_suspects || {})).length
+)
+const selectedStrmOnly = computed(
+  () => selectedKeys.value.length > 0 && strmSelectedCount.value === selectedKeys.value.length
+)
 
 // 是否处于风控退避期（时间戳为未来时刻）
 const isThrottled = computed(
@@ -538,6 +611,9 @@ const failedEntries = computed(() => [
 const queuePaged = computed(() => paginate(queueList.value, pageQueue))
 const failedPaged = computed(() => paginate(failedEntries.value, pageFailed))
 const ignoredPaged = computed(() => paginate(ignoredList.value, pageIgnored))
+// strm 疑似清单不分页时列表可无限增长（strm 插件大面积漏生成时会成批出现），
+// 与另外三个列表统一按 PAGE_SIZE 切片
+const strmPaged = computed(() => paginate(strmSuspectKeys.value, pageStrm))
 
 // 当前标签页的分页结果，供模板统一渲染底部页码条
 const paged = computed(() => {
@@ -554,7 +630,12 @@ const selectableItems = computed(() => {
     return queuePaged.value.slice.map((it) => it.key)
   }
   if (currentTab.value === 'failed') {
-    return failedPaged.value.slice.map((it) => it.file)
+    // strm 疑似清单与对账清单在同一个标签页内，故其 key 也算本页可勾选项，
+    // 否则勾了 strm 条目却因不在集合里被「全选本页」清掉
+    return [
+      ...failedPaged.value.slice.map((it) => it.file),
+      ...strmPaged.value.slice,
+    ]
   }
   return []
 })
@@ -681,24 +762,91 @@ async function retryStrmSuspect(key) {
   }
 }
 
-// 批量触发选中条目
+// 批量触发选中条目。
+// 通道选择依据是「选中项的成分」而不是当前标签页：勾选状态跨分组保留，
+// 用户在哪个标签页按下按钮都可能包含 strm 疑似项，而这两类条目的处理
+// 通道不同（strm 必须先删旧，普通条目删旧属于多余且危险的写操作）。
 async function batchSyncSelected() {
   if (!selectedKeys.value.length || statusData.value.is_running) return
+  const keys = [...selectedKeys.value]
+  const isStrm = selectedStrmOnly.value
+  const isMixed = !isStrm && strmSelectedCount.value > 0
+
+  // 混合选择时明确提示会被分流，避免用户以为「一个按钮一种行为」
+  if (isMixed) {
+    const ok = window.confirm(
+      `选中 ${keys.length} 项中，有 ${strmSelectedCount.value} 项属于 strm 疑似异常。\n\n` +
+      `提交后将自动分流：\n` +
+      `• ${strmSelectedCount.value} 项走「删旧重传」（先删 115 端文件再传）\n` +
+      `• ${keys.length - strmSelectedCount.value} 项走普通定向重传（不删除任何目标端文件）\n\n确定继续吗？`
+    )
+    if (!ok) return
+  } else if (isStrm) {
+    // 全部为 strm 项：删旧是破坏性操作，沿用单条操作的确认口径
+    const ok = window.confirm(
+      `将对选中的 ${keys.length} 个文件执行「删旧重传」：\n\n` +
+      `1. 先删除 115 端这些文件（经挂载点删除，云端状态一并纠正）\n` +
+      `2. 立即定向重传\n` +
+      `3. 传完后自动复核 strm 是否生成\n\n` +
+      `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`
+    )
+    if (!ok) return
+  }
+
   batchSyncing.value = true
-  actionMsg.value = `正在批量触发 ${selectedKeys.value.length} 个文件...`
+  actionMsg.value = `正在批量触发 ${keys.length} 个文件...`
   try {
-    const res = await props.api.post('plugin/Rsync115Sync/sync_item', { keys: [...selectedKeys.value] })
-    if (res && res.success) {
-      actionMsg.value = res.message || '已批量触发同步'
-      selectedKeys.value = []
-    } else {
-      actionMsg.value = res?.message || '批量触发失败'
+    // 路由分流：strm 疑似项走后端 /strm_retry（含删旧护栏），其余走 /sync_item。
+    // 后端 /strm_retry 会对不在疑似清单内的 key 二次校验并忽略，这里有前端分流兜底。
+    const strmKeys = keys.filter((k) => k in (statusData.value.strm_suspects || {}))
+    const plainKeys = keys.filter((k) => !(k in (statusData.value.strm_suspects || {})))
+
+    const messages = []
+    if (strmKeys.length) {
+      const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys: strmKeys })
+      messages.push(res?.message || (res?.success ? `已删旧重传 ${strmKeys.length} 个` : '删旧重传失败'))
     }
+    if (plainKeys.length) {
+      const res = await props.api.post('plugin/Rsync115Sync/sync_item', { keys: plainKeys })
+      messages.push(res?.message || (res?.success ? `已触发 ${plainKeys.length} 个` : '批量触发失败'))
+    }
+    actionMsg.value = messages.join('；') || '未提交任何条目'
+    selectedKeys.value = []
     await fetchStatus()
   } catch (e) {
     actionMsg.value = '批量触发出错: ' + e.message
   } finally {
     batchSyncing.value = false
+  }
+}
+
+// 一键处理全部 strm 疑似异常（清单规模小时最实用，省去逐条确认）
+async function retryAllStrmSuspects() {
+  const keys = [...strmSuspectKeys.value]
+  if (!keys.length || statusData.value.is_running) return
+  const ok = window.confirm(
+    `将对全部 ${keys.length} 个 strm 疑似异常文件执行「删旧重传」：\n\n` +
+    `1. 先删除 115 端这些文件（经挂载点删除，云端状态一并纠正）\n` +
+    `2. 立即定向重传（仍受批次上限与限流配额约束，可能需要多轮）\n` +
+    `3. 传完后自动复核 strm 是否生成\n\n` +
+    `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`
+  )
+  if (!ok) return
+  itemLoading.value = 'strm:all'
+  actionMsg.value = `正在对 ${keys.length} 个疑似异常执行删旧重传...`
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys })
+    if (res && res.success) {
+      actionMsg.value = res.message || `已删除并开始重传 ${keys.length} 个文件`
+    } else {
+      // 失败时保留 actionMsg 原文（例如部分文件删不掉），不要笼统覆盖
+      actionMsg.value = res?.message || '删旧重传失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    actionMsg.value = '删旧重传出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
   }
 }
 
@@ -725,12 +873,15 @@ async function fetchStatus() {
     if (iRes && iRes.success && iRes.data) {
       ignoredList.value = iRes.data
     }
-    // 清理已不存在条目的勾选状态，避免提交到已消失的文件
+    // 清理已不存在条目的勾选状态，避免提交到已消失的文件。
+    // strm 疑似清单也纳入存活集合：它同样是可勾选来源，漏掉会让用户
+    // 勾选后一刷新（30 秒轮询）就被静默清除
     if (selectedKeys.value.length) {
       const alive = new Set([
         ...queueList.value.map((it) => it.key),
         ...(statusData.value.last_status?.missing_files || []),
         ...(statusData.value.last_status?.corrupt_files || []),
+        ...Object.keys(statusData.value.strm_suspects || {}),
       ])
       selectedKeys.value = selectedKeys.value.filter((k) => alive.has(k))
     }

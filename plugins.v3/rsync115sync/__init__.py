@@ -950,7 +950,10 @@ class Rsync115Sync(_PluginBase):
             {"path": "/backfill_scan", "endpoint": self._api_backfill_scan, "methods": ["GET"], "auth": "bear"},
             {"path": "/backfill_start", "endpoint": self._api_backfill_start, "methods": ["POST"], "auth": "bear"},
             {"path": "/backfill_clear", "endpoint": self._api_backfill_clear, "methods": ["POST"], "auth": "bear"},
-            {"path": "/strm_suspects", "endpoint": self._api_strm_suspects, "methods": ["GET"], "auth": "bear"},
+            # 注意：没有 /strm_suspects 端点。strm 疑似清单由 /status 的
+            # strm_suspects 字段一并返回，看板只依赖 /status 一处取数；
+            # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
+            # 已移除避免两条取数路径返回同一份状态而产生分歧。
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
         ]
 
@@ -2522,12 +2525,6 @@ class Rsync115Sync(_PluginBase):
                         )
                     except Exception as e:
                         logger.error(f"[Rsync115Sync] strm 恢复通知发送失败: {e}")
-
-    def _api_strm_suspects(self) -> Dict[str, Any]:
-        """返回当前 strm 疑似异常清单（看板用）。"""
-        return {"success": True, "data": {"suspects": self._strm_suspects,
-                                          "watching": len(self._strm_watch),
-                                          "grace_hours": self._strm_grace_hours}}
 
     def _api_strm_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """
