@@ -303,6 +303,57 @@
             </v-row>
           </div>
         </div>
+
+        <!-- 模块 6：strm 交叉验证 -->
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2">
+          <v-icon size="18" color="warning" class="mr-1">mdi-television-classic</v-icon>
+          strm 交叉验证
+        </div>
+        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
+          <b>它是用来发现「假成功」的</b>：CD2 改名失败时，挂载视图会显示目标文件
+          「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账
+          与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角<b>结构上看不见</b>这种失败。
+          <br>
+          strm 类插件生成的 .strm 指针文件依据与 CD2 无关，是独立见证人。
+          同步成功后文件进入观察期，到期仍未生成对应 .strm 即标记为「疑似上传异常」，
+          可在看板一键删旧重传。全程纯本地文件检查，<b>零 115 API 开销</b>。
+          <br>
+          <b>启用方式</b>：在上方目录映射中为需要验证的映射填写「strm 目录」，
+          留空的映射不启用验证，<b>不影响任何现有行为</b>。
+        </v-alert>
+
+        <div class="settings-group-card rounded-xl overflow-hidden">
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">观察宽限期 (小时)</div>
+              <div class="text-caption text-medium-emphasis">
+                strm 生成并不实时（可能还在上传或刮削中），因此同步成功后先等待一段时间再判定，
+                避免把「还没生成」误判为上传异常。最小 0.5 小时。
+              </div>
+            </div>
+            <v-text-field
+              v-model.number="config.strm_grace_hours"
+              type="number"
+              step="0.5"
+              min="0.5"
+              variant="outlined"
+              density="compact"
+              style="max-width: 130px"
+              hide-details
+            ></v-text-field>
+          </div>
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+            <div>
+              <div class="font-weight-bold text-body-2">当前状态</div>
+              <div class="text-caption text-medium-emphasis">
+                处于观察期的文件数会在看板提示，疑似异常清单出现在「对账异常清单」标签页内。
+              </div>
+            </div>
+            <v-chip size="small" variant="tonal" color="warning">
+              {{ config.sync_pairs.filter((p) => (p.strm_dir || '').trim()).length }} / {{ config.sync_pairs.length }} 个映射已配置
+            </v-chip>
+          </div>
+        </div>
       </v-card-text>
 
       <!-- 底部操作按钮 -->
@@ -355,6 +406,10 @@ const config = ref({
   backoff_secs: 3600,
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
   force_cooldown_days: 7,
+  // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
+  // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
+  // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
+  strm_grace_hours: 6.0,
 })
 
 // ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----

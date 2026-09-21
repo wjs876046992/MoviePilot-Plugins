@@ -1,22 +1,22 @@
 
-.plugin-config[data-v-6a6223f9] {
+.plugin-config[data-v-56f2b3a4] {
   width: 100%;
   box-sizing: border-box;
   /* 桌面端外边距。原为内联 style 且带 !important，
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
   padding: 18px 22px !important;
 }
-.config-main-card[data-v-6a6223f9] {
+.config-main-card[data-v-56f2b3a4] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-6a6223f9] {
+.header-surface[data-v-56f2b3a4] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-6a6223f9] {
+.header-card-item .header-subtitle[data-v-56f2b3a4] {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
@@ -29,11 +29,11 @@
    故直接按内容区类名设置，保证提示条出现时间距依然稳定。
 
    注意：padding-block-start: unset 系看板真实页面调试所得，同步到本页保持一致，勿凭理论删除。 */
-.config-body[data-v-6a6223f9] {
+.config-body[data-v-56f2b3a4] {
   padding-block-start: unset !important;
   margin-top: 16px;
 }
-.header-icon-box[data-v-6a6223f9] {
+.header-icon-box[data-v-56f2b3a4] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -42,15 +42,15 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.settings-group-card[data-v-6a6223f9] {
+.settings-group-card[data-v-56f2b3a4] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.pair-card[data-v-6a6223f9] {
+.pair-card[data-v-56f2b3a4] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.empty-hint-box[data-v-6a6223f9] {
+.empty-hint-box[data-v-56f2b3a4] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }
 
@@ -60,41 +60,41 @@
    断点沿用 Vuetify 的 sm（600px）。 */
 @media (max-width: 599.98px) {
   /* 移动端收窄外层留白，把宽度还给表单内容 */
-.plugin-config[data-v-6a6223f9] {
+.plugin-config[data-v-56f2b3a4] {
     padding: 10px 12px !important;
 }
   /* 同看板：.v-card-item 的 append 列按 max-content 固定宽度、不会收缩，
      窄屏下关闭按钮会被顶出卡片并被 overflow-hidden 裁掉。
      改为 minmax(0, max-content)，允许在宽度不足时收缩。 */
-[data-v-6a6223f9] .v-card-item {
+[data-v-56f2b3a4] .v-card-item {
     grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
 }
-[data-v-6a6223f9] .v-card-item__content {
+[data-v-56f2b3a4] .v-card-item__content {
     min-width: 0;
 }
   /* 开关类设置行：改为纵向排列，控件左对齐，避免被挤出右边界 */
-.setting-row[data-v-6a6223f9] {
+.setting-row[data-v-56f2b3a4] {
     flex-direction: column;
     align-items: flex-start !important;
     gap: 8px;
 }
-.setting-row > .v-switch[data-v-6a6223f9] {
+.setting-row > .v-switch[data-v-56f2b3a4] {
     margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
 }
   /* 模块标题行（标题 + 右侧操作按钮）：标题允许收缩换行，按钮不被迫溢出 */
-.section-header[data-v-6a6223f9] {
+.section-header[data-v-56f2b3a4] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.section-header > div[data-v-6a6223f9] {
+.section-header > div[data-v-56f2b3a4] {
     min-width: 0;
 }
   /* 底部操作条：查看看板 / 保存配置 两个按钮在窄屏各占一行 */
-.config-actions[data-v-6a6223f9] {
+.config-actions[data-v-56f2b3a4] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.config-actions .v-btn[data-v-6a6223f9] {
+.config-actions .v-btn[data-v-56f2b3a4] {
     flex: 1 1 100%;
     margin-left: 0 !important;
 }
