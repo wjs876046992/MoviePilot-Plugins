@@ -3,7 +3,7 @@
 > 面向使用者的操作手册。开发与设计说明见 [DEVELOPMENT.md](./DEVELOPMENT.md)，
 > 待办事项见 [TODO.md](./TODO.md)。
 >
-> 当前版本：**v0.1.6**
+> 当前版本：**v0.1.7**
 
 ---
 
