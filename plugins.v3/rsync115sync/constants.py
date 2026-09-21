@@ -117,3 +117,18 @@ MISSED_SCAN_ENABLED_DEFAULT = False
 # plugin would flood the list; the cap plus an explicit truncation notice keeps that
 # diagnosable.
 STRM_SCAN_LIMIT = 500
+
+# ---- strm 检查专用的视频扩展名 / video-only extensions for strm checks ----
+# ⚠️ **不要与 DEFAULT_MEDIA_EXTENSIONS 混用**，两者回答的是不同问题：
+#   DEFAULT_MEDIA_EXTENSIONS —— 「要同步哪些文件」（含字幕，因为入库单元是整集）
+#   STRM_VIDEO_EXTENSIONS    —— 「哪些文件会生成 .strm」（仅视频容器）
+#
+# strm 插件只为**视频**生成指针文件，字幕永远不会有 .strm。若把同步用的白名单
+# 直接拿来做 strm 检查，每个 `xxx.zh.srt` 都会被判成「疑似上传异常」——
+# 必然误报，且数量通常多于视频本身。这是 v0.1.7 主动扫描的真实缺陷。
+# Subtitles never get a .strm; reusing the sync whitelist makes every subtitle a
+# false suspect. Kept as a separate, explicit list rather than "sync list minus
+# subtitles", because a user may add non-video extensions to the sync list.
+STRM_VIDEO_EXTENSIONS = (
+    "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v"
+)

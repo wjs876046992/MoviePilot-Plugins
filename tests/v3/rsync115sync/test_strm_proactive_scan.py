@@ -47,11 +47,20 @@ def _real_list_dir(path):
         return None
 
 
-def _scan(pairs, limit=500, exts=("mkv", "srt")):
+def _scan(pairs, limit=500, exts=None):
+    """
+    调用扫描。
+
+    注意 exts 默认是**视频专用集合**（由调用方注入），与同步用的
+    media_extensions 不同 —— 后者含字幕，而 strm 只为视频生成。
+    这正是「字幕/图片被误判为疑似异常」这个缺陷的修法。
+    """
+    video_only = set(exts) if exts is not None else {"mkv", "mp4", "avi", "ts"}
     return strm.scan_candidates(
         pairs, _real_list_dir, limit,
         excluded_dirs=set(),
-        valid_exts_for=lambda p: (None if p.get("all_ext") else set(exts)),
+        # 不再读 all_ext：勾了「同步所有类型」也不该去查 jpg/nfo 的 strm
+        valid_exts_for=lambda p: video_only,
     )
 
 
@@ -107,14 +116,22 @@ def test_non_media_extension_is_not_checked(tmp_path):
     assert checked == 1, "只有 a.mkv 应被检查"
 
 
-def test_all_ext_pair_checks_everything(tmp_path):
+def test_all_ext_pair_still_only_checks_video(tmp_path):
+    """
+    即使映射勾了「同步所有文件类型」，strm 检查也只针对视频。
+
+    jpg/nfo 会被同步，但 strm 插件不会为它们生成指针文件，
+    参与检查只会制造误报 —— 因此有效扩展名由 strm 侧决定，与 all_ext 无关。
+    """
     _tree(tmp_path, {
         "src/poster.jpg": b"x",
+        "src/movie.mkv": b"x",
     })
     pair = _pair(src=str(tmp_path / "src"), strm_dir=str(tmp_path / "strm"), all_ext=True)
     candidates, _, checked = _scan([pair])
-    assert checked == 1
+    assert checked == 1, "只有 movie.mkv 应被检查，poster.jpg 不算"
     assert len(candidates) == 1
+    assert "movie.mkv" in candidates[0]
 
 
 def test_excluded_dirs_are_pruned(tmp_path):
@@ -302,3 +319,155 @@ def test_scan_refuses_when_disabled():
     plugin._strm_check_enabled = False
     result = plugin._strm_scan()
     assert result["success"] is False
+
+
+# --------------------------------------------------------------------------
+# 仅视频：字幕/图片/元数据绝不参与 strm 检查（用户实测发现）
+# --------------------------------------------------------------------------
+
+def test_subtitles_are_never_checked(tmp_path):
+    """
+    **这是用户实测发现的缺陷**：strm 检查原先复用同步用的扩展名白名单，
+    而那个白名单**包含字幕**（srt/ssa/ass）—— 同步确实该传字幕，但
+    strm 插件只为视频生成 .strm，字幕永远不会有对应文件。
+
+    后果是每个字幕都被判成「疑似上传异常」，而一集往往有多个语言的字幕，
+    误报数量会超过视频本身，整个疑似清单直接失去可用性。
+    """
+    _tree(tmp_path, {
+        "src/E01.mkv": b"x",
+        "src/E01.zh.srt": b"x",
+        "src/E01.eng.ass": b"x",
+        "src/E01.cht.ssa": b"x",
+        "src/E01.nfo": b"x",
+        "src/poster.jpg": b"x",
+        "src/fanart.png": b"x",
+        "strm/E01.strm": b"x",
+    })
+    pair = _pair(src=str(tmp_path / "src"), strm_dir=str(tmp_path / "strm"))
+
+    candidates, _, checked = _scan([pair])
+
+    assert checked == 1, f"只应检查 E01.mkv，实际检查了 {checked} 个"
+    assert candidates == [], "字幕/图片/nfo 都不该产生疑似异常"
+
+
+def test_video_extensions_constant_excludes_subtitles():
+    """
+    视频扩展名常量必须与同步用的 DEFAULT_MEDIA_EXTENSIONS **分开**，
+    且不含任何字幕扩展名 —— 这是防误报的根本保障。
+    """
+    from app.plugins.rsync115sync import constants
+
+    video = {e.strip().lower() for e in constants.STRM_VIDEO_EXTENSIONS.split(",") if e.strip()}
+    sync = {e.strip().lower() for e in constants.DEFAULT_MEDIA_EXTENSIONS.split(",") if e.strip()}
+    subs = {e.strip().lower() for e in constants.SIDECAR_EXTS}
+
+    assert subs.isdisjoint(video), f"视频集合不该含字幕: {subs & video}"
+    assert "srt" not in video and "ass" not in video and "ssa" not in video
+    assert video.issubset(sync), "视频集合应是同步白名单的子集"
+
+
+def test_video_extensions_cover_common_containers():
+    """常见视频容器不能被漏掉，否则真实坏文件会被漏检。"""
+    from app.plugins.rsync115sync import constants
+
+    video = {e.strip().lower() for e in constants.STRM_VIDEO_EXTENSIONS.split(",") if e.strip()}
+    for ext in ("mkv", "mp4", "ts", "avi", "mov", "wmv", "flv", "m2ts"):
+        assert ext in video, f"缺少常见视频容器 {ext}"
+
+
+def test_helper_ignores_all_ext_flag():
+    """
+    `_strm_video_exts` 不看 all_ext：勾了「同步所有类型」也不该去查 jpg 的 strm。
+    这条同时钉住「不要退回用 _valid_exts_of(self._media_extensions, all_ext)」。
+    """
+    import importlib
+    module = importlib.import_module("app.plugins.rsync115sync")
+    got = module.Rsync115Sync._strm_video_exts()
+    assert "srt" not in got and "ass" not in got and "ssa" not in got
+    assert "mkv" in got and "mp4" in got
+
+
+# --------------------------------------------------------------------------
+# 走**完整** _strm_scan 路径的端到端用例（变异测试发现的缺口）
+# --------------------------------------------------------------------------
+
+def test_strm_scan_end_to_end_excludes_subtitles_and_images():
+    """
+    端到端跑 `_strm_scan`，确认它内部真的用了视频专用集合。
+
+    **这条用例是被变异测试逼出来的**：最初的用例都是「自己传有效扩展名集合
+    给 scan_candidates」，因此把 `_strm_scan` 内部的 `_valid_exts` 改回
+    「同步白名单（含字幕）」时，测试**依然全绿** —— 被测的闭包根本没被执行。
+    只有走完整路径才能拦住这个缺陷。
+    """
+    import importlib
+    import tempfile
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    # 一个视频（缺 strm，应命中）+ 一堆非视频（都不该被检查）
+    for name in ("E01.mkv", "E01.zh.srt", "E01.eng.ass", "poster.jpg", "tvshow.nfo"):
+        with open(os.path.join(src, name), "wb") as fh:
+            fh.write(b"x")
+
+    plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
+    plugin._sync_pairs = [{
+        "name": "电视剧", "src": src, "dest": "/115/TV",
+        "strm_dir": os.path.join(root, "strm"), "all_ext": False,
+    }]
+    plugin._exclude_patterns = "@eaDir/\n#recycle/"
+    # 同步白名单**含字幕**（这正是会引发误报的配置）
+    plugin._media_extensions = "mkv,srt,ssa,ass"
+    plugin._strm_check_enabled = True
+    plugin._strm_suspects = {}
+    plugin._notify = False
+    plugin._strm_notified = False
+    plugin.save_data = lambda k, v: None
+    plugin.post_message = lambda **kw: None
+
+    result = plugin._strm_scan()
+
+    assert result["success"] is True
+    assert result["data"]["checked"] == 1, (
+        f"只有 E01.mkv 应被检查，实际检查了 {result['data']['checked']} 个 —— "
+        f"_strm_scan 内部很可能又用回了含字幕的同步白名单"
+    )
+    assert len(plugin._strm_suspects) == 1
+    assert "E01.mkv" in next(iter(plugin._strm_suspects))
+
+
+def test_strm_scan_end_to_end_ignores_all_ext(tmp_path):
+    """勾了 all_ext 也不能把 jpg/nfo 拉进 strm 检查。"""
+    import importlib
+    import tempfile
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    for name in ("movie.mkv", "poster.jpg", "tvshow.nfo"):
+        with open(os.path.join(src, name), "wb") as fh:
+            fh.write(b"x")
+
+    plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
+    plugin._sync_pairs = [{
+        "name": "电影", "src": src, "dest": "/115/Movies",
+        "strm_dir": os.path.join(root, "strm"), "all_ext": True,
+    }]
+    plugin._exclude_patterns = "@eaDir/"
+    plugin._media_extensions = "mkv"
+    plugin._strm_check_enabled = True
+    plugin._strm_suspects = {}
+    plugin._notify = False
+    plugin._strm_notified = False
+    plugin.save_data = lambda k, v: None
+    plugin.post_message = lambda **kw: None
+
+    result = plugin._strm_scan()
+
+    assert result["data"]["checked"] == 1, "all_ext 下也只该检查视频"
+    assert len(plugin._strm_suspects) == 1

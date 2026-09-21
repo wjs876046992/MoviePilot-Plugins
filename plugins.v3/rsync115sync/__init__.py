@@ -84,6 +84,7 @@ from .constants import (  # noqa: E402
     SIDECAR_EXTS as _SIDECAR_EXTS,
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
     STRM_SCAN_LIMIT,
+    STRM_VIDEO_EXTENSIONS,
     TOLERATED_EXIT_CODES as _TOLERATED_EXIT_CODES,
 )
 from .ignore import (  # noqa: E402
@@ -2350,6 +2351,24 @@ class Rsync115Sync(_PluginBase):
     # I/O 与持久化：探测文件系统、读写 _strm_watch / _strm_suspects。
 
     @staticmethod
+    def _strm_video_exts() -> set:
+        """
+        strm 检查专用的扩展名集合（**仅视频**）。
+
+        Video-only extension set for strm checks.
+
+        为什么不能复用同步用的 media_extensions：那个白名单**包含字幕**
+        （srt/ssa/ass），因为同步的入库单元是「整集 = 视频 + 外挂字幕」。
+        但 strm 插件只为**视频**生成 .strm 指针文件，字幕永远不会有 ——
+        拿同步白名单去查 strm，每个 `xxx.zh.srt` 都会变成「疑似上传异常」。
+        这是主动扫描上线时的真实缺陷（用户发现 jpg/nfo 也会被判）。
+
+        也不看映射的 all_ext：勾了「同步所有类型」意味着 jpg/nfo 也会被同步，
+        但它们同样不会生成 strm，参与检查只会制造误报。
+        """
+        return {e.strip().lower() for e in STRM_VIDEO_EXTENSIONS.split(",") if e.strip()}
+
+    @staticmethod
     def _migrate_strm_suspects(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
         把疑似清单迁移到带来源的新格式。
@@ -2582,7 +2601,16 @@ class Rsync115Sync(_PluginBase):
         excluded = _excluded_dir_names(self._exclude_patterns)
 
         def _valid_exts(pair):
-            return _valid_exts_of(self._media_extensions, pair.get("all_ext", False))
+            # ⚠️ 必须用**视频专用**扩展名，不能用同步用的 media_extensions：
+            # 后者含 srt/ssa/ass，而 strm 插件只为视频生成 .strm，字幕永远没有 ——
+            # 用同步白名单会让每个字幕都被判成疑似异常（必然误报）。
+            # 同理**忽略 all_ext**：勾了「同步所有类型」也不该去查 jpg/nfo 的 strm。
+            #
+            # 注意必须写 self. —— 这是个闭包，内部的裸名字会按**模块全局**解析，
+            # 而 _strm_video_exts 是类方法，不会因此找到（报 NameError）。
+            # `getattr` 在真实实例上有效，裸实例（__new__ 造）也一样，
+            # 但闭包名字解析与实例无关，这是两种完全不同的查找路径。
+            return self._strm_video_exts()
 
         candidates, truncated, checked = _strm.scan_candidates(
             self._sync_pairs, _list_dir, limit,
@@ -2647,8 +2675,14 @@ class Rsync115Sync(_PluginBase):
             )
             return
 
-        missing, present, no_strm_dir = [], [], []
+        missing, present, no_strm_dir, non_video = [], [], [], []
         for key in result["matched"]:
+            # _search_target_files 用的是**同步口径**（含字幕），而 strm 只对视频
+            # 生成指针文件，因此这里必须再按视频扩展名筛一次，否则字幕会误报。
+            ext = os.path.splitext(key.split(":", 1)[-1])[-1].lstrip(".").lower()
+            if ext not in _strm_video_exts():
+                non_video.append(key)
+                continue
             expected = self._strm_expected_path(key)
             if expected is None:
                 no_strm_dir.append(key)
@@ -2678,6 +2712,9 @@ class Rsync115Sync(_PluginBase):
                  f"❌ 缺 strm  : {len(missing)} 个（新增疑似 {added} 个）"]
         if no_strm_dir:
             lines.append(f"⏭️ 所在映射未配 strm 目录，未检查: {len(no_strm_dir)} 个")
+        if non_video:
+            # 字幕等非视频文件不会有 .strm，本就不该参与检查；明确告知而非静默丢弃
+            lines.append(f"⏭️ 非视频文件（字幕等，不会生成 strm），已跳过: {len(non_video)} 个")
         if missing:
             lines.append("--------------------------------")
             lines.append("缺 strm 的文件：")
