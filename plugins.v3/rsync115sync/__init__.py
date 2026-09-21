@@ -85,7 +85,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.1.5"
+    plugin_version = "0.1.6"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
@@ -2376,6 +2376,8 @@ class Rsync115Sync(_PluginBase):
             armed += 1
         if armed:
             self.save_data("strm_watch", self._strm_watch)
+            # 疑点被解除后，若清单已清空则重置通知标志，让下次新发现能再次提醒
+            self._reset_strm_notified_if_clear()
         return armed
 
     def _strm_check(self) -> Dict[str, Any]:
@@ -2443,11 +2445,83 @@ class Rsync115Sync(_PluginBase):
                 logger.warning(f"[Rsync115Sync] 📺 strm 交叉验证发现 {len(new_suspects)} 个疑似上传异常"
                                f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成）: "
                                f"{_brief_paths(new_suspects)}")
+                self._notify_strm_suspects(new_suspects)
             elif settled_ok:
                 logger.debug(f"[Rsync115Sync] strm 交叉验证：{len(settled_ok)} 个文件 strm 已生成，正常")
 
         return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
                 "ok": len(settled_ok), "new_suspects": len(new_suspects)}
+
+    def _notify_strm_suspects(self, new_suspects: List[str]) -> None:
+        """
+        发现新的 strm 疑似异常时推送通知（仅新发现时发，不重复打扰）。
+
+        Notify on newly discovered strm suspects only — the whole-list state is
+        already visible on the dashboard, so repeating it every sweep would be
+        pure noise. Re-arms when the suspect list becomes empty again.
+
+        受众路由：带 mtype 交由宿主「通知场景开关」决定（默认仅管理员），
+        与同步报告一致，避免广播给全部用户。
+        """
+        if not self._notify:
+            return
+        # 去重语义：本轮已就「当前这批疑似」提醒过就不再重复打扰，
+        # 直到清单被清空（_reset_strm_notified_if_clear）后再次新发现才重新提醒。
+        # 否则每轮巡检都会重推同一批文件，很快就会被用户静音。
+        if self._strm_notified:
+            logger.debug(f"[Rsync115Sync] strm 疑似异常已提醒过，本轮新增 {len(new_suspects)} 个不再重复推送")
+            return
+        mtype = self._plugin_mtype()
+        if mtype is None:
+            logger.warning("[Rsync115Sync] 宿主 MessageType 不可用，已跳过 strm 疑似异常通知以免广播")
+            return
+        total = len(self._strm_suspects)
+        lines = "\n".join(f"• {k}" for k in new_suspects[:_MAX_LOGGED_PATHS])
+        more = f"\n（另有 {total - _MAX_LOGGED_PATHS} 个，详见看板）" if total > _MAX_LOGGED_PATHS else ""
+        text = (
+            f"📺 发现 {len(new_suspects)} 个文件疑似上传未真正完成\n"
+            f"————————————————\n"
+            f"{lines}{more}\n"
+            f"————————————————\n"
+            f"判定依据：同步已报告成功，但 {self._strm_grace_hours}h 内未在 strm 目录生成对应文件。\n"
+            f"常见原因是 CD2 改名失败导致云端只留下临时文件（挂载视图看不出）。\n\n"
+            f"👉 处理方式：打开插件看板 →「对账异常」标签 → 底部「strm 疑似上传异常」→"
+            f" 点击「删旧重传」\n"
+            f"⚠️ 若 strm 插件本身未生成（媒体不识别等），此为误报；"
+            f"重传已同步的文件不会重复上传，属安全操作。"
+        )
+        try:
+            self.post_message(mtype=mtype, title="115同步：strm 疑似上传异常", text=text)
+            self._strm_notified = True
+            self.save_data("strm_notified", True)
+            logger.info(f"[Rsync115Sync] 📤 已推送 strm 疑似异常通知（{len(new_suspects)} 个新发现，"
+                        f"清单共 {total} 个）")
+        except Exception as e:
+            logger.error(f"[Rsync115Sync] strm 疑似异常通知发送失败: {e}")
+
+    def _reset_strm_notified_if_clear(self) -> None:
+        """
+        疑似清单清空后重置通知标志，使下次新发现能再次提醒，并推送「已全部解决」。
+
+        Reset the notification latch once the suspect list drains, so a future
+        batch alerts again; also send a short all-clear so the user knows the
+        earlier warning has been resolved rather than merely forgotten.
+        """
+        if self._strm_notified and not self._strm_suspects:
+            self._strm_notified = False
+            self.save_data("strm_notified", False)
+            if self._notify:
+                mtype = self._plugin_mtype()
+                if mtype is not None:
+                    try:
+                        self.post_message(
+                            mtype=mtype,
+                            title="115同步：strm 疑似异常已全部解决",
+                            text="✅ 之前报告的 strm 疑似上传异常文件已全部恢复"
+                                 "（strm 已生成或已完成重传），无需再处理。",
+                        )
+                    except Exception as e:
+                        logger.error(f"[Rsync115Sync] strm 恢复通知发送失败: {e}")
 
     def _api_strm_suspects(self) -> Dict[str, Any]:
         """返回当前 strm 疑似异常清单（看板用）。"""
