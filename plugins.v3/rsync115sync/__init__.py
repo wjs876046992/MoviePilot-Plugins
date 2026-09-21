@@ -55,6 +55,10 @@ _TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
 # 此前只打计数，用户无法判断具体是哪个文件对不上，是排查效率低下的主因。
 _MAX_LOGGED_PATHS = 5
 _MAX_PATH_CHARS = 160
+# /rsync_retry <关键字> 的单次匹配上限。与 search 的展示上限不同：
+# retry 是「删除目标端 + 重传」，超限宁可直接拒绝也不要大范围误操作；
+# search 是只读的，可以全量收集后仅截断展示。
+_RETRY_KEYWORD_LIMIT = 15
 
 
 def _brief_paths(paths: List[str]) -> str:
@@ -78,7 +82,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.1.3"
+    plugin_version = "0.1.4"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
@@ -2246,6 +2250,147 @@ class Rsync115Sync(_PluginBase):
 
         return missing, corrupt
 
+    def _search_target_files(self, keyword: str) -> Dict[str, Any]:
+        """
+        按关键字在**源端**查找文件（供 /rsync_retry <文件名> 与忽略序号复用）。
+
+        Search the *source* roots by keyword, reused by keyword-retry and
+        index-based ignore.
+
+        与 /rsync_search 的差异：
+        - 带上限并上报是否截断（retry 用「超限即拒」策略，search 用「截断展示」策略）；
+        - 关键字命中后不直接采用 —— 删除目标端是破坏性操作，必须由调用方再做
+          一次「相对路径精确对齐」校验（见 _delete_dest_files_for_retry）。
+        口径与同步/补传一致：按映射扩展名过滤、就地裁剪排除目录、零 115 API。
+        """
+        keyword = keyword.strip().lower()
+        matched: List[str] = []
+        truncated = False
+        for pair in self._sync_pairs:
+            src_dir = (pair.get("src") or "").strip().rstrip("/")
+            pair_name = pair.get("name") or src_dir
+            if not os.path.exists(src_dir):
+                continue
+            all_ext = pair.get("all_ext", False)
+            valid_exts = None if all_ext else {
+                x.strip().lower() for x in self._media_extensions.split(",") if x.strip()
+            }
+            excluded_dirs = {
+                ln.strip().rstrip("/")
+                for ln in self._exclude_patterns.splitlines()
+                if ln.strip().endswith("/") and not ln.strip().startswith(".")
+            }
+            for root, dirs, files in os.walk(src_dir):
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                for f in files:
+                    if keyword not in f.lower():
+                        continue
+                    if valid_exts is not None and \
+                            os.path.splitext(f)[-1].lstrip(".").lower() not in valid_exts:
+                        continue
+                    rel_f = os.path.relpath(os.path.join(root, f), src_dir)
+                    matched.append(f"{pair_name}:{rel_f}")
+                    if len(matched) > _RETRY_KEYWORD_LIMIT:
+                        # 超过上限立即停：retry 是删了重传，宁可不执行也不宜大范围误伤
+                        truncated = True
+                        break
+                if truncated:
+                    break
+            if truncated:
+                break
+        return {"matched": matched, "truncated": truncated,
+                "total": len(matched) + (1 if truncated else 0) if truncated else len(matched)}
+
+    def _delete_dest_files_for_retry(self, keys: List[str]) -> Tuple[List[str], List[str]]:
+        """
+        重传前删除目标端文件（经 CD2 挂载），返回 (已删除, 删除失败) 两组 key。
+
+        Delete destination files via the CD2 mount before re-transfer.
+
+        护栏（破坏性操作的三道闸）：
+        1. **相对路径精确对齐**：key 形如 "任务名:相对路径"。只有当源端文件存在、
+           且其相对路径映射到目标端的绝对路径后，才删**那一个**路径。
+           关键字只用于搜源端，绝不参与目标端路径的构造 —— 不会出现"按关键字
+           删掉一批相近文件"的情况。
+        2. **删除前后都记录大小**：删前若目标端文件不存在则无需删除（直接可传）；
+           若存在，记录大小并核对删除后确实消失。
+        3. **删除后复查**：rm 失败或复查仍存在（CD2 缓存未失效）时归入
+           "删除失败"，调用方必须跳过这些文件 —— 带着脏视图去 rsync 会被
+           --size-only 跳过，白白消耗限流配额。
+
+        绝不触碰 `..` 中缀的云端残留：本函数只按「源端相对路径 → 目标端同路径」
+        精确删除正式文件，残留不在任何源端清单里，天然不会被选中。
+        """
+        deleted: List[str] = []
+        undeletable: List[str] = []
+        for key in keys:
+            # 解析 "任务名:相对路径"，并找到该任务的目标根目录
+            pair = None
+            pair_name = None
+            rel_p = None
+            for p in self._sync_pairs:
+                pn = (p.get("name") or (p.get("src") or "").strip().rstrip("/")).strip()
+                if key.startswith(f"{pn}:"):
+                    pair = p
+                    pair_name = pn
+                    rel_p = key.split(f"{pn}:", 1)[1]
+                    break
+            if pair is None or not rel_p:
+                # 无前缀 key（理论上 retry custom_files 不会出现）保守跳过
+                logger.warning(f"[Rsync115Sync] 重传前清理：key 无法归属映射，跳过删除: {key}")
+                undeletable.append(key)
+                continue
+
+            dest_root = (pair.get("dest") or "").strip().rstrip("/")
+            src_root = (pair.get("src") or "").strip().rstrip("/")
+            src_file = os.path.join(src_root, rel_p)
+            dest_file = os.path.join(dest_root, rel_p)
+
+            # 护栏：源端必须真实存在才允许继续（防路径解析异常导致误删别处文件）
+            if not os.path.isfile(src_file):
+                logger.warning(f"[Rsync115Sync] 重传前清理：源端不存在，跳过删除: {src_file}")
+                undeletable.append(key)
+                continue
+
+            dest_size = None
+            try:
+                if os.path.exists(dest_file):
+                    dest_size = os.path.getsize(dest_file)
+            except OSError as e:
+                logger.warning(f"[Rsync115Sync] [{pair_name}] 目标端大小读取失败（继续尝试删除）: "
+                               f"{dest_file}: {e}")
+
+            if dest_size is None:
+                # 目标端本就不存在（或读取失败且确认不存在）：无需删除，可直接重传
+                logger.info(f"[Rsync115Sync] [{pair_name}] 目标端无此文件，无需清理，直接重传: {rel_p}")
+                deleted.append(key)
+                continue
+
+            try:
+                os.remove(dest_file)
+            except OSError as e:
+                logger.error(f"[Rsync115Sync] [{pair_name}] ❌ 目标端删除失败，该文件本轮跳过: "
+                             f"{dest_file}: {e}")
+                undeletable.append(key)
+                continue
+
+            # 删除后复查：CD2 可能因缓存/瞬时错误「假删」，仍存在则视为失败
+            still_there = False
+            try:
+                still_there = os.path.exists(dest_file)
+            except OSError:
+                still_there = False
+            if still_there:
+                logger.error(f"[Rsync115Sync] [{pair_name}] ❌ 目标端删除后仍存在（CD2 视图未失效），"
+                             f"该文件本轮跳过: {dest_file}")
+                undeletable.append(key)
+                continue
+
+            logger.info(f"[Rsync115Sync] [{pair_name}] 🧹 已删除目标端待重传文件: {rel_p} "
+                        f"（删前大小 {dest_size} 字节）")
+            deleted.append(key)
+        return deleted, undeletable
+
     @staticmethod
     def _parse_confirm_indices(arg_str: str, total_count: int) -> List[int]:
         """
@@ -2431,7 +2576,57 @@ class Rsync115Sync(_PluginBase):
         elif action == "retry":
             if self._is_running:
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中。")
+            elif text_arg:
+                # 带关键字 = 「目标明确」的单文件补偿：
+                # 搜源端 → 删目标端（经 CD2 挂载，强制云端状态与视图对齐）→ 定向重传。
+                #
+                # 为什么必须先删：CD2 改名失败等场景下，CD2 挂载视图会显示目标文件
+                # 「存在且大小正常」，但 115 服务端实际只有改名失败的半成品
+                # （形如 影片.mkv..xrp4gj）。此时 rsync --size-only 比较源/目标大小
+                # 判定「已同步」而跳过 —— 重传永远不会发生，且插件无法从视图发现这一点。
+                # 先通过挂载点 rm，CD2 会真实调用 115 删除接口，把视图与云端一起纠正，
+                # 之后 rsync 发现目标端确无此文件，必然完整重传并重新走改名流程。
+                # （同 sync_115 仓库 retry_file.sh 的既有做法，此处插件化并加护栏。）
+                # Keyword mode = targeted single-file compensation. The destination
+                # file must be deleted via the CD2 mount first: the mount view may
+                # report the file as present while the 115 cloud only holds a
+                # rename-failed partial, which would make --size-only skip the
+                # re-transfer entirely.
+                result = self._search_target_files(text_arg)
+                if not result["matched"]:
+                    self._post_reply(event,
+                                     f"🔍 未在源目录中找到包含「{text_arg}」的文件，未做任何改动。")
+                    return
+                if result["truncated"]:
+                    self._post_reply(
+                        event,
+                        f"⚠️ 关键字「{text_arg}」匹配到 {result['total']} 个文件，超过单次上限 "
+                        f"{_RETRY_KEYWORD_LIMIT} 个。\n请用更精确的文件名缩小范围，本次未做任何改动。"
+                    )
+                    return
+                deleted, undeletable = self._delete_dest_files_for_retry(result["matched"])
+                if undeletable:
+                    # 目标端删不掉 = 视图可能仍是脏的，此时 rsync 会因 --size-only
+                    # 跳过这些文件（白占配额），必须明确告知而不是静默继续
+                    names = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
+                    self._post_reply(
+                        event,
+                        f"⚠️ 有 {len(undeletable)} 个文件在目标端删除失败（挂载点可能未就绪），"
+                        f"已跳过它们，其余 {len(deleted)} 个继续重传：\n{names}\n"
+                        f"建议稍后重试；若反复失败请检查 CD2 挂载状态。"
+                    )
+                    if not deleted:
+                        return
+                summary = (
+                    f"🧹 已清理目标端 {len(deleted)} 个文件并开始定向重传：\n"
+                    + "\n".join(f"• {k}" for k in deleted[:_MAX_LOGGED_PATHS])
+                    + (f"\n（共 {len(deleted)} 个）" if len(deleted) > _MAX_LOGGED_PATHS else "")
+                )
+                self._post_reply(event, summary)
+                self._start_sync_thread(mode="retry", custom_files=deleted,
+                                        channel_event=event)
             else:
+                # 不带关键字：维持既有语义 —— 重传历史异常清单
                 self._start_sync_thread(mode="retry", channel_event=event)
 
         elif action == "backfill":
