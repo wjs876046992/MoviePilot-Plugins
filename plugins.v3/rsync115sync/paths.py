@@ -118,3 +118,31 @@ def valid_exts_of(media_extensions: str, all_ext: bool) -> Optional[set]:
     if all_ext:
         return None
     return {x.strip().lower() for x in (media_extensions or "").split(",") if x.strip()}
+
+
+def pair_for_path(file_path: str, pairs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    判断某个绝对路径归属哪一组映射；不属于任何映射时返回 None。
+
+    Decide which mapping pair owns an absolute path; None when it belongs to none.
+
+    ⚠️ **必须按路径分隔符判定归属，不能用裸 startswith**：
+    `/media/TV` 会匹配上 `/media/TV2/x.mkv`，把文件挂到错误的映射上，
+    随后按错误的 src 计算相对路径并入队 —— 结果是文件被送到**另一个**
+    目标目录。这条判定决定了「哪些文件才会被同步」，是本插件最核心的判据之一。
+    Match on a path boundary — plain startswith would let "/media/TV" swallow
+    "/media/TV2/...", attributing files to the wrong mapping and uploading them to
+    the wrong destination.
+
+    多个映射前缀重叠时取**第一个匹配**（与配置顺序一致），调用方不应依赖更
+    复杂的优先级规则。
+    """
+    if not file_path:
+        return None
+    for pair in pairs:
+        root = (pair.get("src") or "").strip().rstrip("/")
+        if not root:
+            continue
+        if file_path == root or file_path.startswith(root + os.sep):
+            return pair
+    return None

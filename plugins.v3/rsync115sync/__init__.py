@@ -85,6 +85,7 @@ from .ignore import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
+    pair_for_path as _pair_for_path,
     pair_name as _pair_name,
     valid_exts_of as _valid_exts_of,
 )
@@ -561,18 +562,7 @@ class Rsync115Sync(_PluginBase):
 
             # 第一步：判定映射归属。这一步必须独立于文件是否存在 ——
             # 否则无法区分「路径不属于任何映射」与「路径属于映射但读不到」。
-            own_pair = None
-            for pair in self._sync_pairs:
-                src_root = (pair.get("src") or "").strip().rstrip("/")
-                if not src_root:
-                    continue
-                # 必须按路径分隔符判定归属，否则 "/media/TV" 会误匹配
-                # "/media/TV2/x.mkv"，把文件挂到错误的映射上。
-                # Match on a path boundary: plain startswith would let "/media/TV"
-                # swallow "/media/TV2/...", attributing files to the wrong mapping.
-                if file_path == src_root or file_path.startswith(src_root + os.sep):
-                    own_pair = pair
-                    break
+            own_pair = _pair_for_path(file_path, self._sync_pairs)
 
             if own_pair is None:
                 unmatched_count += 1
@@ -702,13 +692,18 @@ class Rsync115Sync(_PluginBase):
             pair_name = _pair_name(pair)
             if not src_root or not os.path.isdir(src_root):
                 continue
-            valid_exts = None
-            if not pair.get("all_ext", False):
-                valid_exts = {x.strip().lower() for x in self._media_extensions.split(",") if x.strip()}
+            valid_exts = _valid_exts_of(self._media_extensions, pair.get("all_ext", False))
+            # 与同步/搜索/补传共用同一份排除目录口径。此处原先是硬编码的
+            # ("@eaDir", "#recycle", "@__thumb")，用户在配置页修改排除规则后，
+            # 补齐扫描仍会照旧下钻那些目录 —— 表现为「明明排除了，却还是被捞进来」。
+            # 复用 paths.excluded_dir_names() 后三处口径不可能再漂移。
+            # Shares the exclusion set with sync/search/backfill. Previously hardcoded,
+            # so a user's edited exclude rules were ignored by this scan.
+            excluded_dirs = _excluded_dir_names(self._exclude_patterns)
 
             for dirpath, dirnames, filenames in os.walk(src_root):
                 # 跳过被排除的目录，避免遍历群晖元数据目录
-                dirnames[:] = [d for d in dirnames if d not in ("@eaDir", "#recycle", "@__thumb")]
+                dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
                 for fn in filenames:
                     if valid_exts is not None:
                         ext = os.path.splitext(fn)[-1].lstrip(".").lower()

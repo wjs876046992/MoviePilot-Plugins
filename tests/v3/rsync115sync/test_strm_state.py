@@ -1,0 +1,188 @@
+"""
+strm 交叉验证的状态机与期望路径单测。
+
+Tests for the strm cross-validation state machine. This is the only mechanism that
+can detect a "CD2 fake success" (mount shows the file as present and correctly
+sized while 115 actually holds a rename-failed partial), so its transition
+boundaries are worth exhausting here rather than discovering in production.
+"""
+
+import os
+
+import pytest
+
+from app.plugins.rsync115sync import strm
+
+
+def _pair(name="TV", src="/media/TV", strm_dir="/strm/TV"):
+    return {"name": name, "src": src, "dest": "/115/TV", "strm_dir": strm_dir}
+
+
+# --------------------------------------------------------------------------
+# expected_path —— 用户必须自己保证 strm 插件与整理后文件同名
+# --------------------------------------------------------------------------
+
+def test_expected_path_swaps_extension_only():
+    assert strm.expected_path("TV:a/b.mkv", [_pair()]) == os.path.join("/strm/TV", "a/b.strm")
+
+
+def test_expected_path_keeps_directory_structure():
+    """目录结构必须与源端一致，否则查的是别的文件。"""
+    got = strm.expected_path("TV:剧集/Season 01/剧名 S01E03.mkv", [_pair()])
+    assert got == os.path.join("/strm/TV", "剧集/Season 01/剧名 S01E03.strm")
+
+
+def test_expected_path_strips_extension_not_appends():
+    """
+    只换扩展名、不倒着拼：`a.mkv` → `a.strm`（不是 `a.mkv.strm`）。
+    多段扩展名的文件按**最后一个点**切分。
+    """
+    assert strm.expected_path("TV:a.b.mkv", [_pair()]).endswith("a.b.strm")
+
+
+@pytest.mark.parametrize("strm_dir", ["", "   ", "/"])
+def test_expected_path_none_without_strm_dir_configured(strm_dir):
+    """留空 = 该映射不启用验证。`/` 也会被 rstrip 成空串，同样视为未配置。"""
+    assert strm.expected_path("TV:a/b.mkv", [_pair(strm_dir=strm_dir)]) is None
+
+
+def test_expected_path_none_for_unmatched_pair():
+    assert strm.expected_path("其它:a.mkv", [_pair()]) is None
+    assert strm.expected_path("TV:a.mkv", []) is None
+
+
+def test_expected_path_tolerates_trailing_slash_in_config():
+    got = strm.expected_path("TV:a/b.mkv", [_pair(strm_dir="/strm/TV/")])
+    assert got == os.path.join("/strm/TV", "a/b.strm")
+
+
+# --------------------------------------------------------------------------
+# source_root_of
+# --------------------------------------------------------------------------
+
+def test_source_root_of_resolves_owning_pair():
+    assert strm.source_root_of("TV:a.mkv", [_pair(src="/media/TV/")]) == "/media/TV"
+
+
+def test_source_root_of_none_when_unmatched():
+    assert strm.source_root_of("其它:a.mkv", [_pair()]) is None
+
+
+# --------------------------------------------------------------------------
+# classify_watch —— 五态流转
+# --------------------------------------------------------------------------
+
+def test_watching_inside_grace_window():
+    """宽限期内一律继续观察：strm 生成不实时，早了会误报。"""
+    state, record = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=100, grace_secs=6 * 3600,
+        pairs=[_pair()], strm_exists=False, src_exists=True)
+    assert state == strm.WATCHING
+    assert record == "TV:a.mkv"
+
+
+def test_suspect_when_grace_expired_without_strm():
+    state, record = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=6 * 3600, grace_secs=6 * 3600,
+        pairs=[_pair()], strm_exists=False, src_exists=True)
+    assert state == strm.SUSPECT
+    assert record == "TV:a.mkv"
+
+
+def test_grace_boundary_exactly_at_deadline_is_suspect():
+    """恰好到期即判定（>= 而非 >），与拆分前行为一致。"""
+    state, _ = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=21600, grace_secs=21600,
+        pairs=[_pair()], strm_exists=False, src_exists=True)
+    assert state == strm.SUSPECT
+
+
+def test_grace_boundary_one_second_before_is_still_watching():
+    state, _ = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=21599, grace_secs=21600,
+        pairs=[_pair()], strm_exists=False, src_exists=True)
+    assert state == strm.WATCHING
+
+
+def test_settled_when_strm_appeared():
+    state, record = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=99999, grace_secs=21600,
+        pairs=[_pair()], strm_exists=True, src_exists=True)
+    assert state == strm.SETTLED
+    assert record is None
+
+
+def test_strm_appearing_before_deadline_settles_immediately():
+    """strm 一生成就立刻解除，不必等宽限期走完。"""
+    state, _ = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=60, grace_secs=21600,
+        pairs=[_pair()], strm_exists=True, src_exists=True)
+    assert state == strm.SETTLED
+
+
+def test_source_gone_cleans_up_even_past_deadline():
+    """
+    源端消失 → 清理，**不转疑似**：文件都没了，既无从验证也无从重传。
+    若误判为疑似，用户会在看板上看到永远处理不掉的条目。
+    """
+    state, record = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=99999, grace_secs=21600,
+        pairs=[_pair()], strm_exists=False, src_exists=False)
+    assert state == strm.SOURCE_GONE
+    assert record is None
+
+
+def test_source_gone_wins_over_strm_exists():
+    """
+    源端已消失、而 strm 恰好还在 → 按「源端消失」清理，而不是记成正常解除。
+    判定顺序是承重的，写反会让巡检的 ok 计数长期失真。
+    """
+    state, _ = strm.classify_watch(
+        "TV:a.mkv", synced_ts=0, now_ts=99999, grace_secs=21600,
+        pairs=[_pair()], strm_exists=True, src_exists=False)
+    assert state == strm.SOURCE_GONE
+
+
+def test_no_strm_dir_wins_over_everything():
+    """映射被改成没有 strm_dir 后，观察项立即失效，与其它条件无关。"""
+    for strm_exists in (True, False):
+        for src_exists in (True, False):
+            state, _ = strm.classify_watch(
+                "TV:a.mkv", synced_ts=0, now_ts=99999, grace_secs=21600,
+                pairs=[_pair(strm_dir="")],
+                strm_exists=strm_exists, src_exists=src_exists)
+            assert state == strm.NO_STRM_DIR
+
+
+def test_unmatched_key_is_cleaned_up():
+    """key 不再属于任何映射（映射被删/改名）→ 清理，否则永远挂在观察期。"""
+    state, _ = strm.classify_watch(
+        "已删除的映射:a.mkv", synced_ts=0, now_ts=99999, grace_secs=21600,
+        pairs=[_pair()], strm_exists=False, src_exists=True)
+    assert state == strm.NO_STRM_DIR
+
+
+# --------------------------------------------------------------------------
+# grace_secs_of —— 下限是防误报的关键
+# --------------------------------------------------------------------------
+
+def test_grace_secs_of_normal_value():
+    assert strm.grace_secs_of(6) == 21600.0
+
+
+def test_grace_secs_of_enforces_minimum():
+    """0 或负数会把「还在上传中」直接判成异常，必须被抬到下限。"""
+    assert strm.grace_secs_of(0) == strm.MIN_GRACE_HOURS * 3600
+    assert strm.grace_secs_of(-5) == strm.MIN_GRACE_HOURS * 3600
+    assert strm.grace_secs_of(0.1) == strm.MIN_GRACE_HOURS * 3600
+
+
+@pytest.mark.parametrize("bad", [None, "", "abc", [], {}])
+def test_grace_secs_of_invalid_input_falls_back_to_default(bad):
+    """配置里出现脏值（v-model.number 曾写回过 NaN 这类）时回退默认，不抛异常。"""
+    assert strm.grace_secs_of(bad) == strm.DEFAULT_GRACE_HOURS * 3600
+
+
+def test_grace_secs_of_accepts_numeric_string():
+    """前端 v-model 可能传来字符串，必须能解析。"""
+    assert strm.grace_secs_of("3") == 10800.0
