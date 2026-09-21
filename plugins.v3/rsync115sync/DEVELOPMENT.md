@@ -2,7 +2,7 @@
 
 > 使用说明见 [USAGE.md](./USAGE.md)，待办事项见 [TODO.md](./TODO.md)。
 >
-> 本文记录本轮迭代（v0.0.4 → v0.1.7）的设计决策、发现的问题与遗留风险，
+> 本文记录本轮迭代（v0.0.4 → v0.1.8）的设计决策、发现的问题与遗留风险，
 > 供后续迭代参考。
 
 ---
@@ -771,6 +771,7 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 | v0.0.9 | feat | force 7 天冷却 + include/exclude 过滤 |
 | v0.0.10 | chore | 默认参数对齐 shell + 老配置迁移 |
 | v0.0.11 | docs | 中英双语注释 + 配置页说明改进 |
+| v0.1.8 | fix+feat | 修复事件注册装饰器被误删、配置保存后调度不重建、strm 混入非视频、忽略规则未生效；新增主动扫描缺 strm 与无效条目自动清理；新增 179 项测试 |
 | v0.1.7 | feat | strm 疑似清单批量删旧重传（按选中项成分分流）+ 一键全部 + 分页 + 观察期提示；配置页补 strm 宽限期；修复补齐扫描排除口径漂移；拆分出 4 个无状态模块；新增 117 项核心链路测试 |
 | v0.1.6 | feat | strm 疑似异常通知（新发现提醒一次 + 全部解决补推） |
 | v0.1.5 | feat | strm 交叉验证：利用本地 .strm 独立见证发现 CD2 假成功，看板疑似清单+删旧重传 |
@@ -947,3 +948,157 @@ strm 已生成 → 是否到期），顺序是承重的，已在 `strm.classify_
 `_build_pair_plan` → `_run_rsync` → `_apply_outcome` → `_finalize_run`。
 关键约束：`total_missing` / `audited_keys` / `synced_count` / `fatal_exit_codes` /
 `has_error` 这些累积变量必须**留在编排层**，阶段函数只收参数、返回结果。
+
+---
+
+## 9. 已规划未实施：Webhook 入库事件（待讨论）
+
+> 状态：**仅调研与设计，未写任何代码**。本章记录调研结论与方案，供后续讨论。
+> 待办清单见 TODO.md「P0.5」。
+>
+> ⚠️ 下文所有关于宿主的描述**均来自源码核实**（`/tmp/mp-src`，MoviePilot v3），
+> 不是推测。凡是未能核实的部分都明确标注了「需用户提供」。
+
+### 9.1 动机
+
+现有入库监听依赖宿主的整理完成事件（`TransferComplete` / `SubtitleTransferComplete` /
+`AudioTransferComplete`）。它监听不到这些场景：
+
+- 用户**手动放入**文件（不经下载器/整理流程）
+- **外部工具**（其它脚本、其它容器）搬入文件
+- 整理事件**漏发**（宿主 durable outbox 超过重试上限即永久丢弃，见 3.8.7）
+
+Webhook 可作为**第二来源**覆盖上述场景。来源两处：Emby、MDC-ng。
+
+### 9.2 宿主 webhook 链路（已核实）
+
+```
+Emby/MDC ──HTTP──▶ POST /api/v1/webhook/?token=API_TOKEN&source=<实例名>
+                        ↓ verify_apitoken（宿主统一鉴权）
+                   WebhookChain.message(body, form, args)
+                        ↓ webhook_parser()   ← 由**模块**提供，插件不参与解析
+                   eventmanager.send_event(EventType.WebhookMessage, info)
+                        ↓
+                   插件 @eventmanager.register(EventType.WebhookMessage)
+```
+
+源码位置：
+
+| 环节 | 文件 |
+|---|---|
+| HTTP 端点（POST/GET，需 `token`） | `app/api/endpoints/webhook.py` |
+| 链路与广播 | `app/chain/webhook.py` |
+| 解析分发 | `app/chain/base.py:514`、`app/modules/emby/__init__.py:59` |
+| 事件类型定义 | `app/schemas/types.py:226`（`WebhookMessage = "webhook.message"`） |
+| 事件契约 | `app/runtime/event/contracts.py:100` → `WebhookEventInfo` |
+
+**payload 结构**（`app/schemas/mediaserver.py:171` 的 `WebhookEventInfo`）常用字段：
+`event` / `channel` / `server_name` / `item_type` / `item_name` / **`item_path`** /
+`media_source` / `media_id` / `json_object`（原始报文）
+
+### 9.3 两个来源的支持情况 —— 决定方案形态
+
+| 来源 | 宿主支持 | 依据 |
+|---|---|---|
+| **Emby** | ✅ 原生 | `app/modules/emby/__init__.py:59` 有 `webhook_parser`，`emby.py:829` 有 `get_webhook_message`，支持 `playback.start/stop`、`library.new` 等 |
+| **MDC-ng** | ❌ **宿主不认识** | 遍历 `app/modules/` 全部 40+ 模块，**无 mdc-ng / mdcz**。媒体服务器模块只有 `emby` `jellyfin` `plex` `trimemedia` `zspace`（`watchsync` 支持的 `zspace` 即后者） |
+
+**因此方案必然是双通道** —— 不能指望宿主替我们收 MDC-ng。
+
+### 9.4 插件自建端点的能力（已核实）
+
+`app/adapters/web/plugin/routes.py:116-125`：
+
+```python
+allow_anonymous = api.pop("allow_anonymous", False)
+auth_mode = api.pop("auth", "apikey")          # "bear" 或 "apikey"
+if not allow_anonymous:
+    dependencies.append(Depends(self._verify_token if auth_mode == "bear" else self._verify_apikey))
+```
+
+即插件的 `get_api()` 可以声明 `"allow_anonymous": True` 的端点，跳过宿主鉴权 ——
+自建 webhook 正是这种场景（MDC-ng 不会带 MoviePilot 的 token）。
+
+### 9.5 仓库内的参照实现：`plugins.v3/watchsync`
+
+`watchsync` 已经实现了同类功能，可作为直接参照：
+
+```python
+@eventmanager.register(EventType.WebhookMessage)
+def handle_webhook_message(self, event: Event):
+    if getattr(event_data, 'channel', '') not in ["emby", "zspace"]:
+        return
+    supported_events = ["playback.pause", "playback.stop", "library.new", ...]
+```
+
+两个值得照抄的做法：
+
+1. **按 `channel` 过滤**：多个插件可能同时订阅 `WebhookMessage`，各自只处理自己的来源
+2. **不用 `event.snapshot()`，改用 `getattr(event_data, ...)`** —— 因为
+   `WebhookMessage` **未登记在 `_SNAPSHOT_EVENTS`**（`contracts.py` 只登记了类型而非快照），
+   走快照路径拿不到 payload。
+   ⚠️ 这与本插件 `_handle_transfer_event` 的做法**相反** —— 那里必须优先用
+   `snapshot()`。差异原因已记录在 3.8.6：是否走快照取决于**该事件类型有没有登记契约**，
+   不能一概而论。
+
+### 9.6 方案：双通道 + 合流
+
+```
+通道 A（Emby）：订阅 EventType.WebhookMessage
+                channel == "emby" 且事件为入库类 → 取 item_path
+通道 B（MDC）：插件自建 POST /webhook/mdc（allow_anonymous）
+                取路径（字段名待定，见 9.8）
+
+        两条通道合流到同一入口：
+        webhook → 取路径 → 校验归属映射（复用 paths.pair_for_path）
+                         → 校验源端文件存在 → 入冷却队列（复用现有幂等入队）
+```
+
+Emby 后台 Webhook 配置：
+
+```
+http://<moviepilot>:3001/api/v1/webhook/?token=<API_TOKEN>&source=<emby实例名>
+```
+
+`source` 可省略（宿主会遍历所有 emby 实例），但**建议填**，避免多实例时解析错乱。
+
+**关键设计**：webhook 是**补充而非替代**。同一文件可能同时从两条路进来，
+现有 `_pending_queue` 的重复检测天然幂等（不刷新冷却计时），不会重复入队 ——
+这一性质在 3.8.2 已被验证，是复用的基础。
+
+### 9.7 ⚠️ 通道 B 的安全风险（实施前必须解决）
+
+`allow_anonymous: true` 意味着**知道 URL 就能往插件灌数据**：
+
+- 伪造入库 → 触发不必要的上传（消耗 115 风控配额）
+- 灌入大量伪造路径 → 撑爆冷却队列
+
+防护按优先级：
+
+| # | 手段 | 说明 |
+|---|---|---|
+| 1 | 自定义 Header 密钥 | 最干净，需 MDC-ng 支持 |
+| 2 | URL 参数密钥 `?token=xxx` | 次选 |
+| 3 | **路径白名单校验** | **无条件要做**：路径必须落在已配置的 `sync_pairs` 源目录内，与 `paths.pair_for_path()` 同判据 |
+| 4 | 来源 IP 白名单 | 兜底，需固定出口 IP |
+
+第 3 条即「复用已有判据」，成本极低而收益很高 —— 伪造数据几乎不可能恰好落在
+你配置的媒体库路径下。
+
+### 9.8 实施前需要用户提供（缺一不可）
+
+- [ ] **MDC-ng 的 webhook 报文样例**（真实 JSON）—— 决定字段名与事件命名
+- [ ] **MDC-ng 是否支持自定义 Header / URL 参数** —— 决定鉴权方案
+- [ ] **实际要监听的事件类型**（仅新入库？还是含播放/收藏）
+- [ ] Emby 通道定位：**补充**还是**替代**现有整理事件监听
+
+### 9.9 实施顺序
+
+1. **先做通道 A（Emby）** —— 宿主链路已通、无需自建端点、无需处理鉴权，风险最低
+2. **通道 B 两步走**：先写一个**只记日志、不做任何处理**的临时 debug 端点，
+   让你配上去观察真实 payload；拿到真实报文后再写解析器
+3. 与现有入库链路合流，并**补测试**（webhook 解析、路径校验、幂等、来源过滤）
+
+> ⚠️ **不要凭猜测写解析器**。本项目已多次在「凭推测写机制」上吃亏 ——
+> 3.8.1 记录的两次无依据结论（「宿主只在批次收尾广播」「file_list_new 按类型置空」）
+> 都是这样产生的。没有真实报文就动笔，只会重蹈覆辙。

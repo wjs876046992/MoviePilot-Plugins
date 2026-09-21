@@ -8,7 +8,7 @@
 
 ## P0 — 必须尽快处理
 
-### [ ] 1. 在真实 MoviePilot 宿主中完整验证 v0.0.4 ~ v0.1.7
+### [ ] 1. 在真实 MoviePilot 宿主中完整验证 v0.0.4 ~ v0.1.8
 
 **背景**：本插件自 v0.0.4 起的全部改动**从未在真实宿主运行过**。验证仅限静态
 检查、隔离逻辑测试与构建产物核对。
@@ -36,6 +36,89 @@
 - [ ] 观察是否按批次上限与窗口配额推进、进度是否正确持久化
 - [ ] 确认看板提示与实际行为一致
 - [ ] 根据观察结果回头调整默认阈值
+
+---
+
+## P0.5 — 已规划未实施：Webhook 入库事件（待讨论）
+
+> 状态：**仅设计，未写代码**。方案依据宿主源码调研得出，实施前需用户补充三样东西
+> （见文末）。调研结论见 DEVELOPMENT.md 第 9 章。
+
+### 目标
+
+为「新文件入库」增加**第二来源**，覆盖现有 `TransferComplete` 事件监听不到的场景
+（手动放入、外部工具搬入、整理事件漏发）。来源两处：**Emby** 与 **MDC-ng**。
+
+### 关键调研结论（已核实源码，非推测）
+
+宿主已内建完整 webhook 链路：
+
+```
+Emby/MDC ──HTTP──▶ POST /api/v1/webhook/?token=API_TOKEN&source=<实例名>
+                        ↓ verify_apitoken（宿主鉴权）
+                   WebhookChain.message(body, form, args)
+                        ↓ webhook_parser()   ← 由**模块**提供解析，插件不参与
+                   eventmanager.send_event(EventType.WebhookMessage, info)
+                        ↓
+                   插件 @eventmanager.register(EventType.WebhookMessage)
+```
+
+| 来源 | 宿主支持 | 结论 |
+|---|---|---|
+| **Emby** | ✅ 原生（`app/modules/emby/` 有 `webhook_parser`） | 走宿主链路即可，**无需自建端点** |
+| **MDC-ng** | ❌ **宿主不认识**（40+ 模块中无 mdc-ng/mdcz） | **必须插件自建 `allow_anonymous` 端点** |
+
+插件自建端点能力已核实：`app/adapters/web/plugin/routes.py:116-125` 支持
+`allow_anonymous`（跳过宿主鉴权）与 `auth`（bear/apikey）。
+
+**仓库内已有先例**：`plugins.v3/watchsync` 已实现 `WebhookMessage` 订阅，同时支持
+`emby` 与 `zspace`，可作为参照。注意它**不用 `event.snapshot()`**，而是
+`getattr(event_data, ...)` 直接读 —— 因为 `WebhookMessage` 未登记在
+`_SNAPSHOT_EVENTS`（`app/runtime/event/contracts.py:100` 只登记类型）。
+
+### 方案：双通道
+
+- **通道 A（Emby）**：订阅 `EventType.WebhookMessage`，`channel == "emby"` 时取
+  `item_path`，只处理入库类事件（`library.new` 等），播放类忽略。
+  Emby 后台 Webhook 填：
+  `http://<moviepilot>:3001/api/v1/webhook/?token=<API_TOKEN>&source=<emby实例名>`
+- **通道 B（MDC-ng）**：插件自建 `POST /webhook/mdc`，`allow_anonymous: true`。
+
+两条通道最终**合流到同一入口**：
+
+```
+webhook → 取路径 → 校验归属映射（复用 paths.pair_for_path）
+                 → 校验源端文件存在 → 入冷却队列（复用现有幂等入队）
+```
+
+**设计要点**：webhook 是**补充**而非替代。同一文件可能同时从两条路进来，
+现有 `_pending_queue` 的重复检测天然幂等（不刷新时间戳），不会重复入队。
+
+### ⚠️ 通道 B 的安全风险（实施时必须解决）
+
+`allow_anonymous: true` 意味着**知道 URL 就能往插件灌数据** —— 可伪造入库、
+可灌大量伪造路径撑爆队列。防护优先级：
+
+1. 自定义 Header 密钥（最干净）—— 需 MDC-ng 支持
+2. URL 参数密钥 `?token=xxx` —— 次选
+3. **路径白名单校验（无条件要做）**：进来的路径必须落在已配置的
+   `sync_pairs` 源目录内，与 `paths.pair_for_path()` 同判据，能挡掉绝大多数伪造数据
+4. 来源 IP 白名单（兜底）
+
+### 实施顺序
+
+1. **先做通道 A（Emby）** —— 低风险、宿主链路已通、可立即验证
+2. **通道 B 需先拿到真实报文**：先写一个**只记日志、不做处理**的临时 debug 端点，
+   配上去观察真实 payload，再写解析器。
+   **不要凭猜测写解析器** —— 本项目已多次吃过「凭推测写机制」的亏（见 3.8.1）
+
+### 实施前需要用户提供
+
+- [ ] **MDC-ng 的 webhook 报文样例**（一份真实 JSON）—— 决定字段名与事件命名
+- [ ] **MDC-ng 是否支持自定义 Header / URL 参数** —— 决定鉴权方案
+- [ ] **实际要监听的事件类型**（仅新入库？还是含播放/收藏）
+- [ ] 确认 Emby 通道是**补充**还是**替代**现有整理事件监听
+      （补充则正好覆盖「手动放入/外部搬入」这类现有链路看不到的场景）
 
 ---
 

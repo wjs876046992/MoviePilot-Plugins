@@ -294,7 +294,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
-                      _createTextVNode("v0.1.7", -1)
+                      _createTextVNode("v0.1.8", -1)
                     ]))]),
                     _: 1
                   })
@@ -1037,6 +1037,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a2c8db1a"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-0220a10f"]]);
 
 export { Config as default };
