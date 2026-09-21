@@ -692,13 +692,34 @@ Config.vue 的响应式默认值加上 `strm_grace_hours: 6.0`：`/config` 未�
 **未覆盖的**：插件在宿主的实际加载、Vue 组件渲染、rsync 真实执行、
 115 实际风控行为、限流阈值是否合适。
 
-### 5.2 缺少自动化测试
+### 5.2 自动化测试（已部分补齐，alpha `7a60ee3`）
 
-`tests/v3/` 下**没有 `rsync115sync` 目录**（该插件在本轮之前就已在 `origin/main` 中，
-故新增插件测试门禁未触发）。目前所有逻辑验证靠临时脚本，**不可复现**。
+`tests/v3/rsync115sync/` 已建立，共 117 项，覆盖**核心同步链路**：
 
-建议按仓库约定补 `tests/v3/rsync115sync/`，优先覆盖纯逻辑：
-限流三层判定、退出码分类、补传候选构建、老配置迁移、伴生字幕匹配。
+| 文件 | 覆盖内容 |
+|---|---|
+| `test_ingest_event.py` | 入库事件入队判据、映射归属、幂等、路径来源三级回退、开关守卫 |
+| `test_core_sync_paths.py` | `pair_for_path` 边界、`pair_name`、`split_pair_key`、扩展名/排除口径 |
+| `test_rate_limit.py` | 三层判定顺序、窗口滚动、配额边界、预扣落盘、风控关键词真/假阳 |
+| `test_strm_state.py` | 五态流转、判定顺序、宽限期下限与脏值回退 |
+| `test_ignore_rules.py` | 空规则文本、exact/contains 语义、去重、就地修改语义 |
+
+**仍未覆盖**（按价值排序，后续补）：`_execute_sync` 的批次上限与配额闸门、
+`_build_backfill_candidates` 候选口径、`_delete_dest_files_for_retry` 删除护栏、
+`_migrate_legacy_defaults` 的自定义值保护、`_parse_confirm_indices` 序号解析。
+
+**⚠️ 运行前提与已验证程度**：`tests/conftest.py` 需要 `../MoviePilot` 后端才能
+跑。本机**没有**该后端，因此上述 117 项是在**桩宿主**（自建 `app.core.event` /
+`app.plugins._PluginBase` / `app.sdk.logging` / `app.schemas.types` / `apscheduler`）
+下执行通过的 —— 真实走的是 `app.plugins.rsync115sync` 生产导入路径，但宿主行为
+与真实 MoviePilot 仍有差距。**真机验证仍是 TODO P0，不能因为有了这 117 项就认为
+核心链路已经安全。**
+
+**关于「测试是否真的有效」**：绿灯的测试套件若抓不到回归等于没有，因此做过变异
+测试验证其有效性 —— 把 `pair_for_path` 退回裸 `startswith`（2 项失败）、把事件
+幂等退化为无条件覆盖时间戳（1 项）、把 strm 的 `SOURCE_GONE` 并回 `SETTLED`
+（2 项）、把忽略规则的空白文本当成 `contains`（1 项），全部被对应用例捕获。
+后续改动核心逻辑时建议沿用这一手法。
 
 ### 5.3 配额预扣在失败时也扣减
 

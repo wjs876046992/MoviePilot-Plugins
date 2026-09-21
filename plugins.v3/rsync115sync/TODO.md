@@ -41,23 +41,25 @@
 
 ## P1 — 下个迭代
 
-### [ ] 3. 补充自动化测试 `tests/v3/rsync115sync/`
+### [~] 3. 补充自动化测试（核心链路已完成，外围待补）
 
-**背景**：目前该插件没有测试目录（本轮之前就已存在于 `origin/main`，故新增插件
-测试门禁未触发）。现有逻辑验证都靠临时脚本，**不可复现**。
+**已完成**（alpha `7a60ee3`）：`tests/v3/rsync115sync/` 共 117 项，覆盖核心同步
+链路 —— 入库事件入队判据与映射归属、幂等、路径来源回退、限流三层判定与配额边界、
+strm 五态流转、忽略规则语义。已用变异测试验证用例真的会失败，不是「永远绿灯」。
 
-按仓库约定，测试放 `tests/v3/rsync115sync/test_*.py`，用 `app.plugins.rsync115sync`
-生产命名空间导入，优先用 `object.__new__` 绕过 `__init__` 测纯逻辑。
+**⚠️ 但有一个限制必须知道**：本机没有 `../MoviePilot` 后端，`tests/conftest.py`
+跑不起来，因此这 117 项是在**自建桩宿主**下执行的。真实走 `app.plugins.rsync115sync`
+生产导入路径，但与真实宿主仍有差距。**不要因为有了测试就认为核心链路已安全**。
 
-建议优先覆盖（均为纯函数，易测且价值高）：
+**仍待补**（按价值排序）：
 
-- [ ] `_rate_limit_allows` 三层判定（退避 / 窗口滚动 / 配额耗尽）
-- [ ] `_consume_upload_quota` 扣减与落盘
-- [ ] `_TOLERATED_EXIT_CODES` 退出码分类
+- [ ] `_execute_sync` 的批次上限与配额闸门（方法 572 行，需先按阶段拆分才好测）
 - [ ] `_build_backfill_candidates` 候选口径（排除队列/异常/忽略项）
+- [ ] `_delete_dest_files_for_retry` 删除护栏（**破坏性操作，优先级应提前**）
+- [ ] `_migrate_legacy_defaults` 自定义值保护（**重点：自定义值必须不动**）
+- [ ] `_parse_confirm_indices` 序号解析（`1`、`1,2`、`1-2 4`、`all`）
+- [ ] `_TOLERATED_EXIT_CODES` 退出码分类
 - [ ] `_find_sidecar_files` 伴生字幕匹配（含跨集误纳的边界）
-- [ ] `_migrate_legacy_defaults` 迁移安全性（**重点：自定义值必须不动**）
-- [ ] `_force_cooldown_allows` 冷却判定
 
 ### [ ] 4. 修复 fork 推送不触发 Release 工作流
 
