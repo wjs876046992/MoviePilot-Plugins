@@ -817,3 +817,116 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
    原因：`check_plugin_versions.py` 不接受 `-alpha.n` 后缀，会报「不是合法语义版本」，
    而该门禁同时跑在 `plugin-gate.yml`、`release.yml` 与本仓 pre-push 钩子里，
    写进版本字段会直接卡住推送与 CI。**已决定不放宽门禁**，请勿改动它去接受预发布后缀。
+
+---
+
+## 8. 代码结构：拆分记录
+
+### 8.1 阶段 1（alpha，`ed2ba1d`）— 抽出四个无状态模块
+
+`__init__.py` 一度达到 3128 行 / 61 个方法，其中 `_execute_sync` 单方法 572 行、
+`handle_command` 352 行。拆分按「先搬风险最低的」推进，阶段 1 只搬**纯逻辑**：
+
+| 模块 | 行数 | 内容 |
+|---|---|---|
+| `constants.py` | 105 | 默认参数、rsync 退出码、伴生字幕扩展名、各巡检节流、日志裁剪上限 |
+| `paths.py` | 120 | `brief_paths`、映射对名归一化、key 前缀解析、排除目录/扩展名口径 |
+| `ignore.py` | 94 | 忽略规则匹配与增删（**不含持久化**） |
+| `strm.py` | 112 | strm 期望路径推导、三态流转判定、宽限期换算 |
+
+**决定性约束 —— 什么能拆、什么不能拆**（依据 `docs/Plugin_Development.md` 7.4）：
+
+> 宿主会为虚拟分身「在实例专属模块命名空间中重新执行源码」，但**插件自行导入的
+> 第三方模块全局量仍然是共享的**。
+
+于是结论很明确：
+
+- ✅ **可以搬**：纯函数、常量、无状态逻辑 —— 不存在跨实例污染问题；
+- ❌ **不能搬**：一切可变状态（`_pending_queue` / `_strm_watch` / 限流计数 /
+  `_ignored_rules` …）。这些必须留在插件实例上，否则两个分身会共用同一份队列。
+  因此新模块的签名一律是「传入状态 → 返回结果」，如
+  `ignore.is_ignored(key, rules)` 而不是 `Ignorer().is_ignored(key)`。
+  后者看着更面向对象，实则会制造「谁才是真相来源」的第二个答案。
+
+**为什么主类不能离开 `__init__.py`**：版本门禁
+（`.github/scripts/check_plugin_versions.py`）从 `plugin_dir/__init__.py` 里提取
+类级 `plugin_version` 字面量。主类一旦搬走，门禁直接报「未声明 plugin_version」。
+同理 `package.json` / 索引 version / 新模块都改变不了这一点。
+
+**打包无需改动**：`release.yml` 用 `zip -r ... -x "*/__pycache__/*" -x "*.pyc"`，
+子目录天然包含。仓库内已有先例（`agentresourceofficer` 27850 行 + `services/`、
+`lunatvsource` 7355 行 + 6 个模块），宿主以 `app.plugins.<id>` 包方式加载，
+包内相对导入可用。
+
+### 8.2 拆分带来的真实收益（不只是「好看」）
+
+顺带消除了三处**真实的重复与不一致**：
+
+1. **映射对名回退表达式在 9 处各自硬编码**，且写法不完全一致：
+   `pair.get("name") or (pair.get("src") or "").strip().rstrip("/")`。
+   任一处漏掉 `rstrip("/")`，同一个文件就会在不同代码路径下归属到**不同的 key
+   前缀**，表现为「事件入队了、同步时却找不到它」这类极难定位的问题。
+   现统一走 `paths.pair_name()`。
+2. **排除目录集合与扩展名白名单在 3 处重复构造**，现统一走 `paths` 的两个函数。
+3. **`_remove_ignore_rule` 原先用重新赋值列表实现**，而调用方持有的是同一个
+   列表对象。改用就地切片赋值，语义不变但消除了对象身份分歧的隐患。
+
+### 8.3 拆分中发现并订正的一处失真
+
+`_strm_check` 原实现：
+
+```python
+if state == SUSPECT:   new_suspects.append(...)
+elif state == WATCHING: continue
+elif strm_exists:      settled_ok.append(key)     # ← 问题在这
+else:                  dropped.append(key)
+```
+
+「源端已消失」与「映射被改成没有 strm_dir」这两种清理项，若恰好 `strm_exists`
+为真（例如源端删了、strm 还在），会被归进 `settled_ok`，也就是巡检返回值里的
+`ok`。不影响功能，但**计数长期失真** —— 排查时看不到真实的清理规模。
+
+现拆成三个出口：`SETTLED`（正常解除）/ `SOURCE_GONE` / `NO_STRM_DIR`，
+后两者只计入 `dropped`。判定顺序保持与原实现一致（映射失效 → 源端消失 →
+strm 已生成 → 是否到期），顺序是承重的，已在 `strm.classify_watch` 的注释中写明。
+
+### 8.4 拆分方法（可复用于阶段 2）
+
+阶段 1 的验证手段，**不依赖真实宿主**，可在无 MoviePilot 环境时复用：
+
+1. **差分测试**：用 `ast.unparse` 把拆分前文件的旧实现（`/tmp/old_init.py`）
+   抽出来重新编译执行，与新模块在几十组输入上逐项对比。这是唯一能证明
+   「只是搬家、没改行为」的手段 —— 编译通过说明不了任何事。
+2. **状态机端到端**：同样用 AST 抽出**真实的** `_strm_check` 方法体（不是重写的
+   等价物），配一个只绑定必要状态的最小实例 + 假文件系统，驱动三态流转。
+3. **桩宿主导入 + 实例化**：手工搭 `app.core.event` / `app.plugins` / `app.sdk`
+   等最小桩模块，走完整导入链并真正 `Rsync115Sync()` 出实例。
+4. **静态审计**：遍历 AST 检查 `self.<常量>` 引用是否全部可解析、导入是否全部
+   被使用。
+
+### 8.5 ⚠️ 一个只有实例化才能发现的坑
+
+拆分第一版把 `_MISSED_SCAN_ENABLED_DEFAULT` / `_LEGACY_DEFAULTS` /
+`_MISSED_SCAN_INTERVAL` 从**类体**删掉、只保留模块级别名（值确实已经 import
+进来了，看起来冗余）。结果 `__init__` 里的 `self._MISSED_SCAN_ENABLED_DEFAULT`
+直接抛 `AttributeError` —— **插件实例化即失败**。
+
+`py_compile` / `compileall` 都**发现不了**这个问题，因为它们不执行类体求值后
+的属性访问。类体别名是承重的，判断标准是「有没有代码用 `self.X` 访问它」，
+而不是「值是否已经存在」。
+
+**教训**：拆分后必须真正实例化一次，仅做语法检查远远不够。
+
+### 8.6 后续阶段（未做）
+
+| 阶段 | 内容 | 前置条件 |
+|---|---|---|
+| 2 | `rate_limit.py` / `queue.py` / `rsync.py`（命令构造）/ `audit.py` | 先补 `tests/v3/rsync115sync/` |
+| 3 | `commands.py`（`handle_command` 352 行拆 9 个 handler + 分发表）、`api.py` | 阶段 2 完成 |
+| 3 | `_execute_sync`（572 行）按「每个映射对的流水线阶段」拆四段 | 同上 |
+| 3 | `Page.vue`（947 行）拆子组件 | 需重建 dist |
+
+`_execute_sync` **不能按行数切**，要按阶段切：
+`_build_pair_plan` → `_run_rsync` → `_apply_outcome` → `_finalize_run`。
+关键约束：`total_missing` / `audited_keys` / `synced_count` / `fatal_exit_codes` /
+`has_error` 这些累积变量必须**留在编排层**，阶段函数只收参数、返回结果。
