@@ -50,35 +50,44 @@ def _transfer_success_events() -> List[Any]:
 # 模块级常量：装饰器在类体执行时求值，故必须在类定义前构造好
 _TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
 
-# 日志里最多列出几个路径，以及单个路径的显示长度上限。
-# 目的：让日志能直接看出「是哪个文件」，同时避免超长路径/大批量把日志撑爆。
-# 此前只打计数，用户无法判断具体是哪个文件对不上，是排查效率低下的主因。
-_MAX_LOGGED_PATHS = 5
-_MAX_PATH_CHARS = 160
-# /rsync_retry <关键字> 的单次匹配上限。与 search 的展示上限不同：
-# retry 是「删除目标端 + 重传」，超限宁可直接拒绝也不要大范围误操作；
-# search 是只读的，可以全量收集后仅截断展示。
-_RETRY_KEYWORD_LIMIT = 15
-# strm 交叉验证巡检的最小间隔。strm 生成是分钟级过程，没必要每次同步都查。
-# Minimum interval between strm cross-validation sweeps.
-_STRM_CHECK_INTERVAL = 1800
-
-
-def _brief_paths(paths: List[str]) -> str:
-    """
-    把路径列表压缩成适合写进单行日志的短串。
-
-    Compact a path list into a single-line log fragment: cap the number of
-    entries and truncate each path, so logs stay readable and bounded.
-    """
-    shown = []
-    for path in paths[:_MAX_LOGGED_PATHS]:
-        text = str(path)
-        if len(text) > _MAX_PATH_CHARS:
-            text = "…" + text[-_MAX_PATH_CHARS:]
-        shown.append(text)
-    suffix = f" 等共 {len(paths)} 个" if len(paths) > _MAX_LOGGED_PATHS else ""
-    return "; ".join(shown) + suffix
+# ---- 已拆分到兄弟模块的纯逻辑（阶段 1 拆分）/ extracted in stage-1 split ----
+# 展示与日志上限、重试上限、巡检节流等**纯常量** → constants.py
+# 路径与目录映射纯函数                        → paths.py
+# 忽略规则匹配                                → ignore.py
+# strm 交叉验证的路径推导与三态判定           → strm.py
+# 四个模块都不含可变状态：宿主会在实例命名空间中重新执行本文件，但**插件自行
+# 导入的模块全局量是共享的**，因此状态必须留在插件实例上（见 DEVELOPMENT.md 8.1）。
+#
+# 这里用下划线别名导入，是为了让类体与既有调用点无需到处加模块前缀 ——
+# 类体在求值时能读到本模块的全局名字（与 _TRANSFER_SUCCESS_EVENTS 同理）。
+from . import strm as _strm  # noqa: E402
+from .constants import (  # noqa: E402
+    DEFAULT_EXCLUDE_PATTERNS,
+    DEFAULT_MEDIA_EXTENSIONS,
+    DEFAULT_RSYNC_TIMEOUT,
+    DEFAULT_TASK_TIMEOUT,
+    LEGACY_DEFAULTS as _LEGACY_DEFAULTS,
+    MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
+    MAX_PATH_CHARS as _MAX_PATH_CHARS,
+    MISSED_SCAN_ENABLED_DEFAULT as _MISSED_SCAN_ENABLED_DEFAULT,
+    MISSED_SCAN_INTERVAL as _MISSED_SCAN_INTERVAL,
+    RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
+    SIDECAR_EXTS as _SIDECAR_EXTS,
+    STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
+    TOLERATED_EXIT_CODES as _TOLERATED_EXIT_CODES,
+)
+from .ignore import (  # noqa: E402
+    add_rule as _ignore_add_rule,
+    filter_ignored as _ignore_filter,
+    is_ignored as _ignore_is_ignored,
+    remove_rule as _ignore_remove_rule,
+)
+from .paths import (  # noqa: E402
+    brief_paths as _brief_paths,
+    excluded_dir_names as _excluded_dir_names,
+    pair_name as _pair_name,
+    valid_exts_of as _valid_exts_of,
+)
 
 
 class Rsync115Sync(_PluginBase):
@@ -88,69 +97,30 @@ class Rsync115Sync(_PluginBase):
     plugin_version = "0.1.6"
     plugin_author = "HermanWu"
 
-    # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
-    # rsync exit-code semantics, aligned with _handle_rsync_exit in sync_115.sh:
-    #   0  Success / 成功
-    #   24 Source file vanished mid-transfer — normal fluctuation, not a failure
-    #      / 源文件在传输中消失，属正常波动，不计入失败
-    #   23 Some files not transferred — tolerable warning, not a failure
-    #      / 部分文件未传输，属可容忍告警，不计入失败
-    # Any other non-zero code is fatal: the whole run must be marked as failed,
-    # otherwise the plugin would falsely report "all files uploaded".
-    # 其余非 0 码均视为致命错误，必须让本轮判定为失败，避免谎报“已完成”。
-    _TOLERATED_EXIT_CODES = {0, 23, 24}
+    # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
+    _TOLERATED_EXIT_CODES = _TOLERATED_EXIT_CODES
 
-    # 伴生字幕扩展名：补传媒体文件时，同主名的这些文件一并纳入，
-    # 因为实际入库单元是“整集”（媒体 + 外挂字幕）
-    # Sidecar subtitle extensions. When back-filling a media file, files sharing
-    # the same stem are included too, because a real ingest unit is a whole
-    # episode (video + external subtitles).
-    _SIDECAR_EXTS = {"srt", "ass", "ssa", "sub", "idx", "sup", "vtt"}
+    # 伴生字幕扩展名见 constants.SIDECAR_EXTS（含设计动机说明）
+    _SIDECAR_EXTS = _SIDECAR_EXTS
 
     # ---- 默认参数（与 sync_115.sh 对齐）/ Defaults, aligned with sync_115.sh ----
-    # 同步扩展名：shell 侧含字幕与更多容器格式。字幕必须纳入，
-    # 否则「留足外挂字幕下载时间」的冷却设计就失去意义。
-    # Sync extensions. The shell version includes subtitles and more container
-    # formats. Subtitles must be included, otherwise the very purpose of the
-    # cool-down period ("leave time for external subtitles to download") is lost.
-    DEFAULT_MEDIA_EXTENSIONS = (
-        "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass"
-    )
-    DEFAULT_EXCLUDE_PATTERNS = "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*"
-    # I/O 超时对齐 shell 的 IO_TIMEOUT=600：CD2 挂载下大文件单次 I/O
-    # 超过 60 秒很常见，--timeout 只约束 I/O 无响应而非总时长
-    # I/O timeout aligned with IO_TIMEOUT=600 in the shell script: under a CD2
-    # mount a single large-file I/O can easily exceed 60s, and --timeout limits
-    # I/O inactivity only, not total duration.
-    DEFAULT_RSYNC_TIMEOUT = 600
-    DEFAULT_TASK_TIMEOUT = 3600
+    # 以下默认值来自 constants.py（模块顶部已导入）。保留为类属性是为了兼容
+    # 既有的 self.DEFAULT_* 调用点，并让类自描述其默认行为。
+    # Defaults imported from constants.py; kept as class attributes so existing
+    # `self.DEFAULT_*` call sites keep working and the class stays self-describing.
+    DEFAULT_MEDIA_EXTENSIONS = DEFAULT_MEDIA_EXTENSIONS
+    DEFAULT_EXCLUDE_PATTERNS = DEFAULT_EXCLUDE_PATTERNS
+    DEFAULT_RSYNC_TIMEOUT = DEFAULT_RSYNC_TIMEOUT
+    DEFAULT_TASK_TIMEOUT = DEFAULT_TASK_TIMEOUT
 
-    # 历史默认值：用于把“从未改过配置”的老用户平滑迁移到新默认值。
-    # 只有当前值恰好等于旧默认串时才替换，绝不覆盖用户自定义值。
-    # Legacy defaults, used to migrate users who never touched their config.
-    # A value is replaced only when it exactly equals the old default string,
-    # so a user's customised setting is never overwritten.
-    _LEGACY_DEFAULTS = {
-        "media_extensions": "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb",
-        "exclude_patterns": "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store",
-        "rsync_timeout": 60,
-    }
-
-    # 源端补齐扫描的最小间隔（秒）。事件丢失（插件重载期间）是低频问题，
-    # 没必要每轮同步都整树遍历一次本地媒体库。
-    # Minimum interval between source-root reconciliation scans, in seconds.
-    _MISSED_SCAN_INTERVAL = 1800
-
-    # 源端补齐扫描总开关。默认**关闭**，因为它的判据（文件 mtime 变新）无法区分
-    # 「真的新入库」与「老文件被重新 touch」：刮削写 nfo、下载器续传、套件定期
-    # 刷时间戳等都会让同一个个老文件每轮被重复判为「新入库」，表现为「每隔几分钟
-    # 冒出一个其实 1 小时前就入库的文件、且立刻同步（不受冷却约束）」。
-    # 只有确实频繁遇到「插件重载期间丢事件」的用户才建议开启。
-    # Master switch for the source-root reconciliation scan. OFF by default: its
-    # signal (file mtime became newer) cannot distinguish a genuine new ingest
-    # from an old file merely being touched, which would re-enqueue the same old
-    # file every round and bypass the cool-down.
-    _MISSED_SCAN_ENABLED_DEFAULT = False
+    # 历史默认值与补齐扫描开关：迁移逻辑（_migrate_legacy_defaults）与 __init__
+    # 都通过 self.* 访问它们。**别名必须保留** —— 直接删掉类属性会让
+    # `self._MISSED_SCAN_ENABLED_DEFAULT` 抛 AttributeError（拆分时实测踩到）。
+    # These aliases are load-bearing: __init__ and _migrate_legacy_defaults read them
+    # through `self.*`, so removing the class attributes breaks instantiation.
+    _LEGACY_DEFAULTS = _LEGACY_DEFAULTS
+    _MISSED_SCAN_INTERVAL = _MISSED_SCAN_INTERVAL
+    _MISSED_SCAN_ENABLED_DEFAULT = _MISSED_SCAN_ENABLED_DEFAULT
 
     def __init__(self):
         super().__init__()
@@ -409,68 +379,36 @@ class Rsync115Sync(_PluginBase):
     def get_state(self) -> bool:
         return self._enabled
 
+    # ---- 忽略规则：匹配逻辑在 ignore.py，本类只负责持久化 ----
+    # 状态（_ignored_rules 列表）留在实例上，模块不持有副本，避免出现两个真相来源。
+
     def _is_ignored(self, key: str) -> bool:
-        """检查某个文件 key 是否命中了忽略规则（大小写不敏感）"""
-        if not key or not self._ignored_rules:
-            return False
-        k_lower = key.lower()
-        for r in self._ignored_rules:
-            rule_str = (r.get("rule") or "").lower().strip()
-            if not rule_str:
-                continue
-            match_mode = r.get("match", "contains")
-            if match_mode == "exact":
-                if k_lower == rule_str:
-                    return True
-            else:
-                if rule_str in k_lower:
-                    return True
-        return False
+        """检查某个文件 key 是否命中了忽略规则（大小写不敏感）。"""
+        return _ignore_is_ignored(key, self._ignored_rules)
 
     def _add_ignore_rule(self, rule: str, match: str = "contains", created_by: str = "", source: str = "chat") -> bool:
-        """添加一条忽略规则，并同步剔除已存在于缺失/残缺清单里的项"""
-        rule = rule.strip()
-        if not rule:
+        """添加一条忽略规则，并同步剔除已存在于缺失/残缺清单里的项。"""
+        if not _ignore_add_rule(self._ignored_rules, rule, match, created_by, source):
             return False
-        # 去重
-        for item in self._ignored_rules:
-            if item.get("rule", "").lower() == rule.lower() and item.get("match") == match:
-                return False
-        entry = {
-            "rule": rule,
-            "match": match,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "created_by": created_by,
-            "source": source,
-        }
-        self._ignored_rules.append(entry)
         self.save_data("ignored_files", self._ignored_rules)
 
-        # 立即联动剔除已有的 missing/corrupt
-        self._last_status["missing_files"] = [k for k in self._last_status.get("missing_files", []) if not self._is_ignored(k)]
-        self._last_status["corrupt_files"] = [k for k in self._last_status.get("corrupt_files", []) if not self._is_ignored(k)]
+        # 立即联动剔除已有的 missing/corrupt：否则被忽略的文件仍会显示在异常
+        # 清单里直到下一轮同步，用户会以为「忽略了没用」。
+        self._last_status["missing_files"] = _ignore_filter(
+            self._last_status.get("missing_files", []), self._ignored_rules)
+        self._last_status["corrupt_files"] = _ignore_filter(
+            self._last_status.get("corrupt_files", []), self._ignored_rules)
         self.save_data("missing_files", self._last_status["missing_files"])
         self.save_data("corrupt_files", self._last_status["corrupt_files"])
         return True
 
     def _remove_ignore_rule(self, index_or_rule: Any) -> bool:
-        """移除指定忽略规则"""
-        removed = False
-        if isinstance(index_or_rule, int) and 0 <= index_or_rule < len(self._ignored_rules):
-            self._ignored_rules.pop(index_or_rule)
-            removed = True
-        elif isinstance(index_or_rule, str):
-            target = index_or_rule.strip().lower()
-            orig_len = len(self._ignored_rules)
-            self._ignored_rules = [r for r in self._ignored_rules if (r.get("rule") or "").lower() != target]
-            removed = len(self._ignored_rules) < orig_len
-        if removed:
-            self.save_data("ignored_files", self._ignored_rules)
-        return removed
+        """移除指定忽略规则（按序号或规则文本）。"""
+        if not _ignore_remove_rule(self._ignored_rules, index_or_rule):
+            return False
+        self.save_data("ignored_files", self._ignored_rules)
+        return True
 
-    # ================= 监听 MoviePilot 媒体转移完成事件 =================
-
-    @eventmanager.register(_TRANSFER_SUCCESS_EVENTS)
     def on_transfer_complete(self, event: Event):
         """
         事件入口：仅做异常兜底，业务逻辑见 _handle_transfer_event。
@@ -642,7 +580,7 @@ class Rsync115Sync(_PluginBase):
                 continue
 
             src_root = (own_pair.get("src") or "").strip().rstrip("/")
-            pair_name = own_pair.get("name") or src_root
+            pair_name = _pair_name(own_pair)
 
             # 扩展名过滤（映射配了 all_ext 则不过滤）
             if not own_pair.get("all_ext", False):
@@ -761,7 +699,7 @@ class Rsync115Sync(_PluginBase):
         added = 0
         for pair in self._sync_pairs:
             src_root = (pair.get("src") or "").strip().rstrip("/")
-            pair_name = pair.get("name") or src_root
+            pair_name = _pair_name(pair)
             if not src_root or not os.path.isdir(src_root):
                 continue
             valid_exts = None
@@ -1079,7 +1017,7 @@ class Rsync115Sync(_PluginBase):
         if direct:
             return os.path.exists(key)
         for pair in self._sync_pairs:
-            pair_name = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
+            pair_name = _pair_name(pair)
             src_root = (pair.get("src") or "").strip().rstrip("/")
             if not src_root or not pair_name:
                 continue
@@ -1457,7 +1395,7 @@ class Rsync115Sync(_PluginBase):
         # 只按扩展名过滤候选，范围由每个映射对的 all_ext 决定
         for pair in self._sync_pairs:
             src_dir = (pair.get("src") or "").strip().rstrip("/")
-            pair_name = pair.get("name") or src_dir
+            pair_name = _pair_name(pair)
             if not src_dir or not os.path.isdir(src_dir):
                 continue
             all_ext = pair.get("all_ext", False)
@@ -1784,7 +1722,7 @@ class Rsync115Sync(_PluginBase):
             for idx, pair in enumerate(self._sync_pairs):
                 src = (pair.get("src") or "").strip().rstrip("/")
                 dest = (pair.get("dest") or "").strip().rstrip("/")
-                pair_name = pair.get("name") or src
+                pair_name = _pair_name(pair)
                 all_ext = pair.get("all_ext", False)
 
                 if not os.path.exists(src) or not os.path.exists(dest):
@@ -2336,41 +2274,26 @@ class Rsync115Sync(_PluginBase):
 
     # ================= strm 交叉验证 =================
 
+    # strm 交叉验证的**纯逻辑**（期望路径推导、三态流转判定）已迁至 strm.py，
+    # 便于单测穷举边界（恰好到期 / 源端消失 / 映射被改）。本类保留的职责是
+    # I/O 与持久化：探测文件系统、读写 _strm_watch / _strm_suspects。
+
     def _strm_expected_path(self, key: str) -> Optional[str]:
-        """
-        由队列 key 推导该文件「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。
-
-        Derive the expected .strm path for a queue key; None when the pair has no
-        strm root configured.
-
-        映射规则（用户确认的设计）：strm 目录与源目录**不同根**、由用户在映射里
-        配置 strm_dir；文件名与整理后文件**同名**（仅扩展名换成 .strm）。
-        因此相对路径完全沿用：src 下 A/B/剧名 S01E03.mkv
-        → strm_dir 下 A/B/剧名 S01E03.strm。
-        """
-        for pair in self._sync_pairs:
-            pn = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
-            if key.startswith(f"{pn}:"):
-                strm_dir = (pair.get("strm_dir") or "").strip().rstrip("/")
-                if not strm_dir:
-                    return None
-                rel_p = key.split(f"{pn}:", 1)[1]
-                stem, _ = os.path.splitext(rel_p)
-                return os.path.join(strm_dir, stem + ".strm")
-        return None
+        """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
+        return _strm.expected_path(key, self._sync_pairs)
 
     def _strm_arm_watch(self, keys: List[str]) -> int:
         """
         同步成功后把文件登记进「待观察」清单（宽限期从现在起算）。
 
-        Arm a strm watch for successfully synced files. Already-suspect keys are
-        removed from the suspect list on success (the re-transfer cleared it).
+        Arm a strm watch for successfully synced files. A key already in the suspect
+        list is removed on success — the re-transfer cleared it.
         """
         armed = 0
         now_ts = time.time()
         for k in keys:
             if self._strm_expected_path(k) is None:
-                continue
+                continue  # 该映射未配 strm_dir，不参与交叉验证
             self._strm_watch[k] = now_ts
             # 重传成功即解除疑点
             if k in self._strm_suspects:
@@ -2385,55 +2308,50 @@ class Rsync115Sync(_PluginBase):
 
     def _strm_check(self) -> Dict[str, Any]:
         """
-        strm 交叉验证巡检：宽限期到期的待观察项按 strm 是否生成分类流转。
+        strm 交叉验证巡检：走 I/O 与持久化，三态判定交给 strm.classify_watch。
 
-        Strm cross-validation sweep: settle expired watches by whether the
-        expected .strm has appeared.
+        Strm cross-validation sweep. This method only probes the filesystem and
+        persists results; the state machine itself lives in strm.py.
 
-        三个出口：
-        - strm 已生成 → 移出待观察（正常）；
-        - 宽限期到期仍未生成 → 移入疑似异常清单（看板/通知/手动处理）；
-        - 宽限期未到 → 保留观察。
-        源端文件已消失的待观察项直接清理（对应源都没了，验证无意义）。
-        纯本地文件系统操作，零 115 API；由定时巡检调用（每轮同步后顺带执行），
-        内部再按 30 分钟节流，避免频繁扫描。
+        出口：strm 已生成（正常解除）/ 到期未生成（转疑似）/ 未到期（继续观察）/
+        映射取消 strm_dir 或源端消失（清理）。后两者不合并计数，见 strm.py 的
+        状态定义说明。
+
+        纯本地文件系统操作，零 115 API；由定时巡检调用，内部再按固定间隔节流。
         """
         now_ts = time.time()
         # 巡检节流：strm 生成是分钟级的事，没必要每次同步都查一遍
-        if now_ts - self._strm_last_check < self._STRM_CHECK_INTERVAL:
+        if now_ts - self._strm_last_check < _STRM_CHECK_INTERVAL:
             return {"checked": 0, "ok": 0, "new_suspects": 0}
         self._strm_last_check = now_ts
 
         if not self._strm_check_enabled or not self._strm_watch:
             return {"checked": 0, "ok": 0, "new_suspects": 0}
 
-        grace_secs = self._strm_grace_hours * 3600
+        grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
         settled_ok: List[str] = []
         new_suspects: List[str] = []
         dropped: List[str] = []
 
         for key, synced_ts in list(self._strm_watch.items()):
-            expected = self._strm_expected_path(key)
-            if expected is None:
-                # 映射被改成无 strm_dir：观察项失效，直接清理
-                dropped.append(key)
+            # 两个探测值先算好再交给纯函数判定：三态边界因而可以在单测里穷举，
+            # 不需要真实文件系统。
+            strm_exists = os.path.exists(self._strm_expected_path(key) or "")
+            src_root = _strm.source_root_of(key, self._sync_pairs)
+            src_exists = (not src_root) or os.path.exists(
+                os.path.join(src_root, key.split(":", 1)[1]))
+            state, record = _strm.classify_watch(
+                key, synced_ts, now_ts, grace_secs, self._sync_pairs,
+                strm_exists=strm_exists, src_exists=src_exists)
+            if state == _strm.SUSPECT:
+                new_suspects.append(record)
+            elif state == _strm.WATCHING:
                 continue
-            # 源端已消失：无从验证也无从重传，清理
-            src_root = None
-            for pair in self._sync_pairs:
-                pn = (pair.get("name") or (pair.get("src") or "").strip().rstrip("/")).strip()
-                if key.startswith(f"{pn}:"):
-                    src_root = (pair.get("src") or "").strip().rstrip("/")
-                    break
-            if src_root and not os.path.exists(os.path.join(src_root, key.split(":", 1)[1])):
-                dropped.append(key)
-                continue
-
-            if os.path.exists(expected):
+            elif state == _strm.SETTLED:
                 settled_ok.append(key)
-                continue
-            if now_ts - synced_ts >= grace_secs:
-                new_suspects.append(key)
+            else:
+                # NO_STRM_DIR 与 SOURCE_GONE 都是清理出口，与「正常解除」分开计数
+                dropped.append(key)
 
         for k in settled_ok + dropped:
             self._strm_watch.pop(k, None)
@@ -2460,41 +2378,31 @@ class Rsync115Sync(_PluginBase):
         发现新的 strm 疑似异常时推送通知（仅新发现时发，不重复打扰）。
 
         Notify on newly discovered strm suspects only — the whole-list state is
-        already visible on the dashboard, so repeating it every sweep would be
-        pure noise. Re-arms when the suspect list becomes empty again.
-
-        受众路由：带 mtype 交由宿主「通知场景开关」决定（默认仅管理员），
-        与同步报告一致，避免广播给全部用户。
+        already visible on the dashboard, so repeating it every sweep would train
+        the user to ignore the channel.
         """
-        if not self._notify:
-            return
-        # 去重语义：本轮已就「当前这批疑似」提醒过就不再重复打扰，
-        # 直到清单被清空（_reset_strm_notified_if_clear）后再次新发现才重新提醒。
-        # 否则每轮巡检都会重推同一批文件，很快就会被用户静音。
-        if self._strm_notified:
-            logger.debug(f"[Rsync115Sync] strm 疑似异常已提醒过，本轮新增 {len(new_suspects)} 个不再重复推送")
+        if not self._notify or self._strm_notified or not new_suspects:
             return
         mtype = self._plugin_mtype()
         if mtype is None:
             logger.warning("[Rsync115Sync] 宿主 MessageType 不可用，已跳过 strm 疑似异常通知以免广播")
             return
         total = len(self._strm_suspects)
-        lines = "\n".join(f"• {k}" for k in new_suspects[:_MAX_LOGGED_PATHS])
-        more = f"\n（另有 {total - _MAX_LOGGED_PATHS} 个，详见看板）" if total > _MAX_LOGGED_PATHS else ""
-        text = (
-            f"📺 发现 {len(new_suspects)} 个文件疑似上传未真正完成\n"
-            f"————————————————\n"
-            f"{lines}{more}\n"
-            f"————————————————\n"
-            f"判定依据：同步已报告成功，但 {self._strm_grace_hours}h 内未在 strm 目录生成对应文件。\n"
-            f"常见原因是 CD2 改名失败导致云端只留下临时文件（挂载视图看不出）。\n\n"
-            f"👉 处理方式：打开插件看板 →「对账异常」标签 → 底部「strm 疑似上传异常」→"
-            f" 点击「删旧重传」\n"
-            f"⚠️ 若 strm 插件本身未生成（媒体不识别等），此为误报；"
-            f"重传已同步的文件不会重复上传，属安全操作。"
-        )
+        listed = "\n".join(f"• {k}" for k in new_suspects[:_MAX_LOGGED_PATHS])
+        more = f"\n（另有 {len(new_suspects) - _MAX_LOGGED_PATHS} 个未列出）" \
+            if len(new_suspects) > _MAX_LOGGED_PATHS else ""
         try:
-            self.post_message(mtype=mtype, title="115同步：strm 疑似上传异常", text=text)
+            self.post_message(
+                mtype=mtype,
+                title="115同步：发现疑似上传异常",
+                text=(
+                    f"⚠️ 本次新发现 {len(new_suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
+                    f"{listed}{more}\n\n"
+                    f"判定依据：同步已报告成功，但 {self._strm_grace_hours}h 内未在 strm 目录生成对应文件。\n"
+                    f"💡 请先确认 strm 插件本身是否正常（媒体是否识别、功能是否开启），\n"
+                    f"   再前往看板「对账异常清单」标签使用「删旧重传」处理。"
+                ),
+            )
             self._strm_notified = True
             self.save_data("strm_notified", True)
             logger.info(f"[Rsync115Sync] 📤 已推送 strm 疑似异常通知（{len(new_suspects)} 个新发现，"
@@ -2506,9 +2414,9 @@ class Rsync115Sync(_PluginBase):
         """
         疑似清单清空后重置通知标志，使下次新发现能再次提醒，并推送「已全部解决」。
 
-        Reset the notification latch once the suspect list drains, so a future
-        batch alerts again; also send a short all-clear so the user knows the
-        earlier warning has been resolved rather than merely forgotten.
+        Reset the notification latch once the suspect list drains, so a future batch
+        alerts again; also send a short all-clear so the user knows the earlier
+        warning was resolved rather than merely forgotten.
         """
         if self._strm_notified and not self._strm_suspects:
             self._strm_notified = False
@@ -2575,18 +2483,12 @@ class Rsync115Sync(_PluginBase):
         truncated = False
         for pair in self._sync_pairs:
             src_dir = (pair.get("src") or "").strip().rstrip("/")
-            pair_name = pair.get("name") or src_dir
+            pair_name = _pair_name(pair)
             if not os.path.exists(src_dir):
                 continue
             all_ext = pair.get("all_ext", False)
-            valid_exts = None if all_ext else {
-                x.strip().lower() for x in self._media_extensions.split(",") if x.strip()
-            }
-            excluded_dirs = {
-                ln.strip().rstrip("/")
-                for ln in self._exclude_patterns.splitlines()
-                if ln.strip().endswith("/") and not ln.strip().startswith(".")
-            }
+            valid_exts = _valid_exts_of(self._media_extensions, all_ext)
+            excluded_dirs = _excluded_dir_names(self._exclude_patterns)
             for root, dirs, files in os.walk(src_dir):
                 dirs[:] = [d for d in dirs if d not in excluded_dirs]
                 for f in files:
@@ -2636,7 +2538,7 @@ class Rsync115Sync(_PluginBase):
             pair_name = None
             rel_p = None
             for p in self._sync_pairs:
-                pn = (p.get("name") or (p.get("src") or "").strip().rstrip("/")).strip()
+                pn = _pair_name(p)
                 if key.startswith(f"{pn}:"):
                     pair = p
                     pair_name = pn
@@ -2768,21 +2670,16 @@ class Rsync115Sync(_PluginBase):
 
             for pair in self._sync_pairs:
                 src_dir = (pair.get("src") or "").strip().rstrip("/")
-                pair_name = pair.get("name") or src_dir
+                pair_name = _pair_name(pair)
                 if not os.path.exists(src_dir):
                     continue
                 # 与同步/补传保持一致的过滤口径：扩展名 + 排除规则。
                 # 早先实现两者都不应用，列表会混入 .nfo/.jpg 等永远不会被同步的
                 # 文件，重传它们浪费限流配额且没有意义。
                 all_ext = pair.get("all_ext", False)
-                valid_exts = None if all_ext else {
-                    x.strip().lower() for x in self._media_extensions.split(",") if x.strip()
-                }
-                excluded_dirs = {
-                    ln.strip().rstrip("/")
-                    for ln in self._exclude_patterns.splitlines()
-                    if ln.strip().endswith("/") and not ln.strip().startswith(".")
-                }
+                # 口径与同步/补传共用同一实现，避免「搜索能搜到但同步不认」的漂移
+                valid_exts = _valid_exts_of(self._media_extensions, all_ext)
+                excluded_dirs = _excluded_dir_names(self._exclude_patterns)
 
                 for root, dirs, files in os.walk(src_dir):
                     # 就地裁剪被排除的目录（@eaDir/#recycle 等），不下钻
