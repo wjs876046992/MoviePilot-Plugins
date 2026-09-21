@@ -2301,46 +2301,73 @@ class Rsync115Sync(_PluginBase):
         ).strip()
 
         if action == "search":
-            # 根据关键字从本地源目录或历史记录查找匹配的文件
+            # 根据关键字从本地源目录查找匹配的文件，供确认后定向重传
             if not text_arg:
                 self._post_reply(event, "⚠️ 请提供搜索关键字，例如：/rsync_search 繁花")
                 return
 
             keyword = text_arg.lower()
             matched = []
+            # 展示上限：手机消息太长会被渠道截断或淹没，列表只展示前 N 条。
+            # ⚠️ 但候选必须**全量收集**、只截断展示 —— 早先实现把收集也截断在 15，
+            # 导致超过 15 个匹配时用户永远选不到第 16 个（all 也只重传前 15 个），
+            # 用户实测「24 个文件只找到 15 个」即此缺陷。
+            _SEARCH_DISPLAY_LIMIT = 15
 
             for pair in self._sync_pairs:
                 src_dir = (pair.get("src") or "").strip().rstrip("/")
                 pair_name = pair.get("name") or src_dir
                 if not os.path.exists(src_dir):
                     continue
+                # 与同步/补传保持一致的过滤口径：扩展名 + 排除规则。
+                # 早先实现两者都不应用，列表会混入 .nfo/.jpg 等永远不会被同步的
+                # 文件，重传它们浪费限流配额且没有意义。
+                all_ext = pair.get("all_ext", False)
+                valid_exts = None if all_ext else {
+                    x.strip().lower() for x in self._media_extensions.split(",") if x.strip()
+                }
+                excluded_dirs = {
+                    ln.strip().rstrip("/")
+                    for ln in self._exclude_patterns.splitlines()
+                    if ln.strip().endswith("/") and not ln.strip().startswith(".")
+                }
 
-                for root, _, files in os.walk(src_dir):
+                for root, dirs, files in os.walk(src_dir):
+                    # 就地裁剪被排除的目录（@eaDir/#recycle 等），不下钻
+                    dirs[:] = [d for d in dirs if d not in excluded_dirs]
                     for f in files:
-                        if keyword in f.lower():
-                            rel_f = os.path.relpath(os.path.join(root, f), src_dir)
-                            matched.append(f"{pair_name}:{rel_f}")
-                            if len(matched) >= 15:
-                                break
-                    if len(matched) >= 15:
-                        break
+                        if keyword not in f.lower():
+                            continue
+                        if valid_exts is not None and os.path.splitext(f)[-1].lstrip(".").lower() not in valid_exts:
+                            continue
+                        rel_f = os.path.relpath(os.path.join(root, f), src_dir)
+                        matched.append(f"{pair_name}:{rel_f}")
 
             if not matched:
                 self._post_reply(event, f"🔍 未找到包含关键字「{text_arg}」的本地入库媒体文件。")
                 return
 
+            # 候选全量保留（confirm 可重传全部），仅展示层截断
             self._waiting_confirm_retries = matched
-            list_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(matched)])
+            display = matched[:_SEARCH_DISPLAY_LIMIT]
+            list_text = "\n".join([f"{i+1}. {item}" for i, item in enumerate(display)])
+            truncated_hint = (
+                f"（另有 {len(matched) - _SEARCH_DISPLAY_LIMIT} 个未列出，"
+                f"确认 all 时会一并重传）\n" if len(matched) > _SEARCH_DISPLAY_LIMIT else ""
+            )
             reply = (
-                f"🔍 找到以下 {len(matched)} 个匹配媒体：\n"
+                f"🔍 找到 {len(matched)} 个匹配媒体"
+                f"{'，展示前 %d 个' % _SEARCH_DISPLAY_LIMIT if len(matched) > _SEARCH_DISPLAY_LIMIT else ''}：\n"
                 f"--------------------------------\n"
                 f"{list_text}\n"
+                f"{truncated_hint}"
                 f"--------------------------------\n"
                 f"👉 请发送确认指令触发重传：\n"
                 f"• 全部重传: /rsync_confirm (或 /rsync_confirm all)\n"
                 f"• 选单序号: /rsync_confirm 1\n"
                 f"• 多个序号: /rsync_confirm 1,2 或 /rsync_confirm 1 2\n"
-                f"• 范围序号: /rsync_confirm 1-2 4"
+                f"• 范围序号: /rsync_confirm 1-2 4\n"
+                f"⚠️ 注意：确认只对已收集的候选生效，当前候选共 {len(matched)} 个"
             )
             self._post_reply(event, reply)
 
