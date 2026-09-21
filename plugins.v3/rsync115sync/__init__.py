@@ -410,6 +410,17 @@ class Rsync115Sync(_PluginBase):
         self.save_data("ignored_files", self._ignored_rules)
         return True
 
+    # ================= 监听 MoviePilot 媒体转移完成事件 =================
+    #
+    # ⚠️ 这行装饰器是**整个插件的入口**，删掉它不会有任何报错 —— 插件照常加载、
+    # 看板照常渲染、定时同步照常跑，只是**永远收不到入库事件**，表现为「冷却队列
+    # 永远是 0」。v0.1.7 的拆分（ed2ba1d）曾把它连同上方的分节注释一起删掉，
+    # 前端与后端均无任何提示，属于最难自查的一类回归。改动本文件时务必保留。
+    #
+    # This decorator is the plugin's only ingest entry point. Removing it raises no
+    # error anywhere: the plugin loads, the dashboard renders, cron runs — it simply
+    # never receives ingest events, so the cool-down queue stays empty forever.
+    @eventmanager.register(_TRANSFER_SUCCESS_EVENTS)
     def on_transfer_complete(self, event: Event):
         """
         事件入口：仅做异常兜底，业务逻辑见 _handle_transfer_event。
