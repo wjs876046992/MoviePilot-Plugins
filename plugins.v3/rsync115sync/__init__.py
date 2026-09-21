@@ -19,6 +19,15 @@ try:
 except Exception:  # pragma: no cover - 兼容不同版本宿主
     MessageType = None
 
+# 宿主公开的窄调度门面。用于保存配置后**主动重建本插件的定时任务** ——
+# 配置走本插件自己的 API 时，宿主不会替我们刷新调度（详见 _refresh_scheduled_job）。
+# 缺失时降级为 None，不影响插件加载：旧宿主上没有它只是需要手动重载。
+# Narrow scheduler facade from the host SDK; None on older hosts.
+try:
+    from app.sdk.scheduler import update_plugin_job as _update_plugin_job
+except Exception:  # pragma: no cover - 兼容旧宿主
+    _update_plugin_job = None
+
 
 def _transfer_success_events() -> List[Any]:
     """
@@ -977,7 +986,46 @@ class Rsync115Sync(_PluginBase):
         self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
         self._strm_grace_hours = max(0.5, float(config.get("strm_grace_hours") or 6.0))
         self.update_config(config)
-        return {"success": True, "message": "配置保存成功"}
+        refreshed = self._refresh_scheduled_job()
+        return {
+            "success": True,
+            "message": "配置保存成功" + ("" if refreshed else "（定时任务重建失败，请手动重载插件）"),
+        }
+
+    def _refresh_scheduled_job(self) -> bool:
+        """
+        保存配置后重建本插件的定时任务。
+
+        Rebuild this plugin's scheduler jobs after the config is saved.
+
+        ⚠️ **为什么必须显式做这件事**：宿主有两条保存路径，只有一条会重建调度 ——
+
+          PUT  /plugin/{id}                      → PluginConfigCommand.update()
+                                                   → save → initialize
+                                                   → refresh_registrations()  ← 重建在这里
+          POST /plugin/Rsync115Sync/config       → 本插件的 _api_save_config
+                                                   → update_config()          ← 只写库
+
+        配置页用的是**本插件自己的端点**，因此此前改了 cron 只是写进数据库，
+        APScheduler 里跑的仍是旧表达式 —— 表现为「cron 改成每 5 分钟，却再也
+        看不到任何执行日志」。改「启用/监听入库」这类开关同理不会刷新事件订阅。
+
+        用宿主公开的 SDK 门面（app.sdk.scheduler）而不是内部模块，符合插件边界要求。
+        On failure we only warn: the config itself is already saved, so a scheduler
+        refresh problem must not make the user think the save failed.
+        """
+        if _update_plugin_job is None:
+            logger.warning("[Rsync115Sync] 宿主未提供 app.sdk.scheduler.update_plugin_job，"
+                           "无法主动重建定时任务（配置已保存，如需立即生效请手动重载插件）")
+            return False
+        try:
+            # 插件 ID 用类名：宿主注册表以类名为键，且分身场景下运行类名即实例 ID
+            _update_plugin_job(self.__class__.__name__)
+            logger.info(f"[Rsync115Sync] 🔁 已按新配置重建定时任务（cron={self._cron}）")
+            return True
+        except Exception as err:
+            logger.warning(f"[Rsync115Sync] 定时任务重建失败（配置已保存，可手动重载插件）: {err}")
+            return False
 
     def _count_queue(self, now_ts: float, threshold: float) -> Tuple[int, int, int]:
         """
