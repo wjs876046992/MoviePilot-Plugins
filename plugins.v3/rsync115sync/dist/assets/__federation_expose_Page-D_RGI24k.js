@@ -394,9 +394,19 @@ async function retryStrmSuspect(key) {
 }
 
 // 批量触发选中条目。
+//
 // 通道选择依据是「选中项的成分」而不是当前标签页：勾选状态跨分组保留，
-// 用户在哪个标签页按下按钮都可能包含 strm 疑似项，而这两类条目的处理
-// 通道不同（strm 必须先删旧，普通条目删旧属于多余且危险的写操作）。
+// 用户在哪个标签页按下按钮都可能包含 strm 疑似项。两条后端通道的差异是：
+//
+//   /sync_item  不主动删旧。目标端缺失 → 直接补传；大小不符 → retry 分支
+//               按大小条件清理残缺再传；大小一致且正常 → rsync --size-only
+//               跳过（不传也不删）。**无法修复「大小一致但内容是坏的」**。
+//   /strm_retry 主动删旧，且只要目标端存在就删（含大小一致的）。服务端另有
+//               一道守卫，只接受已在 strm 疑似清单里的 key。
+//
+// 所以分流的实质不是「一个删一个不删」，而是「谁有权限删掉一个大小看起来
+// 完全正常的文件」。这个判断系统只能从 strm 疑似清单得到 —— 纯看大小的话，
+// 「坏得很彻底所以大小完全相同」与「好文件」无法区分。
 async function batchSyncSelected() {
   if (!selectedKeys.value.length || statusData.value.is_running) return
   const keys = [...selectedKeys.value];
@@ -408,8 +418,11 @@ async function batchSyncSelected() {
     const ok = window.confirm(
       `选中 ${keys.length} 项中，有 ${strmSelectedCount.value} 项属于 strm 疑似异常。\n\n` +
       `提交后将自动分流：\n` +
-      `• ${strmSelectedCount.value} 项走「删旧重传」（先删 115 端文件再传）\n` +
-      `• ${keys.length - strmSelectedCount.value} 项走普通定向重传（不删除任何目标端文件）\n\n确定继续吗？`
+      `• ${strmSelectedCount.value} 项走「删旧重传」：目标端那份「看起来正常」的文件\n` +
+      `  实际是坏的（CD2 改名失败），只有先删掉才能让重传真正发生\n` +
+      `• ${keys.length - strmSelectedCount.value} 项走普通定向重传：\n` +
+      `  目标端缺失的直接补传，大小不符的先清理残缺再传，\n` +
+      `  大小一致且正常的会由 rsync 自动跳过，不会被删除\n\n确定继续吗？`
     );
     if (!ok) return
   } else if (isStrm) {
@@ -1016,7 +1029,7 @@ return (_ctx, _cache) => {
                           ], 64))
                         : (strmSelectedCount.value)
                           ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
-                              _createTextVNode(" （其中 " + _toDisplayString(strmSelectedCount.value) + " 项为 strm 疑似异常，将只做定向重传，不删旧） ", 1)
+                              _createTextVNode(" （其中 " + _toDisplayString(strmSelectedCount.value) + " 项为 strm 疑似异常，提交时会自动分流） ", 1)
                             ], 64))
                           : _createCommentVNode("", true)
                     ])
@@ -1704,6 +1717,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-03a246d8"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-5f19998f"]]);
 
 export { App as default };
