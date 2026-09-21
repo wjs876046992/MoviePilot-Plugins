@@ -287,6 +287,7 @@ def _bare_plugin():
     plugin._media_extensions = "mkv"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False
     plugin.save_data = lambda k, v: None
@@ -424,6 +425,7 @@ def test_strm_scan_end_to_end_excludes_subtitles_and_images():
     plugin._media_extensions = "mkv,srt,ssa,ass"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False
     plugin.save_data = lambda k, v: None
@@ -462,6 +464,7 @@ def test_strm_scan_end_to_end_ignores_all_ext(tmp_path):
     plugin._media_extensions = "mkv"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False
     plugin.save_data = lambda k, v: None

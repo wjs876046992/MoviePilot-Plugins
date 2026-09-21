@@ -420,6 +420,21 @@ class Rsync115Sync(_PluginBase):
             self._last_status.get("corrupt_files", []), self._ignored_rules)
         self.save_data("missing_files", self._last_status["missing_files"])
         self.save_data("corrupt_files", self._last_status["corrupt_files"])
+
+        # strm 疑似清单与待观察清单同样要清理 —— 否则用户忽略之后，
+        # 清单里那些条目还挂着（看板照旧显示、还可被「全部删旧重传」波及），
+        # 同样会让人觉得「忽略了没用」。此处是用户实测反馈的补漏。
+        # Purge strm lists too, else ignored entries linger on the dashboard.
+        for key in list(self._strm_suspects.keys()):
+            if _ignore_is_ignored(key, self._ignored_rules):
+                self._strm_suspects.pop(key, None)
+        for key in list(self._strm_watch.keys()):
+            if _ignore_is_ignored(key, self._ignored_rules):
+                self._strm_watch.pop(key, None)
+        self.save_data("strm_suspects", self._strm_suspects)
+        self.save_data("strm_watch", self._strm_watch)
+        # 清单可能因此清空，重置通知闩锁（与 _strm_arm_watch 同一收尾逻辑）
+        self._reset_strm_notified_if_clear()
         return True
 
     def _remove_ignore_rule(self, index_or_rule: Any) -> bool:
@@ -2415,6 +2430,17 @@ class Rsync115Sync(_PluginBase):
         for k in keys:
             if self._strm_expected_path(k) is None:
                 continue  # 该映射未配 strm_dir，不参与交叉验证
+            # 已加入忽略清单的文件不登记观察。
+            #
+            # 为什么要在**最上游**拦：「忽略」的语义是「这个文件不要再报警」，
+            # 而 strm 疑似同样是一种报警。若只在展示层过滤，被忽略的文件仍会在
+            # 观察期到期时写进疑似清单、还会触发通知 —— 用户会收到自己明确
+            # 忽略过的文件的告警。在登记处拦掉，后续观察/疑似/通知全都不涉及它。
+            # Skip ignored files at the earliest point: ignoring means "stop alerting
+            # about this file", and a strm suspect is an alert. Filtering only at the
+            # display layer would still write them into the suspect list and notify.
+            if self._is_ignored(k):
+                continue
             self._strm_watch[k] = now_ts
             # 重传成功即解除疑点
             if k in self._strm_suspects:
@@ -2459,6 +2485,15 @@ class Rsync115Sync(_PluginBase):
         dropped: List[str] = []
 
         for key, synced_ts in list(self._strm_watch.items()):
+            # 忽略清单是最高优先级：用户在观察期内加了忽略规则时，这里必须让位，
+            # 否则条目仍会到期转疑似并触发通知 —— 用户会收到自己忽略过的文件的告警。
+            # `_add_ignore_rule` 已经会主动清理两个清单，这里是兜底（例如规则由
+            # 其它实例/更早版本写入，或清理逻辑未覆盖到的时序）。
+            # Ignore rules win: a rule added during the grace window must not let the
+            # entry turn into a suspect (and notify) anyway.
+            if self._is_ignored(key):
+                dropped.append(key)
+                continue
             # 两个探测值先算好再交给纯函数判定：三态边界因而可以在单测里穷举，
             # 不需要真实文件系统。
             strm_exists = os.path.exists(self._strm_expected_path(key) or "")
@@ -2618,7 +2653,15 @@ class Rsync115Sync(_PluginBase):
 
         now_ts = time.time()
         added = 0
+        skipped_ignored = 0
         for key in candidates:
+            # 已被用户加入忽略清单的文件不产生疑似条目 —— 「忽略」的语义就是
+            # 「不要再为这个文件报警」，而疑似清单是一种报警。用户在 /rsync_ignore
+            # 里明确忽略过的文件再次出现，是用户实测反馈的问题。
+            # Ignored files never become suspects: ignoring means "stop alerting".
+            if self._is_ignored(key):
+                skipped_ignored += 1
+                continue
             # 已在疑似清单里的不重复计数，但**不刷新时间戳**
             # （刷新会让「首次疑似时间」失去意义，用户无从判断它挂了多久）
             if key in self._strm_suspects:
@@ -2628,17 +2671,17 @@ class Rsync115Sync(_PluginBase):
 
         if added:
             self.save_data("strm_suspects", self._strm_suspects)
-            logger.warning(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
-                           f"发现 {len(candidates)} 个缺 strm 的文件，新增 {added} 个疑似")
-        else:
-            logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
-                        f"未发现新的缺 strm 文件")
+        logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
+                    f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
+                    f"{f'，因忽略规则跳过 {skipped_ignored} 个' if skipped_ignored else ''}")
 
         if added:
             self._notify_strm_suspects(candidates[:added])
 
         msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
                f"（新增 {added} 个）。")
+        if skipped_ignored:
+            msg += f"\n🚫 其中 {skipped_ignored} 个已命中忽略规则，未计入疑似。"
         if truncated:
             msg += (f"\n⚠️ 已达到单次上限 {limit} 个，**结果被截断** ——"
                     f"若这个数字很大，更可能是 strm 插件本身没在工作，"
@@ -2647,7 +2690,8 @@ class Rsync115Sync(_PluginBase):
         msg += "这类应使用补传而不是删旧重传。"
         return {"success": True, "message": msg,
                 "data": {"checked": checked, "found": len(candidates),
-                         "added": added, "truncated": truncated}}
+                         "added": added, "truncated": truncated,
+                         "skipped_ignored": skipped_ignored}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
         """
@@ -2680,7 +2724,7 @@ class Rsync115Sync(_PluginBase):
             # _search_target_files 用的是**同步口径**（含字幕），而 strm 只对视频
             # 生成指针文件，因此这里必须再按视频扩展名筛一次，否则字幕会误报。
             ext = os.path.splitext(key.split(":", 1)[-1])[-1].lstrip(".").lower()
-            if ext not in _strm_video_exts():
+            if ext not in self._strm_video_exts():
                 non_video.append(key)
                 continue
             expected = self._strm_expected_path(key)
@@ -2694,7 +2738,12 @@ class Rsync115Sync(_PluginBase):
 
         now_ts = time.time()
         added = 0
+        skipped_ignored = 0
         for key in missing:
+            # 与主动扫描同口径：被忽略的文件不产生疑似条目（忽略即「不再报警」）
+            if self._is_ignored(key):
+                skipped_ignored += 1
+                continue
             if key in self._strm_suspects:
                 continue
             self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_SCAN}
@@ -2715,6 +2764,8 @@ class Rsync115Sync(_PluginBase):
         if non_video:
             # 字幕等非视频文件不会有 .strm，本就不该参与检查；明确告知而非静默丢弃
             lines.append(f"⏭️ 非视频文件（字幕等，不会生成 strm），已跳过: {len(non_video)} 个")
+        if skipped_ignored:
+            lines.append(f"🚫 命中忽略规则，未计入疑似: {len(skipped_ignored) if False else skipped_ignored} 个")
         if missing:
             lines.append("--------------------------------")
             lines.append("缺 strm 的文件：")
