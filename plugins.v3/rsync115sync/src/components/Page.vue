@@ -355,7 +355,9 @@
           </div>
 
           <!-- strm 交叉验证：疑似上传异常（独立于对账，来自 strm 插件视角） -->
-          <div v-if="strmSuspectCount" class="mt-4">
+          <!-- 有配置 strm 目录就渲染本区（即使清单为空）—— 否则用户找不到「主动扫描」
+               入口，而扫描正是清单为空时最需要的功能（发现从未被观察过的坏文件） -->
+          <div v-if="strmConfigured" class="mt-4">
             <div class="d-flex align-center flex-wrap ga-2 mb-2">
               <v-icon size="18" color="warning">mdi-television-classic-off</v-icon>
               <span class="font-weight-bold text-body-2">strm 疑似上传异常 ({{ strmSuspectCount }})</span>
@@ -363,8 +365,23 @@
                 观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 插件本身正常
               </span>
               <v-spacer></v-spacer>
+              <!-- 主动扫描：从**源端**出发反查缺 strm 的文件，因此不依赖「插件曾认为它
+                   同步成功」—— 补上「历史上传失败、从未被观察过」的盲区。纯本地比对 -->
+              <v-btn
+                size="x-small"
+                variant="tonal"
+                color="primary"
+                rounded="lg"
+                :loading="strmScanning"
+                :disabled="!statusData.strm_check_enabled"
+                @click="scanStrm"
+              >
+                <v-icon start size="14">mdi-magnify-scan</v-icon>
+                扫描缺 strm 的文件
+              </v-btn>
               <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
               <v-btn
+                v-if="strmSuspectCount"
                 size="x-small"
                 variant="tonal"
                 color="warning"
@@ -376,6 +393,21 @@
                 <v-icon start size="14">mdi-delete-restore</v-icon>
                 全部删旧重传 ({{ strmSuspectCount }})
               </v-btn>
+            </div>
+
+            <!-- 扫描结果提示（含截断警告与两种成因的说明） -->
+            <v-alert
+              v-if="strmScanMsg"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="rounded-lg mb-2 text-body-2"
+            >
+              <div class="font-weight-medium" style="white-space: pre-line">{{ strmScanMsg }}</div>
+            </v-alert>
+
+            <div v-if="!strmSuspectCount" class="text-caption text-medium-emphasis mb-2">
+              当前无疑似异常。若怀疑有文件上传失败但从未被观察过，点上方「扫描缺 strm 的文件」主动反查。
             </div>
             <div class="d-flex flex-column ga-2">
               <div v-for="key in strmPaged.slice" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
@@ -553,6 +585,9 @@ const itemLoading = ref('')
 const batchSyncing = ref(false)
 // 存量补传：扫描中状态
 const backfillScanning = ref(false)
+// strm 主动扫描：进度与结果提示
+const strmScanning = ref(false)
+const strmScanMsg = ref('')
 
 const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +
@@ -561,6 +596,11 @@ const failedCount = computed(() =>
 
 // strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
 const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspects || {}).length)
+
+// 是否已为某个映射配置了 strm 目录。后端 /status 未返回 sync_pairs，故用
+// 「开关开启」近似判定 —— 没配 strm_dir 时扫描会返回明确的失败提示，
+// 比整个区块都不显示更容易让用户明白该怎么配置。
+const strmConfigured = computed(() => statusData.value.strm_check_enabled !== false)
 const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}))
 
 // 选中项中有多少属于 strm 疑似清单。
@@ -830,6 +870,33 @@ async function batchSyncSelected() {
     actionMsg.value = '批量触发出错: ' + e.message
   } finally {
     batchSyncing.value = false
+  }
+}
+
+// 主动扫描缺 strm 的文件：从源端出发反查，不依赖「插件曾认为它同步成功」，
+// 因此能发现历史上传失败、从未进入过观察期的盲区文件。
+async function scanStrm() {
+  if (strmScanning.value) return
+  strmScanning.value = true
+  strmScanMsg.value = '正在扫描源端并逐个比对 strm…'
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_scan', {})
+    if (res && res.success) {
+      const d = res.data || {}
+      let msg = `已检查 ${d.checked || 0} 个文件，缺 strm ${d.found || 0} 个，新增疑似 ${d.added || 0} 个。`
+      if (d.truncated) {
+        msg += `\n⚠️ 已达到单次上限，结果被截断 —— 数量这么大通常说明 strm 插件本身没在工作，请先确认它的开关与媒体识别是否正常。`
+      }
+      msg += `\n💡 缺 strm 可能是「从未上传的存量文件」（应走补传），也可能是「上传了但 CD2 假成功」（用删旧重传），请先判断再处理。`
+      strmScanMsg.value = msg
+    } else {
+      strmScanMsg.value = res?.message || '扫描失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    strmScanMsg.value = '扫描出错: ' + e.message
+  } finally {
+    strmScanning.value = false
   }
 }
 

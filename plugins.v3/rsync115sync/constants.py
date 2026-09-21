@@ -103,3 +103,17 @@ MISSED_SCAN_INTERVAL = 1800
 # merely being touched, which would re-enqueue the same old file every round and
 # bypass the cool-down.
 MISSED_SCAN_ENABLED_DEFAULT = False
+
+# ---- 主动 strm 扫描 / proactive strm sweep ----
+# 单次主动扫描最多收集多少个「源端存在但缺 strm」的文件。
+#
+# 为什么需要上限：主动扫描的判据是「源端有、strm 端没有」，它**无法区分**两种来源 ——
+# 「从未上传过」（该走补传）与「上传了但 CD2 假成功」（该走删旧重传）。若 strm 插件
+# 本身大面积不工作（开关关闭、媒体未识别），一次扫描会涌出成千上万条，看板与
+# 通知都会被淹没。因此限量收集并在界面明确告知被截断的数量，让用户先判断
+# 「是 strm 插件没工作」还是「真有一批坏文件」。
+# Cap on a proactive sweep. The criterion (source present, strm absent) cannot
+# distinguish "never uploaded" from "uploaded but fake-succeeded", so a broken strm
+# plugin would flood the list; the cap plus an explicit truncation notice keeps that
+# diagnosable.
+STRM_SCAN_LIMIT = 500

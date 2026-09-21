@@ -83,6 +83,7 @@ from .constants import (  # noqa: E402
     RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
     SIDECAR_EXTS as _SIDECAR_EXTS,
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
+    STRM_SCAN_LIMIT,
     TOLERATED_EXIT_CODES as _TOLERATED_EXIT_CODES,
 )
 from .ignore import (  # noqa: E402
@@ -170,7 +171,15 @@ class Rsync115Sync(_PluginBase):
         #           为"该有而没有"，与真异常不可区分，误报源无法排除；
         #   解除：重传成功或 strm 已生成 → 移出清单。
         self._strm_watch: Dict[str, float] = {}        # key → 同步成功时间戳
-        self._strm_suspects: Dict[str, float] = {}     # key → 首次疑似时间戳
+        # key → {"ts": 首次疑似时间戳, "origin": "watch"|"scan"}
+        #
+        # 为什么值从「时间戳」变成「字典」：疑似有两个来源，可信度不同，
+        # 必须分开记录，否则用户看到一批疑似却不知道「为什么突然多出来这些」——
+        #   watch：同步成功过、宽限期到期仍无 strm（**可信度高**，该文件确实传过）
+        #   scan ：主动扫描发现源端有、strm 端没有（**可能是从未上传过**，属正常存量）
+        # 旧格式（纯 float）在 _load 时自动迁移，见 init_plugin。
+        # Value shape changed from float to dict to record the suspect's origin.
+        self._strm_suspects: Dict[str, Dict[str, Any]] = {}
         self._strm_grace_hours: float = 6.0            # 宽限期（小时），可配置
         self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
         self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
@@ -353,7 +362,7 @@ class Rsync115Sync(_PluginBase):
             self._strm_watch = saved_watch
         saved_suspects = self.get_data("strm_suspects") or {}
         if isinstance(saved_suspects, dict):
-            self._strm_suspects = saved_suspects
+            self._strm_suspects = self._migrate_strm_suspects(saved_suspects)
         self._strm_notified = bool(self.get_data("strm_notified") or False)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
@@ -819,6 +828,13 @@ class Rsync115Sync(_PluginBase):
                 "data": {"action": "backfill"}
             },
             {
+                "cmd": "/rsync_strm",
+                "event": EventType.PluginAction,
+                "desc": "扫描缺 strm 的媒体文件（或 /rsync_strm <文件名> 只查指定文件）",
+                "category": "工具",
+                "data": {"action": "strm"}
+            },
+            {
                 "cmd": "/rsync_backfill_clear",
                 "event": EventType.PluginAction,
                 "desc": "清空存量补传队列",
@@ -907,6 +923,7 @@ class Rsync115Sync(_PluginBase):
             # strm_suspects 字段一并返回，看板只依赖 /status 一处取数；
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
+            {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
         ]
 
@@ -2332,6 +2349,37 @@ class Rsync115Sync(_PluginBase):
     # 便于单测穷举边界（恰好到期 / 源端消失 / 映射被改）。本类保留的职责是
     # I/O 与持久化：探测文件系统、读写 _strm_watch / _strm_suspects。
 
+    @staticmethod
+    def _migrate_strm_suspects(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        把疑似清单迁移到带来源的新格式。
+
+        Migrate the suspect list to the origin-carrying shape.
+
+        v0.1.7 及更早存的是 `{key: 时间戳}`；v0.1.8 起改为
+        `{key: {"ts": 时间戳, "origin": "watch"|"scan"}}`。旧条目一律按
+        `watch` 处理 —— 那个版本只存在观察这一条来源，语义上就是正确的归属。
+        迁移必须容忍三种脏数据：非 dict、值不是数字、值已经是新格式。
+        Legacy entries are all attributed to `watch` (the only origin that existed
+        then). Tolerates non-dict input and already-migrated entries.
+        """
+        if not isinstance(raw, dict):
+            return {}
+        migrated: Dict[str, Dict[str, Any]] = {}
+        for key, value in raw.items():
+            if isinstance(value, dict) and "ts" in value:
+                migrated[str(key)] = {
+                    "ts": float(value.get("ts") or 0.0),
+                    "origin": str(value.get("origin") or _strm.ORIGIN_WATCH),
+                }
+                continue
+            try:
+                ts = float(value)
+            except (TypeError, ValueError):
+                ts = 0.0
+            migrated[str(key)] = {"ts": ts, "origin": _strm.ORIGIN_WATCH}
+        return migrated
+
     def _strm_expected_path(self, key: str) -> Optional[str]:
         """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
         return _strm.expected_path(key, self._sync_pairs)
@@ -2380,6 +2428,10 @@ class Rsync115Sync(_PluginBase):
         self._strm_last_check = now_ts
 
         if not self._strm_check_enabled or not self._strm_watch:
+            # 明确留痕：否则用户无法区分「strm 功能没工作」与「工作了但没有待观察项」，
+            # 只能看到一个静默返回，排查时完全没有依据（用户实测反馈过这一点）。
+            logger.debug(f"[Rsync115Sync] strm 巡检跳过："
+                         f"{'功能已关闭' if not self._strm_check_enabled else f'观察清单为空（疑似 {len(self._strm_suspects)} 个）'}")
             return {"checked": 0, "ok": 0, "new_suspects": 0}
 
         grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
@@ -2411,7 +2463,7 @@ class Rsync115Sync(_PluginBase):
             self._strm_watch.pop(k, None)
         for k in new_suspects:
             self._strm_watch.pop(k, None)
-            self._strm_suspects[k] = now_ts
+            self._strm_suspects[k] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
 
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
@@ -2487,6 +2539,168 @@ class Rsync115Sync(_PluginBase):
                         )
                     except Exception as e:
                         logger.error(f"[Rsync115Sync] strm 恢复通知发送失败: {e}")
+
+    # ---- 主动 strm 扫描（补上「从未被观察过」的盲区）----
+    #
+    # 为什么需要它：观察模式（_strm_check）只遍历自己登记过的文件，而登记只发生在
+    # **同步成功之后**。于是「历史上传失败、插件从未认为它成功过」的文件永远进不了
+    # 视野 —— 用户在 115 云端看到 `xxx.mkv..xrp4gj` 残留、挂载视图却显示正常，
+    # 插件这边毫无察觉（用户实测场景）。主动扫描反其道而行：从**源端**出发，
+    # 逐个查该有的 .strm 在不在，因此不依赖「插件自认为成功过」这个前提。
+    #
+    # 纯本地文件比对（源端 + strm 端都是本地路径），零 115 API。
+    # Purely local comparison of two local trees; never touches the 115 mount.
+
+    def _strm_scan(self, limit: int = STRM_SCAN_LIMIT) -> Dict[str, Any]:
+        """
+        主动扫描：找出源端存在但缺对应 .strm 的文件。
+
+        Proactive sweep for files whose own .strm never appeared.
+
+        ⚠️ 判据固有歧义（务必向用户说明）：它**无法区分**
+          a) 从未上传过的存量文件（正常，应走补传而非重传）
+          b) 上传了但 CD2 假成功（要抓的异常）
+        两者表现完全一致。因此结果一律标为 `scan` 来源的**疑似**，
+        且 UI/通知必须提示用户先判断是哪种情况。
+        """
+        if not self._strm_check_enabled:
+            return {"success": False, "message": "strm 交叉验证已关闭"}
+
+        configured = [p for p in self._sync_pairs
+                      if (p.get("strm_dir") or "").strip()]
+        if not configured:
+            return {"success": False,
+                    "message": "没有任何映射配置了 strm 目录，无法执行扫描。"
+                               "请在配置页为目标映射填写 strm 目录。"}
+
+        def _list_dir(path: str):
+            try:
+                return os.listdir(path)
+            except OSError:
+                return None
+
+        excluded = _excluded_dir_names(self._exclude_patterns)
+
+        def _valid_exts(pair):
+            return _valid_exts_of(self._media_extensions, pair.get("all_ext", False))
+
+        candidates, truncated, checked = _strm.scan_candidates(
+            self._sync_pairs, _list_dir, limit,
+            excluded_dirs=excluded, valid_exts_for=_valid_exts)
+
+        now_ts = time.time()
+        added = 0
+        for key in candidates:
+            # 已在疑似清单里的不重复计数，但**不刷新时间戳**
+            # （刷新会让「首次疑似时间」失去意义，用户无从判断它挂了多久）
+            if key in self._strm_suspects:
+                continue
+            self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_SCAN}
+            added += 1
+
+        if added:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.warning(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
+                           f"发现 {len(candidates)} 个缺 strm 的文件，新增 {added} 个疑似")
+        else:
+            logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
+                        f"未发现新的缺 strm 文件")
+
+        if added:
+            self._notify_strm_suspects(candidates[:added])
+
+        msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
+               f"（新增 {added} 个）。")
+        if truncated:
+            msg += (f"\n⚠️ 已达到单次上限 {limit} 个，**结果被截断** ——"
+                    f"若这个数字很大，更可能是 strm 插件本身没在工作，"
+                    f"请先确认它的开关与媒体识别是否正常。")
+        msg += "\n💡 注意：缺 strm 也可能是「从未上传过的存量文件」，"
+        msg += "这类应使用补传而不是删旧重传。"
+        return {"success": True, "message": msg,
+                "data": {"checked": checked, "found": len(candidates),
+                         "added": added, "truncated": truncated}}
+
+    def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
+        """
+        `/rsync_strm <关键字>`：只检查源端命中关键字的文件，不做整库遍历。
+
+        Check only the source files matching a keyword — no library-wide walk.
+
+        为什么需要这一条：用户往往**已经知道是哪个文件出了问题**（例如在 115
+        云端看到了 `xxx.mkv..xrp4gj` 残留），此时遍历整库既慢又无意义。
+        复用了与 `/rsync_retry <关键字>` 相同的源端匹配口径（扩展名过滤 +
+        排除目录裁剪 + 超限即拒），保证「搜到的」与「能重传的」是同一批文件。
+
+        纯本地操作，零 115 API；命中即写入疑似清单（来源标记为 scan）。
+        """
+        result = self._search_target_files(keyword)
+        if not result["matched"]:
+            self._post_reply(event,
+                             f"🔍 未在源目录中找到包含「{keyword}」的文件。")
+            return
+        if result["truncated"]:
+            self._post_reply(
+                event,
+                f"⚠️ 关键字「{keyword}」匹配到超过 {_RETRY_KEYWORD_LIMIT} 个文件，"
+                f"请用更精确的文件名缩小范围。本次未做任何检查。"
+            )
+            return
+
+        missing, present, no_strm_dir = [], [], []
+        for key in result["matched"]:
+            expected = self._strm_expected_path(key)
+            if expected is None:
+                no_strm_dir.append(key)
+                continue
+            if os.path.exists(expected):
+                present.append(key)
+            else:
+                missing.append(key)
+
+        now_ts = time.time()
+        added = 0
+        for key in missing:
+            if key in self._strm_suspects:
+                continue
+            self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_SCAN}
+            added += 1
+        if added:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.warning(f"[Rsync115Sync] 📺 关键字 strm 检查「{keyword}」："
+                           f"命中 {len(result['matched'])} 个，缺 strm {len(missing)} 个，"
+                           f"新增疑似 {added} 个: {_brief_paths(missing)}")
+
+        lines = [f"📺 strm 检查「{keyword}」",
+                 f"--------------------------------",
+                 f"命中文件: {len(result['matched'])} 个",
+                 f"✅ 已有 strm: {len(present)} 个",
+                 f"❌ 缺 strm  : {len(missing)} 个（新增疑似 {added} 个）"]
+        if no_strm_dir:
+            lines.append(f"⏭️ 所在映射未配 strm 目录，未检查: {len(no_strm_dir)} 个")
+        if missing:
+            lines.append("--------------------------------")
+            lines.append("缺 strm 的文件：")
+            for k in missing[:_MAX_LOGGED_PATHS]:
+                lines.append(f"• {k}")
+            if len(missing) > _MAX_LOGGED_PATHS:
+                lines.append(f"…（共 {len(missing)} 个）")
+            lines.append("")
+            lines.append("💡 可能是「从未上传」或「上传了但 CD2 假成功」。")
+            lines.append("   已在看板「对账异常清单」的 strm 疑似区，可勾选批量「删旧重传」。")
+        self._post_reply(event, "\n".join(lines))
+
+    def _api_strm_scan(self) -> Dict[str, Any]:
+        """
+        看板入口：主动扫描缺 strm 的文件（纯本地，零 115 API）。
+
+        **不加 `_is_running` 闸门**：扫描只读本地目录、不启动 rsync、不占窗口配额，
+        与同步任务互不干扰（`_scan_missed_ingest` 同理）。加闸门反而会让用户在
+        同步进行中无法排查问题。
+        No execution gate: this reads local directories only and shares no state with
+        a running rsync, so blocking it during a sync would only hurt diagnostics.
+        """
+        return self._strm_scan()
 
     def _api_strm_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2910,6 +3124,60 @@ class Rsync115Sync(_PluginBase):
             )
             self._start_sync_thread(mode="backfill", custom_files=list(candidates),
                                     channel_event=event)
+
+        elif action == "strm":
+            # /rsync_strm         → 全量主动扫描
+            # /rsync_strm <关键字> → 只查指定文件（不遍历整库）
+            #
+            # 两种模式并存的原因：全量扫描是「我不知道哪些文件有问题」的答案，
+            # 但当用户**已经明确知道**是哪个文件时（例如在 115 云端看到残留），
+            # 遍历整库纯属浪费 —— 关键字模式直接定位那一个，秒回。
+            if not self._strm_check_enabled:
+                self._post_reply(event, "⚠️ strm 交叉验证已在配置页关闭，无法扫描。")
+                return
+            configured = [p for p in self._sync_pairs if (p.get("strm_dir") or "").strip()]
+            if not configured:
+                self._post_reply(
+                    event,
+                    "⚠️ 没有任何映射配置了 strm 目录，无法扫描。\n"
+                    "请到配置页为需要验证的映射填写「strm 目录」（strm 插件的输出根目录）。"
+                )
+                return
+
+            if text_arg:
+                self._reply_strm_keyword(event, text_arg)
+                return
+
+            self._post_reply(event, "🔍 正在扫描源端并逐个比对 strm（纯本地，不访问 115）...")
+            try:
+                result = self._strm_scan()
+            except Exception as e:
+                logger.error(f"[Rsync115Sync] 主动 strm 扫描异常: {e}\n{traceback.format_exc()}")
+                self._post_reply(event, f"❌ 扫描过程出错：{e}")
+                return
+            if not result.get("success"):
+                self._post_reply(event, f"⚠️ {result.get('message')}")
+                return
+            data = result.get("data") or {}
+            reply = (
+                f"📺 strm 扫描完成\n"
+                f"--------------------------------\n"
+                f"已检查源端文件: {data.get('checked', 0)} 个\n"
+                f"缺对应 strm: {data.get('found', 0)} 个\n"
+                f"新增疑似异常: {data.get('added', 0)} 个\n"
+            )
+            if data.get("truncated"):
+                reply += (f"⚠️ 已达到单次上限 {STRM_SCAN_LIMIT} 个，结果被截断。\n"
+                          f"   数量这么大通常说明 strm 插件本身没在工作，"
+                          f"请先确认它的开关与媒体识别是否正常。\n")
+            reply += (
+                f"--------------------------------\n"
+                f"💡 缺 strm 有**两种**可能，处理方式不同：\n"
+                f"• 从未上传过的存量文件 → 用 /rsync_backfill 补传\n"
+                f"• 上传了但 CD2 假成功（云端可能有 ..xxx 残留）→ 用看板「删旧重传」\n"
+                f"💡 疑似清单已在看板「对账异常清单」标签内，可勾选批量处理。"
+            )
+            self._post_reply(event, reply)
 
         elif action == "backfill_clear":
             if self._is_running:

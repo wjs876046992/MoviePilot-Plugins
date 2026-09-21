@@ -110,3 +110,73 @@ def grace_secs_of(grace_hours: Any) -> float:
     except (TypeError, ValueError):
         hours = DEFAULT_GRACE_HOURS
     return max(MIN_GRACE_HOURS, hours) * 3600
+
+
+# 疑似来源标记。主动扫描与同步后观察的判据不同、可信度也不同，必须在数据里
+# 分开记录，否则用户看到一堆疑似却不知道「为什么突然多出来这些」。
+# Suspect origins. A proactive scan and a post-sync watch have different criteria
+# and different confidence, so the origin must be recorded with the entry.
+ORIGIN_WATCH = "watch"      # 同步成功后观察到期仍未生成（可信度高：该文件确实传过）
+ORIGIN_SCAN = "scan"        # 主动扫描发现源端有、strm 端没有（**可能是从未上传过**）
+
+
+def scan_candidates(pairs: List[Dict[str, Any]], list_dir, limit: int,
+                    excluded_dirs=None, valid_exts_for=None) -> Tuple[List[str], bool, int]:
+    """
+    主动扫描：找出「源端存在、但对应 .strm 不存在」的文件。
+
+    Proactive sweep: find files whose own .strm has not appeared.
+
+    ⚠️ **判据的固有歧义**：本函数只能看到「源端有、strm 无」，**无法区分**
+      a) 该文件从未上传过（应当走补传，不是异常）
+      b) 上传了但 CD2 假成功（这才是要抓的）
+    两者的表现完全一样。因此调用方必须把结果标为「疑似」而非「确诊」，
+    并在界面与通知里说明这一点 —— 否则用户会把整库未同步的存量当成坏文件。
+    The criterion cannot distinguish "never uploaded" from "fake success"; the
+    caller must present results as suspects, not conclusions.
+
+    参数列表由调用方注入（list_dir / valid_exts_for），本函数保持纯逻辑：
+    不直接读配置、不持有状态，便于单测穷举。
+
+    :param list_dir: 可调用对象，接收目录路径返回文件名列表（失败返回 None）
+    :param excluded_dirs: 需要剪枝的目录名集合（@eaDir 等）
+    :param valid_exts_for: 接收 pair 返回扩展名白名单或 None 的可调用对象
+    :return: (候选 key 列表, 是否被截断, 已检查的文件总数)
+    """
+    import os as _os
+
+    excluded_dirs = excluded_dirs or set()
+    candidates: List[str] = []
+    truncated = False
+    checked = 0
+
+    for pair in pairs:
+        src_root = (pair.get("src") or "").strip().rstrip("/")
+        strm_dir = (pair.get("strm_dir") or "").strip().rstrip("/")
+        if not src_root or not strm_dir:
+            continue  # 未配 strm_dir 的映射不参与（与观察模式一致）
+        pn = (pair.get("name") or src_root).strip()
+        exts = valid_exts_for(pair) if valid_exts_for else None
+
+        for root, dirnames, filenames in _os.walk(src_root):
+            dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
+            for fn in filenames:
+                if exts is not None:
+                    if _os.path.splitext(fn)[-1].lstrip(".").lower() not in exts:
+                        continue
+                checked += 1
+                rel_f = _os.path.relpath(_os.path.join(root, fn), src_root)
+                stem, _ = _os.path.splitext(rel_f)
+                if _os.path.exists(_os.path.join(strm_dir, stem + ".strm")):
+                    continue  # strm 存在 → 正常
+                candidates.append(f"{pn}:{rel_f}")
+                if len(candidates) >= limit:
+                    # 达到上限即停：继续扫毫无收益（结果不会保留），只浪费磁盘 IO
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+
+    return candidates, truncated, checked
