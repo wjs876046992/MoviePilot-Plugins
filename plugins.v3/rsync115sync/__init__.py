@@ -463,11 +463,58 @@ class Rsync115Sync(_PluginBase):
         if not self._enabled or not self._listen_transfer:
             return
 
+        # 按平台推荐方式读取 payload：优先用 event.snapshot() 拿到**类型化快照**，
+        # 失败时回退到原始 dict。
+        #
+        # 为什么用 snapshot()：宿主对 TransferComplete 登记了契约
+        # （app/runtime/event/contracts.py 的 _PAYLOAD_MODELS →
+        # TransferResultContractData，且 TransferComplete 在 _SNAPSHOT_EVENTS 内），
+        # 快照会按契约把 payload 解析成 Pydantic 模型，字段名与类型由宿主保证；
+        # 而原始 event_data 是「保持插件旧对象字段不变」的兼容形状，
+        # 字段一旦调整就只会静默读到空值 —— 这正是本项目前几轮反复踩的坑。
+        #
+        # 但**必须保留回退**：旧宿主可能没有 snapshot()，或事件未登记契约
+        # （此时 snapshot.payload 为 None），直接改用快照会让原本能工作的
+        # 事件全部读不到数据。故两者并存，并在日志中标注实际来源。
+        #
+        # Prefer the platform-recommended typed snapshot, but keep the raw dict as a
+        # fallback: an unregistered contract or older host yields payload=None, and
+        # dropping the raw path would break otherwise-working events.
+        transfer_info = None
+        file_item = None
+        payload_source = "raw"
+        snapshot = None
+        snapshot_fn = getattr(event, "snapshot", None)
+        if callable(snapshot_fn):
+            try:
+                snapshot = snapshot_fn()
+            except Exception as snap_err:
+                # 快照解析失败绝不能影响事件处理，直接走回退
+                logger.debug(f"[Rsync115Sync] event.snapshot() 调用失败，回退原始 dict: {snap_err}")
+                snapshot = None
+        if snapshot is not None:
+            typed = getattr(snapshot, "payload", None)
+            if typed is not None:
+                transfer_info = getattr(typed, "transferinfo", None)
+                file_item = getattr(typed, "fileitem", None)
+                if transfer_info is not None:
+                    payload_source = "snapshot"
+                    # 契约存在但校验有错时不阻断处理，只留痕便于排查字段变更
+                    if getattr(snapshot, "errors", None):
+                        logger.debug(f"[Rsync115Sync] 事件快照存在校验告警（不影响处理）: "
+                                     f"{getattr(snapshot, 'errors', ())}")
+
+        # 回退：原始 dict（兼容未登记契约的旧宿主）
         event_data = event.event_data or {}
-        transfer_info = event_data.get("transferinfo")
+        if transfer_info is None:
+            transfer_info = event_data.get("transferinfo")
+        if file_item is None:
+            file_item = event_data.get("fileitem")
+
         if not transfer_info:
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 收到整理完成事件但缺少 transferinfo，已忽略"
-                        f"（事件={getattr(event.event_type, 'value', event.event_type)}）")
+                        f"（事件={getattr(event.event_type, 'value', event.event_type)}"
+                        f"，读取方式={payload_source}）")
             return
 
         # 路径来源按可靠性降级：file_list_new（实际落库路径，最可靠）
@@ -493,7 +540,7 @@ class Rsync115Sync(_PluginBase):
             if file_list:
                 path_source = "file_list"
         if not file_list:
-            file_item = event_data.get("fileitem")
+            # file_item 已在上方按 snapshot → 原始 dict 的顺序解析好
             fallback_path = getattr(file_item, "path", None) if file_item else None
             if fallback_path:
                 file_list = [fallback_path]
@@ -581,7 +628,7 @@ class Rsync115Sync(_PluginBase):
             if self._missed_queue:
                 self.save_data("missed_queue", self._missed_queue)
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 监听到 {added_count} 个新入库文件"
-                        f"（事件={event_value}"
+                        f"（事件={event_value}，读取方式={payload_source}"
                         f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}"
                         f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}）"
                         f"，已加入 {self._delay_hours}h 延迟冷却队列: "
@@ -590,7 +637,7 @@ class Rsync115Sync(_PluginBase):
             # 重复投递不是问题（幂等已处理），但值得留痕，否则会误判成「没监听」
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 事件中的 {duplicate_count} 个文件"
                         f"已在冷却队列中，未刷新其冷却计时"
-                        f"（事件={event_value}，队列共 {len(self._pending_queue)} 条）")
+                        f"（事件={event_value}，队列共 {len(self._pending_queue)} 条，读取方式={payload_source}）")
         elif missing_paths and not unmatched_paths:
             # 归属映射明确、但容器内读不到该文件。
             # ⚠️ 这是**最值得警惕**的一类：若路径前缀与你的映射一致却读不到，
@@ -609,7 +656,7 @@ class Rsync115Sync(_PluginBase):
                 (p.get("src") or "?") for p in self._sync_pairs
             ) or "（尚未配置任何映射）"
             logger.info(f"[Rsync115Sync] v{self.plugin_version} 入库事件路径不在任何映射内"
-                        f"（事件={event_value}，共 {len(unmatched_paths)} 个）: "
+                        f"（事件={event_value}，共 {len(unmatched_paths)} 个，读取方式={payload_source}）: "
                         f"{_brief_paths(unmatched_paths)}"
                         f"；当前映射的源目录: {mapping_desc}")
         else:
