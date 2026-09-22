@@ -561,6 +561,27 @@ def test_real_route_accepts_all_documented_payload_shapes(tmp_path):
         "TV:array.mkv", "TV:json.mkv", "TV:query.mkv", "TV:text.mkv"]
 
 
+def test_real_route_enqueues_every_path_in_the_list(tmp_path):
+    """
+    一次推多个文件时**全部**入队，不是只取第一个。
+
+    端点接收侧有两层：`_ingest_from_request` 负责把请求体解码成 str/dict/list，
+    `_webhook_payload_of` 才做形态归一。直接在 `_ingest_from_parts` 上传 bytes
+    会绕过解码层（真实请求永远先经 starlette 解码），于是这个断言的真正价值是
+    钉住**真实路由**下的多路径行为 —— 走 TestClient 发真请求，不经手写 dict。
+    """
+    src = tmp_path / "TV"
+    plugin = _plugin(str(src), allowlist=str(src))
+    client, _ = _real_route(plugin)
+    paths = [_media(str(src), f"e0{i}.mkv") for i in (1, 2, 3)]
+
+    res = client.post("/webhook", json={"paths": paths})
+
+    assert res.json()["success"] is True
+    assert res.json()["data"]["added"] == 3
+    assert sorted(plugin._pending_queue) == ["TV:e01.mkv", "TV:e02.mkv", "TV:e03.mkv"]
+
+
 def test_real_route_reports_source_ip(tmp_path):
     """来源 IP 取自 request.client —— 只有真注入才拿得到，IP 白名单全靠它。"""
     src = tmp_path / "TV"
@@ -780,6 +801,72 @@ def test_webhook_parser_reads_emby_style_form_encoded_payload(tmp_path):
         args={"source": "rsync115sync"})
 
     assert info is not None and info.item_path == path
+
+
+def test_claimed_multi_path_payload_enqueues_every_path(tmp_path):
+    """
+    **认领路径不能丢文件**：认领时写进 json_object 的多路径，回来时必须全部入队。
+
+    `webhook_parser` 按契约只能把第一个路径放进 `item_path`，其余全部塞进
+    `json_object["paths"]`；而接收侧曾写成「item_path 有值就直接返回」——
+    一次推 3 个文件只有第 1 个入队，后 2 个静默消失，且认领日志显示完全成功。
+    本用例走**完整往返**（认领 → 宿主广播 → 事件处理），而不是分别断言两端，
+    正因为这个 bug 只在两端拼接处才出现。
+    """
+    src = tmp_path / "TV"
+    paths = [_media(str(src), f"S01E0{i}.mkv") for i in (1, 2, 3)]
+    plugin = _parser_plugin(str(src))
+
+    info = plugin.webhook_parser(
+        body=json.dumps({"paths": paths}).encode(),
+        form=None, args={"source": "rsync115sync"})
+    assert info is not None, "前置条件：该报文应被认领"
+
+    # 宿主会把解析结果原样广播回来 —— 这里复现那一步
+    plugin._handle_webhook_event(SimpleNamespace(
+        event_type=SimpleNamespace(value="webhook.message"),
+        event_data={
+            "channel": info.channel, "event": info.event,
+            "server_name": info.server_name, "item_path": info.item_path,
+            "json_object": info.json_object,
+        }))
+
+    assert sorted(plugin._pending_queue) == [
+        "TV:S01E01.mkv", "TV:S01E02.mkv", "TV:S01E03.mkv"], (
+        "认领时命中的路径数应等于入队数 —— 少一个就是静默丢文件"
+    )
+
+
+def test_emby_shape_item_path_and_json_object_are_deduped(tmp_path):
+    """
+    Emby 真实形态：`item_path` 与 `json_object.Item.Path` 指向同一个文件。
+
+    合并两处来源（见 extract_paths 的说明）后必须去重 —— 否则同一个文件会被
+    当成两条独立路径去重失败，`added` 计数虚高一倍，用户据此误判发送端在重复推送。
+    """
+    from app.plugins.rsync115sync import webhook as wh
+
+    src = tmp_path / "TV"
+    path = _media(str(src))
+
+    paths, source = wh.extract_paths(SimpleNamespace(
+        item_path=path, json_object={"Item": {"Path": path, "Type": "Episode"}}))
+
+    assert paths == [path], f"同一文件被当成多条路径：{paths}"
+    # 来源标注只列**贡献了新路径**的那一处：json_object 与 item_path 重复时
+    # 不应出现在标注里，否则日志会让人以为报文里有两处不同的路径来源。
+    assert source == "item_path", f"重复来源不应被标注为独立来源：{source}"
+
+    # 反过来：json_object 带来新路径时，标注必须体现出来（否则丢文件无从排查）
+    paths, source = wh.extract_paths(SimpleNamespace(
+        item_path=path, json_object={"paths": [path, str(src / "S01E02.mkv")]}))
+    assert len(paths) == 2 and "json_object.paths" in source
+
+    # 端到端：入队一次，且重复投递不刷新冷却
+    plugin = _parser_plugin(str(src))
+    plugin._handle_webhook_event(_webhook_event(
+        item_path=path, json_object={"Item": {"Path": path}}))
+    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
 
 
 def test_webhook_parser_swallows_malformed_payload(tmp_path):

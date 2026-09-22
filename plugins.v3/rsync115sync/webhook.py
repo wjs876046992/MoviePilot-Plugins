@@ -201,7 +201,15 @@ def extract_paths(event_data: Any) -> Tuple[List[str], str]:
       1. `item_path` —— 宿主 Emby 解析器保证填好的字段（`WebhookEventInfo.item_path`）
       2. `json_object` 里的 Item.Path —— 原始 Emby 报文（`json_object` 是宿主解析器
          塞进去的**原始 dict**，字段名以 Emby 为准）
+      2b. `json_object.paths` —— 本插件**自己认领**时写进去的多路径清单
+          （`webhook_parser` 的返回值，见 __init__.py）
       3. 顶层候选字段 + 一层嵌套容器 —— 覆盖非 Emby 发送端（自建脚本 / MDC-ng）
+
+    ⚠️ 1 与 2 必须**合并**而不是「1 有值就直接返回」。理由是自相矛盾会丢文件：
+    `webhook_parser` 认领时把命中的**全部**路径写进 `json_object["paths"]`，
+    而 `item_path` 按契约只能放**第一个** —— 一个目录型 webhook 推送 3 个文件时，
+    「1 有值就返回」会让后 2 个静默消失，而日志里那次认领看上去完全成功。
+    Emby 的真实报文两者都指向同一个文件，去重后行为不变。
 
     第 3 步是**尽力而为**：拿不到就是拿不到，绝不从 item_name 之类字段推测路径 ——
     本项目在「凭推测写机制」上吃过多次亏（见 DEVELOPMENT.md 3.8.1/3.12）。
@@ -210,13 +218,20 @@ def extract_paths(event_data: Any) -> Tuple[List[str], str]:
     if not data:
         return [], "空报文"
 
-    # 1) 宿主解析器给的规范字段
-    top = _normalize_path(read_field(event_data, "item_path")) or _normalize_path(
-        data.get("item_path"))
-    if top:
-        return [top], "item_path"
+    found: List[str] = []
+    labels: List[str] = []
 
-    # 2) 原始报文（Emby 形态：json_object.Item.Path）
+    def _add(path: Optional[str]) -> None:
+        if path and path not in found:
+            found.append(path)
+
+    # 1) 宿主解析器给的规范字段
+    _add(_normalize_path(read_field(event_data, "item_path")) or _normalize_path(
+        data.get("item_path")))
+    if found:
+        labels.append("item_path")
+
+    # 2) 原始报文（Emby 形态：json_object.Item.Path）+ 认领时写入的多路径清单
     raw = data.get("json_object")
     if isinstance(raw, (str, bytes)):
         try:
@@ -225,14 +240,22 @@ def extract_paths(event_data: Any) -> Tuple[List[str], str]:
         except Exception:
             raw = None
     if isinstance(raw, dict):
-        found: List[str] = []
+        before = len(found)
+        listed = raw.get("paths")
+        if isinstance(listed, (list, tuple)):
+            for entry in listed:
+                _add(_normalize_path(entry))
+        if len(found) > before:
+            labels.append("json_object.paths")
+        before = len(found)
         for holder in (raw.get("Item"), raw.get("item"), raw):
             if isinstance(holder, dict):
-                path = _normalize_path(holder.get("Path") or holder.get("path"))
-                if path and path not in found:
-                    found.append(path)
-        if found:
-            return found, "json_object.Item.Path"
+                _add(_normalize_path(holder.get("Path") or holder.get("path")))
+        if len(found) > before:
+            labels.append("json_object.Item.Path")
+
+    if found:
+        return found, "，".join(labels)
 
     # 3) 其它发送端的候选字段
     candidates = _collect_from_mapping(data)
