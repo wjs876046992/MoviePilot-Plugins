@@ -154,6 +154,23 @@
                   以绕过 CD2 挂载视图「看起来正常」的假成功
                 </v-tooltip>
               </v-btn>
+              <v-btn
+                v-if="selectMode && strmSelectedCount"
+                size="small"
+                variant="tonal"
+                color="secondary"
+                rounded="lg"
+                :loading="batchSyncing"
+                :disabled="!selectedKeys.length || statusData.is_running"
+                @click="ignoreStrmSuspects(selectedKeys.filter((k) => k in (statusData.strm_suspects || {})))"
+              >
+                <v-icon start size="16">mdi-eye-off-outline</v-icon>
+                忽略选中 ({{ strmSelectedCount }})
+                <v-tooltip activator="parent" location="top" max-width="320">
+                  将选中的 strm 疑似条目以「精确匹配」加入忽略规则并移出清单，
+                  之后不再报告。恢复方式：到「已忽略」清单删除对应规则。
+                </v-tooltip>
+              </v-btn>
             </div>
           </div>
 
@@ -665,6 +682,24 @@
                       删除 115 端该文件后立即重传（先删再传，绕过 CD2 视图假成功）
                     </v-tooltip>
                   </v-btn>
+                  <v-btn
+                    size="x-small"
+                    variant="tonal"
+                    color="secondary"
+                    rounded="lg"
+                    class="px-2"
+                    :loading="itemLoading === 'strmign:' + key"
+                    @click="ignoreStrmSuspects([key])"
+                  >
+                    <v-icon start size="14">mdi-eye-off-outline</v-icon>
+                    忽略
+                    <v-tooltip activator="parent" location="top" max-width="320">
+                      以「精确匹配」加入忽略规则并移出疑似清单，<br>
+                      之后同步/巡检不再报告该文件。<br>
+                      恢复方式：到「已忽略」清单删除对应规则。<br>
+                      适用于确认是误报、且不想再被提醒的条目。
+                    </v-tooltip>
+                  </v-btn>
                 </div>
               </div>
             </div>
@@ -1104,6 +1139,44 @@ async function retryStrmSuspect(key) {
     actionMsg.value = '重传出错: ' + e.message
   } finally {
     itemLoading.value = ''
+  }
+}
+
+// 忽略疑似条目（单条与批量共用同一函数，避免两处文案/状态处理漂移）。
+//
+// 语义：以**精确匹配**加入忽略规则并移出疑似清单 —— 只删清单的话下一轮
+// 同步又会把同一文件报回来，用户的操作等于没做；忽略规则才是持久判定。
+// 恢复方式：到「已忽略」清单删除对应规则。
+async function ignoreStrmSuspects(keys) {
+  if (!keys || !keys.length) return
+  const label = keys.length === 1 ? keys[0] : `${keys.length} 个文件`
+  const ok = window.confirm(
+    `将忽略 ${label}：\n\n` +
+    `1. 以「精确匹配」加入忽略规则（只忽略这一个文件，不波及同名其它集数）\n` +
+    `2. 立即从疑似清单移除，之后同步/巡检不再报告\n\n` +
+    `⚠️ 忽略后本插件将不再为它做任何 strm 提醒。若之后想恢复对账，\n` +
+    `请到「已忽略」清单删除对应规则。\n\n确定继续吗？`
+  )
+  if (!ok) return
+  const loadingKey = keys.length === 1 ? 'strmign:' + keys[0] : 'strmign:batch'
+  if (keys.length === 1) itemLoading.value = loadingKey
+  else batchSyncing.value = true
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_ignore', { keys })
+    if (res && res.success) {
+      strmScanMsg.value = res.message || '已忽略'
+      // 被忽略的条目已离场，勾选状态一并清掉，避免后续批量操作对着不存在的条目提交
+      const gone = new Set(res.data?.ignored || [])
+      if (gone.size) selectedKeys.value = selectedKeys.value.filter((k) => !gone.has(k))
+    } else {
+      strmScanMsg.value = res?.message || '忽略失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    strmScanMsg.value = '忽略出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
+    batchSyncing.value = false
   }
 }
 

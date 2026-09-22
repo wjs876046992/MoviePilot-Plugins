@@ -120,7 +120,7 @@ class Rsync115Sync(_PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.1.9"
+    plugin_version = "0.1.10"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -981,6 +981,7 @@ class Rsync115Sync(_PluginBase):
             {"path": "/strm_probe", "endpoint": self._api_strm_probe, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_ignore", "endpoint": self._api_strm_ignore, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
             # ⚠️ 本插件**唯一**依赖外部插件的端点：它把命令交给 P115StrmHelper 执行。
@@ -3001,6 +3002,51 @@ class Rsync115Sync(_PluginBase):
             msg = f"没有发现无效条目（当前 {len(self._strm_suspects)} 个）。"
         return {"success": True, "message": msg,
                 "data": {"removed": removed, "remaining": len(self._strm_suspects)}}
+
+    def _api_strm_ignore(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        看板入口：把疑似清单条目加入忽略规则（**精确匹配**）并移出清单。
+
+        Dashboard entry point: add suspect entries to the ignore list (exact match)
+        and drop them from the suspect list.
+
+        为什么走 _add_ignore_rule 而不是只把条目从清单里删掉：只删清单的话，
+        下一轮同步/巡检会把同一个文件再报一遍 —— 用户的操作等于没做。
+        忽略规则才是持久判定，_add_ignore_rule 内部已含「联动清理两个清单 +
+        落盘 + 重置通知闩锁」，本接口不复制那份逻辑。
+
+        为什么用精确匹配：key 是「映射名:源端相对路径」，contains 会把同目录
+        同名文件（如 S01E01/S01E01.strm 之外的同前缀集）误杀；用户此刻面对的
+        是**一个具体条目**，意图就是只忽略它。想扩大范围仍可在「已忽略」清单
+        里手动改成 contains 规则。
+
+        护栏与 /strm_retry 同口径：只接受疑似清单内的 key。这既是权限边界
+        （不允许构造任意路径写忽略规则），也是 UX 边界 —— 该入口的语义是
+        「处理清单里这条误报」，不是通用忽略编辑器。
+        """
+        keys = body.get("keys") or []
+        if not keys:
+            return {"success": False, "message": "未指定要忽略的文件"}
+        allowed = [k for k in keys if k in self._strm_suspects]
+        not_allowed = [k for k in keys if k not in self._strm_suspects]
+        if not_allowed:
+            logger.warning(f"[Rsync115Sync] strm 忽略请求含非疑似清单条目，已忽略: {not_allowed[:3]}")
+        if not allowed:
+            return {"success": False, "message": "所选文件不在疑似异常清单中"}
+
+        added, already = [], []
+        for key in allowed:
+            if self._add_ignore_rule(rule=key, match="exact", created_by="Web", source="strm_dashboard"):
+                added.append(key)
+            else:
+                already.append(key)
+        if added:
+            msg = (f"已忽略 {len(added)} 个文件（精确匹配），并已从疑似清单移除。\n"
+                   f"如需恢复对账，请到「已忽略」清单删除对应规则。")
+        else:
+            msg = "所选文件均已在忽略清单中，未做改动。"
+        return {"success": True, "message": msg,
+                "data": {"ignored": added, "already_ignored": already}}
 
     def _check_watch_now(self, keys: List[str]) -> Dict[str, Any]:
         """

@@ -513,6 +513,44 @@ async function retryStrmSuspect(key) {
   }
 }
 
+// 忽略疑似条目（单条与批量共用同一函数，避免两处文案/状态处理漂移）。
+//
+// 语义：以**精确匹配**加入忽略规则并移出疑似清单 —— 只删清单的话下一轮
+// 同步又会把同一文件报回来，用户的操作等于没做；忽略规则才是持久判定。
+// 恢复方式：到「已忽略」清单删除对应规则。
+async function ignoreStrmSuspects(keys) {
+  if (!keys || !keys.length) return
+  const label = keys.length === 1 ? keys[0] : `${keys.length} 个文件`;
+  const ok = window.confirm(
+    `将忽略 ${label}：\n\n` +
+    `1. 以「精确匹配」加入忽略规则（只忽略这一个文件，不波及同名其它集数）\n` +
+    `2. 立即从疑似清单移除，之后同步/巡检不再报告\n\n` +
+    `⚠️ 忽略后本插件将不再为它做任何 strm 提醒。若之后想恢复对账，\n` +
+    `请到「已忽略」清单删除对应规则。\n\n确定继续吗？`
+  );
+  if (!ok) return
+  const loadingKey = keys.length === 1 ? 'strmign:' + keys[0] : 'strmign:batch';
+  if (keys.length === 1) itemLoading.value = loadingKey;
+  else batchSyncing.value = true;
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_ignore', { keys });
+    if (res && res.success) {
+      strmScanMsg.value = res.message || '已忽略';
+      // 被忽略的条目已离场，勾选状态一并清掉，避免后续批量操作对着不存在的条目提交
+      const gone = new Set(res.data?.ignored || []);
+      if (gone.size) selectedKeys.value = selectedKeys.value.filter((k) => !gone.has(k));
+    } else {
+      strmScanMsg.value = res?.message || '忽略失败';
+    }
+    await fetchStatus();
+  } catch (e) {
+    strmScanMsg.value = '忽略出错: ' + e.message;
+  } finally {
+    itemLoading.value = '';
+    batchSyncing.value = false;
+  }
+}
+
 // 批量触发选中条目。
 //
 // 通道选择依据是「选中项的成分」而不是当前标签页：勾选状态跨分组保留，
@@ -885,7 +923,7 @@ return (_ctx, _cache) => {
                 color: "primary",
                 size: "22"
               }, {
-                default: _withCtx(() => [...(_cache[11] || (_cache[11] = [
+                default: _withCtx(() => [...(_cache[12] || (_cache[12] = [
                   _createTextVNode("mdi-cloud-sync", -1)
                 ]))]),
                 _: 1
@@ -905,7 +943,7 @@ return (_ctx, _cache) => {
               }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_icon, { size: "18" }, {
-                    default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+                    default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
                       _createTextVNode("mdi-refresh", -1)
                     ]))]),
                     _: 1
@@ -914,7 +952,7 @@ return (_ctx, _cache) => {
                     activator: "parent",
                     location: "bottom"
                   }, {
-                    default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
+                    default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
                       _createTextVNode("刷新状态", -1)
                     ]))]),
                     _: 1
@@ -935,12 +973,12 @@ return (_ctx, _cache) => {
                     start: "",
                     size: "16"
                   }, {
-                    default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
+                    default: _withCtx(() => [...(_cache[17] || (_cache[17] = [
                       _createTextVNode("mdi-cog-outline", -1)
                     ]))]),
                     _: 1
                   }),
-                  _cache[17] || (_cache[17] = _createTextVNode(" 配置 ", -1))
+                  _cache[18] || (_cache[18] = _createTextVNode(" 配置 ", -1))
                 ]),
                 _: 1
               }),
@@ -953,7 +991,7 @@ return (_ctx, _cache) => {
               }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_icon, { size: "18" }, {
-                    default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
+                    default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
                       _createTextVNode("mdi-close", -1)
                     ]))]),
                     _: 1
@@ -962,7 +1000,7 @@ return (_ctx, _cache) => {
                     activator: "parent",
                     location: "bottom"
                   }, {
-                    default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+                    default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
                       _createTextVNode("关闭", -1)
                     ]))]),
                     _: 1
@@ -976,7 +1014,7 @@ return (_ctx, _cache) => {
             _createElementVNode("div", null, [
               _createVNode(_component_v_card_title, { class: "text-subtitle-1 font-weight-bold pa-0 d-flex align-center flex-wrap ga-2" }, {
                 default: _withCtx(() => [
-                  _cache[12] || (_cache[12] = _createElementVNode("span", null, "115 网盘同步监控", -1)),
+                  _cache[13] || (_cache[13] = _createElementVNode("span", null, "115 网盘同步监控", -1)),
                   _createVNode(_component_v_chip, {
                     size: "x-small",
                     variant: "tonal",
@@ -991,7 +1029,7 @@ return (_ctx, _cache) => {
                 ]),
                 _: 1
               }),
-              _cache[13] || (_cache[13] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "监控入库延迟冷却进度、双向对账异常与一键快速定向重试", -1))
+              _cache[14] || (_cache[14] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "监控入库延迟冷却进度、双向对账异常与一键快速定向重试", -1))
             ])
           ]),
           _: 1
@@ -1021,7 +1059,7 @@ return (_ctx, _cache) => {
                   default: _withCtx(() => [
                     _createElementVNode("div", _hoisted_7, [
                       _createElementVNode("div", _hoisted_8, _toDisplayString(statusData.value.ready_count || 0), 1),
-                      _cache[20] || (_cache[20] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-1" }, "冷却就绪待传输", -1))
+                      _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-1" }, "冷却就绪待传输", -1))
                     ])
                   ]),
                   _: 1
@@ -1034,7 +1072,7 @@ return (_ctx, _cache) => {
                   default: _withCtx(() => [
                     _createElementVNode("div", _hoisted_9, [
                       _createElementVNode("div", _hoisted_10, _toDisplayString((statusData.value.last_status?.missing_files?.length || 0) + (statusData.value.last_status?.corrupt_files?.length || 0)), 1),
-                      _cache[21] || (_cache[21] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-1" }, "待重试缺失/残缺文件", -1))
+                      _cache[22] || (_cache[22] = _createElementVNode("div", { class: "text-caption text-medium-emphasis mt-1" }, "待重试缺失/残缺文件", -1))
                     ])
                   ]),
                   _: 1
@@ -1056,7 +1094,7 @@ return (_ctx, _cache) => {
                       : _createCommentVNode("", true),
                     (statusData.value.backfill_remaining)
                       ? (_openBlock(), _createElementBlock("div", _hoisted_12, [
-                          _cache[22] || (_cache[22] = _createTextVNode(" 存量补传进行中：剩余 ", -1)),
+                          _cache[23] || (_cache[23] = _createTextVNode(" 存量补传进行中：剩余 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(statusData.value.backfill_remaining), 1),
                           (statusData.value.backfill_total)
                             ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
@@ -1068,21 +1106,21 @@ return (_ctx, _cache) => {
                       : _createCommentVNode("", true),
                     (statusData.value.stale_count)
                       ? (_openBlock(), _createElementBlock("div", _hoisted_13, [
-                          _cache[23] || (_cache[23] = _createTextVNode(" 🗑️ ", -1)),
+                          _cache[24] || (_cache[24] = _createTextVNode(" 🗑️ ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(statusData.value.stale_count), 1),
-                          _cache[24] || (_cache[24] = _createTextVNode(" 个队列条目的源文件已从本地删除， 将在下轮同步时自动移出（不计入上方「冷却中 / 就绪」数字）。 ", -1))
+                          _cache[25] || (_cache[25] = _createTextVNode(" 个队列条目的源文件已从本地删除， 将在下轮同步时自动移出（不计入上方「冷却中 / 就绪」数字）。 ", -1))
                         ]))
                       : _createCommentVNode("", true),
                     (statusData.value.missed_count)
                       ? (_openBlock(), _createElementBlock("div", _hoisted_14, [
-                          _cache[25] || (_cache[25] = _createTextVNode(" 🕳️ 检测到 ", -1)),
+                          _cache[26] || (_cache[26] = _createTextVNode(" 🕳️ 检测到 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(statusData.value.missed_count), 1),
-                          _cache[26] || (_cache[26] = _createTextVNode(" 个文件可能因插件重载错过了入库事件， 已由源端扫描补回，将在下次同步时一并上传（这些文件不再等待冷却）。 ", -1))
+                          _cache[27] || (_cache[27] = _createTextVNode(" 个文件可能因插件重载错过了入库事件， 已由源端扫描补回，将在下次同步时一并上传（这些文件不再等待冷却）。 ", -1))
                         ]))
                       : _createCommentVNode("", true),
                     (statusData.value.strm_watching)
                       ? (_openBlock(), _createElementBlock("div", _hoisted_15, [
-                          _cache[27] || (_cache[27] = _createTextVNode(" 📺 strm 交叉验证进行中：", -1)),
+                          _cache[28] || (_cache[28] = _createTextVNode(" 📺 strm 交叉验证进行中：", -1)),
                           _createElementVNode("strong", null, _toDisplayString(statusData.value.strm_watching), 1),
                           _createTextVNode(" 个文件处于观察期， " + _toDisplayString(statusData.value.strm_grace_hours) + " 小时内未生成对应 .strm 才会被标记为「疑似上传异常」， 属正常等待，无需处理。 ", 1)
                         ]))
@@ -1108,12 +1146,12 @@ return (_ctx, _cache) => {
                         start: "",
                         size: "16"
                       }, {
-                        default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+                        default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                           _createTextVNode("mdi-play", -1)
                         ]))]),
                         _: 1
                       }),
-                      _cache[29] || (_cache[29] = _createTextVNode(" 同步已就绪媒体 ", -1))
+                      _cache[30] || (_cache[30] = _createTextVNode(" 同步已就绪媒体 ", -1))
                     ]),
                     _: 1
                   }, 8, ["loading", "disabled"]),
@@ -1131,12 +1169,12 @@ return (_ctx, _cache) => {
                         start: "",
                         size: "16"
                       }, {
-                        default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                        default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
                           _createTextVNode("mdi-refresh", -1)
                         ]))]),
                         _: 1
                       }),
-                      _cache[31] || (_cache[31] = _createTextVNode(" 定向重试失败文件 ", -1))
+                      _cache[32] || (_cache[32] = _createTextVNode(" 定向重试失败文件 ", -1))
                     ]),
                     _: 1
                   }, 8, ["loading", "disabled"]),
@@ -1154,17 +1192,17 @@ return (_ctx, _cache) => {
                         start: "",
                         size: "16"
                       }, {
-                        default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                        default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
                           _createTextVNode("mdi-database-arrow-up-outline", -1)
                         ]))]),
                         _: 1
                       }),
-                      _cache[34] || (_cache[34] = _createTextVNode(" 补传存量媒体 ", -1)),
+                      _cache[35] || (_cache[35] = _createTextVNode(" 补传存量媒体 ", -1)),
                       _createVNode(_component_v_tooltip, {
                         activator: "parent",
                         location: "top"
                       }, {
-                        default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+                        default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
                           _createTextVNode(" 扫描本地存量媒体（含同名字幕）并分批补传；只读源端目录，不遍历 115 ", -1)
                         ]))]),
                         _: 1
@@ -1187,12 +1225,12 @@ return (_ctx, _cache) => {
                             start: "",
                             size: "16"
                           }, {
-                            default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
+                            default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
                               _createTextVNode("mdi-cancel", -1)
                             ]))]),
                             _: 1
                           }),
-                          _cache[36] || (_cache[36] = _createTextVNode(" 取消补传 ", -1))
+                          _cache[37] || (_cache[37] = _createTextVNode(" 取消补传 ", -1))
                         ]),
                         _: 1
                       }, 8, ["disabled"]))
@@ -1254,7 +1292,7 @@ return (_ctx, _cache) => {
                                 activator: "parent",
                                 location: "top"
                               }, {
-                                default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                                default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
                                   _createTextVNode(" 选中项全部来自 strm 疑似异常清单：先删除 115 端旧文件再重传， 以绕过 CD2 挂载视图「看起来正常」的假成功 ", -1)
                                 ]))]),
                                 _: 1
@@ -1263,6 +1301,42 @@ return (_ctx, _cache) => {
                         ]),
                         _: 1
                       }, 8, ["color", "loading", "disabled"]))
+                    : _createCommentVNode("", true),
+                  (selectMode.value && strmSelectedCount.value)
+                    ? (_openBlock(), _createBlock(_component_v_btn, {
+                        key: 3,
+                        size: "small",
+                        variant: "tonal",
+                        color: "secondary",
+                        rounded: "lg",
+                        loading: batchSyncing.value,
+                        disabled: !selectedKeys.value.length || statusData.value.is_running,
+                        onClick: _cache[0] || (_cache[0] = $event => (ignoreStrmSuspects(selectedKeys.value.filter((k) => k in (statusData.value.strm_suspects || {})))))
+                      }, {
+                        default: _withCtx(() => [
+                          _createVNode(_component_v_icon, {
+                            start: "",
+                            size: "16"
+                          }, {
+                            default: _withCtx(() => [...(_cache[39] || (_cache[39] = [
+                              _createTextVNode("mdi-eye-off-outline", -1)
+                            ]))]),
+                            _: 1
+                          }),
+                          _createTextVNode(" 忽略选中 (" + _toDisplayString(strmSelectedCount.value) + ") ", 1),
+                          _createVNode(_component_v_tooltip, {
+                            activator: "parent",
+                            location: "top",
+                            "max-width": "320"
+                          }, {
+                            default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
+                              _createTextVNode(" 将选中的 strm 疑似条目以「精确匹配」加入忽略规则并移出清单， 之后不再报告。恢复方式：到「已忽略」清单删除对应规则。 ", -1)
+                            ]))]),
+                            _: 1
+                          })
+                        ]),
+                        _: 1
+                      }, 8, ["loading", "disabled"]))
                     : _createCommentVNode("", true)
                 ])
               ]),
@@ -1299,7 +1373,7 @@ return (_ctx, _cache) => {
             ]),
             _createVNode(_component_v_tabs, {
               modelValue: currentTab.value,
-              "onUpdate:modelValue": _cache[0] || (_cache[0] = $event => ((currentTab).value = $event)),
+              "onUpdate:modelValue": _cache[1] || (_cache[1] = $event => ((currentTab).value = $event)),
               color: "primary",
               density: "compact",
               "show-arrows": "",
@@ -1312,7 +1386,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
+                      default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
                         _createTextVNode("mdi-timer-sand", -1)
                       ]))]),
                       _: 1
@@ -1327,7 +1401,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[39] || (_cache[39] = [
+                      default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
                         _createTextVNode("mdi-alert-circle-outline", -1)
                       ]))]),
                       _: 1
@@ -1342,7 +1416,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
+                      default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
                         _createTextVNode("mdi-television-classic-off", -1)
                       ]))]),
                       _: 1
@@ -1357,7 +1431,7 @@ return (_ctx, _cache) => {
                       start: "",
                       size: "16"
                     }, {
-                      default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
+                      default: _withCtx(() => [...(_cache[44] || (_cache[44] = [
                         _createTextVNode("mdi-eye-off-outline", -1)
                       ]))]),
                       _: 1
@@ -1427,17 +1501,17 @@ return (_ctx, _cache) => {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
+                                    default: _withCtx(() => [...(_cache[45] || (_cache[45] = [
                                       _createTextVNode("mdi-cloud-upload-outline", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[44] || (_cache[44] = _createTextVNode(" 立即同步 ", -1)),
+                                  _cache[47] || (_cache[47] = _createTextVNode(" 立即同步 ", -1)),
                                   _createVNode(_component_v_tooltip, {
                                     activator: "parent",
                                     location: "top"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
+                                    default: _withCtx(() => [...(_cache[46] || (_cache[46] = [
                                       _createTextVNode(" 不等待冷却，立即定向同步此文件（会自动移出冷却队列） ", -1)
                                     ]))]),
                                     _: 1
@@ -1458,24 +1532,24 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
-                          onClick: _cache[1] || (_cache[1] = $event => (paged.value.pageRef.value = paged.value.page - 1))
+                          onClick: _cache[2] || (_cache[2] = $event => (paged.value.pageRef.value = paged.value.page - 1))
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, {
                               start: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[45] || (_cache[45] = [
+                              default: _withCtx(() => [...(_cache[48] || (_cache[48] = [
                                 _createTextVNode("mdi-chevron-left", -1)
                               ]))]),
                               _: 1
                             }),
-                            _cache[46] || (_cache[46] = _createTextVNode("上一页 ", -1))
+                            _cache[49] || (_cache[49] = _createTextVNode("上一页 ", -1))
                           ]),
                           _: 1
                         }, 8, ["disabled"]),
                         _createElementVNode("span", _hoisted_34, [
-                          _cache[47] || (_cache[47] = _createTextVNode(" 第 ", -1)),
+                          _cache[50] || (_cache[50] = _createTextVNode(" 第 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                           _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
                         ]),
@@ -1485,15 +1559,15 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
-                          onClick: _cache[2] || (_cache[2] = $event => (paged.value.pageRef.value = paged.value.page + 1))
+                          onClick: _cache[3] || (_cache[3] = $event => (paged.value.pageRef.value = paged.value.page + 1))
                         }, {
                           default: _withCtx(() => [
-                            _cache[49] || (_cache[49] = _createTextVNode(" 下一页", -1)),
+                            _cache[52] || (_cache[52] = _createTextVNode(" 下一页", -1)),
                             _createVNode(_component_v_icon, {
                               end: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[48] || (_cache[48] = [
+                              default: _withCtx(() => [...(_cache[51] || (_cache[51] = [
                                 _createTextVNode("mdi-chevron-right", -1)
                               ]))]),
                               _: 1
@@ -1510,12 +1584,12 @@ return (_ctx, _cache) => {
                           color: "primary",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
+                          default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
                             _createTextVNode("mdi-check-circle-outline", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[51] || (_cache[51] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
+                        _cache[54] || (_cache[54] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
                       ]))
                     : _createCommentVNode("", true)
                 ]))
@@ -1568,24 +1642,24 @@ return (_ctx, _cache) => {
                                 class: "px-2",
                                 loading: itemLoading.value === _ctx.file,
                                 disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== _ctx.file),
-                                onClick: _cache[3] || (_cache[3] = $event => (syncSingle(_ctx.file)))
+                                onClick: _cache[4] || (_cache[4] = $event => (syncSingle(_ctx.file)))
                               }, {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_icon, {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[52] || (_cache[52] = [
+                                    default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
                                       _createTextVNode("mdi-refresh", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[54] || (_cache[54] = _createTextVNode(" 重试 ", -1)),
+                                  _cache[57] || (_cache[57] = _createTextVNode(" 重试 ", -1)),
                                   _createVNode(_component_v_tooltip, {
                                     activator: "parent",
                                     location: "top"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
+                                    default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
                                       _createTextVNode("立即定向重传此文件", -1)
                                     ]))]),
                                     _: 1
@@ -1598,11 +1672,11 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "text",
                                 color: "primary",
-                                onClick: _cache[4] || (_cache[4] = $event => (ignoreFile(_ctx.file, 'exact')))
+                                onClick: _cache[5] || (_cache[5] = $event => (ignoreFile(_ctx.file, 'exact')))
                               }, {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_icon, { size: "16" }, {
-                                    default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
+                                    default: _withCtx(() => [...(_cache[58] || (_cache[58] = [
                                       _createTextVNode("mdi-eye-off-outline", -1)
                                     ]))]),
                                     _: 1
@@ -1611,7 +1685,7 @@ return (_ctx, _cache) => {
                                     activator: "parent",
                                     location: "top"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
+                                    default: _withCtx(() => [...(_cache[59] || (_cache[59] = [
                                       _createTextVNode("忽略此项（不再报警）", -1)
                                     ]))]),
                                     _: 1
@@ -1632,24 +1706,24 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
-                          onClick: _cache[5] || (_cache[5] = $event => (paged.value.pageRef.value = paged.value.page - 1))
+                          onClick: _cache[6] || (_cache[6] = $event => (paged.value.pageRef.value = paged.value.page - 1))
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, {
                               start: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[57] || (_cache[57] = [
+                              default: _withCtx(() => [...(_cache[60] || (_cache[60] = [
                                 _createTextVNode("mdi-chevron-left", -1)
                               ]))]),
                               _: 1
                             }),
-                            _cache[58] || (_cache[58] = _createTextVNode("上一页 ", -1))
+                            _cache[61] || (_cache[61] = _createTextVNode("上一页 ", -1))
                           ]),
                           _: 1
                         }, 8, ["disabled"]),
                         _createElementVNode("span", _hoisted_43, [
-                          _cache[59] || (_cache[59] = _createTextVNode(" 第 ", -1)),
+                          _cache[62] || (_cache[62] = _createTextVNode(" 第 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                           _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
                         ]),
@@ -1659,15 +1733,15 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
-                          onClick: _cache[6] || (_cache[6] = $event => (paged.value.pageRef.value = paged.value.page + 1))
+                          onClick: _cache[7] || (_cache[7] = $event => (paged.value.pageRef.value = paged.value.page + 1))
                         }, {
                           default: _withCtx(() => [
-                            _cache[61] || (_cache[61] = _createTextVNode(" 下一页", -1)),
+                            _cache[64] || (_cache[64] = _createTextVNode(" 下一页", -1)),
                             _createVNode(_component_v_icon, {
                               end: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[60] || (_cache[60] = [
+                              default: _withCtx(() => [...(_cache[63] || (_cache[63] = [
                                 _createTextVNode("mdi-chevron-right", -1)
                               ]))]),
                               _: 1
@@ -1684,12 +1758,12 @@ return (_ctx, _cache) => {
                           color: "success",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[62] || (_cache[62] = [
+                          default: _withCtx(() => [...(_cache[65] || (_cache[65] = [
                             _createTextVNode("mdi-shield-check", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[63] || (_cache[63] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "冷却队列与待重试文件经对账全部一致，零缺失零残缺！", -1))
+                        _cache[66] || (_cache[66] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "冷却队列与待重试文件经对账全部一致，零缺失零残缺！", -1))
                       ]))
                     : _createCommentVNode("", true)
                 ]))
@@ -1703,7 +1777,7 @@ return (_ctx, _cache) => {
                             size: "18",
                             color: "warning"
                           }, {
-                            default: _withCtx(() => [...(_cache[64] || (_cache[64] = [
+                            default: _withCtx(() => [...(_cache[67] || (_cache[67] = [
                               _createTextVNode("mdi-television-classic-off", -1)
                             ]))]),
                             _: 1
@@ -1716,7 +1790,7 @@ return (_ctx, _cache) => {
                             color: "success",
                             class: "font-weight-bold"
                           }, {
-                            default: _withCtx(() => [...(_cache[65] || (_cache[65] = [
+                            default: _withCtx(() => [...(_cache[68] || (_cache[68] = [
                               _createTextVNode(" 观察/扫描/重传 不依赖插件 ", -1)
                             ]))]),
                             _: 1
@@ -1736,12 +1810,12 @@ return (_ctx, _cache) => {
                                 start: "",
                                 size: "14"
                               }, {
-                                default: _withCtx(() => [...(_cache[66] || (_cache[66] = [
+                                default: _withCtx(() => [...(_cache[69] || (_cache[69] = [
                                   _createTextVNode("mdi-magnify-scan", -1)
                                 ]))]),
                                 _: 1
                               }),
-                              _cache[67] || (_cache[67] = _createTextVNode(" 扫描缺 strm 的文件 ", -1))
+                              _cache[70] || (_cache[70] = _createTextVNode(" 扫描缺 strm 的文件 ", -1))
                             ]),
                             _: 1
                           }, 8, ["loading", "disabled"]),
@@ -1760,17 +1834,17 @@ return (_ctx, _cache) => {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[68] || (_cache[68] = [
+                                    default: _withCtx(() => [...(_cache[71] || (_cache[71] = [
                                       _createTextVNode("mdi-broom", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[70] || (_cache[70] = _createTextVNode(" 清理无效项 ", -1)),
+                                  _cache[73] || (_cache[73] = _createTextVNode(" 清理无效项 ", -1)),
                                   _createVNode(_component_v_tooltip, {
                                     activator: "parent",
                                     location: "top"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[69] || (_cache[69] = [
+                                    default: _withCtx(() => [...(_cache[72] || (_cache[72] = [
                                       _createTextVNode(" 移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、 已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证 ", -1)
                                     ]))]),
                                     _: 1
@@ -1795,7 +1869,7 @@ return (_ctx, _cache) => {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[71] || (_cache[71] = [
+                                    default: _withCtx(() => [...(_cache[74] || (_cache[74] = [
                                       _createTextVNode("mdi-file-refresh-outline", -1)
                                     ]))]),
                                     _: 1
@@ -1808,7 +1882,7 @@ return (_ctx, _cache) => {
                                         location: "top",
                                         "max-width": "360"
                                       }, {
-                                        default: _withCtx(() => [...(_cache[72] || (_cache[72] = [
+                                        default: _withCtx(() => [...(_cache[75] || (_cache[75] = [
                                           _createTextVNode(" 请 115 网盘 STRM 助手按这些文件所在的网盘目录重新生成一次 .strm。", -1),
                                           _createElementVNode("br", null, null, -1),
                                           _createTextVNode(" 成功后说明此前只是助手漏生成，", -1),
@@ -1830,7 +1904,7 @@ return (_ctx, _cache) => {
                                     class: "ml-1",
                                     color: "info"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[73] || (_cache[73] = [
+                                    default: _withCtx(() => [...(_cache[76] || (_cache[76] = [
                                       _createTextVNode("mdi-link-variant", -1)
                                     ]))]),
                                     _: 1
@@ -1855,7 +1929,7 @@ return (_ctx, _cache) => {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[74] || (_cache[74] = [
+                                    default: _withCtx(() => [...(_cache[77] || (_cache[77] = [
                                       _createTextVNode("mdi-delete-restore", -1)
                                     ]))]),
                                     _: 1
@@ -1876,7 +1950,7 @@ return (_ctx, _cache) => {
                             }, {
                               default: _withCtx(() => [
                                 _createElementVNode("div", _hoisted_50, " 「先尝试生成 strm」当前不可用：" + _toDisplayString(helperReason.value), 1),
-                                _cache[75] || (_cache[75] = _createElementVNode("div", { class: "text-caption" }, [
+                                _cache[78] || (_cache[78] = _createElementVNode("div", { class: "text-caption" }, [
                                   _createTextVNode(" 配好即可用它免掉整轮删除重传（生成成功 ⇒ 只是助手漏生成，无需重传）： "),
                                   _createElementVNode("br"),
                                   _createTextVNode("① 在本插件"),
@@ -1929,12 +2003,12 @@ return (_ctx, _cache) => {
                                     start: "",
                                     size: "14"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[76] || (_cache[76] = [
+                                    default: _withCtx(() => [...(_cache[79] || (_cache[79] = [
                                       _createTextVNode("mdi-refresh", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[77] || (_cache[77] = _createTextVNode(" 立即检查全部 ", -1)),
+                                  _cache[80] || (_cache[80] = _createTextVNode(" 立即检查全部 ", -1)),
                                   _createVNode(_component_v_tooltip, {
                                     activator: "parent",
                                     location: "top",
@@ -1997,18 +2071,18 @@ return (_ctx, _cache) => {
                                           start: "",
                                           size: "14"
                                         }, {
-                                          default: _withCtx(() => [...(_cache[78] || (_cache[78] = [
+                                          default: _withCtx(() => [...(_cache[81] || (_cache[81] = [
                                             _createTextVNode("mdi-refresh", -1)
                                           ]))]),
                                           _: 1
                                         }),
-                                        _cache[80] || (_cache[80] = _createTextVNode(" 检查 strm ", -1)),
+                                        _cache[83] || (_cache[83] = _createTextVNode(" 检查 strm ", -1)),
                                         _createVNode(_component_v_tooltip, {
                                           activator: "parent",
                                           location: "top",
                                           "max-width": "320"
                                         }, {
-                                          default: _withCtx(() => [...(_cache[79] || (_cache[79] = [
+                                          default: _withCtx(() => [...(_cache[82] || (_cache[82] = [
                                             _createTextVNode(" 立即比对，不等窗口、不等巡检。", -1),
                                             _createElementVNode("br", null, null, -1),
                                             _createTextVNode(" 已生成 ⇒ 立刻解除观察；窗口已过仍无 ⇒ 立刻转入疑似清单 （并附云端可见性结论，告诉你能不能删旧重传）。", -1),
@@ -2060,7 +2134,7 @@ return (_ctx, _cache) => {
                                         ], 64)),
                                     (destHint(key))
                                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 2 }, [
-                                          _cache[81] || (_cache[81] = _createElementVNode("br", null, null, -1)),
+                                          _cache[84] || (_cache[84] = _createElementVNode("br", null, null, -1)),
                                           _createElementVNode("span", {
                                             class: _normalizeClass(`text-${destColor(key)}`)
                                           }, "🔎 " + _toDisplayString(destHint(key)), 3)
@@ -2078,7 +2152,7 @@ return (_ctx, _cache) => {
                                       variant: "tonal",
                                       class: "font-weight-bold"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[82] || (_cache[82] = [
+                                      default: _withCtx(() => [...(_cache[85] || (_cache[85] = [
                                         _createTextVNode(" 补生成后仍无 ", -1)
                                       ]))]),
                                       _: 1
@@ -2090,7 +2164,7 @@ return (_ctx, _cache) => {
                                       variant: "flat",
                                       class: "font-weight-bold"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[83] || (_cache[83] = [
+                                      default: _withCtx(() => [...(_cache[86] || (_cache[86] = [
                                         _createTextVNode("疑似异常", -1)
                                       ]))]),
                                       _: 1
@@ -2110,7 +2184,7 @@ return (_ctx, _cache) => {
                                       start: "",
                                       size: "14"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[84] || (_cache[84] = [
+                                      default: _withCtx(() => [...(_cache[87] || (_cache[87] = [
                                         _createTextVNode("mdi-file-refresh-outline", -1)
                                       ]))]),
                                       _: 1
@@ -2123,7 +2197,7 @@ return (_ctx, _cache) => {
                                           location: "top",
                                           "max-width": "340"
                                         }, {
-                                          default: _withCtx(() => [...(_cache[85] || (_cache[85] = [
+                                          default: _withCtx(() => [...(_cache[88] || (_cache[88] = [
                                             _createTextVNode(" 请 strm 助手重新生成该文件所在网盘目录的 .strm。 成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。 ", -1)
                                           ]))]),
                                           _: 1
@@ -2147,24 +2221,63 @@ return (_ctx, _cache) => {
                                       start: "",
                                       size: "14"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[86] || (_cache[86] = [
+                                      default: _withCtx(() => [...(_cache[89] || (_cache[89] = [
                                         _createTextVNode("mdi-delete-restore", -1)
                                       ]))]),
                                       _: 1
                                     }),
-                                    _cache[88] || (_cache[88] = _createTextVNode(" 删旧重传 ", -1)),
+                                    _cache[91] || (_cache[91] = _createTextVNode(" 删旧重传 ", -1)),
                                     _createVNode(_component_v_tooltip, {
                                       activator: "parent",
                                       location: "top"
                                     }, {
-                                      default: _withCtx(() => [...(_cache[87] || (_cache[87] = [
+                                      default: _withCtx(() => [...(_cache[90] || (_cache[90] = [
                                         _createTextVNode(" 删除 115 端该文件后立即重传（先删再传，绕过 CD2 视图假成功） ", -1)
                                       ]))]),
                                       _: 1
                                     })
                                   ]),
                                   _: 1
-                                }, 8, ["loading", "disabled", "onClick"])
+                                }, 8, ["loading", "disabled", "onClick"]),
+                                _createVNode(_component_v_btn, {
+                                  size: "x-small",
+                                  variant: "tonal",
+                                  color: "secondary",
+                                  rounded: "lg",
+                                  class: "px-2",
+                                  loading: itemLoading.value === 'strmign:' + key,
+                                  onClick: $event => (ignoreStrmSuspects([key]))
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_v_icon, {
+                                      start: "",
+                                      size: "14"
+                                    }, {
+                                      default: _withCtx(() => [...(_cache[92] || (_cache[92] = [
+                                        _createTextVNode("mdi-eye-off-outline", -1)
+                                      ]))]),
+                                      _: 1
+                                    }),
+                                    _cache[94] || (_cache[94] = _createTextVNode(" 忽略 ", -1)),
+                                    _createVNode(_component_v_tooltip, {
+                                      activator: "parent",
+                                      location: "top",
+                                      "max-width": "320"
+                                    }, {
+                                      default: _withCtx(() => [...(_cache[93] || (_cache[93] = [
+                                        _createTextVNode(" 以「精确匹配」加入忽略规则并移出疑似清单，", -1),
+                                        _createElementVNode("br", null, null, -1),
+                                        _createTextVNode(" 之后同步/巡检不再报告该文件。", -1),
+                                        _createElementVNode("br", null, null, -1),
+                                        _createTextVNode(" 恢复方式：到「已忽略」清单删除对应规则。", -1),
+                                        _createElementVNode("br", null, null, -1),
+                                        _createTextVNode(" 适用于确认是误报、且不想再被提醒的条目。 ", -1)
+                                      ]))]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                }, 8, ["loading", "onClick"])
                               ])
                             ]))
                           }), 128))
@@ -2177,24 +2290,24 @@ return (_ctx, _cache) => {
                                 rounded: "lg",
                                 class: "pager-btn",
                                 disabled: paged.value.page <= 1,
-                                onClick: _cache[7] || (_cache[7] = $event => (paged.value.pageRef.value = paged.value.page - 1))
+                                onClick: _cache[8] || (_cache[8] = $event => (paged.value.pageRef.value = paged.value.page - 1))
                               }, {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_icon, {
                                     start: "",
                                     size: "16"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[89] || (_cache[89] = [
+                                    default: _withCtx(() => [...(_cache[95] || (_cache[95] = [
                                       _createTextVNode("mdi-chevron-left", -1)
                                     ]))]),
                                     _: 1
                                   }),
-                                  _cache[90] || (_cache[90] = _createTextVNode("上一页 ", -1))
+                                  _cache[96] || (_cache[96] = _createTextVNode("上一页 ", -1))
                                 ]),
                                 _: 1
                               }, 8, ["disabled"]),
                               _createElementVNode("span", _hoisted_68, [
-                                _cache[91] || (_cache[91] = _createTextVNode(" 第 ", -1)),
+                                _cache[97] || (_cache[97] = _createTextVNode(" 第 ", -1)),
                                 _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                                 _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
                               ]),
@@ -2204,15 +2317,15 @@ return (_ctx, _cache) => {
                                 rounded: "lg",
                                 class: "pager-btn",
                                 disabled: paged.value.page >= paged.value.pages,
-                                onClick: _cache[8] || (_cache[8] = $event => (paged.value.pageRef.value = paged.value.page + 1))
+                                onClick: _cache[9] || (_cache[9] = $event => (paged.value.pageRef.value = paged.value.page + 1))
                               }, {
                                 default: _withCtx(() => [
-                                  _cache[93] || (_cache[93] = _createTextVNode(" 下一页", -1)),
+                                  _cache[99] || (_cache[99] = _createTextVNode(" 下一页", -1)),
                                   _createVNode(_component_v_icon, {
                                     end: "",
                                     size: "16"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[92] || (_cache[92] = [
+                                    default: _withCtx(() => [...(_cache[98] || (_cache[98] = [
                                       _createTextVNode("mdi-chevron-right", -1)
                                     ]))]),
                                     _: 1
@@ -2251,7 +2364,7 @@ return (_ctx, _cache) => {
                                 variant: "tonal",
                                 class: "font-weight-bold"
                               }, {
-                                default: _withCtx(() => [...(_cache[94] || (_cache[94] = [
+                                default: _withCtx(() => [...(_cache[100] || (_cache[100] = [
                                   _createTextVNode("已忽略", -1)
                                 ]))]),
                                 _: 1
@@ -2265,7 +2378,7 @@ return (_ctx, _cache) => {
                               }, {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_icon, { size: "16" }, {
-                                    default: _withCtx(() => [...(_cache[95] || (_cache[95] = [
+                                    default: _withCtx(() => [...(_cache[101] || (_cache[101] = [
                                       _createTextVNode("mdi-restore", -1)
                                     ]))]),
                                     _: 1
@@ -2274,7 +2387,7 @@ return (_ctx, _cache) => {
                                     activator: "parent",
                                     location: "top"
                                   }, {
-                                    default: _withCtx(() => [...(_cache[96] || (_cache[96] = [
+                                    default: _withCtx(() => [...(_cache[102] || (_cache[102] = [
                                       _createTextVNode("恢复对账", -1)
                                     ]))]),
                                     _: 1
@@ -2295,24 +2408,24 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
-                          onClick: _cache[9] || (_cache[9] = $event => (paged.value.pageRef.value = paged.value.page - 1))
+                          onClick: _cache[10] || (_cache[10] = $event => (paged.value.pageRef.value = paged.value.page - 1))
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, {
                               start: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[97] || (_cache[97] = [
+                              default: _withCtx(() => [...(_cache[103] || (_cache[103] = [
                                 _createTextVNode("mdi-chevron-left", -1)
                               ]))]),
                               _: 1
                             }),
-                            _cache[98] || (_cache[98] = _createTextVNode("上一页 ", -1))
+                            _cache[104] || (_cache[104] = _createTextVNode("上一页 ", -1))
                           ]),
                           _: 1
                         }, 8, ["disabled"]),
                         _createElementVNode("span", _hoisted_77, [
-                          _cache[99] || (_cache[99] = _createTextVNode(" 第 ", -1)),
+                          _cache[105] || (_cache[105] = _createTextVNode(" 第 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                           _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
                         ]),
@@ -2322,15 +2435,15 @@ return (_ctx, _cache) => {
                           rounded: "lg",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
-                          onClick: _cache[10] || (_cache[10] = $event => (paged.value.pageRef.value = paged.value.page + 1))
+                          onClick: _cache[11] || (_cache[11] = $event => (paged.value.pageRef.value = paged.value.page + 1))
                         }, {
                           default: _withCtx(() => [
-                            _cache[101] || (_cache[101] = _createTextVNode(" 下一页", -1)),
+                            _cache[107] || (_cache[107] = _createTextVNode(" 下一页", -1)),
                             _createVNode(_component_v_icon, {
                               end: "",
                               size: "16"
                             }, {
-                              default: _withCtx(() => [...(_cache[100] || (_cache[100] = [
+                              default: _withCtx(() => [...(_cache[106] || (_cache[106] = [
                                 _createTextVNode("mdi-chevron-right", -1)
                               ]))]),
                               _: 1
@@ -2347,12 +2460,12 @@ return (_ctx, _cache) => {
                           color: "primary",
                           class: "mb-2"
                         }, {
-                          default: _withCtx(() => [...(_cache[102] || (_cache[102] = [
+                          default: _withCtx(() => [...(_cache[108] || (_cache[108] = [
                             _createTextVNode("mdi-eye-off-outline", -1)
                           ]))]),
                           _: 1
                         }),
-                        _cache[103] || (_cache[103] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "当前没有忽略任何文件", -1))
+                        _cache[109] || (_cache[109] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "当前没有忽略任何文件", -1))
                       ]))
                     : _createCommentVNode("", true)
                 ]))
@@ -2368,6 +2481,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-35399666"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f2e3b6a6"]]);
 
 export { App as default };
