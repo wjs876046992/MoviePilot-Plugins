@@ -1066,14 +1066,38 @@ strm 已生成 → 是否到期），顺序是承重的，已在 `strm.classify_
 
 **教训**：拆分后必须真正实例化一次，仅做语法检查远远不够。
 
-### 8.6 后续阶段（未做）
+### 8.6 阶段 2（`c7b2231` 之后）— Mixin 方法块拆分（已完成）
+
+`__init__.py` 再度膨胀至 4329 行 / 82 个方法，阶段 2 把三块**方法群**搬进
+Mixin 兄弟模块。关键决策：**用 Mixin 而不是独立对象** —— 这些方法读写大量
+插件实例状态，8.1 的约束是「可变状态必须留在插件实例上」，Mixin 搬的是
+**代码**不是状态（与宿主文档 §7.3 的 DatabaseMixin 模式同构）。
+
+| 模块 | 行数 | 内容 |
+|---|---|---|
+| `strm_ops.py` | 1466 | strm 交叉验证状态机 + 助手联动 + 全部 strm Web API + 删旧重传配套 |
+| `sync_ops.py` | 418 | 上传限流 / 退避 / 冷却与补传队列 |
+| `commands.py` | 620 | `/rsync_*` 命令表、`handle_command` 分发、回复通道 |
+
+主类声明变为 `class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase)`，
+`plugin_version` 留在 `__init__.py`（版本门禁），`__init__.py` 由 4329 行降至约 2000 行。
+
+**组合根注入**：宿主能力绑定（`_PluginManager` / `MessageType`）的 try/except
+导入只保留在 `__init__.py`，兄弟模块通过「包根优先」的解析函数读取同一份绑定。
+理由：测试与宿主都 patch 组合根上的名字；Mixin 若留自己的拷贝，同一能力出现
+两份真相，注入点漂移会让测试假绿。
+
+**契约加固**：`test_registration_contract.py` 从「只扫 `__init__.py`」扩展为
+「扫包内全部 .py + 运行时验证组合后的类真的带着方法与 Mixin MRO」；新增
+`test_split_contract.py` 钉住三件事：版本字面量留在 `__init__.py`、
+Mixin 保持无状态（模块级/类体赋值即失败）、组合面完整 + 实例化冒烟。
+
+### 8.7 后续阶段（未做）
 
 | 阶段 | 内容 | 前置条件 |
 |---|---|---|
-| 2 | `rate_limit.py` / `queue.py` / `rsync.py`（命令构造）/ `audit.py` | 先补 `tests/v3/rsync115sync/` |
-| 3 | `commands.py`（`handle_command` 352 行拆 9 个 handler + 分发表）、`api.py` | 阶段 2 完成 |
-| 3 | `_execute_sync`（572 行）按「每个映射对的流水线阶段」拆四段 | 同上 |
-| 3 | `Page.vue`（947 行）拆子组件 | 需重建 dist |
+| 3 | `_execute_sync`（572 行）按「每个映射对的流水线阶段」拆四段 | 累积变量必须留在编排层 |
+| 3 | `Page.vue`（1600+ 行）拆子组件 | 需重建 dist |
 
 `_execute_sync` **不能按行数切**，要按阶段切：
 `_build_pair_plan` → `_run_rsync` → `_apply_outcome` → `_finalize_run`。
