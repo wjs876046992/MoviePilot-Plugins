@@ -136,8 +136,8 @@
             </template>
           </div>
           <div v-if="webhookStat.rejected > 0" class="mt-1">
-            ⛔ 被拒 <strong>{{ webhookStat.rejected }}</strong> 条（防护链拦下：IP / 密钥 / 路径白名单），
-            具体是哪一道见日志。
+            ⛔ 被拒 <strong>{{ webhookStat.rejected }}</strong> 条（报文不合入库类事件、
+            或路径不在任何映射内，插件未认领），具体是哪一条见日志。
           </div>
           <div v-if="webhookStat.unrecognized > 0" class="mt-1">
             ⚠️ 有 <strong>{{ webhookStat.unrecognized }}</strong> 条取不到入库路径 ——
@@ -148,17 +148,9 @@
           </div>
           <div class="text-caption text-medium-emphasis mt-1">
             来源渠道：{{ (webhookStat.channels || []).join('、') || '未配置' }}
-            <template v-if="webhookStat.self_enabled">
-              · 自建端点<b>已开启</b>
-              <template v-if="webhookStat.secret_set">、已设密钥</template>
-              <template v-else>、<b>未设密钥</b></template>
-              <template v-if="(webhookStat.allow_roots || []).length">
-                · 允许目录：{{ webhookStat.allow_roots.join('、') }}
-              </template>
-            </template>
-            <template v-else>
-              · 自建端点未开启（用 Emby 的话无需开启）
-            </template>
+            · 入口：宿主 webhook 端点（<code>/api/v1/webhook/</code>）——
+            本插件不再自带端点，发送端只用把 <code>source</code> 指到
+            <code>rsync115sync</code>，鉴权交给宿主。
           </div>
 
           <!-- 最近报文样本。存在的理由只有一条：发送端往往是**另一个工程**，
@@ -929,9 +921,9 @@ const statusData = ref({
   webhook: {},
 })
 
-// webhook 运行态。可见性判据刻意选「曾经收到过任何一条请求」或「自建端点已开启」，
-// 而不是「webhook 功能已启用」—— 后者的默认值就是启用（渠道默认 emby），
-// 用它判断会让这块面板对每个用户都常驻显示，等于没做门控。
+// webhook 运行态。可见性判据刻意选「曾经收到过任何一条请求」——
+// 而不是「webhook 功能已启用」：渠道默认就是 emby，用后者判断会让这块面板
+// 对每个用户都常驻显示，等于没做门控。
 const webhookStat = computed(() => statusData.value.webhook || {})
 
 // 报文样本缩进展示。走 `<pre>` 而不是把 JSON 塞进普通文本，是因为样本要**照着
@@ -949,7 +941,6 @@ const webhookVisible = computed(() =>
   // `claimed` 必须一并作为显示条件：只用 received 的话，**认领失败**的用户
   // 恰恰看不到这块面板 —— 而认领失败正是最需要看这块面板的情况。
   || (Number(webhookStat.value.claimed) || 0) > 0
-  || Boolean(webhookStat.value.self_enabled)
 )
 
 const ignoredList = ref([])

@@ -1,14 +1,22 @@
 """
-Webhook 入库（第二来源）：通道 A（宿主 Emby 链路）与通道 B（插件自建端点）。
+Webhook 入库（第二来源）：宿主 webhook 端点的**认领 + 广播**链路。
 
-Webhook ingest, both channels:
-  A — host-broadcast `EventType.WebhookMessage` (Emby native)
-  B — this plugin's own anonymous `POST /webhook` (MDC-ng / custom senders)
+Webhook ingest: the host-endpoint chain only.
 
-**为什么这两条路必须有测试**：webhook 是本插件唯一由**外部**发起的入口，
+  · 入口：宿主端点 `/api/v1/webhook/` → 宿主调用本插件的 `webhook_parser`
+          （模块方法契约，见 get_module() 的声明）
+  · 之后：认领结果经 `EventType.WebhookMessage` 广播回来 → `_handle_webhook_event`
+
+本插件曾自带一个匿名端点作为第二通道（`POST /api/v1/plugin/Rsync115Sync/webhook`），
+2026-09-22 **已移除** —— 宿主端点已能满足同一需求，而自建端点要顶着「向网络暴露
+一个可写入接口」的风险（四条自配防护：开关 / 密钥 / 路径白名单 / IP 白名单）。
+理由与取舍见 DEVELOPMENT §9.18。因此本文件原先的「通道 B」用例整组删除 ——
+它们验证的四道防护已不存在，留着只会让「插件暴露了什么」出现错误答案。
+
+**为什么这条路必须有测试**：webhook 是本插件唯一由**外部**发起的入口，
 出问题时用户手里没有任何可自查的证据 —— 发送端显示 200、日志一片安静、
-看板队列不增长。因此这里把四件事钉住：入队语义与事件链路**完全一致**、
-播放类事件绝不入队、四道防护链逐道生效、计数点记在能定位问题的位置。
+看板队列不增长。因此这里把三件事钉住：入队语义与事件链路**完全一致**、
+播放类事件绝不入队、失败必须**可区分**（取不到路径 / 路径不在映射内）。
 """
 
 import importlib
@@ -20,7 +28,6 @@ import pytest
 
 
 def _plugin(src_root, *, enabled=True, listen=True, channels=("emby",),
-            self_enabled=True, secret="", allowlist="", ip_allowlist="",
             pairs=None, media_extensions="mkv,srt"):
     """构造最小实例：只带 webhook 链路真正用到的状态。"""
     module = importlib.import_module("app.plugins.rsync115sync")
@@ -29,10 +36,6 @@ def _plugin(src_root, *, enabled=True, listen=True, channels=("emby",),
     plugin._enabled = enabled
     plugin._listen_transfer = listen
     plugin._webhook_channels = list(channels)
-    plugin._webhook_self_enabled = self_enabled
-    plugin._webhook_secret = secret
-    plugin._webhook_path_allowlist = allowlist
-    plugin._webhook_ip_allowlist = ip_allowlist
     plugin._sync_pairs = pairs if pairs is not None else [{
         "name": "TV", "src": src_root, "dest": "/dest/TV",
         "all_ext": False, "strm_dir": "",
@@ -157,173 +160,17 @@ def test_unrecognized_payload_is_counted_not_silent(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# 通道 B：自建端点（防护链逐道验证）
-# --------------------------------------------------------------------------
-
-def _post(plugin, *, body=None, query=None, headers=None, ip="10.0.0.9"):
-    """驱动自建端点的完整防护链（绕开 Request 解析层）。"""
-    return plugin._ingest_from_parts(
-        client_ip=ip, headers=headers, query=dict(query or {}), body=body)
-
-
-def test_self_endpoint_is_off_by_default(tmp_path):
-    """暴露接口必须是用户明确打开的行为，绝不能在升级后悄悄生效。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), self_enabled=False)
-    plugin._webhook_path_allowlist = str(src)
-
-    res = _post(plugin, body={"paths": [path]})
-
-    assert res["success"] is False
-    assert plugin._pending_queue == {}
-
-
-def test_allowlisted_path_is_enqueued(tmp_path):
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, body={"paths": [path], "event": "library.new"})
-
-    assert res["success"] is True
-    assert res["data"]["added"] == 1
-    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
-
-
-def test_path_outside_allowlist_is_rejected(tmp_path):
-    """
-    无条件生效的那道防护：伪造者能编任何路径字符串，但不可能让它落在
-    你配置的媒体库目录下。它不依赖「用户有没有填密钥」。
-    """
-    src = tmp_path / "TV"
-    outside = tmp_path / "elsewhere" / "a.mkv"
-    outside.parent.mkdir()
-    outside.write_bytes(b"x")
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, body={"paths": [str(outside)]})
-
-    assert res["success"] is False
-    assert plugin._pending_queue == {}
-    assert plugin._webhook_stat["rejected"] == 1
-
-
-def test_sibling_directory_is_not_inside_allowlist(tmp_path):
-    """`/media/TV2` 不能因为前缀相同就被当作落在 `/media/TV` 内。"""
-    tv = tmp_path / "TV"
-    tv2 = tmp_path / "TV2"
-    tv2.mkdir()
-    f = tv2 / "a.mkv"
-    f.write_bytes(b"x")
-    plugin = _plugin(str(tv), allowlist=str(tv))
-
-    res = _post(plugin, body={"paths": [str(f)]})
-
-    assert res["success"] is False
-
-
-def test_allowlist_falls_back_to_mapping_sources(tmp_path):
-    """未配置白名单时退回各映射的源目录 —— 保证开箱可用。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist="")
-
-    res = _post(plugin, body={"paths": [path]})
-
-    assert res["success"] is True
-
-
-def test_wrong_secret_is_rejected(tmp_path):
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src), secret="s3cret")
-
-    bad = _post(plugin, body={"paths": [path]}, headers={"x-webhook-secret": "nope"})
-    assert bad["success"] is False
-    assert plugin._pending_queue == {}
-
-    ok = _post(plugin, body={"paths": [path]}, headers={"x-webhook-secret": "s3cret"})
-    assert ok["success"] is True
-
-
-def test_secret_via_query_parameter(tmp_path):
-    """老脚本只会拼查询串，不接受自定义 Header —— 两种都要支持。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src), secret="s3cret")
-
-    res = _post(plugin, query={"token": "s3cret"}, body={"paths": [path]})
-
-    assert res["success"] is True
-
-
-def test_ip_allowlist_blocks_unknown_source(tmp_path):
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src), ip_allowlist="192.168.1.")
-
-    assert _post(plugin, body={"paths": [path]}, ip="10.0.0.9")["success"] is False
-    assert _post(plugin, body={"paths": [path]}, ip="192.168.1.8")["success"] is True
-
-
-def test_query_string_payload(tmp_path):
-    """纯查询串形态（`?path=/x/a.mkv`）：同步文档里最容易配的一种。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, query={"path": path})
-
-    assert res["success"] is True
-    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
-
-
-def test_bare_array_body(tmp_path):
-    src = tmp_path / "TV"
-    p1 = _media(str(src), "a.mkv")
-    p2 = _media(str(src), "b.mkv")
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, body=[p1, p2])
-
-    assert res["success"] is True
-    assert sorted(plugin._pending_queue) == ["TV:a.mkv", "TV:b.mkv"]
-
-
-def test_string_body_is_parsed_as_json(tmp_path):
-    """部分发送端把 JSON 当纯文本发（Content-Type 不是 application/json）。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, body='{"paths": ["%s"]}' % path)
-
-    assert res["success"] is True
-
-
-def test_mixed_paths_only_allowlisted_ones_enter(tmp_path):
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    outside = tmp_path / "elsewhere.mkv"
-    outside.write_bytes(b"x")
-    plugin = _plugin(str(src), allowlist=str(src))
-
-    res = _post(plugin, body={"paths": [path, str(outside)]})
-
-    assert res["success"] is True
-    assert res["data"]["added"] == 1
-    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
-
-
-# --------------------------------------------------------------------------
 # 目录型通知：发送端最自然的「通知入库」就是推一个目录
 # --------------------------------------------------------------------------
 #
-# 这一组的由来：目录名没有扩展名，直接进扩展名白名单必然被判 skipped，而端点当时
-# 返回 `success=True, 已入队 0 个` —— 发送端和用户都以为成功了，队列却是空的。
+# 这一组的由来：目录名没有扩展名，直接进扩展名白名单必然被判 skipped，而当时的
+# 端点返回 `success=True, 已入队 0 个` —— 发送端和用户都以为成功了，队列却是空的。
 # 对 9KG 这类场景尤其致命：另一个工程下完一部电影／一季，最自然的通知方式就是
 # 把目录路径发过来；推文件反而是不自然的（它不知道目录里最终有几个文件）。
+#
+# 现在入口只有宿主端点一个，因此这些用例一律走 `_host_post`（真路由 + 认领 +
+# 广播），而不再是曾经那个自建端点的内部函数 —— 否则「目录展开」这条判据的
+# 测试就只覆盖了一条已经不存在的通路。
 
 def _movie_dir(src_root, name="某电影 (2001)", files=("movie.mkv", "movie.zh.srt")):
     """造一个「电影目录 + 目录内文件」的真实入库形态。"""
@@ -345,9 +192,9 @@ def test_directory_is_expanded_not_silently_swallowed(tmp_path):
     """
     src = tmp_path / "9kg"
     d = _movie_dir(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    res = _post(plugin, body={"path": d})
+    res = _host_post(plugin, {"path": d})
 
     assert res["success"] is True
     assert res["data"]["added"] == 2, f"目录未被展开：{res}"
@@ -359,9 +206,9 @@ def test_directory_with_trailing_slash_expands_too(tmp_path):
     """尾斜杠是发送端最常见的写法差异，不能只支持其中一种。"""
     src = tmp_path / "9kg"
     _movie_dir(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    res = _post(plugin, body={"path": str(src / "某电影 (2001)") + "/"})
+    res = _host_post(plugin, {"path": str(src / "某电影 (2001)") + "/"})
 
     assert res["data"]["added"] == 2
 
@@ -370,9 +217,9 @@ def test_directory_expansion_respects_extension_whitelist(tmp_path):
     """展开不是无差别放行：非媒体文件照样被扩展名白名单挡掉。"""
     src = tmp_path / "9kg"
     _movie_dir(str(src), files=("movie.mkv", "poster.jpg", "readme.txt"))
-    plugin = _plugin(str(src), allowlist=str(src), media_extensions="mkv")
+    plugin = _plugin(str(src), media_extensions="mkv")
 
-    res = _post(plugin, body={"path": str(src / "某电影 (2001)")})
+    res = _host_post(plugin, {"path": str(src / "某电影 (2001)")})
 
     assert res["data"]["added"] == 1
     assert list(plugin._pending_queue) == ["TV:某电影 (2001)/movie.mkv"]
@@ -387,9 +234,9 @@ def test_directory_expansion_skips_excluded_dirs(tmp_path):
     os.makedirs(meta)
     with open(os.path.join(meta, "thumb.mkv"), "wb") as fh:
         fh.write(b"x")
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    res = _post(plugin, body={"path": base})
+    res = _host_post(plugin, {"path": base})
 
     assert res["data"]["added"] == 2, "排除目录内的文件不应入队"
     assert all("@eaDir" not in k for k in plugin._pending_queue)
@@ -405,10 +252,10 @@ def test_directory_expansion_is_capped_and_reported(tmp_path):
     """
     src = tmp_path / "9kg"
     d = _movie_dir(str(src), files=tuple(f"e{i:03d}.mkv" for i in range(20)))
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
     plugin.DIR_EXPAND_LIMIT = 5
 
-    res = _post(plugin, body={"path": d})
+    res = _host_post(plugin, {"path": d})
 
     assert res["data"]["added"] == 5
 
@@ -422,9 +269,9 @@ def test_directory_with_no_media_files_logs_instead_of_lying(tmp_path):
     """
     src = tmp_path / "9kg"
     _movie_dir(str(src), files=("poster.jpg",))
-    plugin = _plugin(str(src), allowlist=str(src), media_extensions="mkv")
+    plugin = _plugin(str(src), media_extensions="mkv")
 
-    res = _post(plugin, body={"path": str(src / "某电影 (2001)")})
+    res = _host_post(plugin, {"path": str(src / "某电影 (2001)")})
 
     assert res["data"]["added"] == 0
     assert res["data"]["expanded"] == 1
@@ -435,11 +282,11 @@ def test_directory_expansion_dedups_against_already_queued(tmp_path):
     """目录展开出的文件仍走同一套幂等：重复推同一目录不刷新冷却计时。"""
     src = tmp_path / "9kg"
     d = _movie_dir(str(src))
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    _post(plugin, body={"path": d})
+    _host_post(plugin, {"path": d})
     first = dict(plugin._pending_queue)
-    res = _post(plugin, body={"path": d})
+    res = _host_post(plugin, {"path": d})
 
     assert res["data"]["added"] == 0
     assert res["data"]["duplicate"] == 2
@@ -522,18 +369,25 @@ def test_extension_filter_applies_to_webhook(tmp_path):
 
 
 def test_path_in_no_mapping_is_not_enqueued(tmp_path):
-    """入库路径与配置的源目录不一致时只记日志，绝不猜、绝不错误入队。"""
+    """
+    入库路径与配置的源目录不一致时**不认领**（返回 None），绝不猜、绝不错误入队。
+
+    注意断言的是「认领阶段就拒了」而不是「入队后计数为 unmatched」：路径不落在
+    任何映射内意味着我们不认识这条报文，此时必须把机会让给宿主自己的解析器 ——
+    抢下来再丢掉会掐断宿主对 Emby/Jellyfin/Plex 报文的处理（见本文件末组用例）。
+    """
     src = tmp_path / "TV"
     src.mkdir()
     outside = tmp_path / "other" / "a.mkv"
     outside.parent.mkdir()
     outside.write_bytes(b"x")
-    plugin = _plugin(str(src), allowlist=str(tmp_path))
+    plugin = _parser_plugin(str(src))
 
-    res = _post(plugin, body={"paths": [str(outside)]})
+    client, _ = _host_chain_route(plugin)
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      json={"data": {"source_path": str(outside)}})
 
-    assert res["success"] is True          # 白名单内，通过了防护链
-    assert res["data"]["unmatched"] == 1   # 但不属于任何映射 → 不入队
+    assert res.status_code == 200
     assert plugin._pending_queue == {}
 
 
@@ -541,27 +395,28 @@ def test_path_in_no_mapping_is_not_enqueued(tmp_path):
 # 契约：端点注册与事件注册（删掉不会有任何报错的那两行）
 # --------------------------------------------------------------------------
 
-def test_webhook_endpoint_is_registered_as_anonymous(tmp_path):
+def test_no_self_built_endpoint_is_registered():
     """
-    端点必须显式声明 allow_anonymous —— 外部发送端不带宿主 API_TOKEN。
+    本插件**不得**注册任何匿名（免宿主鉴权）端点 —— 自建 webhook 端点已移除。
+
+    这条用例的价值是反向的：它拦住「某天顺手再加一个匿名口」。匿名口意味着
+    知道 URL 的人都能往插件里灌数据，而伪造入库会真实消耗 115 风控配额。
+    宿主端点（`/api/v1/webhook/`）已能满足同一需求且鉴权由宿主负责，
+    因此插件侧的正确状态是**一个匿名端点都没有**。
 
     用运行时读 `get_api()` 而非源码字符串匹配：注册表本身就是契约。
-    匿名是**有意为之**（安全由处理器内部的四道防护承担），
-    所以这里同时断言它确实是匿名的，避免有人「顺手」把它改成需要鉴权 ——
-    那会让 MDC 通道静默失效（发送端只会收到 401，用户在插件侧看不到任何记录）。
     """
-    import os
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
     apis = module.Rsync115Sync.get_api(plugin)
-    entry = [a for a in apis if a.get("path") == "/webhook"]
-    assert entry, "自建 webhook 端点未注册"
-    assert entry[0].get("allow_anonymous") is True
-    assert "POST" in entry[0]["methods"]
-    # 其余端点必须保持需要鉴权：只有 webhook 允许匿名
+
+    assert not [a for a in apis if a.get("path") == "/webhook"], (
+        "自建 webhook 端点已移除，不应再注册 /webhook"
+    )
     for api in apis:
-        if api["path"] != "/webhook":
-            assert not api.get("allow_anonymous"), f"{api['path']} 不应匿名"
+        assert not api.get("allow_anonymous"), (
+            f"{api['path']} 不应匿名：本插件现在全部端点都走宿主鉴权"
+        )
 
 
 def test_webhook_message_event_is_subscribed():
@@ -603,37 +458,57 @@ def test_channel_normalization_never_yields_empty():
 # --------------------------------------------------------------------------
 # 真实路由契约：这些断言只有把端点挂进真 FastAPI 才可能失效（也必须靠它才发现）
 # --------------------------------------------------------------------------
+#
+# 注意：这一组测的是**宿主端点**（`/api/v1/webhook/`）而不是本插件的端点 ——
+# 后者已于 2026-09-22 移除。因此下面不再有 `_real_route`（挂自建端点的那套），
+# 只剩 `_host_chain_route`（复刻宿主端点 + 认领 + 广播的完整链路）。
 
-def _real_route(plugin):
+def _host_post(plugin, payload, *, query="token=t&source=rsync115sync", raw=False):
     """
-    把本插件的 /webhook 端点挂进一个真实 FastAPI 应用，并绑定到给定实例上。
+    走**宿主端点真路由 + 认领 + 广播**的完整链路，返回入队计数。
 
-    **为什么必须有这一组**：本仓单测环境通常没有 fastapi，因此其余用例都是直接
-    调用处理方法，绕过路由层。而路由层恰好是最容易「静默失效」的一环 ——
-    实测（fastapi 0.141）把签名写成 `request: Any = None` 时，FastAPI 会把它
-    当作**查询参数**：端点注册成功、HTTP 200、但 request 拿到的是空字符串，
-    来源 IP / 请求头 / 请求体全部读不到。密钥校验于是永远失败、报文永远为空。
-    这种「注册成功、调用成功、结果全空」的失效，只有真路由能发现。
+    为什么不再有「直接调处理器」的捷径：自建端点移除后，插件的入口只剩
+    `webhook_parser` 一处，而它必须经宿主的模块调度器才会被调用（漏声明
+    `get_module()` 就等于死代码）。测试若绕过声明表直接调实例方法，就复刻不出
+    真机的失效 —— 这正是 2026-09-22 那次「测试全绿、真机全哑」的成因。
+    因此本文件的所有入口用例都从这里走。
 
-    注意 `dependant.call` 是注册时**捕获**的方法对象，只改 route.endpoint 不够 ——
-    实际调用走的是 dependant.call，两处都要换成本实例的方法。
+    ⚠️ 返回值里的 `data` 不是「端点响应」——插件现在没有自己的端点，宿主端点的
+    响应体是宿主决定的（假宿主这里固定返回 `{"success": True}`）。计数是从
+    `_enqueue_ingest_paths`（两条来源唯一共用的入队函数）捕获的，也就是**用户
+    在看板上/日志里会看到的同一份数字**。以前断言的是自建端点自己拼的那个
+    `{"success": …, "data": counts}`，端点没了，改从这里取。
     """
-    pytest.importorskip("fastapi", reason="本环境无 fastapi，跳过路由层契约验证")
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    module = importlib.import_module("app.plugins.rsync115sync")
-    app = FastAPI()
-    for api in module.Rsync115Sync.get_api(plugin):
-        if api["path"] == "/webhook":
-            app.add_api_route(path=api["path"], endpoint=api["endpoint"],
-                              methods=api["methods"])
-    route = app.router.routes[-1]
-    # get_api 返回的已经是绑定到本实例的方法；再套一层 MethodType 会造成
-    # 「重复绑定」(self 被喂成方法名对象)，调用时报 got multiple values for argument 'request'。
-    bound = plugin._api_webhook_ingest
-    route.endpoint = bound
-    route.dependant.call = bound
-    return TestClient(app), module
+    captured: dict = {}
+    original = plugin._enqueue_ingest_paths
+
+    def spy(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        captured.update(counts)
+        return counts
+
+    plugin._enqueue_ingest_paths = spy
+    client, _ = _host_chain_route(plugin)
+    kwargs = {"content": payload} if raw else {"json": payload}
+    res = client.post(f"/api/v1/webhook/?{query}", **kwargs)
+    if res.status_code != 200:
+        return {"success": False, "status": res.status_code, "data": captured}
+    return {"success": True, "data": captured}
+
+
+def _claim(plugin, payload, *, source="rsync115sync"):
+    """
+    只驱动「认领」这一步（宿主解析入口 → provider），不广播事件。
+
+    用于断言认领阶段的**判据与日志/样本**：报文是否被认领、失败时留下什么痕迹。
+    与 `_host_post` 的分工是「只到入口」vs「一路到入队」。
+
+    `source` 走 args（= 查询串），与真实发送端一致：收件人标识通常写在 URL 上
+    （`?source=rsync115sync`），body 里只放业务字段。传 `source=None` 可模拟
+    「没声明收件人」的报文（宿主每条 Emby 报文都是这个形态）。
+    """
+    args = {"source": source} if source else None
+    return _declared_webhook_parser(plugin)(body=payload, form=None, args=args)
 
 
 def _host_chain_route(plugin):
@@ -862,64 +737,6 @@ def test_host_route_with_trailing_slash_is_the_only_working_form(tmp_path):
     assert list(plugin._pending_queue), "带尾斜杠时整条链应当通畅"
 
 
-def test_self_endpoint_requires_no_trailing_slash(tmp_path):
-    """
-    **自建端点与宿主相反：不能带尾斜杠。** 两个地址的斜杠要求正好相反。
-
-    这一条是照抄宿主习惯时最可能踩的坑：用户若把 `.../Rsync115Sync/webhook/`
-    填进发送端（因为宿主那边必须带斜杠），会同样拿到一个 307、同样看不到日志。
-    在此显式钉住「自建端点不带斜杠」，并让 USAGE 给出可直接照抄的两个地址。
-    """
-    src = tmp_path / "9KG"
-    src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src))
-    client, _ = _real_route(plugin)
-    client.follow_redirects = False
-
-    ok = client.post("/webhook", json={"paths": [str(src / "a.mkv")]})
-    assert ok.status_code == 200, "自建端点地址不带尾斜杠"
-
-    bad = client.post("/webhook/", json={"paths": [str(src / "a.mkv")]})
-    assert bad.status_code == 307, (
-        "自建端点带尾斜杠会被重定向；若这里不再是 307，说明宿主注册方式变了，"
-        "USAGE 里「两个地址斜杠要求相反」的提醒需要复核"
-    )
-
-
-def test_self_endpoint_survives_the_same_bad_content_type(tmp_path):
-    """
-    **发送端的 Content-Type 改不了时，自建端点是可用的退路。**
-
-    这条用例回答的是一个很实际的问题：上面那个 400 是宿主端点`form = await
-    request.form()` 造成的，而自建端点**先试 JSON**、只在 content-type 为
-    text/plain（或无）时才读原始 body、且把 `await request.form()` 包在
-    try/except 里兜底 —— 因此同一个「声明 multipart 却发裸 JSON」的请求，
-    打宿主是 400，打自建端点是 200 + 正常入队。
-
-    实测依据（starlette，`TestClient` 真请求）：两个端点收到的都是完整 body，
-    差别只在于宿主把那个 400 抛出了路由、而自建端点把它吞掉并回退到已解出的 JSON。
-
-    ⚠️ 这条**不能**读成「自建端点更健壮所以不用修发送端」：宿主那条路是用户已经
-    在用的（source=rsync115sync），修 Content-Type 才是正解；本用例的价值是把
-    「还有一条不被这个坑影响的通路」固定下来，供发送端无法改头时使用。
-    """
-    src = tmp_path / "9KG"
-    src.mkdir()
-    path = _media(str(src), "movie.mkv")
-    plugin = _plugin(str(src), allowlist=str(src))
-    client, _ = _real_route(plugin)
-
-    payload = json.dumps({"event": "download.finish",
-                          "data": {"title": "某电影", "source_path": path}})
-    res = client.post("/webhook", content=payload,
-                      headers={"Content-Type": "Multipart/form-data"})
-
-    assert res.status_code == 200, "自建端点不应因 content-type 与 body 不匹配而 400"
-    assert res.json()["success"] is True
-    assert res.json()["data"]["added"] == 1
-    assert plugin._pending_queue, "就算头写错了，路径也该被解出来并入队"
-
-
 def test_source_path_nested_under_data_is_recognized(tmp_path):
     """
     用户实际发送的字段形态：`data.source_path`（嵌在 `data` 下）。
@@ -1003,93 +820,61 @@ def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
     assert str(src) in text, "日志要写出当前配置的映射源目录，用户才知道该往哪改"
 
 
-def test_real_route_injects_request_object(tmp_path):
-    src = tmp_path / "TV"
-    plugin = _plugin(str(src), allowlist=str(src), secret="s3cret")
-    client, _ = _real_route(plugin)
-    path = _media(str(src))
-    res = client.post("/webhook", headers={"X-Webhook-Secret": "s3cret"},
-                      json={"paths": [path]})
-
-    assert res.status_code == 200
-    assert res.json()["success"] is True, res.text
-    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
-
-
-def test_real_route_reads_secret_from_header(tmp_path):
+def test_host_route_accepts_documented_payload_shapes(tmp_path):
     """
-    request 必须真被注入 —— 否则读不到请求头，密钥校验**永远失败**。
+    发送端能用的几种载体都要在**真路由**下走通：JSON body、查询串、纯文本 JSON。
 
-    这正是「参数写成 Any 就被当成查询参数」那个坑的表现形式，所以这里用手写错误
-    密钥做对照：只有真拿到头，正确密钥才会通过、错误密钥才会被拒。
+    为什么值得单独测：这三种形态在宿主端点里走的是不同分支 —— JSON 进 body、
+    查询串进 args、text/plain 的 JSON 要先 decode 再 parse。宿主把三者作为三个
+    不同参数交给 provider（`body=…, form=…, args=…`），漏读任何一个，对应形态的
+    发送端就会表现为「请求到了、插件说取不到路径」。这里走 TestClient 发真请求，
+    不用手写 dict —— 手写 dict 会绕过 starlette 的解码层，测不出真实形态。
     """
     src = tmp_path / "TV"
     src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src), secret="s3cret")
-    client, _ = _real_route(plugin)
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route(plugin)
+    url = "/api/v1/webhook/?token=t&source=rsync115sync"
 
-    bad = client.post("/webhook", headers={"X-Webhook-Secret": "wrong"},
-                      json={"paths": [str(src / "x.mkv")]})
-    assert bad.json()["success"] is False
-    assert "密钥" in bad.json()["message"]
+    p1 = _media(str(src), "json.mkv")
+    r1 = client.post(url, json={"event": "download.finish",
+                                "data": {"source_path": p1}})
+    assert r1.status_code == 200 and plugin._webhook_stat_now()["claimed"] == 1
 
+    p2 = _media(str(src), "query.mkv")
+    r2 = client.post(f"{url}&path={p2}")
+    assert r2.status_code == 200 and plugin._webhook_stat_now()["claimed"] == 2
 
-def test_real_route_accepts_all_documented_payload_shapes(tmp_path):
-    """四种报文形态都要在真实路由下走通（解析层单测覆盖不到 content-type 分流）。"""
-    src = tmp_path / "TV"
-    plugin = _plugin(str(src), allowlist=str(src))
-    client, _ = _real_route(plugin)
-
-    path = _media(str(src), "json.mkv")
-    assert client.post("/webhook", json={"paths": [path]}).json()["success"] is True
-
-    path2 = _media(str(src), "array.mkv")
-    assert client.post("/webhook", json=[path2]).json()["success"] is True
-
-    path3 = _media(str(src), "query.mkv")
-    assert client.post("/webhook", params={"path": path3}).json()["success"] is True
-
-    path4 = _media(str(src), "text.mkv")
-    res = client.post("/webhook", content='{"path": "%s"}' % path4,
-                      headers={"Content-Type": "text/plain"})
-    assert res.json()["success"] is True
+    p3 = _media(str(src), "text.mkv")
+    r3 = client.post(url, content='{"data": {"source_path": "%s"}}' % p3,
+                     headers={"Content-Type": "text/plain"})
+    assert r3.status_code == 200 and plugin._webhook_stat_now()["claimed"] == 3
 
     assert sorted(plugin._pending_queue) == [
-        "TV:array.mkv", "TV:json.mkv", "TV:query.mkv", "TV:text.mkv"]
+        "TV:json.mkv", "TV:query.mkv", "TV:text.mkv"]
 
 
-def test_real_route_enqueues_every_path_in_the_list(tmp_path):
+def test_host_route_enqueues_every_path_in_the_list(tmp_path):
     """
     一次推多个文件时**全部**入队，不是只取第一个。
 
-    端点接收侧有两层：`_ingest_from_request` 负责把请求体解码成 str/dict/list，
-    `_webhook_payload_of` 才做形态归一。直接在 `_ingest_from_parts` 上传 bytes
-    会绕过解码层（真实请求永远先经 starlette 解码），于是这个断言的真正价值是
-    钉住**真实路由**下的多路径行为 —— 走 TestClient 发真请求，不经手写 dict。
+    两层都可能是丢文件的地方：宿主端点把原始 body 交给我们（bytes → JSON），
+    认领侧把命中的路径写进 `json_object.paths`，接收侧再把 `item_path` 与
+    `json_object` 合并去重（`item_path` 按宿主契约只能放单个值，早先写成
+    「有值就直接返回」时，第二条起全部静默丢失）。走真路由才覆盖到第一层。
     """
     src = tmp_path / "TV"
-    plugin = _plugin(str(src), allowlist=str(src))
-    client, _ = _real_route(plugin)
+    src.mkdir()
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route(plugin)
     paths = [_media(str(src), f"e0{i}.mkv") for i in (1, 2, 3)]
 
-    res = client.post("/webhook", json={"paths": paths})
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      json={"event": "download.finish",
+                            "data": {"paths": paths}})
 
-    assert res.json()["success"] is True
-    assert res.json()["data"]["added"] == 3
+    assert res.status_code == 200
     assert sorted(plugin._pending_queue) == ["TV:e01.mkv", "TV:e02.mkv", "TV:e03.mkv"]
-
-
-def test_real_route_reports_source_ip(tmp_path):
-    """来源 IP 取自 request.client —— 只有真注入才拿得到，IP 白名单全靠它。"""
-    src = tmp_path / "TV"
-    plugin = _plugin(str(src), allowlist=str(src), ip_allowlist="10.1.2.3")
-    client, _ = _real_route(plugin)
-
-    # TestClient 的默认 client host 是 "testclient"，不在白名单内 → 必须被拒
-    res = client.post("/webhook", json={"paths": [str(src / "a.mkv")]})
-    assert res.json()["success"] is False
-    assert plugin._webhook_stat["rejected"] == 1
-    assert plugin._webhook_stat["last_source"] == "testclient"
 
 
 # --------------------------------------------------------------------------
@@ -1099,6 +884,9 @@ def test_real_route_reports_source_ip(tmp_path):
 # 这一组的由来：发送端往往是**另一个工程**（用户原话：「我不知道发送端会传递
 # 什么样的参数」）。`last_payload_shape` 只给结构与类型，答不出「值长什么样」——
 # 而候选字段表能否命中，恰恰取决于值是否符合路径形态。开发期只能边收边对齐。
+#
+# 采样点与「是否成功入队」无关：认领阶段的解码失败、以及认领成功后被广播回来的
+# 报文，两者都会留下样本（见 `_note_webhook_claim_attempt` 与 `_note_webhook`）。
 
 def test_unrecognized_payload_is_sampled_with_values(tmp_path):
     """
@@ -1110,15 +898,15 @@ def test_unrecognized_payload_is_sampled_with_values(tmp_path):
     """
     src = tmp_path / "9kg"
     src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    _post(plugin, body={"Event": "download.finish",
-                        "movie": {"file": "/vol3/9kg/某电影/movie.mkv"}})
+    _claim(plugin, {"Event": "download.finish",
+                    "movie": {"file": "/vol3/9kg/某电影/movie.mkv"}})
 
     samples = plugin._webhook_stat_now()["samples"]
     assert len(samples) == 1
     sample = samples[0]
-    assert sample["action"] == "未识别", "样本要带结论，用户才知道这条有没有用"
+    assert sample["action"] == "已到达·待认领", "样本要带结论，用户才知道这条有没有用"
     assert sample["payload"]["movie"]["file"] == "/vol3/9kg/某电影/movie.mkv"
 
 
@@ -1131,10 +919,10 @@ def test_sampled_payload_redacts_secrets(tmp_path):
     """
     src = tmp_path / "9kg"
     src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    _post(plugin, body={"pathx": "/vol3/a.mkv", "token": "super-secret",
-                        "authorization": "Bearer xyz"})
+    _claim(plugin, {"pathx": "/vol3/a.mkv", "token": "super-secret",
+                    "authorization": "Bearer xyz"})
 
     payload = plugin._webhook_stat_now()["samples"][0]["payload"]
     assert payload["token"] == "***"
@@ -1146,9 +934,9 @@ def test_sampled_payload_truncates_long_values(tmp_path):
     """超长值截断（附长度后缀）—— 样本是排障窗口，不该把 data 文件撑爆。"""
     src = tmp_path / "9kg"
     src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
-    _post(plugin, body={"pathx": "/vol3/" + "x" * 5000 + ".mkv"})
+    _claim(plugin, {"pathx": "/vol3/" + "x" * 5000 + ".mkv"})
 
     value = plugin._webhook_stat_now()["samples"][0]["payload"]["pathx"]
     assert len(value) < 400, "超长值未截断"
@@ -1164,10 +952,10 @@ def test_samples_are_capped_and_newest_first(tmp_path):
     """
     src = tmp_path / "9kg"
     src.mkdir()
-    plugin = _plugin(str(src), allowlist=str(src))
+    plugin = _plugin(str(src))
 
     for i in range(plugin.WEBHOOK_SAMPLE_LIMIT + 3):
-        _post(plugin, body={"pathx": f"/vol3/{i}.mkv"})
+        _claim(plugin, {"pathx": f"/vol3/{i}.mkv"})
 
     samples = plugin._webhook_stat_now()["samples"]
     assert len(samples) == plugin.WEBHOOK_SAMPLE_LIMIT
@@ -1215,10 +1003,9 @@ def test_status_exposes_samples_newest_first(tmp_path):
     src = tmp_path / "9kg"
     src.mkdir()
     plugin = _status_ready_plugin(str(src))
-    plugin._webhook_path_allowlist = str(src)
 
     for i in range(2):
-        _post(plugin, body={"pathx": f"/vol3/{i}.mkv"})
+        _claim(plugin, {"pathx": f"/vol3/{i}.mkv"})
 
     samples = plugin._api_get_status()["data"]["webhook"]["samples"]
     assert len(samples) == 2
@@ -1322,7 +1109,7 @@ def test_stub_host_status_defaults_align_with_frontend():
 
     前端 statusData 的初值是空对象 `webhook: {}`：首帧（尚未拉到 /status）时
     模板里所有 `webhookStat.x` 都会取到 undefined。`v-if="webhookVisible"` 依赖
-    `webhookStat.received` 与 `webhookStat.self_enabled` 读取 undefined 而不抛错 ——
+    `webhookStat.received` 与 `webhookStat.claimed` 读取 undefined 而不抛错 ——
     这条用例把「模板用到的字段都允许缺失」这件事钉住，防止将来有人写成
     `webhookStat.channels.join(...)` 而在首帧崩掉整个看板。
     """
@@ -1331,9 +1118,13 @@ def test_stub_host_status_defaults_align_with_frontend():
     assert "(webhookStat.channels || [])" in src, (
         "webhookStat.channels 未做空值兜底，首帧会抛 TypeError 并让整个看板白屏"
     )
-    assert "(webhookStat.allow_roots || [])" in src, (
-        "webhookStat.allow_roots 未做空值兜底，首帧会抛 TypeError"
-    )
+    # 自建端点移除后，看板不该再渲染它的任何字段（allow_roots / secret_set /
+    # self_enabled）：这些键已不再由 /status 返回，模板里留着只会恒取 undefined。
+    for gone in ("webhookStat.self_enabled", "webhookStat.secret_set",
+                 "webhookStat.allow_roots"):
+        assert gone not in src, (
+            f"{gone} 是自建端点的字段，已随端点移除 —— 看板不该再引用它"
+        )
 
 # ===================== webhook_parser 认领契约 =====================
 #

@@ -39,99 +39,48 @@
 
 ---
 
-## P0.5 — 已实施（alpha，未发布版本号）：Webhook 入库事件
+## P0.5 — 已实施：Webhook 入库事件（**代码已完成并移除过剩部分**）
 
-> ✅ **代码已实施、已提交；尚未发布**（alpha 阶段按仓库策略不占版本号，
-> 三处版本字段保持 `0.1.10`，变更说明暂存 DEVELOPMENT.md 9.13，真机验证清单见 9.12）。
-> 实现见 `webhook.py` + `__init__.py` 的 webhook 段落，
-> 测试 62 项（`tests/v3/rsync115sync/test_webhook_ingest.py`），
-> 实施记录与设计差异见 DEVELOPMENT.md 9.10。
+> ✅ **代码已实施、已提交**。变更说明暂存 DEVELOPMENT.md 9.13，
+> 真机验证清单见 9.12，实施记录与设计差异见 9.10，**两层成因复盘见 9.16/9.17**。
+> 实现见 `webhook.py`（纯解析层）+ `__init__.py` 的 webhook 段落，
+> 测试见 `tests/v3/rsync115sync/test_webhook_ingest.py` 与
+> `test_all_ext_ingest.py`。
 >
-> 下面保留原始设计稿，供对照「设计 vs 实现」；已确认的差异点标在 §9.10。
+> ⚠️ **与下方原始设计稿的最大差异：只有一条通道。**
+> 设计稿的「通道 B：插件自建 `allow_anonymous` 端点」已于 2026-09-22
+> **整体移除**（含四条防护配置与看板字段）。
+> 原因：宿主端点对**任何**发送端都收得下报文，只是不认识发送端身份；
+> 插件用 `webhook_parser` 认领（发送端带 `source=rsync115sync`）就能拿到它 ——
+> 「宿主不替我们解析」不等于「宿主不替我们收」。
+> 拆除的完整理由、代价与哨兵见 **DEVELOPMENT §9.18**。
+> 下文设计稿保留原样，供对照；**凡涉及通道 B 的段落均已作废**。
 
-### 原设计稿（保留对照）
-
-
-> 状态：**仅设计，未写代码**。方案依据宿主源码调研得出，实施前需用户补充三样东西
-> （见文末）。调研结论见 DEVELOPMENT.md 第 9 章。
-
-### 目标
-
-为「新文件入库」增加**第二来源**，覆盖现有 `TransferComplete` 事件监听不到的场景
-（手动放入、外部工具搬入、整理事件漏发）。来源两处：**Emby** 与 **MDC-ng**。
-
-### 关键调研结论（已核实源码，非推测）
-
-宿主已内建完整 webhook 链路：
-
-```
-Emby/MDC ──HTTP──▶ POST /api/v1/webhook/?token=API_TOKEN&source=<实例名>
-                        ↓ verify_apitoken（宿主鉴权）
-                   WebhookChain.message(body, form, args)
-                        ↓ webhook_parser()   ← 由**模块**提供解析，插件不参与
-                   eventmanager.send_event(EventType.WebhookMessage, info)
-                        ↓
-                   插件 @eventmanager.register(EventType.WebhookMessage)
-```
+### 已核实的关键结论（最终态）
 
 | 来源 | 宿主支持 | 结论 |
 |---|---|---|
-| **Emby** | ✅ 原生（`app/modules/emby/` 有 `webhook_parser`） | 走宿主链路即可，**无需自建端点** |
-| **MDC-ng** | ❌ **宿主不认识**（40+ 模块中无 mdc-ng/mdcz） | **必须插件自建 `allow_anonymous` 端点** |
+| **Emby** | ✅ 原生（`app/modules/emby/` 有 `webhook_parser`） | 走平台链路即可 |
+| **MDC-ng** | ❌ 宿主**不认识**（40+ 模块中无 mdc-ng/mdcz），但**收得下**其报文 | 同样打平台地址，`source` 填 `rsync115sync`，由插件认领 |
+| **自建脚本** | — | 同上；只发 query string 也行（宿主另注册了 `GET /`） |
 
-插件自建端点能力已核实：`app/adapters/web/plugin/routes.py:116-125` 支持
-`allow_anonymous`（跳过宿主鉴权）与 `auth`（bear/apikey）。
+插件侧必须做的一件事：在 `get_module()` 里声明 `{"webhook_parser": self.webhook_parser}` ——
+**只写方法定义等于死代码**（宿主不调用、不报错、无日志），见 DEVELOPMENT §9.17。
 
-**仓库内已有先例**：`plugins.v3/watchsync` 已实现 `WebhookMessage` 订阅，同时支持
-`emby` 与 `zspace`，可作为参照。注意它**不用 `event.snapshot()`**，而是
-`getattr(event_data, ...)` 直接读 —— 因为 `WebhookMessage` 未登记在
-`_SNAPSHOT_EVENTS`（`app/runtime/event/contracts.py:100` 只登记类型）。
+### 原始设计稿在哪
 
-### 方案：双通道
+原先整段贴在这里（双通道方案、通道 B 的四道防护、实施顺序、待用户提供的四项）。
+**已删除** —— 它描述的是「插件自建匿名端点 + 四条防护」这条最终被拆掉的路，
+而其中的宿主调研结论（链路形态、来源支持情况、`source` 语义、双通道取舍）
+已完整保存在 **DEVELOPMENT.md 第 9 章**，与本文件重复只会让两处逐渐失真。
+查找入口：
 
-- **通道 A（Emby）**：订阅 `EventType.WebhookMessage`，`channel == "emby"` 时取
-  `item_path`，只处理入库类事件（`library.new` 等），播放类忽略。
-  Emby 后台 Webhook 填：
-  `http://<moviepilot>:3001/api/v1/webhook/?token=<API_TOKEN>&source=<emby实例名>`
-- **通道 B（MDC-ng）**：插件自建 `POST /webhook/mdc`，`allow_anonymous: true`。
-
-两条通道最终**合流到同一入口**：
-
-```
-webhook → 取路径 → 校验归属映射（复用 paths.pair_for_path）
-                 → 校验源端文件存在 → 入冷却队列（复用现有幂等入队）
-```
-
-**设计要点**：webhook 是**补充**而非替代。同一文件可能同时从两条路进来，
-现有 `_pending_queue` 的重复检测天然幂等（不刷新时间戳），不会重复入队。
-
-### ⚠️ 通道 B 的安全风险（实施时必须解决）
-
-`allow_anonymous: true` 意味着**知道 URL 就能往插件灌数据** —— 可伪造入库、
-可灌大量伪造路径撑爆队列。防护优先级：
-
-1. 自定义 Header 密钥（最干净）—— 需 MDC-ng 支持
-2. URL 参数密钥 `?token=xxx` —— 次选
-3. **路径白名单校验（无条件要做）**：进来的路径必须落在已配置的
-   `sync_pairs` 源目录内，与 `paths.pair_for_path()` 同判据，能挡掉绝大多数伪造数据
-4. 来源 IP 白名单（兜底）
-
-### 实施顺序
-
-1. **先做通道 A（Emby）** —— 低风险、宿主链路已通、可立即验证
-2. **通道 B 需先拿到真实报文**：先写一个**只记日志、不做处理**的临时 debug 端点，
-   配上去观察真实 payload，再写解析器。
-   **不要凭猜测写解析器** —— 本项目已多次吃过「凭推测写机制」的亏（见 3.8.1）
-
-### 实施前需要用户提供
-
-- [ ] **MDC-ng 的 webhook 报文样例**（一份真实 JSON）—— 决定字段名与事件命名
-- [ ] **MDC-ng 是否支持自定义 Header / URL 参数** —— 决定鉴权方案
-- [ ] **实际要监听的事件类型**（仅新入库？还是含播放/收藏）
-- [ ] 确认 Emby 通道是**补充**还是**替代**现有整理事件监听
-      （补充则正好覆盖「手动放入/外部搬入」这类现有链路看不到的场景）
-
----
+| 想查什么 | 去哪 |
+|---|---|
+| 宿主 webhook 链路的原始调研结论 | DEVELOPMENT §9.2 / §9.3 |
+| 双通道方案与当时的安全推理（历史） | DEVELOPMENT §9.6 / §9.7 |
+| **为什么最终砍成单通道** | DEVELOPMENT §9.18 |
+| 真机踩到的两层成因 | DEVELOPMENT §9.16 / §9.17 |
 
 ## P0.7 — 待实机确认：补生成 strm 的真实闭环
 

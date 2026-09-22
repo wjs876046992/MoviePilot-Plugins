@@ -34,6 +34,45 @@ import pytest
 from app.plugins.rsync115sync import Rsync115Sync
 
 
+def _host_chain_route(plugin):
+    """
+    复刻**宿主** `/api/v1/webhook/` 端点：读原始 body → 调 provider → 广播事件。
+
+    与宿主 `app/api/endpoints/webhook.py` 同序（`body = await request.body()`
+    之后才调 provider），并**只从 `get_module()` 声明表里取 provider** —— 宿主
+    `projection.modules()` 就是这么收集的，漏声明等于死代码。
+
+    本文件自带一份（不 import test_webhook_ingest 的）是为了让这个文件能单独运行：
+    pytest 的 importlib 模式下跨文件导入同级测试模块容易受 rootdir 影响而失败。
+    """
+    pytest.importorskip("fastapi", reason="本环境无 fastapi，跳过路由层验证")
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    import importlib
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    app = FastAPI()
+
+    @app.post("/api/v1/webhook/")
+    async def host_webhook(request: Request):
+        body = await request.body()
+        form = await request.form()
+        args = request.query_params
+        declared = plugin.get_module()
+        assert isinstance(declared, dict), "get_module() 必须返回字典，否则宿主看不到本插件"
+        provider = declared.get("webhook_parser")
+        assert callable(provider), "get_module() 未声明 webhook_parser —— 认领通道整条失效"
+        info = provider(body=body, form=form, args=args)
+        if info:
+            from types import SimpleNamespace
+            plugin._handle_webhook_event(SimpleNamespace(
+                event_type=SimpleNamespace(value="webhook.message"),
+                event_data=info))
+        return {"success": True}
+
+    return TestClient(app, raise_server_exceptions=False), module
+
+
 ALL_EXT_EXTENSIONS = "mkv,srt"
 
 
@@ -45,10 +84,6 @@ def _plugin(src_root, *, pairs=None, media_extensions=ALL_EXT_EXTENSIONS,
     plugin._enabled = True
     plugin._listen_transfer = True
     plugin._webhook_channels = ["emby"]
-    plugin._webhook_self_enabled = True
-    plugin._webhook_secret = ""
-    plugin._webhook_path_allowlist = str(src_root)
-    plugin._webhook_ip_allowlist = ""
     plugin._sync_pairs = pairs if pairs is not None else [{
         "name": "9KG", "src": src_root, "dest": "/dest/9KG",
         "all_ext": True, "strm_dir": "",
@@ -73,9 +108,34 @@ def _write(path, data=b"x"):
 
 
 def _ingest(plugin, *paths):
-    """走自建端点的完整防护链（与真机 sender 的入口一致）。"""
-    return plugin._ingest_from_parts(client_ip="10.0.0.9", headers=None,
-                                     query={}, body={"paths": list(paths)})
+    """
+    走**真机同一条链路**：宿主 webhook 端点 → 本插件的 `webhook_parser` 认领 → 广播入队。
+
+    为什么不能直接调 `_enqueue_ingest_paths`：本文件验的正是「发送端推来的东西
+    最终有没有进队列」这条端到端行为，而认领判据（路径是否落在映射内、是否取到
+    路径）就在链路上。绕过它，用例可能在一个真机上根本走不到的分支上全绿。
+
+    ⚠️ 这里必须经声明表取 provider（`get_module()`），不能直接调实例方法 ——
+    2026-09-22 那次「测试全绿、真机全哑」就是因为 harness 绕过了声明表。
+
+    返回 `_enqueue_ingest_paths` 的计数（= 日志与看板上用户看到的同一份数字）。
+    自建端点移除后，插件不再自己拼响应体，因此计数从这里捕获。
+    """
+    captured: dict = {}
+    original = plugin._enqueue_ingest_paths
+
+    def spy(*args, **kwargs):
+        counts = original(*args, **kwargs)
+        captured.update(counts)
+        return counts
+
+    plugin._enqueue_ingest_paths = spy
+    client, _ = _host_chain_route(plugin)
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      json={"event": "download.finish",
+                            "data": {"paths": list(paths)}})
+    assert res.status_code == 200, f"宿主端点应当返回 200，实际 {res.status_code}"
+    return {"success": True, "data": captured}
 
 
 # --------------------------------------------------------------------------

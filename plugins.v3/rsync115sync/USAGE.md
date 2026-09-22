@@ -171,8 +171,8 @@ http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=<emby实
 
 #### 顺带一条：自定义发送端也可以走平台的 webhook 地址
 
-如果发送端（自建脚本、MDC-ng 之类）不方便直连插件自建端点，可以改走平台的
-webhook 地址 + 一个专属标识，由插件认领：
+发送端（自建脚本、MDC-ng 之类）都走**同一个**平台 webhook 地址 + 一个专属标识，
+由插件认领。这是**唯一**的入口（插件自带的端点在 2026-09-22 已移除，见 4.5.3）：
 
 ```bash
 curl -X POST "http://<mp>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync" \
@@ -231,22 +231,19 @@ curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook/?token=<API_TOKEN>&sourc
 > 「取到的路径不属于任何映射」，那就不是 Content-Type 的问题了 ——
 > 它会把你当前配置的全部映射源目录列出来，照着改报文即可。
 
-**如果发送端的 Content-Type 根本改不了**（有些工具把它写死），改用自建端点
-（通道 B，即 `POST /api/v1/plugin/Rsync115Sync/webhook`）：它**不受这个坑影响** ——
-收到「声明 multipart 却发裸 JSON」的请求时仍能正常解析入队（已实测，
-见 `test_self_endpoint_survives_the_same_bad_content_type`）。
-代价是要自己在插件配置页开启端点并配好密钥/IP 白名单。
+**发送端的 Content-Type 改不了怎么办**：这是**发送端侧**的问题，插件无法兜底
+（请求在进入插件之前就被宿主拒了）。可选的途径：
 
-> ⚠️ **两个地址的斜杠要求正好相反，照抄时最容易搞错：**
+- 找一个能改请求头的中间层（反代、`curl` 脚本、n8n/HomeAssistant 之类的转发节点），
+  由它把 Content-Type 写对再转给平台地址；
+- 若该工具支持，直接把 Content-Type 设为 `application/json`（或干脆不带这个头）。
+
+> ⚠️ **本插件自 2026-09-22 起不再自带端点**，因此没有「换个地址绕开」这条路了。
+> 此前那个免登录端点正是为了绕开这类发送端限制而存在，但它同时意味着
+> 向网络暴露一个可写入接口，而宿主端点已能满足同一需求（鉴权交给宿主）。
+> 少一个暴露面，少四条容易配错的安全配置。理由与取舍见 DEVELOPMENT §9.18。
 >
-> | 通道 | 地址 | 尾斜杠 |
-> |---|---|---|
-> | A 平台链路 | `/api/v1/webhook/?token=...&source=rsync115sync` | **必须带** |
-> | B 自建端点 | `/api/v1/plugin/Rsync115Sync/webhook` | **不能带** |
->
-> 两边写反都会拿到一个 307 重定向 + 插件零日志。已各有一条用例钉住
-> （`test_host_route_with_trailing_slash_is_the_only_working_form`、
-> `test_self_endpoint_requires_no_trailing_slash`）。
+> 也正因如此，**唯一的地址就是宿主端点**，尾斜杠必须带（见上一条）。
 
 **报文形态参考**（另一个工程常用的形态，字段名不必完全一致，见下）：
 
@@ -317,65 +314,30 @@ curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook/?token=<API_TOKEN>&sourc
 
 一次推多个文件时，报文的 `paths` 数组会被**全部**入队（不是只取第一个）。
 
-### 4.5.3 通道 B：自建端点（仅用于宿主不认识的发送端，如 MDC-ng）
+### 4.5.3 自建端点（已于 2026-09-22 移除）
 
-宿主**不认识 MDC-ng**（其模块列表里没有它），所以 MDC 的 webhook 无法经宿主链路
-到达插件。这就是自建端点存在的唯一理由：**用 Emby 的话不需要打开它。**
+**宿主不认识的发送端也能走平台入口**，因此不再需要自建端点。
 
-在配置页打开「启用本插件自建端点」后，接口地址是：
+早先的做法是插件自带一个免登录端点（`POST /api/v1/plugin/Rsync115Sync/webhook`），
+理由是 MDC-ng 一类的发送端不会被宿主解析。但这条路要付出两处代价：
 
-```
-POST http://<moviepilot地址>:3001/api/v1/plugin/Rsync115Sync/webhook
-```
+1. **多一个可写入的暴露面** —— `allow_anonymous` 意味着知道地址的人都能往插件里灌数据，
+   伪造入库会真实消耗 115 风控配额；
+2. **多四条容易配错的安全配置** —— 端点开关、密钥、路径白名单、来源 IP 白名单，
+   配错任何一条都可能「看起来开着、其实没防住」。
 
-> 💡 **先考虑走平台入口。** 如果你的发送端只是「往一个地址 POST 一段 JSON」，用上面
-> 4.5.2 的平台地址 + `source=rsync115sync` 更省事：鉴权、请求日志都由宿主负责，
-> 也不必暴露一个免登录接口。自建端点留给「必须自己控制地址与鉴权」的场景。
+而它解决的问题用平台入口就能解决：发送端把 `source` 指到 `rsync115sync`
+（或带 `X-Webhook-Target: rsync115sync` 头）即可，**鉴权由宿主用 API Token 负责**，
+请求也有宿主日志可查。这个判断经复查成立，因此端点与其四条配置一并移除。
 
-支持四种报文形态（不做多余猜测，取不到路径就记日志）：
-
-```bash
-# ① JSON 对象
-curl -X POST "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook" \
-  -H "Content-Type: application/json" \
-  -d '{"paths": ["/volume3/HomeTheater/emby/电影/x.mkv"], "event": "library.new", "channel": "mdcz"}'
-
-# ② 带密钥（也支持 ?token=<密钥> 查询串形式）
-curl -X POST "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook" \
-  -H "X-Webhook-Secret: 你的密钥" -H "Content-Type: application/json" \
-  -d '{"path": "/volume3/HomeTheater/emby/电影/x.mkv"}'
-
-# ③ 裸数组 / ④ 纯查询串
-curl -X POST "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook" -d '["/volume3/a.mkv"]'
-curl "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook?path=/volume3/a.mkv"
-```
-
-> ⚠️ **这是本插件唯一免登录的接口**，默认关闭。开启前请读完下面一节。
-
-### 4.5.4 ⚠️ 自建端点的安全（配置前必读）
-
-打开这个开关意味着：**知道地址的人都可以往插件里灌数据。** 伪造入库不是「多传几个
-文件」那么无害 —— 每次上传都消耗 115 的风控配额，灌一批伪造路径足以把冷却队列撑爆
-并触发风控。所以防护是**四道串联**，任何一道不过即拒绝：
-
-| # | 防护 | 说明 | 默认 |
-|---|---|---|---|
-| 1 | 端点开关 | 必须由你在配置页显式打开 | **关闭** |
-| 2 | 来源 IP 白名单 | 每行一条，支持 `192.168.1.` 这样的前缀 | 空（不限） |
-| 3 | 密钥 | `X-Webhook-Secret` 头或 `?token=` | 空（不校验） |
-| 4 | **路径白名单** | 路径必须落在你配置的目录内 | **无条件生效** |
-
-第 4 道是真正兜底的那道，也是唯一**不依赖密钥**的：伪造者可以编造任何路径字符串，
-但不可能让它同时落在你的媒体库目录下。留空时它会退回使用各目录映射的**本地源目录**；
-如果你的发送端推的目录与媒体库不是同一棵子树，请显式填写。
-
-> 💡 **怎么配最省事**：如果你的发送端和 MoviePilot 在同一个局域网，把发送端 IP 填进
-> 「来源 IP 白名单」，再随便设个密钥，就可以放心用了。两道都不配也不是不能用
-> （路径白名单仍在生效），但**暴露在公网时请务必至少配一个**。
+> 📌 若你此前配了这个端点，**升级后请把发送端地址改成平台入口**（见 4.5.2）：
+> 旧地址会返回 404。这一条只影响「当初没用平台入口」的发送端 —— 用 Emby 的话
+> 本来就一直在走平台入口，无需任何改动。
 
 ### 4.5.5 怎么确认这条路通了
 
-看板顶部会显示 webhook 的四项计数：**收到 / 入队 / 被拒 / 未识别**，加上两个更具体的：
+看板顶部会显示 webhook 的四项计数：**收到 / 入队 / 被拒 / 未识别**（外加「平台解析入口到达」），
+以及两个更具体的：
 
 - **最近报文的字段结构**（只记字段名与类型，**不记值**）—— 用于日志排障；
 - **最近报文样本（含值）** —— 展开就能看到发送端实际传了什么，值已截断、密钥已隐去。
@@ -385,9 +347,9 @@ curl "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook?path=/volume3/a.mkv"
 
 | 看到的现象 | 结论 |
 |---|---|
-| 收到 = 0 | 请求根本没到插件：检查发送端地址、宿主 API Token、IP 白名单 |
+| 收到 = 0 | 请求根本没到插件：查地址尾斜杠、Content-Type、宿主 API Token、`source` 是否写对 |
 | 收到 > 0，入队 = 0，未识别 > 0 | 到了但字段名对不上：展开「最近报文样本」，把字段名反馈给插件以扩展候选表 |
-| 收到 > 0，被拒 > 0 | 防护链拦下了：日志里会写明是哪一道（IP / 密钥 / 白名单） |
+| 收到 > 0，被拒 > 0 | 认领阶段未通过（路径不在任何映射内等），日志会写明原因 |
 | 收到 > 0，入队 > 0 | 正常。若队列没涨，说明这些文件**已经在队列里**（幂等，不重复入队） |
 | 收到 > 0，消息显示「目录已展开但无文件入队」 | 目录收到了，但里面没有符合扩展名的文件（或全在忽略清单里）|
 
@@ -413,10 +375,10 @@ curl "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook?path=/volume3/a.mkv"
 > → 队列里会同时出现同目录的 `movie.zh.srt`、`poster.jpg`、`movie.nfo` 等**全部**文件。
 > 单目录超过 300 个文件时截断，日志会写明漏掉多少。
 
-> 典型用法：另一个工程下完 9KG 内容后，POST 一个目录路径过来即可 ——
+> 典型用法：另一个工程下完 9KG 内容后，POST 一个目录路径到**平台入口**即可 ——
 > ```bash
-> curl -X POST "http://mp:3001/api/v1/plugin/Rsync115Sync/webhook" \
->   -H "X-Webhook-Secret: <你设的密钥>" -H "Content-Type: application/json" \
+> curl -X POST "http://mp:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync" \
+>   -H "Content-Type: application/json" \
 >   -d '{"Event": "download.finish", "path": "/volume3/9kg/某电影 (2024)"}'
 > ```
 > 目录里只放媒体文件时，`Event`/`path` 之外的字段随便叫什么都能识别（候选字段表）；

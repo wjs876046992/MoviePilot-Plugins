@@ -457,7 +457,7 @@
           </div>
 
           <div class="setting-row px-4 py-3 border-b">
-            <div class="font-weight-bold text-body-2 mb-1">通道 A：宿主原生链路（Emby）</div>
+            <div class="font-weight-bold text-body-2 mb-1">平台 webhook 地址（宿主原生链路）</div>
             <div class="text-caption text-medium-emphasis">
               无需在本插件做任何额外配置，只需在 <b>Emby 后台 → 通知 → Webhooks</b> 里添加地址：
               <br>
@@ -468,89 +468,12 @@
               <br>
               <b>自定义发送端</b>（自建脚本等）也可以走这个地址，把 <code>source</code> 换成
               <code>rsync115sync</code>（或加请求头 <code>X-Webhook-Target: rsync115sync</code>），
-              插件会认领它；鉴权交给宿主，无需开启下面的自建端点。
+              插件会认领它。
               <b>注意这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
               插件都不会处理。
             </div>
           </div>
 
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2 d-flex align-center">
-                启用本插件自建端点
-                <v-chip size="x-small" color="error" variant="tonal" class="ml-1 font-weight-bold">安全相关</v-chip>
-              </div>
-              <div class="text-caption text-medium-emphasis">
-                仅用于<b>宿主不认识的发送端</b>（如 MDC-ng）。开启后暴露一个<b>免登录</b>接口
-                <code>POST /api/v1/plugin/Rsync115Sync/webhook</code>，
-                意味着<b>知道地址的人都能往这里灌数据</b> —— 伪造入库会消耗 115 风控配额。
-                因此默认关闭，且开启后请至少配置下面的密钥或 IP 白名单。
-                <br>用 Emby 的话不需要打开它。
-              </div>
-            </div>
-            <v-switch v-model="config.webhook_self_enabled" color="error" inset hide-details density="compact"></v-switch>
-          </div>
-
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2">端点密钥（可选）</div>
-              <div class="text-caption text-medium-emphasis">
-                发送端需带 <code>X-Webhook-Secret: &lt;密钥&gt;</code> 请求头，或 <code>?token=&lt;密钥&gt;</code>。
-                <b>留空则不校验密钥</b>，此时只剩「路径白名单」与「IP 白名单」两道防护。
-              </div>
-            </div>
-            <v-text-field
-              v-model="config.webhook_secret"
-              variant="outlined"
-              density="compact"
-              placeholder="留空 = 不校验"
-              style="max-width: 200px"
-              hide-details
-            ></v-text-field>
-          </div>
-
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2">来源 IP 白名单（可选）</div>
-              <div class="text-caption text-medium-emphasis">
-                每行一条，支持精确 IP 或前缀（如 <code>192.168.1.</code>）。留空 = 不限来源。
-              </div>
-            </div>
-            <v-textarea
-              v-model="config.webhook_ip_allowlist"
-              variant="outlined"
-              density="compact"
-              rows="2"
-              placeholder="192.168.1."
-              style="max-width: 240px"
-              hide-details
-            ></v-textarea>
-          </div>
-
-          <div class="setting-row px-4 py-3">
-            <div class="font-weight-bold text-body-2 mb-1">
-              webhook 允许的入库目录（路径白名单，<b>无条件生效</b>）
-              <v-chip size="x-small" color="primary" variant="tonal" class="ml-1 font-weight-bold">建议必填</v-chip>
-            </div>
-            <div class="text-caption text-medium-emphasis mb-2">
-              每行一条绝对路径。进来的路径必须落在这里面才会被处理 ——
-              这是<b>唯一不依赖密钥</b>的一道防护：伪造者能编造任何路径字符串，
-              但不可能让它同时落在你的媒体库目录下。
-              留空时退回使用上方各目录映射的<b>本地源目录</b>；
-              若发送端推的目录与媒体库不同（MDC 常见），请在此显式填写。
-              <br>
-              （注意：即使通过了白名单，路径还必须属于某个目录映射才会真正入队 ——
-              白名单回答「可信吗」，映射回答「同步到哪」。）
-            </div>
-            <v-textarea
-              v-model="config.webhook_path_allowlist"
-              variant="outlined"
-              density="compact"
-              rows="3"
-              placeholder="/volume3/HomeTheater/emby"
-              hide-details
-            ></v-textarea>
-          </div>
         </div>
       </v-card-text>
 
@@ -605,13 +528,9 @@ const config = ref({
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
   force_cooldown_days: 7,
   // ---- webhook（第二入库来源）----
-  // 与后端实例默认值保持一致：渠道默认只开 emby（宿主原生支持、零额外配置），
-  // 自建端点默认**关闭**（暴露免登录接口必须由用户明确开启）。
+  // 只剩渠道过滤一项：与后端实例默认值保持一致，渠道默认只开 emby
+  // （宿主原生支持、零额外配置）。自建端点及其四条防护配置已于 2026-09-22 移除。
   webhook_channels: ['emby'],
-  webhook_self_enabled: false,
-  webhook_secret: '',
-  webhook_path_allowlist: '',
-  webhook_ip_allowlist: '',
   // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。

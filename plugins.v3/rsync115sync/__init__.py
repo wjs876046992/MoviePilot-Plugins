@@ -19,21 +19,6 @@ try:
 except Exception:  # pragma: no cover - 兼容不同版本宿主
     MessageType = None
 
-# FastAPI 的 Request：自建 webhook 端点必须靠**类型注解**让宿主把请求对象注入进来。
-#
-# ⚠️ 这里不能用 `Any` 或字符串注解 —— 实测（fastapi 0.141）对 `Any` 注解的参数
-# 会按**查询参数**处理，于是 `request`/`body` 都变成 `?request=&body=`，
-# 端点既拿不到请求体、也拿不到来源 IP 与请求头，全部返回空值。类型必须是
-# Request 本身，FastAPI 才按 request 参数注入（见 _api_webhook_ingest 的说明）。
-#
-# 桩环境（本仓单测无宿主依赖）下 fastapi 不存在，退化成一个占位类：
-# 只要不为真宿主加载，这个类就不会被 FastAPI 检查到。
-try:
-    from fastapi import Request as _FastAPIRequest
-except Exception:  # pragma: no cover - 仅在无宿主的桩环境走到
-    class _FastAPIRequest:  # type: ignore[no-redef]
-        """占位类型：桩环境下不会真的被 FastAPI 解析。"""
-
 # 宿主公开的窄调度门面。用于保存配置后**主动重建本插件的定时任务** ——
 # 配置走本插件自己的 API 时，宿主不会替我们刷新调度（详见 _refresh_scheduled_job）。
 # 缺失时降级为 None，不影响插件加载：旧宿主上没有它只是需要手动重载。
@@ -164,7 +149,9 @@ from .paths import (  # noqa: E402
     pair_name as _pair_name,
     valid_exts_of as _valid_exts_of,
 )
-# Webhook 报文解析（纯逻辑，无状态）+ 自建端点里的路径归属判据
+# Webhook 报文解析（纯逻辑，无状态）。认领判据也在这里（判定「这条报文是不是发给
+# 本插件的」），但它不再是某个自建端点的内部函数 —— 自建端点已于 2026-09-22 移除，
+# 现在唯一的载体是宿主的平台 webhook 链路，见 DEVELOPMENT §9.18。
 from . import webhook as _wh  # noqa: E402
 from .webhook import valid_extension as _wh_valid_extension  # noqa: E402
 
@@ -211,18 +198,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 已启用的来源渠道（channel 过滤）。默认只开 emby —— 宿主原生支持它，
         # 用户只需在 Emby 后台填一次回调地址即可，零额外配置。
         self._webhook_channels: List[str] = ["emby"]
-        # 自建端点开关。默认**关闭**：它意味着向网络暴露一个可写入的接口，
-        # 必须是用户明确打开的行为，绝不能在升级后悄悄生效。
-        self._webhook_self_enabled: bool = False
-        # 自建端点的路径白名单根目录（每行一条，空 = 只用 sync_pairs 的源目录）。
-        # 这是「无条件要做」的那道防护：MDC 与媒体库路径完全解耦，进来的路径
-        # 必须显式声明可信，不能仅凭「落在某个 sync_pairs 里」就接受。
-        self._webhook_path_allowlist: str = ""
-        # 自建端点密钥（可选）。空 = 不校验密钥，此时**只靠路径白名单与来源 IP**；
-        # 文档与配置页必须把这一点写清楚，不能让用户以为不填也安全。
-        self._webhook_secret: str = ""
-        # 来源 IP 白名单（每行一条，支持精确 IP 与 1.2.3. 这样的前缀；空 = 不限）
-        self._webhook_ip_allowlist: str = ""
         # webhook 运行态：累计收入计数 + 最近一次报文的字段结构摘要。
         # 必须持久化（save_data）而不是只放内存：用户排查时习惯「推一条 → 重载插件
         # → 去看板确认」，只在内存里的话重载即清零，永远看不到刚推的那一条。
@@ -1690,17 +1665,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # The only endpoint that depends on another plugin; everything else,
             # including the whole strm cross-validation feature, is self-contained.
             {"path": "/strm_generate", "endpoint": self._api_strm_generate, "methods": ["POST"], "auth": "bear"},
-            # ⚠️ 本插件**唯一**匿名（免宿主鉴权）的端点：自建 webhook 接收口。
-            # 外部发送端（MDC-ng、自建脚本）不带 MoviePilot 的 API_TOKEN，
-            # 走宿主鉴权必然 401。安全由插件自己在处理器内部兜住（密钥 +
-            # 路径白名单 + 来源 IP 白名单 + 开关默认关闭），见 _api_webhook_ingest。
-            # The only anonymous endpoint in this plugin. Its own guard chain is the
-            # entire security boundary — never loosen it without the same scrutiny.
-            {"path": "/webhook", "endpoint": self._api_webhook_ingest, "methods": ["POST"],
-             "allow_anonymous": True},
         ]
 
-    # ================= 自建 webhook 端点（第二通道） =================
+    # ================= Webhook 入库运行态 =================
+    #
+    # 现在只有一条通道：宿主的 `webhook_parser` 契约（认领确认发给本插件的报文）。
+    # 自建匿名端点已于 2026-09-22 移除，原因见 DEVELOPMENT §9.18。
 
     @staticmethod
     def _wh_stat() -> Dict[str, Any]:
@@ -1817,212 +1787,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         except Exception:
             pass  # 运行态落盘失败绝不能影响入库本身
 
-    async def _api_webhook_ingest(self, request: _FastAPIRequest) -> Dict[str, Any]:
-        """
-        接收外部 webhook 推送的入库路径，走与事件链路**同一个入队函数**。
-
-        Receive externally-pushed ingest paths. This endpoint exists because the host
-        only knows about media servers it has a module for — MDC-ng is not one of
-        them (verified: no mdc/mdcz module in app/modules), so its webhooks can
-        never reach `EventType.WebhookMessage`. Everything else (Emby) should use
-        the host chain instead: it is authenticated by the host and needs no
-        endpoint of ours.
-
-        ## 为什么这是全插件**唯一**匿名端点，以及它凭什么安全
-
-        `allow_anonymous: True` 意味着知道 URL 的人都能往这里灌数据。
-        伪造入库不只是「多传几个文件」—— 每次上传都消耗 115 风控配额，
-        灌一批伪造路径足以把冷却队列撑爆并触发风控。因此防护是**串行四道**，
-        任何一道不过即拒绝（顺序即代码顺序）：
-
-          1. 总开关 `webhook_self_enabled`（默认**关闭**：暴露接口必须由用户明确开启）
-          2. 来源 IP 白名单（若配置）
-          3. 密钥（若配置）—— 支持 `X-Webhook-Secret` 头或 `?token=`
-          4. **路径白名单**（无条件生效）：路径必须落在显式白名单内，
-             未配置时退回各 mapping 的源目录
-
-        第 4 道是真正兜底的那道：伪造者可以伪造任何路径字符串，但不可能让一个
-        任意路径**同时**落在你配置的媒体库目录下。它不会因为「密钥没填」而失效。
-
-        ## ⚠️ 签名为什么必须是单个 `request: Request`（改之前先看这条）
-
-        实测（fastapi 0.141）：参数写成 `request: Any = None` 会让 FastAPI 把它
-        分类为**查询参数**而不是 request 对象 —— 端点照样能注册、OpenAPI 照样生成、
-        HTTP 照样 200，但 `request` 拿到的是一个空字符串，于是
-        **来源 IP、请求头、请求体全部读不到**：密钥校验永远失败、来源 IP 永远为空、
-        报文永远是空的。这类「注册成功、调用成功、结果全空」的失效最难自查，
-        因此这里不留任何宽松余量：类型就是 Request，参数就一个。
-
-        请求体通过 `await request.json()` 自己读，不用 `Body(...)` 声明 ——
-        报文形态有四种（JSON 对象 / 裸数组 / 纯查询串 / 纯文本 JSON），
-        声明成某一具体模型等于提前选定了其中一种。
-        """
-        if not getattr(self, "_enabled", False):
-            return {"success": False, "message": "插件未启用"}
-        return await self._ingest_from_request(request)
-
-    async def _ingest_from_request(self, request: Any) -> Dict[str, Any]:
-        """
-        从真实 Request 里取齐四要素后交给 `_ingest_from_parts` 处理。
-
-        必须 async：FastAPI 要求用 await 读请求体（`await request.json()`）。
-        调用方 `_api_webhook_ingest` 同样是 async 并 `await` 本函数 —— 若它保持
-        同步，这里返回的协程会被 FastAPI 当作普通返回值丢给 JSON 编码器，
-        报出与真实故障毫无关联的 `'coroutine' object is not iterable`。
-
-        每一段都单独兜异常：取不到就不该让端点 500 —— 对发送端来说 500 是
-        「请重试」的信号，会把同一个请求反复打进来。
-        """
-        headers = None
-        try:
-            headers = getattr(request, "headers", None)
-        except Exception:
-            headers = None
-        client_ip = ""
-        try:
-            client = getattr(request, "client", None)
-            if client is not None:
-                client_ip = getattr(client, "host", "") or ""
-        except Exception:
-            client_ip = ""
-        query: Dict[str, Any] = {}
-        try:
-            query = dict(getattr(request, "query_params", None) or {})
-        except Exception:
-            query = {}
-
-        # 请求体：先看 starlette 缓存的 _json（宿主已解析过时直接复用，避免二次读取），
-        # 再按 content-type 分流（text/plain 里塞 JSON 的发送端真实存在），
-        # 最后退回 form。三种都失败就当没有 body —— 纯查询串形态本来就没有。
-        body: Any = getattr(request, "_json", None)
-        if body is None:
-            try:
-                body = await request.json()
-            except Exception:
-                body = None
-        if body is None:
-            ctype = ""
-            try:
-                ctype = (headers.get("content-type") or "") if headers is not None else ""
-            except Exception:
-                ctype = ""
-            if ("text/plain" in ctype or not ctype) and hasattr(request, "body"):
-                try:
-                    raw = await request.body()
-                    if raw:
-                        body = raw.decode("utf-8", "replace")
-                except Exception:
-                    body = None
-        if body is None and hasattr(request, "form"):
-            try:
-                form = await request.form()
-                if form:
-                    body = {str(k): v for k, v in form.items()}
-            except Exception:
-                body = None
-
-        return self._ingest_from_parts(client_ip=client_ip, headers=headers,
-                                       query=query, body=body)
-
-    def _ingest_from_parts(self, client_ip: str, headers: Any,
-                           query: Dict[str, Any], body: Any) -> Dict[str, Any]:
-        """防护链 + 解析 + 入队。与端点分离，便于单测直接驱动完整防护链。"""
-        # 1) 自建端点开关 + 入库总闸
-        if not getattr(self, "_webhook_self_enabled", False):
-            return {"success": False, "message": "自建 webhook 端点未启用（请在配置页开启）"}
-        if not getattr(self, "_listen_transfer", True):
-            return {"success": False,
-                    "message": "「监听媒体转移入库事件」总开关已关闭，webhook 一并停用"}
-
-        # 2) 来源 IP 白名单
-        if not self._webhook_ip_allowed(client_ip):
-            self._note_webhook(source=client_ip, rejected=True)
-            logger.warning(f"[Rsync115Sync] webhook 请求被拒：来源 IP 不在白名单内（{client_ip or '未知'}）")
-            return {"success": False, "message": "来源 IP 不在白名单内"}
-
-        # 3) 密钥（未配置则不校验，但路径白名单仍会生效；配置页必须写清这一点）
-        if getattr(self, "_webhook_secret", ""):
-            provided = _wh.header_lookup(headers, "x-webhook-secret")
-            if not provided:
-                provided = query.get("token") or query.get("secret")
-            if not _wh.secret_ok(getattr(self, "_webhook_secret", ""), provided):
-                self._note_webhook(source=client_ip, rejected=True)
-                logger.warning(f"[Rsync115Sync] webhook 请求被拒：密钥错误（来源 {client_ip or '未知'}）")
-                return {"success": False, "message": "密钥错误"}
-
-        event_data = self._webhook_payload_of(body, query)
-        shape = _wh.describe_payload(event_data)
-        event_name = str(_wh.read_field(event_data, "event", "") or "")
-        raw_paths, path_source = _wh.extract_paths(event_data)
-        if not raw_paths:
-            self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                               unrecognized=True, sample=event_data, action="未识别")
-            logger.info(f"[Rsync115Sync] 自建 webhook 未取到路径"
-                        f"（来源 {client_ip or '未知'}，报文结构={shape}）")
-            return {"success": False, "message": "未能从报文中取到文件路径（详见插件日志中的报文结构）"}
-
-        # 4) 路径白名单（无条件）
-        roots = self._webhook_allowed_roots()
-        allowed = [p for p in raw_paths if _wh.path_in_roots(p, roots)]
-        rejected = [p for p in raw_paths if p not in allowed]
-        if rejected:
-            logger.warning(f"[Rsync115Sync] 自建 webhook 丢弃 {len(rejected)} 条不在白名单内的路径"
-                           f"（来源 {client_ip or '未知'}）: {_brief_paths(rejected)}"
-                           f"；当前白名单: {_brief_paths(roots)}")
-        if not allowed:
-            self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                               rejected=True, sample=event_data, action="被拒")
-            return {"success": False,
-                    "message": "路径不在允许的目录白名单内（请在配置页填写「webhook 允许的入库目录」）"}
-
-        counts = self._enqueue_ingest_paths(
-            allowed, source="Webhook(自建)",
-            event_desc=f"来源={client_ip or '未知'}，路径来源={path_source}")
-        self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                           ingested=counts.get("added", 0), sample=event_data,
-                           action="入队" if counts.get("added", 0) else "未入队")
-        return {
-            "success": True,
-            "data": counts,
-            "message": f"已入队 {counts['added']} 个"
-                       + (f"，{counts['duplicate']} 个已在队列中" if counts["duplicate"] else "")
-                       + (f"，{counts['skipped']} 个被过滤" if counts["skipped"] else "")
-                       + (f"，{counts['unmatched']} 个不在任何映射内" if counts["unmatched"] else "")
-                       + (f"，{counts['missing']} 个在本容器内不可见" if counts["missing"] else "")
-                       + (f"；{len(rejected)} 条被白名单拒绝" if rejected else ""),
-        }
-
-    @staticmethod
-    def _webhook_payload_of(body: Any, query: Dict[str, Any]) -> Any:
-        """
-        把「请求体 + 查询串」合成一份待解析的报文。
-
-        为什么要把查询串并进来：自建 sender 未必走 POST JSON —— 很多脚本/老系统
-        只会发一个 GET/POST 带查询串（`?path=/media/x.mkv&channel=mdcz`）。
-        把两者合并成同一个 dict，解析层就只有一条路径，不会出现
-        「JSON 能收到、查询串收不到」这种半可用状态。
-        """
-        data: Dict[str, Any] = {}
-        if isinstance(query, dict):
-            data.update({str(k): v for k, v in query.items()})
-        if isinstance(body, dict):
-            data.update(body)
-        elif isinstance(body, list):
-            return {"paths": body}
-        elif isinstance(body, str) and body.strip():
-            try:
-                import json
-                parsed = json.loads(body)
-            except Exception:
-                parsed = None
-            if isinstance(parsed, dict):
-                data.update(parsed)
-            elif isinstance(parsed, list):
-                return {"paths": parsed}
-            else:
-                return {"path": body}
-        return data
-
     def _api_get_ignored(self):
         return {"success": True, "data": self._ignored_rules}
 
@@ -2050,14 +1814,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
                 "missed_scan_enabled": self._missed_scan_enabled,
-                # webhook（第二入库来源）。密钥原样回传：它是配置页要展示、编辑的
-                # 用户自设口令，不是宿主凭据；不回传的话用户每次打开配置页都会
-                # 看到空密钥并顺手保存，把已配置的密钥清掉。
+                # webhook（第二入库来源）。只剩渠道过滤一项：自建端点及其四条
+                # 防护配置已随端点一并移除（DEVELOPMENT §9.18）。
                 "webhook_channels": (getattr(self, "_webhook_channels", None) or ["emby"]),
-                "webhook_self_enabled": bool(getattr(self, "_webhook_self_enabled", False)),
-                "webhook_secret": getattr(self, "_webhook_secret", ""),
-                "webhook_path_allowlist": getattr(self, "_webhook_path_allowlist", ""),
-                "webhook_ip_allowlist": getattr(self, "_webhook_ip_allowlist", ""),
                 "strm_check_enabled": self._strm_check_enabled,
                 "strm_grace_hours": self._strm_grace_hours,
                 "notify": self._notify,
@@ -2161,9 +1920,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 而 0 次既可能是没配、也可能是配错地址 —— 报文的最后结构摘要
         # 正是用来区分这两者的（没请求 = 没配好；有请求但未识别 = 字段名要加）。
         webhook_stat["channels"] = list(getattr(self, "_webhook_channels", None) or ["emby"])
-        webhook_stat["self_enabled"] = bool(getattr(self, "_webhook_self_enabled", False))
-        webhook_stat["secret_set"] = bool(getattr(self, "_webhook_secret", ""))
-        webhook_stat["allow_roots"] = _brief_paths(self._webhook_allowed_roots())
         # 报文样本（含值、已截断脱敏）：发送端是另一个工程时，「它到底传了什么」
         # 在开发期是未知的。结构摘要能告诉你字段名，但只有样本能告诉你值长什么样 ——
         # 而候选字段表能否命中取决于值的形态。按时间倒序，看板直接照抄最近一条。
@@ -2320,45 +2076,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         return seen or ["emby"]
 
     def _read_webhook_config(self, config: Dict[str, Any]) -> None:
-        """从配置字典读取 webhook 相关字段（缺失时保持当前值，便于热改）。"""
+        """
+        从配置字典读取 webhook 相关字段（缺失时保持当前值，便于热改）。
+
+        ⚠️ 这里**只**剩渠道过滤一项。自建端点（开关/密钥/路径白名单/IP 白名单）
+        的四个配置字段随端点在 2026-09-22 一并移除 —— 见 DEVELOPMENT §9.18：
+        那四条防护是为一个**没有宿主鉴权**的匿名端点准备的，端点不存在时它们
+        的保护对象也就消失了，留着只会让用户以为自己暴露了什么。
+        """
         if "webhook_channels" in config:
             self._webhook_channels = self._normalize_channels(config.get("webhook_channels"))
-        if "webhook_self_enabled" in config:
-            self._webhook_self_enabled = bool(config.get("webhook_self_enabled"))
-        if "webhook_secret" in config:
-            self._webhook_secret = str(config.get("webhook_secret") or "").strip()
-        if "webhook_path_allowlist" in config:
-            self._webhook_path_allowlist = str(config.get("webhook_path_allowlist") or "")
-        if "webhook_ip_allowlist" in config:
-            self._webhook_ip_allowlist = str(config.get("webhook_ip_allowlist") or "")
-
-    def _webhook_allowed_roots(self) -> List[str]:
-        """
-        自建端点的路径白名单根目录：显式配置优先，其次退回各映射的源目录。
-
-        退回 sync_pairs 是**为了让开箱可用**，但它单独并不足够安全：MDC 的入库
-        目录与媒体库往往不是同一棵子树，用户真要接 MDC 就必须显式填白名单。
-        """
-        roots: List[str] = []
-        for line in (getattr(self, "_webhook_path_allowlist", "") or "").splitlines():
-            item = line.strip()
-            if item and not item.startswith("#"):
-                roots.append(item)
-        if not roots:
-            roots = [((p or {}).get("src") or "").strip()
-                     for p in (getattr(self, "_sync_pairs", None) or [])]
-        return [r for r in roots if r]
-
-    def _webhook_ip_allowed(self, client_ip: str) -> bool:
-        """来源 IP 白名单（空 = 不限）。支持精确 IP 与前缀（`192.168.1.`）。"""
-        rules = [x.strip() for x in (getattr(self, "_webhook_ip_allowlist", "") or "").splitlines()
-                 if x.strip() and not x.strip().startswith("#")]
-        if not rules:
-            return True
-        ip = (client_ip or "").strip()
-        if not ip:
-            return False
-        return any(ip == rule or ip.startswith(rule) for rule in rules)
 
     def _migrate_legacy_defaults(self, config: Dict[str, Any]):
         """

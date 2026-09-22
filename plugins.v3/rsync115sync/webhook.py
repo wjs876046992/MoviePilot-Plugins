@@ -11,12 +11,15 @@ Webhook ingest: payload parsing only. Pure logic — no I/O, no mutable state.
   2. 外部工具（其它脚本、其它容器）搬入文件
   3. 整理事件**漏发** —— 宿主走 durable outbox，超过重试上限即永久丢弃
 
-Webhook 作为**第二来源**覆盖这些场景。来源两处，宿主支持程度完全不同：
+Webhook 作为**第二来源**覆盖这些场景。承载它的是**宿主自己的 webhook 端点**
+（`/api/v1/webhook/`）：宿主把报到交给我们实现的 `webhook_parser` 契约方法，
+认领成功后再经 `EventType.WebhookMessage` 广播回来。
 
-  · Emby  → 宿主原生支持（`app/modules/emby` 提供 webhook_parser），
-            插件只订阅 `EventType.WebhookMessage` 即可，**无需自建端点**
-  · MDC-ng → 宿主**不认识**（全量排查 app/modules 后确认无 mdc/mdcz 模块），
-            只能由本插件自建端点接收
+本插件曾在 2026-09-22 之前自带一个匿名端点作为第二通道，**已移除**：它要顶着
+「向网络暴露一个可写入接口」的风险（四条自建防护：开关、密钥、路径白名单、
+来源 IP 白名单），而宿主端点已能满足同一需求 —— 发送端把 `source` 指到实例名
+（或带上 `X-Webhook-Target: rsync115sync`）即可，鉴权交给宿主。少一个可写入的
+暴露面，少四条容易配错的安全配置。理由与取舍见 DEVELOPMENT §9.18。
 
 ## 与「整理事件」的读取方式差异（照抄前一定要看）
 
@@ -168,26 +171,6 @@ def norm_path(value: Any) -> str:
     if not value:
         return ""
     return posixpath.normpath(str(value).replace("\\", "/").strip())
-
-
-def path_in_roots(path: str, roots: List[str]) -> bool:
-    """
-    判断路径是否落在给定根目录之一内（逐段比较，不是朴素前缀）。
-
-    朴素 `startswith` 会让 `/media/TV2/a.mkv` 落进 `/media/TV` ——
-    归错映射会把文件上传到**另一个** 115 目录，属静默的破坏性后果
-    （与 paths.pair_for_path 的判据一致，此处独立实现以免引入循环依赖）。
-    """
-    target = norm_path(path)
-    if not target:
-        return False
-    for root in roots or []:
-        base = norm_path(root)
-        if not base or base == "/":
-            continue
-        if target == base or target.startswith(base + "/"):
-            return True
-    return False
 
 
 def extract_paths(event_data: Any) -> Tuple[List[str], str]:
@@ -363,32 +346,6 @@ def describe_payload(event_data: Any, limit: int = 40) -> str:
         return "<无法摘要>"
 
 
-def match_mapping(file_path: str, pairs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    把入库路径归属到某个目录映射（**复用本模块的逐段比较**，不改写原路径）。
-
-    注意与 `paths.pair_for_path` 的分工：那里做的是同一件事，但它对每条路径
-    取「最长匹配」并做相对路径计算。此处只回答「属于哪个映射」，因此独立实现、
-    保持纯函数，避免 webhook 链路反向依赖同步链路的实现细节。
-
-    Windows/UNC 形态的路径在这里基本匹配不上（映射配的是容器内的 POSIX 路径）——
-    这是**预期行为**：匹配不上就不入队，绝不猜。
-    """
-    target = norm_path(file_path)
-    if not target:
-        return None
-    best: Optional[Dict[str, Any]] = None
-    best_len = -1
-    for pair in pairs or []:
-        src_root = norm_path((pair or {}).get("src") or "")
-        if not src_root:
-            continue
-        if target == src_root or target.startswith(src_root + "/"):
-            if len(src_root) > best_len:
-                best, best_len = pair, len(src_root)
-    return best
-
-
 def valid_extension(pair: Dict[str, Any], file_path: str, media_extensions: str) -> bool:
     """扩展名过滤：与事件链路同一口径（映射勾了 all_ext 则不过滤）。"""
     if (pair or {}).get("all_ext", False):
@@ -424,44 +381,8 @@ def is_ingest_event(event_name: str) -> bool:
 
 
 def channel_of(event_data: Any) -> str:
-    """取事件来源渠道（emby / mdcz / 自建 sender 自报名）。"""
+    """取事件来源渠道（emby / jellyfin / plex，或发送端自报的实例名）。"""
     return str(read_field(event_data, "channel", "") or "").strip().lower()
-
-
-def secret_ok(expected: str, provided: Any) -> bool:
-    """
-    常量时间比较 webhook 密钥。
-
-    用 `secrets.compare_digest` 而非 `==`：字符串比较会短路，逐字符的耗时差
-    可被用于逐位猜解密钥。空 expected 视为「未配置」——**调用方必须据此拒绝请求**，
-    本函数不做这个判断，避免把「未配置」和「密钥错误」两种语义混在一起。
-    """
-    import secrets
-    if not expected:
-        return False
-    return secrets.compare_digest(str(expected), str(provided or ""))
-
-
-def header_lookup(headers: Any, name: str) -> Optional[str]:
-    """
-    从 FastAPI 的 headers 里取一个头（大小写不敏感）—— 不使用 Header(...) 参数
-    注入，因为那是 fastapi 专有依赖，桩环境里没有；用 Request 更稳。
-    """
-    if headers is None:
-        return None
-    try:
-        value = headers.get(name)
-    except Exception:
-        return None
-    if value is not None:
-        return value
-    try:
-        for key, val in headers.items():
-            if str(key).lower() == name.lower():
-                return val
-    except Exception:
-        return None
-    return None
 
 
 def is_file(path: str) -> bool:
