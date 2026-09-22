@@ -31,8 +31,12 @@ def _plugin(root, *, watch=None, suspects=None):
         fh.write(b"x")
 
     plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
+    # dest 用真实临时目录：云端可见性探测要读它，写死 abs 路径会在测试里
+    # 撞上真实文件系统（既不可控，也可能没权限）。
+    dest = os.path.join(root, "dest")
+    os.makedirs(dest, exist_ok=True)
     plugin._sync_pairs = [{
-        "name": "电视剧", "src": src, "dest": "/115/TV",
+        "name": "电视剧", "src": src, "dest": dest,
         "strm_dir": os.path.join(root, "strm"), "pan_dir": "/HomeTheater/TV",
         "all_ext": False,
     }]
@@ -180,3 +184,73 @@ def test_check_one_does_not_touch_persistence():
     src = inspect.getsource(module.Rsync115Sync.check_one)
     assert "save_data" not in src
     assert "post_message" not in src
+
+
+# --------------------------------------------------------------------------
+# 窗口内检查：顺手探一次云端可见性（回答「等下去会怎样」）
+# --------------------------------------------------------------------------
+
+def test_check_within_window_probes_cloud_visibility(tmp_path):
+    """
+    窗口内检查虽不改状态，但必须**顺手探一次云端可见性**。
+
+    用户点「检查 strm」时真正的疑问往往不是「还要等多久」，而是「等下去会怎样」。
+    探一次就能回答：云端有文件 ⇒ 问题在生成侧，窗口过了也别急着删；
+    云端看不到 ⇒ 窗口过了直接删旧重传即可。
+    """
+    plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
+    # dest 端刻意留空 → 云端不可见
+    res = plugin._api_strm_check({"keys": [KEY]})
+
+    assert res["success"] is True
+    assert KEY in plugin._strm_watch, "窗口内不应解除观察"
+    assert "云端" in res["message"], "应给出云端可见性的结论"
+    assert "删旧重传" in res["message"], "并说明该结论对后续操作意味着什么"
+
+
+def test_check_within_window_says_do_not_delete_when_cloud_copy_intact(tmp_path):
+    """
+    云端可见且大小一致时，窗口内的回答必须是「别急着删」。
+
+    这是探测唯一被允许的用法方向：它的假阳性是「把坏文件看成好的」，
+    因此只能用来劝用户**先别动手**，不能反过来说「文件是好的、可以放心」。
+    """
+    plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
+    pair = plugin._sync_pairs[0]
+    with open(os.path.join(pair["src"], "a.mkv"), "wb") as fh:
+        fh.write(b"x" * 100)
+    dest_file = os.path.join(pair["dest"], "a.mkv")
+    os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+    with open(dest_file, "wb") as fh:
+        fh.write(b"x" * 100)
+
+    res = plugin._api_strm_check({"keys": [KEY]})
+
+    assert KEY in plugin._strm_watch
+    assert "大小" in res["message"] and "别急" in res["message"]
+
+
+def test_check_notifies_when_entry_becomes_suspect(tmp_path):
+    """
+    ⚠️ 手动检查转疑似时**必须发通知**，与自动巡检同口径。
+
+    不补这一步的话，用户主动检查反而比什么都不做更安静：条目已进疑似清单，
+    而 `_reset_strm_notified_if_clear()` 会因「清单刚由空转非空」把闩锁重置，
+    等下一轮巡检再判时已经没有条目可判了 —— 等于「谁先发现」决定了要不要通知。
+    """
+    notified = []
+    plugin = _plugin(str(tmp_path), watch={KEY: 0.0})   # 早已过了窗口
+    plugin._strm_last_check = 0.0
+    plugin._strm_check_enabled = True
+    plugin._strm_expected_path = lambda k: "/nonexistent/never.strm"
+    plugin._is_ignored = lambda k: False
+    plugin._reset_strm_notified_if_clear = lambda: None
+    plugin._notify_strm_suspects = lambda keys: notified.append(list(keys))
+    import app.plugins.rsync115sync.strm as strm_mod
+    import pytest as _pytest
+    _pytest.MonkeyPatch().setattr(strm_mod, "source_root_of", lambda k, p: "")
+
+    res = plugin._api_strm_check({"keys": [KEY]})
+
+    assert KEY in plugin._strm_suspects
+    assert notified and KEY in notified[0], "手动检查转疑似也必须走通知"

@@ -2009,9 +2009,11 @@ return (_ctx, _cache) => {
                                           "max-width": "320"
                                         }, {
                                           default: _withCtx(() => [...(_cache[79] || (_cache[79] = [
-                                            _createTextVNode(" 立刻看这个文件的 .strm 出来了没有，不必等下一轮巡检。", -1),
+                                            _createTextVNode(" 立即比对，不等窗口、不等巡检。", -1),
                                             _createElementVNode("br", null, null, -1),
-                                            _createTextVNode(" 已生成 ⇒ 立即解除观察；仍未生成 ⇒ 继续等待（窗口内不报警）。", -1),
+                                            _createTextVNode(" 已生成 ⇒ 立刻解除观察；窗口已过仍无 ⇒ 立刻转入疑似清单 （并附云端可见性结论，告诉你能不能删旧重传）。", -1),
+                                            _createElementVNode("br", null, null, -1),
+                                            _createTextVNode(" 窗口内仍无 ⇒ 会顺手探一次云端可见性，告诉你 「等下去会怎样」，免得白等到期。", -1),
                                             _createElementVNode("br", null, null, -1),
                                             _createTextVNode(" 纯本地读取，不访问 115、不消耗配额。 ", -1)
                                           ]))]),
@@ -2366,6 +2368,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b1eb58e2"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9d932d81"]]);
 
 export { App as default };

@@ -3028,6 +3028,7 @@ class Rsync115Sync(_PluginBase):
             return {"success": False, "message": "所选文件已不在观察期（可能已被处理或解除）"}
 
         changed = False
+        entered: List[str] = []          # 本次因到期而转入疑似的 key
         results: List[Dict[str, Any]] = []
         for key in targets:
             # clock 随结果一并回传：调用方要靠它区分「普通观察到期」与
@@ -3049,6 +3050,7 @@ class Rsync115Sync(_PluginBase):
                 # 到期未生成：与巡检同一处置（转疑似 + 通知）
                 self._strm_watch.pop(key, None)
                 self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
+                entered.append(key)
                 changed = True
                 results.append({"key": key, "state": state, "clock": clock})
             else:
@@ -3094,16 +3096,44 @@ class Rsync115Sync(_PluginBase):
         elif no_dir:
             msg = f"🗑️ 所属映射已取消 strm 目录：{len(no_dir)} 个已移出观察"
         else:
-            gen_wait = [r["key"] for r in results
-                        if r["state"] == _strm.WATCHING and r.get("clock") == "gen"]
-            if gen_wait:
-                msg = (f"⏳ 仍未生成 strm（{len(gen_wait)} 个为补生成请求中）。"
-                       f"助手按目录遍历云端需要时间 —— {_strm.REGRACE_HOURS:g} 小时"
-                       f"内属正常等待，稍后再点「检查 strm」即可。")
+            # 仍在窗口内：strm 没出来是正常的，但用户真正想知道的往往不是
+            # 「还要等多久」，而是「等下去会怎样」。**顺手探一次云端可见性**
+            # 就能把这句回答掉：云端有文件 ⇒ 问题在生成侧，窗口过了也别急着删；
+            # 云端看不到 ⇒ 窗口过了直接删旧重传即可（云端没文件时删除是空操作）。
+            #
+            # 只探本次**被明确问到的**那几个 key（纯本地读取，零 115 API），
+            # 不为整个清单预探 —— 用户问一个，就只读一个。
+            try:
+                verdicts = self._dest_visibility(still)
+            except Exception as e:
+                logger.warning(f"[Rsync115Sync] 检查时云端可见性探测异常（已忽略）: {e}")
+                verdicts = {}
+            intact = [k for k in still if verdicts.get(k) == _strm.DEST_OK]
+            absent = [k for k in still if verdicts.get(k) == _strm.DEST_ABSENT]
+            if intact:
+                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
+                       f"🔎 但云端文件**可见且大小与源端一致** —— 说明文件本身是好的，"
+                       f"问题出在 strm **生成**侧。窗口过后**先别急着删旧重传**"
+                       f"（删了 rsync 也会因 --size-only 跳过，传不上去），"
+                       f"请先查助手配置与生成日志。")
+            elif absent:
+                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
+                       f"🔎 云端**看不到**这些文件 —— 说明很可能是从未传成功、"
+                       f"或改名失败只剩残留。窗口过后直接删旧重传即可："
+                       f"云端没有文件时删除是空操作，不会白删，也不会重复上传。")
             else:
-                msg = (f"⏳ 仍未生成 strm（{len(still)} 个）。"
-                       f"strm 生成不实时 —— 若刚跑完生成任务请稍等再试；"
-                       f"宽限期内属正常等待。")
+                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。"
+                       f"strm 生成不实时，若刚跑完生成任务请稍等再试。")
+
+        if entered:
+            # 手动检查与自动巡检**走同一个通知口径**。
+            # 不补这一句的话，用户主动检查反而比什么都不做更安静：条目已经进了
+            # 疑似清单，等下一轮巡检时 `_strm_notified` 会被这一次的
+            # `_reset_strm_notified_if_clear()` 重置（清单刚由空转非空），
+            # 巡检再判时已经没有条目可判了 —— 结果是「谁先发现」决定了要不要通知。
+            # The manual path must notify on the same terms as the sweep, or checking
+            # first would swallow the alert the sweep would have sent.
+            self._notify_strm_suspects(entered)
 
         if settled or suspects or gone or no_dir:
             self._reset_strm_notified_if_clear()
