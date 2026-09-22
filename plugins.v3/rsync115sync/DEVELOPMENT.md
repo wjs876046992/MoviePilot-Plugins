@@ -2089,9 +2089,14 @@ json_object={"paths": [...]}  # 命中的**全部**路径 —— 多出来的只
 >
 > ⚠️ **索引里每条都是多行文本（每条内部按「小标题一行 + 说明一段」排布，
 > 条目之间空一行）。** 这是 2026-09-22 按用户要求改的：内容一多，一整段挤在
-> 一行里没人看得下去。宿主侧 `history` 类型是 `dict[str, str]`，不做格式校验，
-> 仓库里也早有先例（`ShortCutModified` v3.0.2、`UpdateWeChatIp` 1.0.6）。
-> 市场页与 Release notes 都用 `white-space: pre-wrap` / Markdown 渲染换行。
+> 一行里没人看得下去。宿主侧 `history` 类型是 `dict[str, str]`、**不做任何格式校验**
+> （`app/schemas/plugin.py` 只要求它是 dict，索引规范化也只数条目个数），
+> 仓库里也早有先例：`ShortCutModified` v3.0.2、`UpdateWeChatIp` 1.0.6 都是多行文本，
+> 且已正常使用至今。Release notes 走 `gh release create --notes`（Markdown 渲染，
+> 换行确定有效）。
+> **市场页怎么渲染没有核实** —— 前端不在本机的 MoviePilot 后端源码里，无从确认它是
+> `pre-wrap` 还是压成一行。按上面的先例判断风险为零；若真机上看到换行丢失，
+> 那属**显示**问题、不影响功能，届时再调排版即可。
 
 ```
 1. 新增 Webhook 入库（补充来源）
