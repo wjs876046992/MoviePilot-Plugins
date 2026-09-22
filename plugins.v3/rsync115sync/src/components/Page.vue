@@ -273,7 +273,9 @@
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
           </div>
-          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <!-- 空态显式绑定清单长度：不要用 v-else 挂在分页条上 —— 那会让
+               「单页数据」时同时显示条目与空态（已忽略标签曾因此自相矛盾） -->
+          <div v-if="!queueList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-check-circle-outline</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">暂无正在冷却中的媒体文件</div>
           </div>
@@ -353,7 +355,7 @@
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
           </div>
-          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <div v-if="!failedCount" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
           </div>
@@ -541,7 +543,7 @@
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
           </div>
-          <div v-else class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <div v-if="!ignoredList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-eye-off-outline</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">当前没有忽略任何文件</div>
           </div>

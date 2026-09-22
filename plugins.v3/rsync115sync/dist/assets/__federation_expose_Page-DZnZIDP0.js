@@ -1302,7 +1302,9 @@ return (_ctx, _cache) => {
                           _: 1
                         }, 8, ["disabled"])
                       ]))
-                    : (_openBlock(), _createElementBlock("div", _hoisted_35, [
+                    : _createCommentVNode("", true),
+                  (!queueList.value.length)
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_35, [
                         _createVNode(_component_v_icon, {
                           size: "32",
                           color: "primary",
@@ -1315,6 +1317,7 @@ return (_ctx, _cache) => {
                         }),
                         _cache[51] || (_cache[51] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "暂无正在冷却中的媒体文件", -1))
                       ]))
+                    : _createCommentVNode("", true)
                 ]))
               : _createCommentVNode("", true),
             (currentTab.value === 'failed')
@@ -1473,7 +1476,9 @@ return (_ctx, _cache) => {
                           _: 1
                         }, 8, ["disabled"])
                       ]))
-                    : (_openBlock(), _createElementBlock("div", _hoisted_44, [
+                    : _createCommentVNode("", true),
+                  (!failedCount.value)
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_44, [
                         _createVNode(_component_v_icon, {
                           size: "32",
                           color: "success",
@@ -1485,7 +1490,8 @@ return (_ctx, _cache) => {
                           _: 1
                         }),
                         _cache[63] || (_cache[63] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "冷却队列与待重试文件经对账全部一致，零缺失零残缺！", -1))
-                      ])),
+                      ]))
+                    : _createCommentVNode("", true),
                   (strmConfigured.value)
                     ? (_openBlock(), _createElementBlock("div", _hoisted_45, [
                         _createElementVNode("div", _hoisted_46, [
@@ -1844,7 +1850,9 @@ return (_ctx, _cache) => {
                           _: 1
                         }, 8, ["disabled"])
                       ]))
-                    : (_openBlock(), _createElementBlock("div", _hoisted_67, [
+                    : _createCommentVNode("", true),
+                  (!ignoredList.value.length)
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_67, [
                         _createVNode(_component_v_icon, {
                           size: "32",
                           color: "primary",
@@ -1857,6 +1865,7 @@ return (_ctx, _cache) => {
                         }),
                         _cache[90] || (_cache[90] = _createElementVNode("div", { class: "text-caption font-weight-bold text-medium-emphasis" }, "当前没有忽略任何文件", -1))
                       ]))
+                    : _createCommentVNode("", true)
                 ]))
               : _createCommentVNode("", true)
           ]),
@@ -1870,6 +1879,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-098de9e8"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-2c1445b3"]]);
 
 export { App as default };
