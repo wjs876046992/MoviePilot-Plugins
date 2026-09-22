@@ -998,7 +998,7 @@ return (_ctx, _cache) => {
         }),
         _createVNode(_component_v_card_text, { class: "pa-4 flex-grow-1 overflow-y-auto body-surface" }, {
           default: _withCtx(() => [
-            _createVNode(_component_v_row, { class: "mb-3 mx-0" }, {
+            _createVNode(_component_v_row, { class: "mb-3 strm-stat-row" }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_col, {
                   cols: "12",
@@ -2368,6 +2368,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9d932d81"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9008200e"]]);
 
 export { App as default };

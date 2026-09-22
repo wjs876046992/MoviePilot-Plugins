@@ -44,7 +44,7 @@
       <!-- 主体内容 -->
       <v-card-text class="pa-4 flex-grow-1 overflow-y-auto body-surface">
         <!-- 核心指标卡片 -->
-        <v-row class="mb-3 mx-0">
+        <v-row class="mb-3 strm-stat-row">
           <v-col cols="12" sm="4" class="pa-1">
             <div class="stat-card stat-info rounded-xl pa-3 text-center">
               <div class="text-h5 font-weight-black text-info">{{ statusData.cooling_count || 0 }}</div>
@@ -1496,6 +1496,22 @@ onUnmounted(() => {
 }
 .stat-card {
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+}
+/* 首行三个数据卡片的 border-top 曾整条不可见（实测于真实宿主，勿凭理论回退）。
+   成因：宿主把内容区顶部内边距归零（见上方 .header-card-item + .v-card-text 注释），
+   而 .v-row 自带 margin: -12px，上下各外扩 12px；内容区又没有 padding-top，
+   于是整行的顶边落在滚动容器（v-card-text 有 overflow-y:auto，即滚动裁剪框）之外
+   —— 卡片的上边框与上圆角都被裁掉。实测卡片顶边相对容器顶边为 -8px。
+   现有写法在页面无法滚动时会更严重：scrollHeight 恰等于 clientHeight，
+   滚动区域没有可滚动内容，用户连滚动补救都做不到，只能一直看缺一条边的卡片。
+
+   修法取「不依赖滚动容器内边距」的一步：把本行的负上边距归零，
+   使内容顶边与容器顶边重合（实测 -8px → +4px，即列内边距，边框完整露出）。
+   刻意不去覆写 .v-card-text 的顶部内边距 —— 那需要穿过宿主样式表并加 !important，
+   宿主改版即失效；而归零负边距与宿主改版无关，重装依赖也不会被冲掉。 */
+.strm-stat-row {
+  margin-top: 0 !important;
+  margin-bottom: 12px !important;
 }
 .stat-info { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06); }
 .stat-primary { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06); }
