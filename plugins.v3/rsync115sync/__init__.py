@@ -1168,6 +1168,36 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 logger.error(f"[Rsync115Sync] 定时规则解析失败: {e}")
         return services
 
+    # ================= 胁持宿主模块方法（webhook_parser） =================
+
+    def get_module(self) -> Dict[str, Any]:
+        """
+        声明本插件接管的宿主模块方法。
+
+        ⚠️ **实现 `webhook_parser` 方法本身不会让宿主调用它** —— 宿主是从
+        `get_module()` 返回的「方法名 → 方法」映射里收集 provider 的
+        （`app/runtime/extensions/plugin/projection.py:92` 的 `modules()`：
+        `declared = plugin.get_module()`，`None` 直接 `continue`）。
+        基类默认实现返回 `None`，因此**漏写这个声明 = 认领通道整条静默失效**：
+        宿主不会报错、`webhook_parser` 一行日志都不会有、`source=rsync115sync`
+        的报文只会交给宿主自己的 Emby/Jellyfin/Plex 解析器（它们不认识这个
+        source，于是返回 None），最终现象就是「平台收到请求、插件毫无反应」。
+
+        这正是 2026-09-22 真机联调排查了 Content-Type 与尾斜杠两轮之后
+        才发现的**真正原因** —— 前三轮所有排查都建立在「插件已被调用」这个
+        错误前提上。教训：跨系统静默失效时，要先验证**链路是否真的接通**，
+        再排查链路上的每一步；`tests/v3/rsync115sync/test_registration_contract.py`
+        的 `test_webhook_parser_is_declared_in_get_module` 就是为此加的哨兵。
+
+        Returns
+        -------
+        Dict[str, Any]
+            模块方法名 → 绑定方法。当前只声明 `webhook_parser`。
+        """
+        return {
+            "webhook_parser": self.webhook_parser,
+        }
+
     # ================= 渲染模式与基类抽象方法实现 =================
 
     @staticmethod

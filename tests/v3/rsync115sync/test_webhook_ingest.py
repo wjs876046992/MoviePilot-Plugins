@@ -665,7 +665,12 @@ def _host_chain_route(plugin):
         body = await request.body()
         form = await request.form()
         args = request.query_params
-        info = plugin.webhook_parser(body=body, form=form, args=args)
+        # ⚠️ 必须经 `_declared_webhook_parser` 取 provider，**不能**直接
+        # `plugin.webhook_parser(...)`。真机的第二次「插件零日志」正是因为在
+        # `get_module()` 里漏了这行声明：宿主从声明表里收集 provider，漏声明 =
+        # 方法永远不会被调用。直接调实例方法会绕过声明表，于是测试全绿而真机全哑 ——
+        # 这个 harness 当初就是这么写的，所以没能拦住那个 bug。
+        info = _declared_webhook_parser(plugin)(body=body, form=form, args=args)
         if info:
             plugin._handle_webhook_event(SimpleNamespace(
                 event_type=SimpleNamespace(value="webhook.message"),
@@ -673,6 +678,30 @@ def _host_chain_route(plugin):
         return {"success": True}
 
     return TestClient(app, raise_server_exceptions=False), module
+
+
+def _declared_webhook_parser(plugin):
+    """
+    完全按宿主的方式取得 `webhook_parser` provider：**只从 `get_module()` 声明表里拿**。
+
+    宿主实现（app/runtime/extensions/plugin/projection.py 的 `modules()`）：
+    `declared = plugin.get_module()`，返回 `None` 就 `continue`，即该插件对
+    所有模块方法都不可见。基类默认实现正是返回 `None`。
+
+    因此这里拿不到就 `assert` 失败，而不是退回 `plugin.webhook_parser` ——
+    退回就等于把「宿主根本不会调用它」这个事实从测试里抹掉。
+    """
+    declared = plugin.get_module()
+    assert isinstance(declared, dict), (
+        "get_module() 必须返回字典，宿主只接受 Mapping；返回 None 会让本插件"
+        "对所有模块方法不可见（这正是真机排查三轮的那个 bug）"
+    )
+    provider = declared.get("webhook_parser")
+    assert callable(provider), (
+        "get_module() 未声明 webhook_parser —— 宿主不会调用我们的实现，"
+        "认领通道整条静默失效（不报错、无日志）"
+    )
+    return provider
 
 
 def test_host_route_rejects_multipart_without_boundary(tmp_path):
@@ -769,7 +798,8 @@ def _host_chain_route_noredirect(plugin):
         body = await request.body()
         form = await request.form()
         args = request.query_params
-        info = plugin.webhook_parser(body=body, form=form, args=args)
+        # 同 `_host_chain_route`：必须走声明表，不能直接调实例方法
+        info = _declared_webhook_parser(plugin)(body=body, form=form, args=args)
         if info:
             plugin._handle_webhook_event(SimpleNamespace(
                 event_type=SimpleNamespace(value="webhook.message"),

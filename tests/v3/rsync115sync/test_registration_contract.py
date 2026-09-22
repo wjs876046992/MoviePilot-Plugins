@@ -14,6 +14,7 @@ Plugin registration contract: the event subscription must be present.
 import ast
 import importlib
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -176,6 +177,164 @@ def test_optional_host_hooks_present():
             names |= {m.name for m in node.body if isinstance(m, ast.FunctionDef)}
     assert "get_command" in names, "缺少 get_command：所有 /rsync_* 指令会消失"
     assert "get_service" in names, "缺少 get_service：定时同步不会注册"
+
+
+# --------------------------------------------------------------------------
+# webhook_parser 必须被 get_module() 声明 —— 只实现方法是**不会**被调用的
+# --------------------------------------------------------------------------
+#
+# 这一组是 2026-09-22 真机联调的最终结论，也是本文件里最贵的一条教训。
+#
+# 症状：`source=rsync115sync` 的报文打进来，宿主日志能看到请求，插件一行日志
+# 都没有。排查依次走过 Content-Type（真踩到了，但不是本次的因）、地址尾斜杠
+# （真踩到了，也不是）、映射配置 —— 每一轮都建立在「插件已被调用」这个**错误
+# 前提**上，因此怎么查都查不到。
+#
+# 真因：宿主是从 `get_module()` 返回的「方法名 → 方法」映射里收集 provider 的
+# （app/runtime/extensions/plugin/projection.py 的 modules()：`declared =
+# plugin.get_module()`，返回 None 直接 continue）。基类默认实现 `pass` → 返回
+# None。**所以只写 `def webhook_parser(...)` 是死代码** —— 永远不会被调用，
+# 也不会报错。加一行 `"webhook_parser": self.webhook_parser` 就通了。
+#
+# 教训（与文件开头那段同源，但更隐蔽）：文件开头那条是「装饰器被删」，
+# 装饰器至少写在源码里看得见；这一条是**从未存在过**的声明 ——
+# 没有删除记录、没有 diff、没有报错，静态搜索 `webhook_parser` 会命中
+# 方法定义，让所有基于 grep 的自查都误判为「已实现」。
+
+def test_webhook_parser_is_declared_in_get_module():
+    """
+    静态契约：`get_module()` 必须声明 `webhook_parser`。
+
+    断言的是**返回值**而不是「方法名出现在源码里」—— 后者正是当初误判的原因：
+    `webhook_parser` 方法确实定义在源码里，但没人调用它。
+    """
+    src = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    declaring: Optional[ast.FunctionDef] = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "get_module":
+            declaring = node
+            break
+    assert declaring is not None, (
+        "本插件实现了 webhook_parser，必须用 get_module() 向宿主声明；"
+        "缺少该方法会让认领通道整条静默失效（宿主不会报错）"
+    )
+
+    # 收集 return 的字典字面量里的字符串键
+    keys = set()
+    for node in ast.walk(declaring):
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+            for key in node.value.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value)
+    assert "webhook_parser" in keys, (
+        "get_module() 的返回字典里必须包含 'webhook_parser' 键；"
+        "只定义方法不声明 = 宿主永远不调用它（这正是真机联调排查三轮的原因）"
+    )
+
+
+def test_webhook_parser_declaration_returns_the_bound_method():
+    """
+    运行时契约：声明的必须是**本实例的绑定方法**，且真能返回可认领的结果。
+
+    只做静态 AST 校验不够 —— `{"webhook_parser": self.something_else}` 这种
+    键对值错的写法同样能通过 AST 检查，却会让宿主调用到错误的实现。
+    这里在能导入生产命名空间时真正调用一次 `get_module()`。
+    """
+    try:
+        module = importlib.import_module("app.plugins.rsync115sync")
+    except Exception as exc:  # pragma: no cover - 取决于运行环境
+        pytest.skip(f"无法导入生产命名空间（{exc.__class__.__name__}），跳过运行时校验")
+
+    cls = module.Rsync115Sync
+    instance = cls.__new__(cls)          # 不跑 init_plugin：这里只验声明本身
+    declared = instance.get_module()
+
+    assert isinstance(declared, dict), "get_module() 必须返回字典（宿主只接受 Mapping）"
+    assert "webhook_parser" in declared, "未声明 webhook_parser"
+    func = declared["webhook_parser"]
+    assert callable(func), "webhook_parser 声明项必须可调用"
+    # 必须是绑定了本实例的方法：宿主会直接 `func(body=..., form=..., args=...)`
+    assert getattr(func, "__self__", None) is instance, (
+        "声明的必须是 self.webhook_parser（绑定方法），不能是类或其它函数 ——"
+        "宿主会直接调用它，签名不符不会报错、只会拿不到值"
+    )
+    # 光验「是个绑定方法」还不够：`{"webhook_parser": self._别的同名签名方法}`
+    # 同样能通过（签名不同在兼容阶段只诊断不拒绝）。必须**按名字**核对。
+    assert getattr(func, "__name__", "") == "webhook_parser", (
+        f"声明的实现必须是 webhook_parser 本身，实际是 "
+        f"{getattr(func, '__name__', type(func).__name__)} —— 键对值错同样会静默失效"
+    )
+
+
+def test_no_other_module_methods_are_implemented_but_undeclared():
+    """
+    反向审计：**不允许存在「实现了宿主模块方法却没声明」的死代码。**
+
+    宿主模块方法名是一份固定清单（`_METHOD_CONTRACTS` 去掉下划线前缀的公开方法，
+    外加冻结清单）。插件上若出现与其中某个同名的可调用成员，却不在 `get_module()`
+    的返回里，那就是 §9.17 那种死代码 —— 宿主永远不会调用它，也不会有任何提示。
+
+    这条是**通用**哨兵，专治「以后又在别的地方犯同一个错」：新增任何胁持方法时，
+    忘了声明就会被它拦下，而不是等到真机上发现「什么都没发生」。
+    """
+    try:
+        module = importlib.import_module("app.plugins.rsync115sync")
+    except Exception as exc:  # pragma: no cover - 取决于运行环境
+        pytest.skip(f"无法导入生产命名空间（{exc.__class__.__name__}）")
+    import inspect
+
+    host_methods = _host_module_method_names()
+    if not host_methods:  # pragma: no cover - 找不到宿主源码时
+        pytest.skip("无法读取宿主模块方法清单，跳过反向审计")
+
+    cls = module.Rsync115Sync
+    instance = cls.__new__(cls)
+    declared = set(instance.get_module() or {})
+    implemented = {name for name, _ in inspect.getmembers(cls, callable)}
+
+    undeclared = sorted((host_methods & implemented) - declared)
+    assert not undeclared, (
+        f"插件实现了宿主模块方法 {undeclared} 但未在 get_module() 里声明 —— "
+        f"宿主永远不会调用它们（不报错、无日志），见 DEVELOPMENT §9.17"
+    )
+
+
+def _host_module_method_names():
+    """
+    从宿主源码里解析出模块方法名清单。
+
+    不导入 `app.runtime.extensions.module.contracts`：测试环境只有 `app.plugins` 桩，
+    没有完整宿主。改为 AST 解析 —— 与其余契约测试同一策略（找不到就跳过，
+    不把「环境缺失」伪装成「通过」）。
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "MoviePilot" / "app" / "runtime" / "extensions" / \
+            "module" / "contracts.py"
+        if candidate.is_file():
+            break
+    else:
+        candidate = Path("/tmp/mp-src/app/runtime/extensions/module/contracts.py")
+        if not candidate.is_file():
+            return set()
+
+    tree = ast.parse(candidate.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = {getattr(t, "id", "") for t in node.targets}
+        if "_METHOD_CONTRACTS" in targets and isinstance(node.value, ast.Dict):
+            for key in node.value.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    names.add(key.value)
+        if targets & {"_FROZEN_METHODS", "_LEGACY_METHODS"} and \
+                isinstance(node.value, (ast.List, ast.Tuple)):
+            for entry in node.value.elts:
+                if isinstance(entry, ast.Constant) and isinstance(entry.value, str):
+                    names.add(entry.value)
+    return names
 
 
 def test_plugin_identity_attributes_present():
