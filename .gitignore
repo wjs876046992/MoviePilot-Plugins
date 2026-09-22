@@ -169,3 +169,6 @@ yarn.lock
 .aider*
 # WorkBuddy 会话工作数据（项目记忆与本地记录）：只是本机工作产物，不进版本库
 .workbuddy/
+
+# 开发本机脚本：含 NAS 地址与端口，不入库
+scripts/update_rsync115sync.sh
