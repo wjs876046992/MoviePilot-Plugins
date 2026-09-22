@@ -733,6 +733,40 @@ def test_multipart_without_boundary_but_json_content_type_works(tmp_path):
     assert list(plugin._pending_queue), "报文应被认领并成功入队"
 
 
+def test_self_endpoint_survives_the_same_bad_content_type(tmp_path):
+    """
+    **发送端的 Content-Type 改不了时，自建端点是可用的退路。**
+
+    这条用例回答的是一个很实际的问题：上面那个 400 是宿主端点`form = await
+    request.form()` 造成的，而自建端点**先试 JSON**、只在 content-type 为
+    text/plain（或无）时才读原始 body、且把 `await request.form()` 包在
+    try/except 里兜底 —— 因此同一个「声明 multipart 却发裸 JSON」的请求，
+    打宿主是 400，打自建端点是 200 + 正常入队。
+
+    实测依据（starlette，`TestClient` 真请求）：两个端点收到的都是完整 body，
+    差别只在于宿主把那个 400 抛出了路由、而自建端点把它吞掉并回退到已解出的 JSON。
+
+    ⚠️ 这条**不能**读成「自建端点更健壮所以不用修发送端」：宿主那条路是用户已经
+    在用的（source=rsync115sync），修 Content-Type 才是正解；本用例的价值是把
+    「还有一条不被这个坑影响的通路」固定下来，供发送端无法改头时使用。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    path = _media(str(src), "movie.mkv")
+    plugin = _plugin(str(src), allowlist=str(src))
+    client, _ = _real_route(plugin)
+
+    payload = json.dumps({"event": "download.finish",
+                          "data": {"title": "某电影", "source_path": path}})
+    res = client.post("/webhook", content=payload,
+                      headers={"Content-Type": "Multipart/form-data"})
+
+    assert res.status_code == 200, "自建端点不应因 content-type 与 body 不匹配而 400"
+    assert res.json()["success"] is True
+    assert res.json()["data"]["added"] == 1
+    assert plugin._pending_queue, "就算头写错了，路径也该被解出来并入队"
+
+
 def test_source_path_nested_under_data_is_recognized(tmp_path):
     """
     用户实际发送的字段形态：`data.source_path`（嵌在 `data` 下）。

@@ -1542,6 +1542,24 @@ body 为空。此后：
 2. 在 `webhook_parser` 的**上方注释**、`USAGE.md` 与看板里写明这个失败模式。
    Content-Type 是发送端配置，插件只能把「去查什么」告诉用户。
 
+#### 对比：自建端点为什么不受影响（可作退路）
+
+同一个「声明 `multipart/form-data`、实发裸 JSON」的请求，打宿主是 400，
+打自建端点是 **200 + 正常入队**。差别不在本事，在**读取顺序与容错**：
+
+| | 宿主端点 | 自建端点 `_ingest_from_request` |
+|---|---|---|
+| 解析顺序 | `request.body()` → **`request.form()`** → provider | **`request.json()`** → 原始 body → `request.form()` |
+| 失败处理 | 不兜异常，直接 400 | 每段各自 `try/except`，失败就往下退 |
+
+两个端点收到的 body 都是完整的（同一个请求），只是自建端点**先试 JSON**、
+失败也不会把异常抛出路由，于是同一个报文照样解析出来。实测依据见
+`test_self_endpoint_survives_the_same_bad_content_type`（真 starlette 请求）。
+这条退路已写进 USAGE，供**发送端 Content-Type 改不了**时使用。
+
+> 但不要把它读成「自建端点更好，宿主那条路可以不管」：宿主链路鉴权交给宿主、
+> 有宿主日志，是用户的默认用法；修 Content-Type 才是正解，自建端点只是退路。
+
 #### 教训（与 §9.14 的三条同类）
 
 **「什么都没发生」必须能被拆成可区分的几种情况。** 本次两类失败

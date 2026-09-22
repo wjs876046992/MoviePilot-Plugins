@@ -200,6 +200,29 @@ curl -X POST "http://<mp>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115
 > 发 JSON 就不要声明 multipart；两者混用宿主不接受。已验证：同一个报文、仅改这一个
 > 请求头，行为从「400 + 插件零日志」变成「200 + 正常入队」。
 
+**先把这条路单独打通，再去调那个工程**（发送端还没摸清时，这能省下大量来回）：
+
+```bash
+curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook?token=<API_TOKEN>&source=rsync115sync" \
+  -H "Content-Type: application/json" \
+  -d '{"event":"download.finish","data":{"title":"某电影 (2024)","source_path":"/volume3/9KG/某电影 (2024)"}}'
+```
+
+期望：HTTP **200** + body `{"success":true}`，插件日志出现一条
+`监听到 N 个新入库文件（... 路径来源=候选字段）`，看板「平台解析入口到达」+1、
+「最近报文样本」出现这条报文。**这四样齐了，就说明插件侧没问题**，
+剩下的差异全在发送端。
+
+> 💡 上面的路径请换成你**映射源目录下真实存在**的路径。若插件日志说
+> 「取到的路径不属于任何映射」，那就不是 Content-Type 的问题了 ——
+> 它会把你当前配置的全部映射源目录列出来，照着改报文即可。
+
+**如果发送端的 Content-Type 根本改不了**（有些工具把它写死），改用自建端点
+（通道 B，即上面的 `POST /api/v1/plugin/Rsync115Sync/webhook`）：它**不受这个坑影响** ——
+收到「声明 multipart 却发裸 JSON」的请求时仍能正常解析入队（已实测，
+见 `test_self_endpoint_survives_the_same_bad_content_type`）。
+代价是要自己在插件配置页开启端点并配好密钥/IP 白名单。
+
 **报文形态参考**（另一个工程常用的形态，字段名不必完全一致，见下）：
 
 ```jsonc
