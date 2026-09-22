@@ -435,6 +435,29 @@
               <div class="font-weight-medium" style="white-space: pre-line">{{ strmScanMsg }}</div>
             </v-alert>
 
+            <!-- 观察期明细：这些文件刚同步成功、还在等 strm 生成（宽限期内），
+                 属正常等待 —— 展示出来是为了让用户知道「谁在等、还要等多久」，
+                 因此**不带任何操作按钮**（此时删除重传毫无意义，还会白白消耗配额） -->
+            <div v-if="strmWatchingEntries.length" class="d-flex flex-column ga-2 mb-3">
+              <div v-for="entry in strmWatchingEntries" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+                <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
+                  <div class="overflow-hidden">
+                    <div class="font-weight-bold text-body-2 text-truncate">{{ entry.key }}</div>
+                    <div class="text-caption text-medium-emphasis mt-0.5">
+                      同步成功，等待 strm 生成（宽限期 {{ statusData.strm_grace_hours }}h） · {{ entry.remainingText }}
+                    </div>
+                  </div>
+                </div>
+                <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
+                  <v-chip size="x-small" color="info" variant="tonal" class="font-weight-bold">观察中</v-chip>
+                  <v-tooltip activator="parent" location="top" max-width="320">
+                    宽限期内不判定、不报警：strm 生成不实时（可能还在上传或刮削中）。
+                    到期仍未生成会自动转入下方「疑似异常」清单，届时才需要处理。
+                  </v-tooltip>
+                </div>
+              </div>
+            </div>
+
             <div v-if="!strmSuspectCount" class="text-caption text-medium-emphasis mb-2">
               当前无疑似异常。若怀疑有文件上传失败但从未被观察过，点上方「扫描缺 strm 的文件」主动反查。
             </div>
@@ -583,6 +606,7 @@ const statusData = ref({
   missed_scan_enabled: false,
   stale_count: 0,
   strm_suspects: {},
+  strm_watch_detail: {},
   strm_watching: 0,
   strm_grace_hours: 6,
   backfill_total: 0,
@@ -624,6 +648,30 @@ const failedCount = computed(() =>
 
 // strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
 const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspects || {}).length)
+
+// 观察期条目明细：显示在疑似清单上方，带「观察中」tag、不可操作。
+// 宽限期从同步成功时刻起算，这里换算出剩余时间让用户对「还要等多久」有预期；
+// 剩余时间只在每次 fetchStatus（30 秒轮询）时刷新，精度足够。
+const strmWatchingEntries = computed(() => {
+  const detail = statusData.value.strm_watch_detail || {}
+  const grace = (Number(statusData.value.strm_grace_hours) || 6) * 3600
+  const now = Date.now() / 1000
+  return Object.entries(detail)
+    .map(([key, syncedTs]) => {
+      const remainingSec = Math.max(0, grace - (now - Number(syncedTs)))
+      const remainingMin = Math.ceil(remainingSec / 60)
+      let remainingText
+      if (remainingSec <= 0) {
+        remainingText = '即将在下轮巡检判定'
+      } else if (remainingMin >= 60) {
+        remainingText = `约 ${Math.ceil(remainingMin / 60)} 小时后判定`
+      } else {
+        remainingText = `约 ${remainingMin} 分钟后判定`
+      }
+      return { key, remainingText }
+    })
+    .sort((a, b) => a.key.localeCompare(b.key))
+})
 
 // 是否已为某个映射配置了 strm 目录。后端 /status 未返回 sync_pairs，故用
 // 「开关开启」近似判定 —— 没配 strm_dir 时扫描会返回明确的失败提示，

@@ -1144,6 +1144,11 @@ class Rsync115Sync(_PluginBase):
                 "missed_scan_enabled": self._missed_scan_enabled,
                 # strm 交叉验证状态（看板展示与重传操作的数据源）
                 "strm_suspects": self._strm_suspects,
+                # 观察期明细：key → 同步成功时间戳。
+                # 之前只返回数量（strm_watching），用户看到「1 个文件处于观察期」
+                # 却不知道是哪个文件、等了多久 —— 明细让观察状态可见、可预期
+                # （对照宽限期就能算出还剩多久出结果）。
+                "strm_watch_detail": {k: ts for k, ts in self._strm_watch.items()},
                 "strm_watching": len(self._strm_watch),
                 "strm_grace_hours": self._strm_grace_hours,
                 "strm_check_enabled": self._strm_check_enabled,
