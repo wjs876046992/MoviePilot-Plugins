@@ -99,6 +99,58 @@
           </div>
         </v-alert>
 
+        <!-- Webhook 入库运行态（第二来源）：只在**配过** webhook 时才出现。
+             平时不占位 —— 绝大多数用户走的是宿主的整理事件，给他们看一块永远
+             是 0 的面板只会让人怀疑自己配错了什么。这里不显示计数就安静地不显示。
+
+             「收到 / 入队 / 被拒 / 未识别」这四个数字的组合本身就是诊断结论：
+             收到=0 说明请求没到；收到>0 而入队=0 且未识别>0 说明字段名对不上。
+             与「last_payload_shape」配合，用户不必翻日志、不必来回问，照摘要把
+             字段名报过来就能扩展候选表。 -->
+        <v-alert
+          v-if="webhookVisible"
+          :type="webhookStat.rejected > 0 ? 'warning' : 'info'"
+          variant="tonal"
+          density="compact"
+          class="rounded-lg mb-3 text-body-2"
+        >
+          <div class="font-weight-medium">
+            🪝 Webhook 入库（第二来源）：
+            <template v-if="webhookStat.received > 0">
+              收到 <strong>{{ webhookStat.received }}</strong> 条 ·
+              入队 <strong>{{ webhookStat.ingested }}</strong> 个文件
+            </template>
+            <template v-else>
+              暂无请求
+            </template>
+          </div>
+          <div v-if="webhookStat.rejected > 0" class="mt-1">
+            ⛔ 被拒 <strong>{{ webhookStat.rejected }}</strong> 条（防护链拦下：IP / 密钥 / 路径白名单），
+            具体是哪一道见日志。
+          </div>
+          <div v-if="webhookStat.unrecognized > 0" class="mt-1">
+            ⚠️ 有 <strong>{{ webhookStat.unrecognized }}</strong> 条取不到入库路径 ——
+            说明请求到了、但字段名没对齐，需要扩展候选字段表。
+            <template v-if="webhookStat.last_payload_shape">
+              最近报文的字段结构：<code>{{ webhookStat.last_payload_shape }}</code>
+            </template>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            来源渠道：{{ (webhookStat.channels || []).join('、') || '未配置' }}
+            <template v-if="webhookStat.self_enabled">
+              · 自建端点<b>已开启</b>
+              <template v-if="webhookStat.secret_set">、已设密钥</template>
+              <template v-else>、<b>未设密钥</b></template>
+              <template v-if="(webhookStat.allow_roots || []).length">
+                · 允许目录：{{ webhookStat.allow_roots.join('、') }}
+              </template>
+            </template>
+            <template v-else>
+              · 自建端点未开启（用 Emby 的话无需开启）
+            </template>
+          </div>
+        </v-alert>
+
         <!-- 快捷操作工具条 -->
         <div class="action-strip rounded-xl pa-3 mb-4">
           <div class="action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2">
@@ -825,7 +877,17 @@ const statusData = ref({
   upload_max_per_window: 500,
   upload_window_secs: 1800,
   upload_blocked_until: 0,
+  // webhook 运行态：计数 + 最近一次报文的字段结构摘要（不含路径值）
+  webhook: {},
 })
+
+// webhook 运行态。可见性判据刻意选「曾经收到过任何一条请求」或「自建端点已开启」，
+// 而不是「webhook 功能已启用」—— 后者的默认值就是启用（渠道默认 emby），
+// 用它判断会让这块面板对每个用户都常驻显示，等于没做门控。
+const webhookStat = computed(() => statusData.value.webhook || {})
+const webhookVisible = computed(() =>
+  (Number(webhookStat.value.received) || 0) > 0 || Boolean(webhookStat.value.self_enabled)
+)
 
 const ignoredList = ref([])
 

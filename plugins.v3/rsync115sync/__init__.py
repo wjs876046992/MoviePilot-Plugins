@@ -19,6 +19,21 @@ try:
 except Exception:  # pragma: no cover - 兼容不同版本宿主
     MessageType = None
 
+# FastAPI 的 Request：自建 webhook 端点必须靠**类型注解**让宿主把请求对象注入进来。
+#
+# ⚠️ 这里不能用 `Any` 或字符串注解 —— 实测（fastapi 0.141）对 `Any` 注解的参数
+# 会按**查询参数**处理，于是 `request`/`body` 都变成 `?request=&body=`，
+# 端点既拿不到请求体、也拿不到来源 IP 与请求头，全部返回空值。类型必须是
+# Request 本身，FastAPI 才按 request 参数注入（见 _api_webhook_ingest 的说明）。
+#
+# 桩环境（本仓单测无宿主依赖）下 fastapi 不存在，退化成一个占位类：
+# 只要不为真宿主加载，这个类就不会被 FastAPI 检查到。
+try:
+    from fastapi import Request as _FastAPIRequest
+except Exception:  # pragma: no cover - 仅在无宿主的桩环境走到
+    class _FastAPIRequest:  # type: ignore[no-redef]
+        """占位类型：桩环境下不会真的被 FastAPI 解析。"""
+
 # 宿主公开的窄调度门面。用于保存配置后**主动重建本插件的定时任务** ——
 # 配置走本插件自己的 API 时，宿主不会替我们刷新调度（详见 _refresh_scheduled_job）。
 # 缺失时降级为 None，不影响插件加载：旧宿主上没有它只是需要手动重载。
@@ -36,6 +51,29 @@ try:
     from app.sdk.plugins import PluginManager as _PluginManager
 except Exception:  # pragma: no cover - 兼容旧宿主
     _PluginManager = None
+
+# 宿主 webhook 事件的 payload 模型。实现 `webhook_parser` 时必须返回它的实例 ——
+# 宿主在 WebhookChain 里直接把它交给 eventmanager，返回别的类型（或 None）都会
+# 让整条链静默结束。桩环境下退化成一个「能带任意属性」的最小替身。
+try:
+    from app.schemas.mediaserver import WebhookEventInfo as _HostWebhookEventInfo
+except Exception:  # pragma: no cover - 桩环境
+    _HostWebhookEventInfo = None
+
+    # ⚠️ 替身类必须定义在这个 except 块**内部**（而不是模块顶层）：
+    # 注册契约测试用 AST 取「源文件里第一个 ClassDef」当作插件主类，
+    # 顶层再放一个类会让它取错对象，表现为一批「缺少基类契约方法」的误报。
+    class _FallbackWebhookEventInfo:  # type: ignore[no-redef]
+        """桩环境替身：只保证能挂属性，供单测验证认领逻辑。"""
+
+        def __init__(self, **kwargs: Any) -> None:
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+
+def _webhook_event_info_class():
+    """返回宿主可用的 WebhookEventInfo 类型（桩环境用替身）。"""
+    return _HostWebhookEventInfo or _FallbackWebhookEventInfo
 
 
 def _transfer_success_events() -> List[Any]:
@@ -125,6 +163,9 @@ from .paths import (  # noqa: E402
     pair_name as _pair_name,
     valid_exts_of as _valid_exts_of,
 )
+# Webhook 报文解析（纯逻辑，无状态）+ 自建端点里的路径归属判据
+from . import webhook as _wh  # noqa: E402
+from .webhook import valid_extension as _wh_valid_extension  # noqa: E402
 
 
 class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
@@ -165,6 +206,29 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._listen_transfer: bool = True
         self._missed_scan_enabled: bool = self._MISSED_SCAN_ENABLED_DEFAULT
         self._notify: bool = True
+        # ---- Webhook 入库（第二来源，见 webhook.py 头注释）----
+        # 已启用的来源渠道（channel 过滤）。默认只开 emby —— 宿主原生支持它，
+        # 用户只需在 Emby 后台填一次回调地址即可，零额外配置。
+        self._webhook_channels: List[str] = ["emby"]
+        # 自建端点开关。默认**关闭**：它意味着向网络暴露一个可写入的接口，
+        # 必须是用户明确打开的行为，绝不能在升级后悄悄生效。
+        self._webhook_self_enabled: bool = False
+        # 自建端点的路径白名单根目录（每行一条，空 = 只用 sync_pairs 的源目录）。
+        # 这是「无条件要做」的那道防护：MDC 与媒体库路径完全解耦，进来的路径
+        # 必须显式声明可信，不能仅凭「落在某个 sync_pairs 里」就接受。
+        self._webhook_path_allowlist: str = ""
+        # 自建端点密钥（可选）。空 = 不校验密钥，此时**只靠路径白名单与来源 IP**；
+        # 文档与配置页必须把这一点写清楚，不能让用户以为不填也安全。
+        self._webhook_secret: str = ""
+        # 来源 IP 白名单（每行一条，支持精确 IP 与 1.2.3. 这样的前缀；空 = 不限）
+        self._webhook_ip_allowlist: str = ""
+        # webhook 运行态：累计收入计数 + 最近一次报文的字段结构摘要。
+        # 必须持久化（save_data）而不是只放内存：用户排查时习惯「推一条 → 重载插件
+        # → 去看板确认」，只在内存里的话重载即清零，永远看不到刚推的那一条。
+        # 计数只增不清，用作「这条路是否真的在工作」的证据。
+        # 初始化走 _wh_stat()，保证「模板只有一处真相」，不在类体里再放一份可变默认值。
+        self._webhook_stat: Dict[str, Any] = self._wh_stat()
+
         self._delay_hours: float = 2.0
         self._cron: str = "0 */2 * * *"
 
@@ -346,6 +410,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
             )
             self._notify = config.get("notify", True)
+            self._read_webhook_config(config)
             self._delay_hours = float(config.get("delay_hours", 2.0))
             self._cron = config.get("cron", "0 */2 * * *")
             self._sync_pairs = config.get("sync_pairs") or []
@@ -389,6 +454,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         if self._missed_queue:
             logger.info(f"[Rsync115Sync] 🕳️ 已恢复错过的入库待补扫清单：{len(self._missed_queue)} 个"
                         f"（将在每轮同步开头扫描源端目录补齐）")
+
+        # 恢复 webhook 运行态（累计计数与最近一次报文摘要）。
+        # 逐字段合并而不是整体替换：运行态字典跨版本会增加字段，整体替换会把
+        # 新版本新增的计数键抹掉，看板取字段时拿到 KeyError。
+        saved_wh_stat = self.get_data("webhook_stat") or {}
+        if isinstance(saved_wh_stat, dict):
+            self._webhook_stat_now().update(saved_wh_stat)
 
         # 恢复未完成的补传队列，保证跨重载/重启继续推进
         saved_backfill = self.get_data("backfill_queue") or []
@@ -525,6 +597,220 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                          f"（已兜底，不影响其它事件）: {err}")
             logger.debug(f"[Rsync115Sync] 事件处理异常堆栈:\n{traceback.format_exc()}")
 
+    # ================= 监听 MoviePilot Webhook 事件（第二入库来源） =================
+    #
+    # ⚠️ 与上方 on_transfer_complete 同理：**删掉这行装饰器不会有任何报错**。
+    # 表现为「Emby 侧明明配了 webhook，手动放进媒体库的文件却永远不同步」，
+    # 而日志里连一条 webhook 相关记录都不会有。改动本文件时务必保留。
+    #
+    # 与整理事件的关键差异（照抄代码前必读）：
+    #   · TransferComplete **在** _SNAPSHOT_EVENTS 内 → 走 event.snapshot() 拿类型化快照
+    #   · WebhookMessage **不在** _SNAPSHOT_EVENTS 内（只登记了 payload 模型）→
+    #     快照拿不到 payload，必须直接读 event_data 的属性（repo 内 watchsync 同写法）
+    # 这条差异是实测源码结论（app/runtime/event/contracts.py），不是推测。
+    @eventmanager.register(EventType.WebhookMessage)
+    def on_webhook_message(self, event: Event):
+        """
+        事件入口：仅做异常兜底，业务逻辑见 _handle_webhook_event。
+
+        Entry point for host-delivered webhooks (Emby today; any module that ships a
+        webhook_parser tomorrow). Guarded so a malformed payload can never be
+        recorded as a host-level plugin error.
+        """
+        try:
+            self._handle_webhook_event(event)
+        except Exception as err:
+            logger.error(f"[Rsync115Sync] v{self.plugin_version} 处理 webhook 事件时异常"
+                         f"（已兜底，不影响其它事件）: {err}")
+            logger.debug(f"[Rsync115Sync] webhook 事件异常堆栈:\n{traceback.format_exc()}")
+
+    def _enqueue_ingest_paths(self, raw_paths: List[str], source: str,
+                              event_desc: str) -> Dict[str, int]:
+        """
+        把一组**候选入库路径**校验后放入冷却队列 —— 事件链路与 webhook 链路的合流点。
+
+        Validate candidate ingest paths and put the survivors into the cool-down
+        queue. This is the single funnel both ingest sources (host transfer events
+        and webhooks) go through, so the two can never drift apart.
+
+        为什么必须合流：两条来源的**归一化与安全判据完全不同**（路径来源可信度、
+        是否可能收到伪造数据），但**入队语义必须只有一个** —— 重复投递保留原时间戳、
+        补回的文件从「错过清单」移除、扩展名与映射归属先于存在性判断。若各写一份，
+        「事件入队的文件」与「webhook 入队的文件」迟早出现行为差异。
+
+        ⚠️ 判据顺序：**先判映射归属，再判文件是否存在**。反过来的话，
+        「不在任何映射内」这个计数永远为 0，日志就分不清「路径与你配置的源目录
+        不一致」（改配置）与「路径对但容器里读不到」（挂载问题）。
+
+        :param source: 日志里的来源标签（如 `Webhook`）。整理事件链路传空串 ——
+            它的来源由 event_desc 里的 `事件=` 体现，再加一个标签只会让日志更长。
+        :return: 各原因计数（added/duplicate/skipped/unmatched/missing）
+        """
+        # 来源标签可能在左侧（"Webhook 监听到 N 个"）或完全没有（整理事件）。
+        # 统一在这里拼一次，避免每个分支都要判断有没有来源。
+        who = f"{source} " if source else ""
+        counts = {"added": 0, "duplicate": 0, "skipped": 0, "unmatched": 0,
+                  "missing": 0, "upgraded": 0}
+        added_paths: List[str] = []
+        unmatched_paths: List[str] = []
+        missing_paths: List[str] = []
+        now_ts = time.time()
+
+        for file_path in raw_paths or []:
+            if not file_path:
+                counts["skipped"] += 1
+                continue
+
+            own_pair = _pair_for_path(file_path, self._sync_pairs)
+            if own_pair is None:
+                counts["unmatched"] += 1
+                unmatched_paths.append(file_path)
+                continue
+
+            src_root = (own_pair.get("src") or "").strip().rstrip("/")
+            pair_name = _pair_name(own_pair)
+
+            if not _wh_valid_extension(own_pair, file_path, self._media_extensions):
+                counts["skipped"] += 1
+                continue
+
+            if not os.path.exists(file_path):
+                counts["missing"] += 1
+                missing_paths.append(file_path)
+                continue
+
+            rel_path = os.path.relpath(file_path, src_root)
+            queue_key = f"{pair_name}:{rel_path}"
+            if self._is_ignored(queue_key):
+                # 忽略清单优先级最高：否则被忽略的文件会从 webhook 这条新路
+                # 重新进队，表现为「明明忽略了却还在同步」。
+                counts["skipped"] += 1
+                continue
+            # 幂等：已在队列中的条目保留原入库时间，不刷新时间戳。
+            # durable outbox 是 at-least-once，webhook 发送端也常带重试；无条件覆盖
+            # 会让「1 小时前入库的文件」永远走不完冷却。
+            #
+            # ⚠️ 本判断必须在下面「待补扫清单升级」**之前**：一个文件可以同时出现在
+            # 冷却队列与待补扫清单里（webhook 抢先入队、随后补齐扫描又发现它）。
+            # 顺序颠倒会让重复投递经由「升级」分支绕过幂等检查，把冷却重新计时。
+            if queue_key in self._pending_queue:
+                counts["duplicate"] += 1
+                continue
+            if queue_key in self._missed_queue:
+                # ⚠️ 这里曾有一处 `continue`（把「已在待补扫清单」也当成重复投递），
+                # 它造成的是一个**静默的永久卡死**：补齐扫描发现文件「源端存在、
+                # 从未同步过」，只把它放进待补扫清单；而真实入库事件到达时又因
+                # 「已在待补扫清单」被判重复而不入冷却队列 —— 该文件从此既不在冷却
+                # 队列、也没被任何一轮同步取走，用户看到清单里永远挂着一条。
+                # 正确语义是「升级」：文件真的入库了就该走正常的冷却流程，
+                # 同时从待补扫清单移出（两处都保留只会让同一文件被两条通道各自处理）。
+                # Upgrading an entry to the real cool-down queue is the whole point:
+                # a plain `continue` left it stranded in neither queue nor sync.
+                counts["upgraded"] += 1
+
+            self._pending_queue[queue_key] = now_ts
+            self._missed_queue.pop(queue_key, None)
+            counts["added"] += 1
+            added_paths.append(rel_path)
+
+        if counts["added"] > 0:
+            self.save_data("pending_queue", self._pending_queue)
+            if self._missed_queue:
+                self.save_data("missed_queue", self._missed_queue)
+            dup_note = f"，其中 {counts['duplicate']} 个已在队列中" if counts["duplicate"] else ""
+            up_note = f"，{counts['upgraded']} 个由待补扫清单转入正常冷却" if counts["upgraded"] else ""
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}监听到 "
+                        f"{counts['added']} 个新入库文件（{event_desc}{dup_note}）"
+                        f"，已加入 {self._delay_hours}h 延迟冷却队列: "
+                        f"{_brief_paths(added_paths)}")
+        elif counts["duplicate"]:
+            # 重复投递不是问题（幂等已处理），但值得留痕，否则会误判成「没监听」
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}"
+                        f"{counts['duplicate']} 个文件已在冷却队列中，未刷新其冷却计时"
+                        f"（{event_desc}，队列共 {len(self._pending_queue)} 条）")
+        elif missing_paths and not unmatched_paths:
+            # 归属映射明确、但容器内读不到 —— 最值得警惕的一类（挂载不一致）
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}路径在本容器内不可见"
+                        f"（{event_desc}，共 {len(missing_paths)} 个；"
+                        f"路径前缀与映射一致但读不到，请检查宿主机目录是否已映射进容器）: "
+                        f"{_brief_paths(missing_paths)}")
+        elif unmatched_paths:
+            mapping_desc = ", ".join((p.get("src") or "?") for p in self._sync_pairs) or "（尚未配置任何映射）"
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}路径不在任何映射内"
+                        f"（{event_desc}，共 {len(unmatched_paths)} 个）: "
+                        f"{_brief_paths(unmatched_paths)}；当前映射的源目录: {mapping_desc}")
+        else:
+            logger.debug(f"[Rsync115Sync] v{self.plugin_version} {who}未入队"
+                         f"（{event_desc}，空路径/扩展名被过滤 {counts['skipped']} 个）")
+        return counts
+
+    def _handle_webhook_event(self, event: Event):
+        """
+        处理宿主广播的 WebhookMessage：只认「入库类」事件 + 已启用的来源渠道。
+
+        Handle a host-broadcast WebhookMessage. Only ingest-type events from an
+        enabled channel are accepted; everything else returns immediately.
+
+        两个必查项，缺一个都会产生静默的错误行为：
+
+        1. **按 channel 过滤** —— 多个插件会同时订阅 WebhookMessage（仓库内
+           watchsync / mediaservermsg 都订阅了），各插件必须只处理自己的来源。
+           不滤的话，本插件会去处理别的媒体服务器推送的播放事件。
+        2. **按事件名过滤（白名单）** —— 播放类事件同样携带 Item.Path。
+           不过滤的后果是：**用户每看一集，那集就被重新入队并再上传一次**。
+        """
+        if not self._enabled:
+            return
+        # 开关语义：webhook 与整理事件都是「入库来源」，共用同一个 listen_transfer
+        # 总闸。分成两个开关会让用户遇到「关了一个、另一个还在悄悄入队」。
+        if not self._listen_transfer:
+            return
+
+        event_data = getattr(event, "event_data", None)
+        if not event_data:
+            return
+
+        channel = _wh.channel_of(event_data)
+        # 显式发给本插件的报文（`webhook_parser` 认领的那条路）channel 就是
+        # WEBHOOK_TARGET，它**不在**用户的渠道配置里，必须单独放行 —— 否则我们会
+        # 认领一条报文、再自己把它过滤掉，表现为「日志里连一条都没有」。
+        # 放行它是安全的：能走到这里的报文已由发送端显式声明收件人，不存在歧义。
+        allowed_channels = list(getattr(self, "_webhook_channels", None) or ["emby"])
+        if self.WEBHOOK_TARGET != channel and channel not in allowed_channels:
+            # 明确留痕（debug 级）：用户配了 webhook 却没有任何反应时，
+            # 第一件要确认的就是「事件到了没有、channel 是什么」。
+            logger.debug(f"[Rsync115Sync] webhook 已送达但渠道未启用，忽略"
+                         f"（channel={channel or '空'}，已启用={allowed_channels}）")
+            return
+
+        event_name = str(_wh.read_field(event_data, "event", "") or "")
+        server_name = str(_wh.read_field(event_data, "server_name", "") or "")
+        shape = _wh.describe_payload(event_data)
+        # 计数点放在**渠道过滤之后**：别的媒体服务器推的播放事件也会走到这里，
+        # 把它们计进 received 会让看板上的数字虚高，用户以为 webhook 配得很成功。
+        if not _wh.is_ingest_event(event_name):
+            self._note_webhook(channel=channel, event=event_name, source=server_name,
+                               shape=shape)
+            logger.debug(f"[Rsync115Sync] webhook 非入库类事件，忽略（event={event_name or '空'}）")
+            return
+
+        raw_paths, path_source = _wh.extract_paths(event_data)
+        if not raw_paths:
+            # 拿不到路径 = 报文结构还没对齐。只记 debug，不刷 info：
+            # 播放类噪声已经挡在前面了，这里能剩下的通常只是刮削更新之类。
+            self._note_webhook(channel=channel, event=event_name, source=server_name,
+                               shape=shape, unrecognized=True)
+            logger.debug(f"[Rsync115Sync] webhook 未取到入库路径"
+                         f"（event={event_name}，channel={channel}，报文结构={shape}）")
+            return
+
+        counts = self._enqueue_ingest_paths(
+            raw_paths, source="Webhook(宿主)",
+            event_desc=f"event={event_name}，channel={channel}，"
+                       f"server={server_name or '未知'}，路径来源={path_source}")
+        self._note_webhook(channel=channel, event=event_name, source=server_name,
+                           shape=shape, ingested=counts.get("added", 0))
+
     def _handle_transfer_event(self, event: Event):
         """
         监听媒体转移/字幕/音频整理完成事件，把新入库文件放入冷却队列。
@@ -632,113 +918,17 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 path_source = "fileitem.path"
         fallback_used = path_source != "file_list_new"
 
-        now_ts = time.time()
-        added_count = 0
-        skipped_count = 0
-        unmatched_count = 0
-        duplicate_count = 0
-        # 按原因分类收集，便于日志给出可行动结论。
-        # ⚠️ 关键：**先判映射归属，再判文件是否存在**。
-        # 原实现先判存在、不存在就 continue，导致「不在任何映射内」这个计数
-        # 永远为 0 —— 不是真的匹配上了，而是根本没走到映射判断。
-        # 这会掩盖病因：分不清「宿主给的库路径与你配置的源目录不一致」
-        # （改配置即可）与「路径对但容器里读不到」（挂载/映射问题）。
-        # Classify by cause, and evaluate mapping membership BEFORE existence,
-        # so the two diagnoses stay distinguishable in the log.
-        added_paths: List[str] = []
-        missing_paths: List[str] = []      # 归属某映射，但文件在容器内不存在
-        unmatched_paths: List[str] = []    # 不属于任何映射（含配置为空的场景）
-
-        for file_path in file_list:
-            if not file_path:
-                skipped_count += 1
-                continue
-
-            # 第一步：判定映射归属。这一步必须独立于文件是否存在 ——
-            # 否则无法区分「路径不属于任何映射」与「路径属于映射但读不到」。
-            own_pair = _pair_for_path(file_path, self._sync_pairs)
-
-            if own_pair is None:
-                unmatched_count += 1
-                unmatched_paths.append(file_path)
-                continue
-
-            src_root = (own_pair.get("src") or "").strip().rstrip("/")
-            pair_name = _pair_name(own_pair)
-
-            # 扩展名过滤（映射配了 all_ext 则不过滤）
-            if not own_pair.get("all_ext", False):
-                ext = os.path.splitext(file_path)[-1].lstrip(".").lower()
-                valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
-                if ext not in valid_exts:
-                    skipped_count += 1
-                    continue
-
-            # 第二步：归属已确定，此时才检查文件在容器内是否可见。
-            # 明确归入「缺失」而不是笼统的「跳过」—— 这条最能定位挂载/路径映射问题。
-            if not os.path.exists(file_path):
-                missing_paths.append(file_path)
-                continue
-
-            rel_path = os.path.relpath(file_path, src_root)
-            queue_key = f"{pair_name}:{rel_path}"
-            # 幂等：已在队列中的条目**保留原入库时间**，不刷新时间戳。
-            # 宿主的整理事件走 durable outbox（at-least-once），同一事件可能
-            # 被重复投递；若无条件覆盖时间戳，每次重投都会把冷却重新计时，
-            # 表现为「明明是 1 小时前入库的文件，冷却永远走不完」。
-            # Idempotent: keep the original timestamp instead of refreshing it.
-            if queue_key in self._pending_queue:
-                duplicate_count += 1
-                continue
-            self._pending_queue[queue_key] = now_ts
-            # 该文件已经补上，从「错过待补扫」清单里移除，避免下轮重复判定
-            self._missed_queue.pop(queue_key, None)
-            added_count += 1
-            added_paths.append(rel_path)
-
-        event_value = getattr(event.event_type, "value", event.event_type)
-        if added_count > 0:
-            self.save_data("pending_queue", self._pending_queue)
-            if self._missed_queue:
-                self.save_data("missed_queue", self._missed_queue)
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 监听到 {added_count} 个新入库文件"
-                        f"（事件={event_value}，读取方式={payload_source}"
-                        f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}"
-                        f"{f'，重复投递已跳过 {duplicate_count} 个' if duplicate_count else ''}）"
-                        f"，已加入 {self._delay_hours}h 延迟冷却队列: "
-                        f"{_brief_paths(added_paths)}")
-        elif duplicate_count:
-            # 重复投递不是问题（幂等已处理），但值得留痕，否则会误判成「没监听」
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 事件中的 {duplicate_count} 个文件"
-                        f"已在冷却队列中，未刷新其冷却计时"
-                        f"（事件={event_value}，队列共 {len(self._pending_queue)} 条，读取方式={payload_source}）")
-        elif missing_paths and not unmatched_paths:
-            # 归属映射明确、但容器内读不到该文件。
-            # ⚠️ 这是**最值得警惕**的一类：若路径前缀与你的映射一致却读不到，
-            # 说明宿主机路径与容器内挂载不一致（或文件已被移动/删除）。
-            # 保持 INFO 并给出完整路径，这是定位挂载问题的关键证据。
-            # Owned by a mapping but unreadable inside the container — the most
-            # important case: the prefix matches, so this points at a host/container
-            # path-mapping mismatch (or the file having moved).
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 入库事件路径在本容器内不可见"
-                        f"（事件={event_value}，共 {len(missing_paths)} 个；"
-                        f"路径前缀与映射一致但读不到，请检查宿主机目录是否已映射进容器）: "
-                        f"{_brief_paths(missing_paths)}")
-        elif unmatched_paths:
-            # 路径不属于任何映射 —— 配置问题，给出现有映射便于对照
-            mapping_desc = ", ".join(
-                (p.get("src") or "?") for p in self._sync_pairs
-            ) or "（尚未配置任何映射）"
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 入库事件路径不在任何映射内"
-                        f"（事件={event_value}，共 {len(unmatched_paths)} 个，读取方式={payload_source}）: "
-                        f"{_brief_paths(unmatched_paths)}"
-                        f"；当前映射的源目录: {mapping_desc}")
-        else:
-            # 其余情况（路径为空、扩展名被过滤等）无需用户行动，降为 debug
-            logger.debug(f"[Rsync115Sync] v{self.plugin_version} 整理完成事件未入队"
-                         f"（事件={event_value}，共 {len(file_list)} 个路径："
-                         f"空路径/扩展名被过滤 {skipped_count}"
-                         f"{f'，路径来源={path_source}（回退）' if fallback_used else ''}）")
+        # ⚠️ 归一化、映射归属、扩展名过滤、忽略清单、幂等、补齐清单清理
+        # **全部**由 `_enqueue_ingest_paths` 承担 —— 本函数只负责「从 payload 里取到
+        # 候选路径」这一件事。此前这里有一份与 webhook 链路**逐字重复**的入队实现，
+        # 它比 webhook 那份**少了忽略清单判断**，于是被忽略的文件仍会经整理事件入队，
+        # 与「已忽略」清单上的承诺直接矛盾。合流是唯一能保证两条来源行为一致的写法：
+        # 任何新的入队判据只需要在一个地方加。
+        self._enqueue_ingest_paths(
+            file_list, source="",
+            event_desc=f"事件={getattr(event.event_type, 'value', event.event_type)}"
+                       f"，读取方式={payload_source}"
+                       + (f"，路径来源={path_source}（回退）" if fallback_used else ""))
 
     def _scan_missed_ingest(self) -> int:
         """
@@ -885,6 +1075,197 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 pass
         self._is_running = False
 
+    # ================= 认领宿主 webhook 解析（必须实现，理由见下） =================
+    #
+    # ⚠️ 这不是可选优化，是**必须**实现的。宿主的 `webhook_parser` 是「模块方法」，
+    # 其契约（app/runtime/extensions/module/contracts.py:1089）为：
+    #     aggregation = FIRST_NON_EMPTY   # 取第一个非空结果
+    #     plugin_short_circuit = True     # 非空即短路
+    #     public_to_plugins = True        # 插件可实现
+    # 而调度顺序是**插件优先、宿主殿后**（dispatcher.py:169）。两者相加的语义是：
+    #
+    #     任何启用的插件只要实现了 webhook_parser 并返回非空结果，
+    #     宿主的 Emby / Jellyfin / Plex 解析器就**再也不会被调用**。
+    #
+    # （已用宿主自己的调度代码复现：插件返回非空 → 第二个 provider 的 call_mode
+    #  变为 STOP、不被调用；见 DEVELOPMENT.md 9.11。）
+    #
+    # 所以不实现它等于赌「别的插件永远不实现这个钩子」。赌输的后果是：宿主的
+    # WebhookEventInfo 根本不会被构造 → WebhookMessage 不广播 → 本插件一行日志都没有，
+    # 现象与「Emby 回调没配好」完全一致，用户没有任何可自查的线索。
+    #
+    # ## ⚠️ 认领判据只认「显式收件人」，绝不按 channel 认领
+    #
+    # 曾经想按配置里的 `webhook_channels`（默认 emby）来认领 —— 那是个严重错误：
+    # 宿主的 Emby 解析器产出的 `channel` **就是** `emby`
+    # （`emby.py:1082` `WebhookEventInfo(event=..., channel="emby")`）。按它认领会把
+    # 宿主本来能正常处理的 Emby 报文抢过来、短路掉宿主解析器，于是健康检查、图片
+    # 获取等宿主功能一起失效 —— 而本插件只想要一个路径，代价完全不成比例。
+    #
+    # 现在的判据是**发送端必须显式声明收件人为本插件**，且只认一个明确的标识：
+    #     `source=rsync115sync`（查询串）或 `x-webhook-target: rsync115sync`（请求头）
+    # 宿主自己的解析器按 source 去查**新媒体服务器实例**，`rsync115sync` 不是实例名，
+    # 因此它们只会返回 None 并继续往下走，不存在「抢错」的可能。
+    #
+    # 三条全部满足才认领，缺一条都返回 None：
+    #   1. 显式收件人标识命中
+    #   2. 插件本身已启用且监听入库事件
+    #   3. 报文里确实含**本插件映射下的**路径（只凭自报标识就认领会吞掉别人报文）
+    #
+    # ## ⚠️ 签名与请求体形态
+    #
+    # 签名必须与宿主调用方式一致（`base.py:514` 以 body/form/args 三个关键词调用）。
+    # 参数名不匹配时宿主**不会报错也不会告警**（兼容阶段只诊断不拒绝 provider），
+    # 表现为「回调 200、插件收不到」，属最难查的一类。
+    #
+    # `/api/v1/webhook/` 的 body 是 **`await request.body()` 的原始 bytes**
+    # （`app/api/endpoints/webhook.py`），不是解析好的 dict；`form` 拿到的是
+    # `await request.form()`。因此这里把三种载体都试一遍：form → body → args。
+    # （Emby 走 form、Jellyfin/TrimeMedia 走 body、Plex 走 form —— 各家不一。）
+    WEBHOOK_TARGET = "rsync115sync"
+
+    def webhook_parser(self, body: Any, form: Any, args: Any) -> Any:
+        """
+        认领**显式发给本插件**的 webhook 报文，其余一律 `None`（= 我不认领）。
+
+        Claim webhook payloads explicitly addressed to this plugin. Returns None
+        for everything else, so the host's own Emby/Jellyfin/Plex parsers keep
+        working — returning a non-empty result here would short-circuit them.
+
+        认领成功时返回宿主契约要求的 `WebhookEventInfo`（不是本插件自造的类型）：
+        宿主会把它直接交给 eventmanager，类型不符或返回 `None` 都会让整条链静默结束。
+        """
+        try:
+            if not getattr(self, "_enabled", False) or not getattr(self, "_listen_transfer", True):
+                return None
+            query = self._query_of(args)
+            if not self._claims_for_us(form, body, query):
+                return None
+            raw_paths = self._paths_from_webhook_request(body, form, query)
+            if not raw_paths:
+                return None
+            # 判据 3：必须真能归属到本插件的某个映射。不满足说明这条报文不是给我们的
+            # （或路径形态对不上），此时**认领了反而更糟** —— 既吞掉报文，又什么都做不成。
+            own = [_pair_for_path(p, self._sync_pairs or []) for p in raw_paths]
+            if not any(own):
+                logger.debug(f"[Rsync115Sync] webhook 报文声明发往本插件，但路径不在任何映射内，"
+                             f"不认领（避免短路宿主解析器）: {_brief_paths(raw_paths)}")
+                return None
+            return _webhook_event_info_class()(
+                event="library.new",
+                channel=self.WEBHOOK_TARGET,
+                server_name=self.WEBHOOK_TARGET,
+                item_path=raw_paths[0],
+                json_object={"paths": raw_paths},
+            )
+        except Exception as err:  # 认领判定异常绝不能影响宿主其它 provider
+            logger.debug(f"[Rsync115Sync] webhook_parser 认领判定异常（已忽略）: {err}")
+            return None
+
+    # 收件人标识可出现的载体：查询串、请求头（form 与 body 里也一并找，兼容
+    # 把标识写进 JSON 的发送端）。
+    _WEBHOOK_TARGET_KEYS = ("source", "target", "channel", "x-webhook-target")
+
+    @classmethod
+    def _claims_for_us(cls, *sources: Any) -> bool:
+        """判断任一载体里是否显式声明了「发给本插件」。"""
+        for source in sources:
+            for key, value in cls._iter_flat_items(source):
+                if key in cls._WEBHOOK_TARGET_KEYS and str(value).strip().lower() == cls.WEBHOOK_TARGET:
+                    return True
+        return False
+
+    @staticmethod
+    def _iter_flat_items(source: Any):
+        """把 dict / QueryParams / 原始 bytes / 字符串归一成 (key, value) 迭代。"""
+        if not source:
+            return
+        if isinstance(source, (bytes, bytearray)):
+            try:
+                source = source.decode("utf-8", "ignore")
+            except Exception:
+                return
+        if isinstance(source, str):
+            text = source.strip()
+            if not text:
+                return
+            if text.startswith("{"):
+                try:
+                    import json
+                    source = json.loads(text)
+                except Exception:
+                    return
+            else:
+                try:
+                    from urllib.parse import parse_qsl
+                    yield from ((k.lower(), v) for k, v in parse_qsl(text))
+                except Exception:
+                    return
+                return
+        if isinstance(source, dict):
+            yield from ((str(k).lower(), v) for k, v in source.items())
+            return
+        # QueryParams / Multidict / form 等：都支持 items()
+        items = getattr(source, "items", None)
+        if callable(items):
+            try:
+                yield from ((str(k).lower(), v) for k, v in items())
+            except Exception:
+                return
+
+    @classmethod
+    def _paths_from_webhook_request(cls, body: Any, form: Any, args: Any) -> List[str]:
+        """按 form → body → args 的顺序取出候选入库路径（各家发送端载体不一）。"""
+        import json
+
+        for source in (form, body):
+            candidate: Any = None
+            if isinstance(source, (bytes, bytearray)):
+                try:
+                    source = bytes(source).decode("utf-8", "ignore")
+                except Exception:
+                    continue
+            if isinstance(source, str):
+                text = source.strip()
+                if not text:
+                    continue
+                try:
+                    candidate = json.loads(text)
+                except Exception:
+                    from urllib.parse import parse_qsl
+                    candidate = dict(parse_qsl(text)) or None
+            elif source:
+                candidate = dict(source) if not isinstance(source, dict) else source
+            if isinstance(candidate, dict) and candidate.get("data"):
+                # Emby 把 JSON 塞在 form 的 `data` 字段里（见 emby.py 的解析实现）
+                inner = candidate.get("data")
+                if isinstance(inner, str):
+                    try:
+                        candidate = json.loads(inner)
+                    except Exception:
+                        pass
+                elif isinstance(inner, dict):
+                    candidate = inner
+            if candidate:
+                paths, _ = _wh.extract_paths(candidate)
+                if paths:
+                    return paths
+        if args:
+            paths, _ = _wh.extract_paths(dict(args))
+            if paths:
+                return paths
+        return []
+
+    @staticmethod
+    def _query_of(args: Any) -> Dict[str, Any]:
+        """把宿主传来的 args（QueryParams 或 dict）归一成 dict。"""
+        if not args:
+            return {}
+        try:
+            return {str(k): v for k, v in dict(args).items()}
+        except Exception:
+            return {}
+
     # ================= Web API 接口 (支撑独立前端页面) =================
 
     def get_api(self) -> List[Dict[str, Any]]:
@@ -925,7 +1306,293 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # The only endpoint that depends on another plugin; everything else,
             # including the whole strm cross-validation feature, is self-contained.
             {"path": "/strm_generate", "endpoint": self._api_strm_generate, "methods": ["POST"], "auth": "bear"},
+            # ⚠️ 本插件**唯一**匿名（免宿主鉴权）的端点：自建 webhook 接收口。
+            # 外部发送端（MDC-ng、自建脚本）不带 MoviePilot 的 API_TOKEN，
+            # 走宿主鉴权必然 401。安全由插件自己在处理器内部兜住（密钥 +
+            # 路径白名单 + 来源 IP 白名单 + 开关默认关闭），见 _api_webhook_ingest。
+            # The only anonymous endpoint in this plugin. Its own guard chain is the
+            # entire security boundary — never loosen it without the same scrutiny.
+            {"path": "/webhook", "endpoint": self._api_webhook_ingest, "methods": ["POST"],
+             "allow_anonymous": True},
         ]
+
+    # ================= 自建 webhook 端点（第二通道） =================
+
+    @staticmethod
+    def _wh_stat() -> Dict[str, Any]:
+        """
+        新建一份 webhook 运行态模板。
+
+        计数键清单只在这里出现一次：`init_plugin` 用它初始化、`_note_webhook` 用它
+        兜底（`__new__` 构造的测试实例、或跨版本的旧数据文件都可能缺字段）。
+        两处各写一份的话，新增一个计数键必然漏掉其中一处，表现为看板取键 KeyError。
+        """
+        return {
+            "received": 0,          # 收到的 webhook 事件数（含被过滤的非入库类）
+            "ingested": 0,          # 真正入队的文件数
+            "rejected": 0,          # 被防护链或白名单拒绝的请求数
+            "unrecognized": 0,      # 收到了但没解析出路径的次数
+            "last_ts": 0.0,
+            "last_channel": "",
+            "last_event": "",
+            "last_source": "",
+            "last_payload_shape": "",
+        }
+
+    def _webhook_stat_now(self) -> Dict[str, Any]:
+        """
+        取运行态（缺失时按模板补全）—— 每个读写点都必须走它。
+
+        为什么不能直接 `self._webhook_stat`：本插件的单测与部分宿主路径用
+        `__new__` 构造实例（不跑 `__init__`），此时该属性不存在。为看板/统计这类
+        旁路功能抛 AttributeError，会把「入库本身完全正常」的情况表现成异常，
+        是本项目已记录过的一类缺陷（DEVELOPMENT.md 8.5：只有实例化才能暴露）。
+        """
+        stat = getattr(self, "_webhook_stat", None)
+        if not isinstance(stat, dict):
+            stat = self._wh_stat()
+            self._webhook_stat = stat
+        else:
+            for key, default in self._wh_stat().items():
+                stat.setdefault(key, default)
+        return stat
+
+    def _note_webhook(self, *, channel: str = "", event: str = "", source: str = "",
+                      shape: str = "", ingested: int = 0, rejected: bool = False,
+                      unrecognized: bool = False) -> None:
+        """
+        记录一次 webhook 到达/入队/被拒，供看板与日志回答「这条路到底通不通」。
+
+        为什么值得专门做一份运行态：webhook 是全插件唯一**由外部发起**的入口，
+        出问题时用户手里没有任何可自查的证据 —— 发送端显示 200、插件日志一片
+        安静、看板队列不增长。把「收到几条 / 入队几条 / 拒了几条 / 最后一次的
+        报文长什么样」记下来，才能把问题定位到具体是哪一环。
+        """
+        stat = self._webhook_stat_now()
+        stat["received"] = int(stat.get("received", 0)) + 1
+        stat["ingested"] = int(stat.get("ingested", 0)) + max(0, int(ingested))
+        if rejected:
+            stat["rejected"] = int(stat.get("rejected", 0)) + 1
+        if unrecognized:
+            stat["unrecognized"] = int(stat.get("unrecognized", 0)) + 1
+        stat["last_ts"] = time.time()
+        if channel:
+            stat["last_channel"] = channel
+        if event:
+            stat["last_event"] = event
+        if source:
+            stat["last_source"] = source
+        if shape:
+            stat["last_payload_shape"] = shape
+        try:
+            self.save_data("webhook_stat", stat)
+        except Exception:
+            pass  # 运行态落盘失败绝不能影响入库本身
+
+    async def _api_webhook_ingest(self, request: _FastAPIRequest) -> Dict[str, Any]:
+        """
+        接收外部 webhook 推送的入库路径，走与事件链路**同一个入队函数**。
+
+        Receive externally-pushed ingest paths. This endpoint exists because the host
+        only knows about media servers it has a module for — MDC-ng is not one of
+        them (verified: no mdc/mdcz module in app/modules), so its webhooks can
+        never reach `EventType.WebhookMessage`. Everything else (Emby) should use
+        the host chain instead: it is authenticated by the host and needs no
+        endpoint of ours.
+
+        ## 为什么这是全插件**唯一**匿名端点，以及它凭什么安全
+
+        `allow_anonymous: True` 意味着知道 URL 的人都能往这里灌数据。
+        伪造入库不只是「多传几个文件」—— 每次上传都消耗 115 风控配额，
+        灌一批伪造路径足以把冷却队列撑爆并触发风控。因此防护是**串行四道**，
+        任何一道不过即拒绝（顺序即代码顺序）：
+
+          1. 总开关 `webhook_self_enabled`（默认**关闭**：暴露接口必须由用户明确开启）
+          2. 来源 IP 白名单（若配置）
+          3. 密钥（若配置）—— 支持 `X-Webhook-Secret` 头或 `?token=`
+          4. **路径白名单**（无条件生效）：路径必须落在显式白名单内，
+             未配置时退回各 mapping 的源目录
+
+        第 4 道是真正兜底的那道：伪造者可以伪造任何路径字符串，但不可能让一个
+        任意路径**同时**落在你配置的媒体库目录下。它不会因为「密钥没填」而失效。
+
+        ## ⚠️ 签名为什么必须是单个 `request: Request`（改之前先看这条）
+
+        实测（fastapi 0.141）：参数写成 `request: Any = None` 会让 FastAPI 把它
+        分类为**查询参数**而不是 request 对象 —— 端点照样能注册、OpenAPI 照样生成、
+        HTTP 照样 200，但 `request` 拿到的是一个空字符串，于是
+        **来源 IP、请求头、请求体全部读不到**：密钥校验永远失败、来源 IP 永远为空、
+        报文永远是空的。这类「注册成功、调用成功、结果全空」的失效最难自查，
+        因此这里不留任何宽松余量：类型就是 Request，参数就一个。
+
+        请求体通过 `await request.json()` 自己读，不用 `Body(...)` 声明 ——
+        报文形态有四种（JSON 对象 / 裸数组 / 纯查询串 / 纯文本 JSON），
+        声明成某一具体模型等于提前选定了其中一种。
+        """
+        if not getattr(self, "_enabled", False):
+            return {"success": False, "message": "插件未启用"}
+        return await self._ingest_from_request(request)
+
+    async def _ingest_from_request(self, request: Any) -> Dict[str, Any]:
+        """
+        从真实 Request 里取齐四要素后交给 `_ingest_from_parts` 处理。
+
+        必须 async：FastAPI 要求用 await 读请求体（`await request.json()`）。
+        调用方 `_api_webhook_ingest` 同样是 async 并 `await` 本函数 —— 若它保持
+        同步，这里返回的协程会被 FastAPI 当作普通返回值丢给 JSON 编码器，
+        报出与真实故障毫无关联的 `'coroutine' object is not iterable`。
+
+        每一段都单独兜异常：取不到就不该让端点 500 —— 对发送端来说 500 是
+        「请重试」的信号，会把同一个请求反复打进来。
+        """
+        headers = None
+        try:
+            headers = getattr(request, "headers", None)
+        except Exception:
+            headers = None
+        client_ip = ""
+        try:
+            client = getattr(request, "client", None)
+            if client is not None:
+                client_ip = getattr(client, "host", "") or ""
+        except Exception:
+            client_ip = ""
+        query: Dict[str, Any] = {}
+        try:
+            query = dict(getattr(request, "query_params", None) or {})
+        except Exception:
+            query = {}
+
+        # 请求体：先看 starlette 缓存的 _json（宿主已解析过时直接复用，避免二次读取），
+        # 再按 content-type 分流（text/plain 里塞 JSON 的发送端真实存在），
+        # 最后退回 form。三种都失败就当没有 body —— 纯查询串形态本来就没有。
+        body: Any = getattr(request, "_json", None)
+        if body is None:
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+        if body is None:
+            ctype = ""
+            try:
+                ctype = (headers.get("content-type") or "") if headers is not None else ""
+            except Exception:
+                ctype = ""
+            if ("text/plain" in ctype or not ctype) and hasattr(request, "body"):
+                try:
+                    raw = await request.body()
+                    if raw:
+                        body = raw.decode("utf-8", "replace")
+                except Exception:
+                    body = None
+        if body is None and hasattr(request, "form"):
+            try:
+                form = await request.form()
+                if form:
+                    body = {str(k): v for k, v in form.items()}
+            except Exception:
+                body = None
+
+        return self._ingest_from_parts(client_ip=client_ip, headers=headers,
+                                       query=query, body=body)
+
+    def _ingest_from_parts(self, client_ip: str, headers: Any,
+                           query: Dict[str, Any], body: Any) -> Dict[str, Any]:
+        """防护链 + 解析 + 入队。与端点分离，便于单测直接驱动完整防护链。"""
+        # 1) 自建端点开关 + 入库总闸
+        if not getattr(self, "_webhook_self_enabled", False):
+            return {"success": False, "message": "自建 webhook 端点未启用（请在配置页开启）"}
+        if not getattr(self, "_listen_transfer", True):
+            return {"success": False,
+                    "message": "「监听媒体转移入库事件」总开关已关闭，webhook 一并停用"}
+
+        # 2) 来源 IP 白名单
+        if not self._webhook_ip_allowed(client_ip):
+            self._note_webhook(source=client_ip, rejected=True)
+            logger.warning(f"[Rsync115Sync] webhook 请求被拒：来源 IP 不在白名单内（{client_ip or '未知'}）")
+            return {"success": False, "message": "来源 IP 不在白名单内"}
+
+        # 3) 密钥（未配置则不校验，但路径白名单仍会生效；配置页必须写清这一点）
+        if getattr(self, "_webhook_secret", ""):
+            provided = _wh.header_lookup(headers, "x-webhook-secret")
+            if not provided:
+                provided = query.get("token") or query.get("secret")
+            if not _wh.secret_ok(getattr(self, "_webhook_secret", ""), provided):
+                self._note_webhook(source=client_ip, rejected=True)
+                logger.warning(f"[Rsync115Sync] webhook 请求被拒：密钥错误（来源 {client_ip or '未知'}）")
+                return {"success": False, "message": "密钥错误"}
+
+        event_data = self._webhook_payload_of(body, query)
+        shape = _wh.describe_payload(event_data)
+        event_name = str(_wh.read_field(event_data, "event", "") or "")
+        raw_paths, path_source = _wh.extract_paths(event_data)
+        if not raw_paths:
+            self._note_webhook(event=event_name, source=client_ip, shape=shape,
+                               unrecognized=True)
+            logger.info(f"[Rsync115Sync] 自建 webhook 未取到路径"
+                        f"（来源 {client_ip or '未知'}，报文结构={shape}）")
+            return {"success": False, "message": "未能从报文中取到文件路径（详见插件日志中的报文结构）"}
+
+        # 4) 路径白名单（无条件）
+        roots = self._webhook_allowed_roots()
+        allowed = [p for p in raw_paths if _wh.path_in_roots(p, roots)]
+        rejected = [p for p in raw_paths if p not in allowed]
+        if rejected:
+            logger.warning(f"[Rsync115Sync] 自建 webhook 丢弃 {len(rejected)} 条不在白名单内的路径"
+                           f"（来源 {client_ip or '未知'}）: {_brief_paths(rejected)}"
+                           f"；当前白名单: {_brief_paths(roots)}")
+        if not allowed:
+            self._note_webhook(event=event_name, source=client_ip, shape=shape,
+                               rejected=True)
+            return {"success": False,
+                    "message": "路径不在允许的目录白名单内（请在配置页填写「webhook 允许的入库目录」）"}
+
+        counts = self._enqueue_ingest_paths(
+            allowed, source="Webhook(自建)",
+            event_desc=f"来源={client_ip or '未知'}，路径来源={path_source}")
+        self._note_webhook(event=event_name, source=client_ip, shape=shape,
+                           ingested=counts.get("added", 0))
+        return {
+            "success": True,
+            "data": counts,
+            "message": f"已入队 {counts['added']} 个"
+                       + (f"，{counts['duplicate']} 个已在队列中" if counts["duplicate"] else "")
+                       + (f"，{counts['skipped']} 个被过滤" if counts["skipped"] else "")
+                       + (f"，{counts['unmatched']} 个不在任何映射内" if counts["unmatched"] else "")
+                       + (f"，{counts['missing']} 个在本容器内不可见" if counts["missing"] else "")
+                       + (f"；{len(rejected)} 条被白名单拒绝" if rejected else ""),
+        }
+
+    @staticmethod
+    def _webhook_payload_of(body: Any, query: Dict[str, Any]) -> Any:
+        """
+        把「请求体 + 查询串」合成一份待解析的报文。
+
+        为什么要把查询串并进来：自建 sender 未必走 POST JSON —— 很多脚本/老系统
+        只会发一个 GET/POST 带查询串（`?path=/media/x.mkv&channel=mdcz`）。
+        把两者合并成同一个 dict，解析层就只有一条路径，不会出现
+        「JSON 能收到、查询串收不到」这种半可用状态。
+        """
+        data: Dict[str, Any] = {}
+        if isinstance(query, dict):
+            data.update({str(k): v for k, v in query.items()})
+        if isinstance(body, dict):
+            data.update(body)
+        elif isinstance(body, list):
+            return {"paths": body}
+        elif isinstance(body, str) and body.strip():
+            try:
+                import json
+                parsed = json.loads(body)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                data.update(parsed)
+            elif isinstance(parsed, list):
+                return {"paths": parsed}
+            else:
+                return {"path": body}
+        return data
 
     def _api_get_ignored(self):
         return {"success": True, "data": self._ignored_rules}
@@ -954,6 +1621,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
                 "missed_scan_enabled": self._missed_scan_enabled,
+                # webhook（第二入库来源）。密钥原样回传：它是配置页要展示、编辑的
+                # 用户自设口令，不是宿主凭据；不回传的话用户每次打开配置页都会
+                # 看到空密钥并顺手保存，把已配置的密钥清掉。
+                "webhook_channels": (getattr(self, "_webhook_channels", None) or ["emby"]),
+                "webhook_self_enabled": bool(getattr(self, "_webhook_self_enabled", False)),
+                "webhook_secret": getattr(self, "_webhook_secret", ""),
+                "webhook_path_allowlist": getattr(self, "_webhook_path_allowlist", ""),
+                "webhook_ip_allowlist": getattr(self, "_webhook_ip_allowlist", ""),
                 "strm_check_enabled": self._strm_check_enabled,
                 "strm_grace_hours": self._strm_grace_hours,
                 "notify": self._notify,
@@ -983,6 +1658,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
         )
         self._notify = config.get("notify", True)
+        self._read_webhook_config(config)
         self._delay_hours = float(config.get("delay_hours", 2.0))
         self._cron = config.get("cron", "0 */2 * * *")
         self._sync_pairs = config.get("sync_pairs") or []
@@ -1050,10 +1726,21 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         now_ts = time.time()
         threshold = self._delay_hours * 3600
         ready_count, cooling_count, stale_count = self._count_queue(now_ts, threshold)
+        webhook_stat = dict(self._webhook_stat_now())
+        # 看板要能直接回答「webhook 这条路到底通不通」。只给累计计数还不够：
+        # 用户配好 Emby 回调后最常见的问题是「到底有没有请求打进来」，
+        # 而 0 次既可能是没配、也可能是配错地址 —— 报文的最后结构摘要
+        # 正是用来区分这两者的（没请求 = 没配好；有请求但未识别 = 字段名要加）。
+        webhook_stat["channels"] = list(getattr(self, "_webhook_channels", None) or ["emby"])
+        webhook_stat["self_enabled"] = bool(getattr(self, "_webhook_self_enabled", False))
+        webhook_stat["secret_set"] = bool(getattr(self, "_webhook_secret", ""))
+        webhook_stat["allow_roots"] = _brief_paths(self._webhook_allowed_roots())
         return {
             "success": True,
             "data": {
                 "is_running": self._is_running,
+                # webhook 运行态：收入计数 + 最近一次报文的**结构摘要**（不含路径值）
+                "webhook": webhook_stat,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,
                 # 源端文件已不存在、等待同步轮清理的条目数（不计入上面两个数字）
@@ -1170,6 +1857,74 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
 
 
+
+    # ================= Webhook 入库配置 =================
+    # 读取/清洗逻辑集中在这里，是因为它被三处调用（init_plugin、_api_save_config、
+    # 兜底默认），任何一处漏掉都会造成「配置页显示的值与运行时用的值不一致」。
+
+    @staticmethod
+    def _normalize_channels(raw: Any) -> List[str]:
+        """
+        把渠道配置归一成小写、去空、去重的列表；**永不返回空列表**。
+
+        为什么永不返回空：空列表意味着「任何渠道都不接受」，用户会看到
+        「webhook 明明推送成功、插件就是没反应」，而配置页上开关却是开着的 ——
+        这种自相矛盾的状态最难自查。用户若想停用，应关闭总开关或清空渠道后
+        显式接受这个后果（此时前端至少会看到提示）。
+        """
+        if isinstance(raw, str):
+            items = [x.strip() for x in raw.replace("\n", ",").split(",")]
+        elif isinstance(raw, (list, tuple)):
+            items = [str(x).strip() for x in raw]
+        else:
+            items = []
+        seen: List[str] = []
+        for item in items:
+            low = item.lower()
+            if low and low not in seen:
+                seen.append(low)
+        return seen or ["emby"]
+
+    def _read_webhook_config(self, config: Dict[str, Any]) -> None:
+        """从配置字典读取 webhook 相关字段（缺失时保持当前值，便于热改）。"""
+        if "webhook_channels" in config:
+            self._webhook_channels = self._normalize_channels(config.get("webhook_channels"))
+        if "webhook_self_enabled" in config:
+            self._webhook_self_enabled = bool(config.get("webhook_self_enabled"))
+        if "webhook_secret" in config:
+            self._webhook_secret = str(config.get("webhook_secret") or "").strip()
+        if "webhook_path_allowlist" in config:
+            self._webhook_path_allowlist = str(config.get("webhook_path_allowlist") or "")
+        if "webhook_ip_allowlist" in config:
+            self._webhook_ip_allowlist = str(config.get("webhook_ip_allowlist") or "")
+
+    def _webhook_allowed_roots(self) -> List[str]:
+        """
+        自建端点的路径白名单根目录：显式配置优先，其次退回各映射的源目录。
+
+        退回 sync_pairs 是**为了让开箱可用**，但它单独并不足够安全：MDC 的入库
+        目录与媒体库往往不是同一棵子树，用户真要接 MDC 就必须显式填白名单。
+        """
+        roots: List[str] = []
+        for line in (getattr(self, "_webhook_path_allowlist", "") or "").splitlines():
+            item = line.strip()
+            if item and not item.startswith("#"):
+                roots.append(item)
+        if not roots:
+            roots = [((p or {}).get("src") or "").strip()
+                     for p in (getattr(self, "_sync_pairs", None) or [])]
+        return [r for r in roots if r]
+
+    def _webhook_ip_allowed(self, client_ip: str) -> bool:
+        """来源 IP 白名单（空 = 不限）。支持精确 IP 与前缀（`192.168.1.`）。"""
+        rules = [x.strip() for x in (getattr(self, "_webhook_ip_allowlist", "") or "").splitlines()
+                 if x.strip() and not x.strip().startswith("#")]
+        if not rules:
+            return True
+        ip = (client_ip or "").strip()
+        if not ip:
+            return False
+        return any(ip == rule or ip.startswith(rule) for rule in rules)
 
     def _migrate_legacy_defaults(self, config: Dict[str, Any]):
         """
