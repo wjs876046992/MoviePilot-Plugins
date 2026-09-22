@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.sdk.logging import logger
 
+from .paths import is_junk_file_name as _is_junk_file_name
 from .paths import pair_name as _pair_name
 
 
@@ -230,7 +231,7 @@ class SyncOpsMixin:
                 # 就地裁剪排除目录，避免无谓 descend
                 dirs[:] = [d for d in dirs if f"{d}/" not in self._exclude_patterns]
                 for f in files:
-                    if f.startswith("._") or f == ".DS_Store":
+                    if _is_junk_file_name(f):
                         continue
                     ext = os.path.splitext(f)[-1].lstrip(".").lower()
                     if not all_ext and ext not in valid_exts:

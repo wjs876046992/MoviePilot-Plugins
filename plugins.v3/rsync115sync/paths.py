@@ -107,6 +107,23 @@ def excluded_dir_names(exclude_patterns: str) -> set:
     }
 
 
+def is_junk_file_name(name: str) -> bool:
+    """
+    系统垃圾文件名：macOS 的 `.DS_Store` 与 AppleDouble 资源分叉 `._*`。
+
+    macOS junk: `.DS_Store` and AppleDouble resource forks (`._*`).
+
+    这两种文件在四处的处理口径必须一致（补传前置扫描、双向对账、目录展开、
+    all_ext 同目录展开）。原先是在三处各写一遍 `startswith("._") or == ".DS_Store"`，
+    任何一处漏写就会表现为「明明排除过的垃圾文件被同步上去了」——
+    而它在 115 侧是**真实占用配额**的上传。
+    The same predicate used to be open-coded at three sites; one omission means junk
+    files get uploaded and actually consume 115 quota.
+    """
+    text = str(name or "")
+    return text.startswith("._") or text == ".DS_Store"
+
+
 def valid_exts_of(media_extensions: str, all_ext: bool) -> Optional[set]:
     """
     映射的扩展名白名单；`all_ext=True`（同步所有类型）时返回 None 表示不过滤。

@@ -159,6 +159,7 @@ from .ignore import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
+    is_junk_file_name as _is_junk_file_name,
     pair_for_path as _pair_for_path,
     pair_name as _pair_name,
     valid_exts_of as _valid_exts_of,
@@ -172,7 +173,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.1.10"
+    plugin_version = "0.1.11"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -705,11 +706,22 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 任何东西（非媒体文件照样被扩展名过滤掉）。
             expanded = self._expand_ingest_path(file_path)
             if expanded is None:
-                # 普通文件：直接走单文件判据
-                sub = self._enqueue_one_path(
-                    file_path, own_pair, src_root, pair_name, now_ts, counts)
-                if sub:
-                    added_paths.append(sub)
+                # 普通文件：先看是否为 all_ext 映射的「同目录兜底」。
+                # `is None` 表示不属于 all_ext，退回单文件判据 —— 与下面目录
+                # 分支同一条理由：空列表/None 都是合法结果，不能靠真值判断。
+                siblings = self._collect_sibling_files(file_path, own_pair)
+                if siblings is None:
+                    sub = self._enqueue_one_path(
+                        file_path, own_pair, src_root, pair_name, now_ts, counts)
+                    if sub:
+                        added_paths.append(sub)
+                    continue
+                counts["expanded"] += 1
+                for mate in siblings:
+                    sub = self._enqueue_one_path(
+                        mate, own_pair, src_root, pair_name, now_ts, counts)
+                    if sub:
+                        added_paths.append(sub)
                 continue
 
             # 目录：把展开出的文件按同一套判据逐个入队。
@@ -772,6 +784,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     # （115 侧随之而来的是风控配额被瞬间打满）。超出部分**不静默截断** ——
     # 计数进 truncated，日志里明说少了多少，用户才知道该改成推子目录。
     DIR_EXPAND_LIMIT = 500
+
+    # `all_ext` 映射下单目录同级文件的展开上限（见 _collect_sibling_files）。
+    # 与 DIR_EXPAND_LIMIT 同量级但更小：这条路兜的是「一部电影一个目录」，
+    # 正常几到几十个文件；几百个说明用户把整库塞进了同一个目录，
+    # 那种情况下应该推目录而不是推文件。
+    SIBLING_EXPAND_LIMIT = 300
 
     def _expand_ingest_path(self, file_path: str) -> Optional[List[str]]:
         """
@@ -839,6 +857,97 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                            f"否则一轮同步会同时上传过多文件。")
         # 排序保证同一目录多次推送的入队顺序稳定（便于对照日志与队列）
         return sorted(found)
+
+    def _collect_sibling_files(self, file_path: str, pair: Dict[str, Any]) -> Optional[List[str]]:
+        """
+        `all_ext` 映射的兜底：把**同一目录**下的其它文件一并纳入本次入队。
+
+        Sibling expansion for `all_ext` pairs: when a single file is announced,
+        every other file in the **same directory** is enqueued with it.
+
+        为什么必须有这一步（2026-09-22 真机反馈）：
+        「9KG 下配置的是所有文件都上传，在 webhook 入库后，进行上传时，
+        没有把媒体文件所在目录下其他文件一并上传」。原因是整条链路
+        （扩展名白名单 → 冷却队列 → `--files-from`）**以文件为粒度**，
+        发送端推来一个文件路径时，同目录的其它文件永远拿不到冷却资格 ——
+        于是永远不上传。而 `all_ext` 配置项的字面含义正是「这个目录下的
+        文件全都要上传」，用户不会预期「只有被点到名的那一个」。
+
+        为什么只在 `all_ext` 下生效：默认映射的上传范围是**扩展名白名单**，
+        顺手扩大范围等于绕过用户「只同步视频+字幕」的配置意图，每次入库都
+        静默多传文件、多耗 115 风控配额。
+
+        为什么只取一层（不递归子目录）：本方法兜的是「一部电影被放在一个
+        目录里」这个真实入库形态。递归会把 `Season 01/` 之类的层级一次性拉进来，
+        而那是「推目录」这条路的语义（见 `_expand_ingest_path`）—— 两条路的
+        边界必须清晰，否则一次通知能膨胀成整季甚至整库。
+        `sibling_files` 里每一项都是**绝对路径**，且**不保证**在映射内或存在：
+        children 仍逐个走 `_enqueue_one_path` 的同一套判据（扩展名 / 忽略清单 /
+        幂等 / 待补扫升级），本方法不额外放行任何东西。
+
+        :return: `None` = 不属于 `all_ext` 映射（或不是普通文件），调用方只处理
+                 被点到名的那个文件；`[...]` = 该目录下参与本轮判定的文件
+                 （**含** `file_path` 自身，便于调用方原样遍历）。
+        """
+        if not (pair or {}).get("all_ext", False):
+            return None
+        try:
+            if not os.path.isfile(file_path):
+                return None
+        except OSError:
+            return None
+
+        parent = os.path.dirname(file_path)
+        try:
+            names = sorted(os.listdir(parent))
+        except OSError as err:
+            # 列不了目录（权限/竞态）不该让整条入库链路崩掉：退化成单文件入队，
+            # 被点到名的那个文件仍然会入队。
+            logger.debug(f"[Rsync115Sync] all_ext 同目录展开失败（按单文件处理）: "
+                         f"{parent} — {err}")
+            return None
+
+        # 排除目录口径与遍历层一致（补传前置扫描用同一份 patterns），
+        # 否则同一个目录在两条路上结果不同，用户无法解释。
+        excluded_dirs = _excluded_dir_names(
+            getattr(self, "_exclude_patterns", self.DEFAULT_EXCLUDE_PATTERNS))
+        # 上限**含被点到名的文件本身**：先给它留一个位置，再枚举同级文件。
+        # 若反过来（先枚举到满、最后硬塞进去），总量会变成 LIMIT+1 ——
+        # 上限就成了「大约」，而这类上限一旦是「大约」就等于没有。
+        room = max(0, self.SIBLING_EXPAND_LIMIT - 1)
+        siblings: List[str] = []
+        truncated = 0
+        for name in names:
+            full = os.path.join(parent, name)
+            if full == file_path:
+                continue
+            try:
+                if not os.path.isfile(full):
+                    continue
+            except OSError:
+                continue
+            if _is_junk_file_name(name):
+                # 垃圾文件在白名单层也会被 `..*` 排除规则挡掉（rsync 的 --exclude
+                # 在本插件是**无条件**追加的），此处提前剪掉既省一次判定，
+                # 也让计数不虚高。
+                continue
+            if name in excluded_dirs:
+                continue
+            if len(siblings) >= room:
+                truncated += 1
+                continue
+            siblings.append(full)
+
+        if truncated:
+            # 截断必须留痕：静默少入队会让用户以为文件已在排队，实际永远轮不到
+            logger.warning(f"[Rsync115Sync] all_ext 目录 {parent} 内文件超过 "
+                           f"{self.SIBLING_EXPAND_LIMIT} 个上限，"
+                           f"{truncated} 个未纳入本批；建议把该类目录拆分为子目录，"
+                           f"或改用「推送目录」方式通知（两种方式语义相同）")
+        # 被点到名的文件**一定**在结果里：它是发送端唯一的明确意图，
+        # 无论它叫 `._x` 还是恰好排在上限之外，都不能被兜底逻辑挤掉。
+        siblings.insert(0, file_path)
+        return siblings
 
     def _enqueue_one_path(self, file_path: str, own_pair: Dict[str, Any], src_root: str,
                           pair_name: str, now_ts: float, counts: Dict[str, int]) -> str:
@@ -3028,7 +3137,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         for root, _, files in os.walk(source_dir):
             for f in files:
-                if f.startswith("._") or f == ".DS_Store":
+                if _is_junk_file_name(f):
                     continue
                 if not all_ext:
                     ext = os.path.splitext(f)[-1].lstrip(".").lower()

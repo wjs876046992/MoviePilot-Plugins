@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.1.10</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.1.11</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -89,7 +89,9 @@
           为每个媒体库配置一对路径：<b>本地源目录</b> → <b>CD2 挂载的 115 目录</b>。
           插件只同步这些映射内的文件，不会扫描其它位置。
           <b>「同步所有文件类型」</b>关闭时只传视频与字幕（推荐），开启后连同 nfo、图片等一律上传；
-          文件类型由下方「同步的扩展名」统一控制。
+          文件类型由下方「同步的扩展名」统一控制。开启该选项的映射还有一个区别：
+          webhook 只推来一个文件时，同目录下的其它文件会一并入队（不递归子目录）——
+          否则「全都要上传」就变成了「只传被点到名的那一个」。
         </v-alert>
 
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
