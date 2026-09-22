@@ -124,6 +124,17 @@
               暂无请求
             </template>
           </div>
+          <!-- 「到达解析入口」与「收到事件」是两个不同的点位，必须分别显示：
+               前者是宿主**调用 webhook_parser** 的次数（认领成功与否都算），
+               后者是认领成功后宿主**广播回来**的次数。二者之差就是「到了但没认领」——
+               那次「插件看不到任何日志」的排查里，缺的正是这个能区分二者的数字。 -->
+          <div v-if="webhookStat.claimed > 0" class="mt-1">
+            🎯 平台解析入口到达 <strong>{{ webhookStat.claimed }}</strong> 条
+            <template v-if="Number(webhookStat.received) < Number(webhookStat.claimed)">
+              —— 其中 <strong>{{ Number(webhookStat.claimed) - Number(webhookStat.received) }}</strong> 条
+              <b>既未入队也未产生事件</b>（路径不在映射内、或插件未启用），下方样本可看到它们的内容
+            </template>
+          </div>
           <div v-if="webhookStat.rejected > 0" class="mt-1">
             ⛔ 被拒 <strong>{{ webhookStat.rejected }}</strong> 条（防护链拦下：IP / 密钥 / 路径白名单），
             具体是哪一道见日志。
@@ -934,7 +945,11 @@ function prettySample(payload) {
   }
 }
 const webhookVisible = computed(() =>
-  (Number(webhookStat.value.received) || 0) > 0 || Boolean(webhookStat.value.self_enabled)
+  (Number(webhookStat.value.received) || 0) > 0
+  // `claimed` 必须一并作为显示条件：只用 received 的话，**认领失败**的用户
+  // 恰恰看不到这块面板 —— 而认领失败正是最需要看这块面板的情况。
+  || (Number(webhookStat.value.claimed) || 0) > 0
+  || Boolean(webhookStat.value.self_enabled)
 )
 
 const ignoredList = ref([])

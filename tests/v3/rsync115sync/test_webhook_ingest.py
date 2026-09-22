@@ -629,11 +629,191 @@ def _real_route(plugin):
                               methods=api["methods"])
     route = app.router.routes[-1]
     # get_api 返回的已经是绑定到本实例的方法；再套一层 MethodType 会造成
-    # 「重复绑定」(self 被喂成方法对象)，调用时报 got multiple values for argument 'request'。
+    # 「重复绑定」(self 被喂成方法名对象)，调用时报 got multiple values for argument 'request'。
     bound = plugin._api_webhook_ingest
     route.endpoint = bound
     route.dependant.call = bound
     return TestClient(app), module
+
+
+def _host_chain_route(plugin):
+    """
+    复刻**宿主** `/api/v1/webhook/` 端点的真实形态，用来验证平台那条路。
+
+    为什么非要有它：本文件的其余用例都是直接调 `plugin.webhook_parser(...)`，
+    而真实宿主在调用任何插件之前会先 `body = await request.body()` 再
+    `form = await request.form()`（app/api/endpoints/webhook.py）。**那一步会失败** ——
+    当发送端声明 `Content-Type: multipart/form-data` 却没有 boundary 时（很多 webhook
+    配置界面的下拉框会诱导这么选），starlette 直接抛 400，请求在进入插件之前就被拒。
+    插件侧一行日志都不会有，宿主日志里只有一条内容为空的 400。
+
+    这正是用户实测踩到的那个坑，因此必须有一条用例把它钉住：**这个失败不是本插件
+    能捕获的**，只能靠文档把「Content-Type 必须与 body 形态匹配」讲清楚。
+    """
+    pytest.importorskip("fastapi", reason="本环境无 fastapi，跳过路由层契约验证")
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    module = importlib.import_module("app.plugins.rsync115sync")
+    app = FastAPI()
+
+    # 与宿主端点逐字同序：先读原始 body，再解析 form，最后才调 provider。
+    # 拿到非空结果后还要**广播事件**（宿主是 WebhookChain.message →
+    # send_event(EventType.WebhookMessage, event_info)：不广播的话事件处理器
+    # 永远不会被调用，表现成「认领成功但队列不涨」）。
+    @app.post("/api/v1/webhook/")
+    async def host_webhook(request: Request):
+        body = await request.body()
+        form = await request.form()
+        args = request.query_params
+        info = plugin.webhook_parser(body=body, form=form, args=args)
+        if info:
+            plugin._handle_webhook_event(SimpleNamespace(
+                event_type=SimpleNamespace(value="webhook.message"),
+                event_data=info))
+        return {"success": True}
+
+    return TestClient(app, raise_server_exceptions=False), module
+
+
+def test_host_route_rejects_multipart_without_boundary(tmp_path):
+    """
+    `Content-Type: multipart/form-data` + 裸 JSON body → 宿主在调用插件前就 400。
+
+    这条用例记录的是**用户实测遇到的真实故障**，而不是假想场景：
+
+        MP 平台能看到 webhook 请求，但看不到具体信息；
+        rsync115sync 插件看不到任何日志。
+
+    原因就是宿主端点里的 `form = await request.form()`：multipart 没有 boundary，
+    starlette 直接拒绝。**插件无法捕获**（SDK 没有 middlewar 钩子，请求根本没到
+    插件代码），所以本用例的价值是把这个失败模式**固定下来**：
+    它必须表现为「宿主 4xx + 插件零日志」，而不是被误认为「认领判据写错了」。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route(plugin)
+
+    payload = json.dumps({"event": "download.finish",
+                          "data": {"source_path": str(src / "某电影")}})
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      content=payload,
+                      headers={"Content-Type": "Multipart/form-data"})
+
+    assert res.status_code == 400, (
+        "宿主对无 boundary 的 multipart 应当直接拒绝；若这里变成 200，"
+        "说明宿主端点的解析顺序变了，文档里的排查步骤需要同步修改"
+    )
+    # 插件这一侧什么都没看到 —— 这正是用户「看不到任何日志」的成因
+    assert plugin._webhook_stat_now().get("claimed", 0) == 0
+
+
+def test_multipart_without_boundary_but_json_content_type_works(tmp_path):
+    """
+    同一个报文，只把 Content-Type 改对 → 整条链就通了。
+
+    这是给用户看的那一步：**不是插件的认领判据错了，是请求头与 body 形态不匹配**。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    path = _media(str(src), "movie.mkv")
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route(plugin)
+
+    payload = {"event": "download.finish",
+               "data": {"title": "某电影", "first_actor": "某人",
+                        "source_path": path, "target_path": "/9KG/某电影"}}
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      json=payload)
+
+    assert res.status_code == 200
+    assert plugin._webhook_stat_now().get("claimed", 0) == 1, (
+        "改了 Content-Type 之后报文应能到达插件解析入口"
+    )
+    assert list(plugin._pending_queue), "报文应被认领并成功入队"
+
+
+def test_source_path_nested_under_data_is_recognized(tmp_path):
+    """
+    用户实际发送的字段形态：`data.source_path`（嵌在 `data` 下）。
+
+    `data` 在 NESTED_CONTAINERS 内、`source_path` 在 PATH_FIELD_CANDIDATES 内，
+    因此这个形态**本来就应该能被识别** —— 本用例把它钉住，避免以后有人以为
+    嵌套字段不被支持而去写特例。真正踩到的坑是 Content-Type，不是字段名。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    d = tmp_path / "9KG" / "某电影 (2024)"
+    d.mkdir()
+    path = _media(str(d), "movie.mkv")
+    plugin = _parser_plugin(str(src))
+
+    info = plugin.webhook_parser(
+        body=json.dumps({"event": "download.finish",
+                         "data": {"title": "某电影", "first_actor": "某人",
+                                  "source_path": path,
+                                  "target_path": "/9KG/某电影 (2024)"}}).encode(),
+        form={}, args={"token": "t", "source": "rsync115sync"})
+
+    assert info is not None, "data.source_path 形态应可认领"
+    assert info.item_path == path
+
+
+def test_unclaimable_addressed_payload_still_leaves_a_trace(tmp_path):
+    """
+    **声明发往本插件、但最终没认领** 的报文必须留下线索。
+
+    这正是「插件看不到任何日志」那次最难的地方：认领失败与报文没到，现象完全一样。
+    现在：入口计数 `claimed` 一定增加，并且样本里能直接看到发送端到底传了什么。
+
+    宿主自己的 Emby 报文不受影响（没声明收件人的那条路仍只记 debug，不刷屏）。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    plugin = _parser_plugin(str(src))
+    outside = tmp_path / "elsewhere" / "x.mkv"
+    outside.parent.mkdir()
+    outside.write_bytes(b"x")
+
+    # 声明发给我们，但路径不在任何映射内 → 认领失败
+    info = plugin.webhook_parser(
+        body=json.dumps({"paths": [str(outside)]}).encode(),
+        form={}, args={"source": "rsync115sync"})
+
+    assert info is None, "路径不在映射内时不应认领（避免短路宿主解析器）"
+    stat = plugin._webhook_stat_now()
+    assert stat["claimed"] == 1, "声明发往本插件的报文必须计入 claimed"
+    assert stat["samples"], "认领失败也必须留下报文样本，否则用户无从自查"
+    assert stat["samples"][-1]["action"] == "已到达·待认领"
+
+
+def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
+    """
+    认领失败必须打 **info** 级日志（不能只是 debug）。
+
+    这条是用户要求「增加点日志来定位问题」的直接落点：debug 级在默认日志级别下
+    根本看不到，而这个分支只会在**用户显式声明了 source=rsync115sync** 时走到 ——
+    它天然是低频且高价值的，不存在刷屏风险。日志里必须带上路径与当前映射，
+    否则用户只知道自己「配了但没生效」，仍然不知道该改哪一项。
+    """
+    import logging
+
+    src = tmp_path / "9KG"
+    src.mkdir()
+    plugin = _parser_plugin(str(src))
+    outside = tmp_path / "elsewhere" / "x.mkv"
+    outside.parent.mkdir()
+    outside.write_bytes(b"x")
+
+    with caplog.at_level(logging.INFO, logger="stubhost"):
+        plugin.webhook_parser(
+            body=json.dumps({"paths": [str(outside)]}).encode(),
+            form={}, args={"source": "rsync115sync"})
+
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "不属于任何映射" in text, f"认领失败必须留下 info 日志，实际日志：{text!r}"
+    assert str(outside) in text, "日志要写出是哪个路径没匹配上"
+    assert str(src) in text, "日志要写出当前配置的映射源目录，用户才知道该往哪改"
 
 
 def test_real_route_injects_request_object(tmp_path):
@@ -900,6 +1080,11 @@ def test_dashboard_renders_webhook_counters():
         assert f"webhookStat.{field}" in src or f"webhookStat.value.{field}" in src, (
             f"看板未渲染 webhook 的 {field} 计数，但 USAGE.md 承诺用户能在这里看到它"
         )
+    # `claimed`（平台解析入口到达数）必须显示：它是唯一能区分
+    # 「报文没到插件」与「到了但认领失败」的数字，而这两者的修法完全不同。
+    assert "webhookStat.claimed" in src, (
+        "看板未渲染 claimed 计数 —— 认领失败的用户将无从判断报文是否到达"
+    )
     assert "last_payload_shape" in src, (
         "看板未展示最近报文的字段结构摘要 —— 用户遇到「未识别」时唯一的自查依据"
     )
@@ -916,6 +1101,11 @@ def test_dashboard_webhook_panel_is_gated_not_always_visible():
     src = _page_source()
     assert "webhookVisible" in src, "看板缺少 webhook 面板的显示条件"
     assert "v-if=\"webhookVisible\"" in src, "webhook 面板未绑定显示条件"
+    # 判据必须包含 claimed：只用 received 的话，**认领失败**（received 为 0）
+    # 的用户看不到这块面板 —— 而那正是最需要它的场景。
+    assert "webhookStat.value.claimed" in src, (
+        "显示条件未包含 claimed —— 认领失败的用户将看不到这块面板"
+    )
 
 
 def test_dashboard_renders_payload_samples():

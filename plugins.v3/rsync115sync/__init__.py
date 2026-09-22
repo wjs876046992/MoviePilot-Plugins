@@ -1247,6 +1247,21 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     # （`app/api/endpoints/webhook.py`），不是解析好的 dict；`form` 拿到的是
     # `await request.form()`。因此这里把三种载体都试一遍：form → body → args。
     # （Emby 走 form、Jellyfin/TrimeMedia 走 body、Plex 走 form —— 各家不一。）
+    #
+    # ## ⚠️⚠️ 本函数之外还有一种「连这里都到不了」的失败（实测踩坑）
+    #
+    # 宿主端点在调用 provider 之前就先 `form = await request.form()`。若发送端用
+    # `Content-Type: multipart/form-data` 却发**裸 JSON body**（没有 boundary ——
+    # 很多 webhook 配置界面的「Content-Type 下拉框」会诱导用户这么选），starlette
+    # 会直接抛 `400 Missing boundary in multipart`，请求在**进入本函数之前**就被拒。
+    # 此时本插件一行日志都不会有，而宿主日志里只有一条 400、内容为空 ——
+    # 用户看到的现象正是「MP 平台能看到请求，但看不到具体信息，插件也没日志」。
+    # 这是**发送端配置问题**，插件无法在此函数里兜住（那个 400 发生在 provider 调度
+    # 之前，SDK 也没有路由中间件钩子；曾写过一版路由级探测代码，因永远不可达而删除，
+    # 详见 DEVELOPMENT §9.16）。能做的只有**可观测**：让这个失败在现象上与「到了但
+    # 认领失败」区分开 —— 靠看板的「平台解析入口到达」计数（本函数之外的
+    # `_note_webhook_claim_attempt`）始终为 0，即可判定请求没到插件，接着去查
+    # Content-Type。
     WEBHOOK_TARGET = "rsync115sync"
 
     def webhook_parser(self, body: Any, form: Any, args: Any) -> Any:
@@ -1265,16 +1280,30 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 return None
             query = self._query_of(args)
             if not self._claims_for_us(form, body, query):
+                # 没写着发给本插件 → 正常情况（宿主每条 Emby 报文都会走到这里）。
+                # 只记 debug：这是**高频**路径，打 info 会刷屏。
+                logger.debug("[Rsync115Sync] webhook 报文未声明发往本插件，不认领")
                 return None
+            # 从这里往下：报文**明确写着是给我们的**。到了这一步就不允许再「静默」了 ——
+            # 用户已经按文档在发送端填了 source=rsync115sync，若最终什么都没发生，
+            # 他手里必须有可自查的线索（这正是「看不到任何日志」那次的教训）。
+            self._note_webhook_claim_attempt(body, form, query)
             raw_paths = self._paths_from_webhook_request(body, form, query)
             if not raw_paths:
+                logger.info(f"[Rsync115Sync] webhook 报文声明发往本插件，但**取不到任何路径** ——"
+                            f"请照下一条日志的报文样本核对字段名（发送端字段需出现在"
+                            f" webhook.PATH_FIELD_CANDIDATES 或嵌套容器表内）。"
+                            f"报文结构={_wh.describe_payload(self._webhook_body_of(body, form, query))}")
                 return None
             # 判据 3：必须真能归属到本插件的某个映射。不满足说明这条报文不是给我们的
             # （或路径形态对不上），此时**认领了反而更糟** —— 既吞掉报文，又什么都做不成。
             own = [_pair_for_path(p, self._sync_pairs or []) for p in raw_paths]
             if not any(own):
-                logger.debug(f"[Rsync115Sync] webhook 报文声明发往本插件，但路径不在任何映射内，"
-                             f"不认领（避免短路宿主解析器）: {_brief_paths(raw_paths)}")
+                mapping_desc = ", ".join((p.get("src") or "?") for p in (self._sync_pairs or [])) \
+                    or "（尚未配置任何映射）"
+                logger.info(f"[Rsync115Sync] webhook 报文声明发往本插件，但取到的路径"
+                            f"**不属于任何映射**，不认领（避免短路宿主解析器）: "
+                            f"{_brief_paths(raw_paths)}；当前映射的源目录: {mapping_desc}")
                 return None
             return _webhook_event_info_class()(
                 event="library.new",
@@ -1286,6 +1315,75 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         except Exception as err:  # 认领判定异常绝不能影响宿主其它 provider
             logger.debug(f"[Rsync115Sync] webhook_parser 认领判定异常（已忽略）: {err}")
             return None
+
+    def _webhook_body_of(self, body: Any, form: Any, query: Any) -> Any:
+        """
+        把三种载体合成一份「可摘要/可采样」的报文，供日志与看板展示。
+
+        与 `_paths_from_webhook_request` 的区别：那个按优先级**取路径**，找到就返回；
+        这个只为**展示**而合并全部载体 —— 发送端把 JSON 塞在 form 的 `data` 字段里时，
+        只用 body 做摘要会得到空报文，用户照着看不出任何东西。
+        """
+        merged: Dict[str, Any] = {}
+        if isinstance(query, dict):
+            merged.update(query)
+        for source in (form, body):
+            if not source:
+                continue
+            if isinstance(source, (bytes, bytearray)):
+                try:
+                    source = bytes(source).decode("utf-8", "replace")
+                except Exception:
+                    continue
+            if isinstance(source, str):
+                text = source.strip()
+                if not text:
+                    continue
+                try:
+                    import json
+                    parsed = json.loads(text)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    merged.update(parsed)
+                elif parsed is not None:
+                    merged["_body"] = parsed
+                else:
+                    merged["_body"] = text
+                continue
+            try:
+                merged.update(dict(source))
+            except Exception:
+                continue
+        return merged
+
+    def _note_webhook_claim_attempt(self, body: Any, form: Any, query: Any) -> None:
+        """
+        记下「一个声明发给本插件的报文到了」。
+
+        与 `_handle_webhook_event` 里的计数分工：那里统计的是**宿主广播回来的事件**
+        （只覆盖成功认领的那条路），这里统计的是**宿主解析入口收到的东西**。
+        只有后者能区分「报文没到插件」与「到了但认领失败」—— 那次排查里两者
+        观察到的现象完全一样（都没有日志），而修法完全不同。
+        """
+        stat = self._webhook_stat_now()
+        stat["claimed"] = int(stat.get("claimed", 0)) + 1
+        payload = self._webhook_body_of(body, form, query)
+        stat["last_claimed_ts"] = time.time()
+        stat["last_claimed_shape"] = _wh.describe_payload(payload)
+        try:
+            self.save_data("webhook_stat", stat)
+        except Exception:
+            pass
+        # 保留一条样本：这一条**必然**是用户关心的（他显式声明发给我们），
+        # 无论最终认领成功与否都值得留下，是「看不到任何日志」最直接的解药。
+        try:
+            self._note_webhook(source="宿主解析入口", shape=stat["last_claimed_shape"],
+                               sample=payload, action="已到达·待认领")
+        except Exception:
+            pass
+        logger.debug(f"[Rsync115Sync] webhook 报文声明发往本插件，开始认领判定："
+                     f"{stat['last_claimed_shape']}")
 
     # 收件人标识可出现的载体：查询串、请求头（form 与 body 里也一并找，兼容
     # 把标识写进 JSON 的发送端）。
@@ -1465,6 +1563,20 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 最近若干条报文的**样本**（含值，已截断脱敏）。发送端是另一个工程时，
             # 「它到底传了什么」在开发期是未知的 —— 只留结构摘要答不出这个问题。
             "samples": [],
+            # 平台 webhook 端点**正在返回非 200**：多为发送端 Content-Type 与
+            # body 形态不匹配（如 multipart 却没有 boundary），请求在进入
+            # webhook_parser 之前就被拒。详见 _log_webhook_route_failure。
+            "route_failed": False,
+            "route_status": 0,
+            "route_warned_ts": 0.0,
+            "route_last_ts": 0.0,
+            # 宿主解析入口收到的「声明发往本插件」的报文数（认领成功与否都计）。
+            # 与 received 的分工：received 记的是宿主**广播回来**的事件，
+            # 只覆盖认领成功那条路；claimed 记的是入口到达量 ——
+            # 只有它能区分「报文没到插件」与「到了但认领失败」。
+            "claimed": 0,
+            "last_claimed_ts": 0.0,
+            "last_claimed_shape": "",
         }
 
     # 报文样本保留条数。取小值：这是排障用的「最近发生了什么」，不是审计日志；
