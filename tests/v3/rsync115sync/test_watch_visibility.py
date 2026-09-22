@@ -39,6 +39,7 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._strm_grace_hours = 6.0
     plugin._strm_last_check = 0.0
     plugin._strm_notified = False
+    plugin._strm_gen_requested = {}
     plugin._strm_watch = dict(watch or {})
     plugin._strm_suspects = dict(suspects or {})
     plugin._notify = False

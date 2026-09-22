@@ -132,3 +132,71 @@ STRM_SCAN_LIMIT = 500
 STRM_VIDEO_EXTENSIONS = (
     "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v"
 )
+
+# ---- 借道 strm 助手补生成 / delegating strm generation to the helper plugin ----
+# 「疑似上传异常」有两种成因，处理成本差三个数量级：
+#   a) strm 插件自身漏生成 —— 云端文件其实是好的，重新生成一次指针文件即可
+#   b) CD2 改名失败假成功 —— 云端只有 `..xxx` 半成品，必须删旧重传
+# 两者在插件本地视角**完全无法区分**，但可以花一次「让 strm 助手遍历云端目录」的
+# 代价来判别：生成成功 ⇒ 是 a，省下整轮删除重传；仍没有 ⇒ 是 b。
+# The two causes of a "suspect" are indistinguishable locally, but a single
+# helper-side sweep discriminates them: success ⇒ (a), still absent ⇒ (b).
+#
+# 助手插件名与其命令（宿主命令表里的注册名，见其 get_command）。
+# 命令走 EventType.CommandExcute 由**宿主**解析后转发，本插件不直接调用其内部方法：
+# 内部方法签名属于实现细节，跨插件耦合会在对方升级时静默失效。
+# We dispatch through the host command bus rather than calling the helper's
+# internals, so an upgrade on their side cannot silently break us.
+P115_STRM_HELPER_PLUGIN = "P115StrmHelper"
+P115_STRM_COMMAND = "/p115_strm"
+
+# ⚠️ 助手**只认** full_sync_strm_paths 这一个字段做参数匹配，别再去找别的。
+# 实证：p115strmhelper/__init__.py 的 p115_strm 只把该字段传给
+# PathUtils.get_p115_strm_path；monitor_life_paths / increment_sync_strm_paths
+# 里的目录传过去一律匹配失败（助手回「路径匹配错误」），不会报错到本插件这边，
+# 表现是「命令发出去了但什么都没发生」。
+# 早先本模块按「多来源更保险」写了三级回退 —— 方向恰好相反：多出来的两个来源
+# 只会让本插件以为可用、实际必然失败。这是凭推测写机制的又一例（见 TODO 3.8.1）。
+# Only this field is used by the helper to validate the argument. The other two
+# fields look like useful fallbacks but always fail; keeping them would make the
+# button appear to work while nothing happens.
+P115_PAN_MAPPING_FIELD = "full_sync_strm_paths"
+
+# 单次补生成最多涉及多少个**不同目录**。
+#
+# 为什么按目录数而不是文件数限：助手收到的每个参数都会让它遍历该目录的整个云端
+# 子树（不是只处理那一个文件），所以真实成本 ≈ 遍历到的文件总数，而目录数正是它的
+# 主因。逐目录去重后，20 个散落在 15 个季节目录的疑似只产生 15 次小规模遍历，
+# 远小于遍历整个媒体库。超过上限说明疑似条目已呈全局散布，此时继续逐目录触发
+# 开销反而超过一次整库遍历 —— 应当由用户明确决策，而不是插件自动放大访问量。
+# Capped by *directory* count, not file count: each argument makes the helper walk
+# that entire cloud subtree, so the directory count drives the real cost.
+STRM_GEN_DIR_LIMIT = 20
+
+# 补生成期间该条目的去向：从疑似清单移回「待观察」并按现有宽限期重新计时。
+# strm 助手是异步长任务，插件侧拿不到完成回调；重新计时可以复用已有的巡检状态机
+# （strm 出现 ⇒ 自动解除；宽限期到仍无 ⇒ 回到疑似清单，且此时判定更硬 ——
+# 生成动作已经做过而仍然没有，基本可以确定是云端真缺文件）。
+# Re-arming the existing watch reuses the whole state machine instead of adding a
+# second, parallel polling path.
+#
+# ⚠️ 「已补生成过」**不记为新的 origin**：它与来源是正交的两个维度，
+# 见 strm.py 顶部的说明。状态由插件实例上的 _strm_gen_requested 单独承载。
+
+# 本插件侧显式配置的「网盘目录」映射对（每行 `本插件映射名#网盘目录`）。
+# sync_pairs 里对应映射的 `pan_dir` 字段填了值就优先用它。
+#
+# 为什么必须支持显式配置（而不是全靠反查助手配置）：
+#   1. 助手那边可能压根没为这个目录做全量映射（用户实机：9KG 只在
+#      monitor_life_paths 里，而助手只认 full_sync_strm_paths），自动反查
+#      永远够不着 —— 此时本插件用户会看到「补生成」对 9KG 完全不可用；
+#   2. 反查依赖的是对方配置的**字段名与格式**，属实现细节，对方改名即静默失效；
+#   3. 网盘目录与本地 strm 目录**不必同构**（助手侧 `本地#网盘` 是两棵独立的树），
+#      从本地路径推导网盘路径在原理上就是不牢靠的。
+# Explicit per-pair cloud dir: the helper's config cannot be relied upon as the
+# only source, both because it may simply not cover the directory and because
+# deriving a cloud path from a local one assumes the two trees are isomorphic.
+P115_PAN_DIR_HINT = (
+    "请在上方目录映射中为该映射填写「网盘目录」"
+    "（助手 /p115_strm 只接受它 full_sync_strm_paths 里存在的网盘路径）"
+)

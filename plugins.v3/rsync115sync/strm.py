@@ -15,6 +15,7 @@ a strm plugin is an independent witness and is read purely locally.
 """
 
 import os
+import posixpath
 from typing import Any, Dict, List, Optional, Tuple
 
 # 观察期状态。前三个构成用户可见的三态生命周期，后两个是**清理出口**：
@@ -118,6 +119,108 @@ def grace_secs_of(grace_hours: Any) -> float:
 # and different confidence, so the origin must be recorded with the entry.
 ORIGIN_WATCH = "watch"      # 同步成功后观察到期仍未生成（可信度高：该文件确实传过）
 ORIGIN_SCAN = "scan"        # 主动扫描发现源端有、strm 端没有（**可能是从未上传过**）
+# 注：「已补生成过」这一状态**没有**做成第三种 origin。
+# 它是与来源正交的一个维度（watch 与 scan 都可能被补生成过），硬塞进 origin
+# 会让两个维度互相覆盖。改用实例上的 _strm_gen_requested 字典单独记录，
+# 看板据此显示「补生成无效」。origin 仍保持二元语义。
+# "Already asked the helper" is deliberately NOT a third origin: it is orthogonal to
+# provenance, so it lives in its own dict on the instance.
+
+
+def pan_dir_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    取队列 key 所属映射配置的**网盘目录**（用户在本插件里显式填的），未配置返回 None。
+
+    The cloud directory the user configured for this mapping, or None.
+
+    为什么必须由用户显式配置，而不是从助手的配置反查：
+      1. **助手侧未必有这个目录的映射** —— 实证：用户实机 9KG 只出现在助手的
+         `monitor_life_paths` 里，而 `/p115_strm` 只认 `full_sync_strm_paths`，
+         自动反查出来的路径发过去必然匹配失败（见 constants.P115_PAN_MAPPING_FIELD）。
+      2. 反查依赖对方配置的字段名与格式，属**实现细节**，对方改名即静默失效。
+      3. 两棵树**不必同构**：本地 strm 目录与 115 网盘目录是独立的两个根，
+         「本地路径减去前缀 = 网盘路径」在原理上就不成立，只是碰巧在规整的
+         配置里看起来对。
+    The mapping is explicit because none of the automatic derivations are sound: the
+    helper may not cover the directory at all, the field names are their internals,
+    and the two trees are not required to be isomorphic.
+    """
+    from .paths import pair_name as _pair_name
+    for pair in pairs:
+        pn = _pair_name(pair)
+        if pn and key.startswith(f"{pn}:"):
+            return (pair.get("pan_dir") or "").strip().rstrip("/") or None
+    return None
+
+
+def gen_targets_for_suspects(keys: List[str], pairs: List[Dict[str, Any]],
+                             limit: int) -> Tuple[List[str], List[str], List[str], bool]:
+    """
+    把疑似文件的 key 折算成「请助手生成 strm」的网盘**目录**参数列表。
+
+    Turn suspect keys into the list of cloud directories to hand to the helper.
+
+    返回 (目录参数, 已归属目录的 key, 无法归属的 key, 是否因上限被截断)。
+
+    ⚠️ **必须传目录，不能传文件**。实证（用户实机 2026-08-17 的助手日志）：
+    传文件路径时助手会打印「网盘媒体目录 ID 获取成功: .../杀手妈咪 S01E05.mkv」，
+    然后生成 **0 个** STRM 文件 —— 它拿到的 ID 指向文件本身，其下没有可遍历的
+    内容。而传目录时（2026-08-13 日志）正常生成 6 个。传文件不会报错，只是
+    静默什么也不做，是最难排查的一类失败。
+    Pass directories, never files: a file path yields a "directory ID" that contains
+    nothing to iterate, and the helper silently generates zero files.
+
+    ⚠️ 命中上限时**不能只丢掉多余的文件**：它们仍在疑似清单里，用户会看到
+    「点了按钮但一部分毫无动静」。必须把「哪些已纳入、哪些被截断」分开回传，
+    让调用方给出明确提示（或干脆在此前就拒绝执行）—— 静默遗漏是最坏的结果，
+    因为用户会以为整批都处理过了，从而不再关注那些条目。
+    When the cap is hit the dropped keys are returned explicitly rather than
+    silently discarded, so the caller can tell the user which batch was skipped.
+
+    逐目录去重的理由见 constants.STRM_GEN_DIR_LIMIT：助手对每个参数都会遍历
+    整个云端子树，所以按**目录**去重才是真正的成本控制（20 个文件散在 3 个
+    季节目录 ⇒ 3 次小遍历，而不是 20 次，更不是整库一次）。
+    De-duplicating by directory (not by file) is what keeps the helper's cloud
+    traversal bounded.
+    """
+    ordered_dirs: List[str] = []
+    seen_dirs = set()
+    matched_keys: List[str] = []
+    unmatched: List[str] = []
+    truncated = False
+
+    for key in keys:
+        rel = key.split(":", 1)[1] if ":" in key else key
+        pan_root = pan_dir_of(key, pairs)
+        if not pan_root:
+            unmatched.append(key)
+            continue
+        # 相对路径里的目录部分（去掉文件名）拼到网盘根下 —— 只把参数收窄到
+        # 该文件所在的季/集目录，不上升为整个映射根。
+        rel_dir = posixpath.dirname(rel)
+        target = posixpath.join(pan_root, rel_dir) if rel_dir else pan_root
+        # ⚠️ 命令通道对「连续空格」不是无损的：宿主把命令串按空白切分后再用单个
+        # 空格拼回 args（command.py: `cmd.split()[0]` / `" ".join(...)`），因此
+        # `/TV/剧  名` 到达助手时会变成 `/TV/剧 名`，路径匹配失败。而失败消息只
+        # 发给助手侧的用户、本插件收不到 —— 表现为「点了按钮什么都没发生」。
+        # 这类路径宁可在这里就明确列为未处理，也不要发一条注定失败的假命令。
+        # The host splits the command line on whitespace and rejoins with single
+        # spaces, so runs of spaces inside a directory name are collapsed and the
+        # path silently stops matching on the helper side.
+        if target != " ".join(target.split()):
+            unmatched.append(key)
+            continue
+        if target not in seen_dirs:
+            if len(ordered_dirs) >= limit:
+                # 目录数超限：本文件与后续文件都不再纳入，并置截断标志。
+                truncated = True
+                unmatched.append(key)
+                continue
+            seen_dirs.add(target)
+            ordered_dirs.append(target)
+        matched_keys.append(key)
+
+    return ordered_dirs, matched_keys, unmatched, truncated
 
 
 def scan_candidates(pairs: List[Dict[str, Any]], list_dir, limit: int,

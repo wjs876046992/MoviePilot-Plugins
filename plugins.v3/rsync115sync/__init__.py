@@ -28,6 +28,15 @@ try:
 except Exception:  # pragma: no cover - 兼容旧宿主
     _update_plugin_job = None
 
+# 插件管理器：用于确认 strm 助手插件是否真的在运行。
+# 只有当它确实加载并启用时才值得去发那条命令 —— 否则命令会石沉大海，
+# 而用户已经在看板上点过按钮，无从判断是「没装」还是「装了没生效」。
+# Plugin manager, used to check whether the strm helper plugin is actually running.
+try:
+    from app.sdk.plugins import PluginManager as _PluginManager
+except Exception:  # pragma: no cover - 兼容旧宿主
+    _PluginManager = None
+
 
 def _transfer_success_events() -> List[Any]:
     """
@@ -80,9 +89,13 @@ from .constants import (  # noqa: E402
     MAX_PATH_CHARS as _MAX_PATH_CHARS,
     MISSED_SCAN_ENABLED_DEFAULT as _MISSED_SCAN_ENABLED_DEFAULT,
     MISSED_SCAN_INTERVAL as _MISSED_SCAN_INTERVAL,
+    P115_PAN_DIR_HINT as _P115_PAN_DIR_HINT,
+    P115_STRM_COMMAND as _P115_STRM_COMMAND,
+    P115_STRM_HELPER_PLUGIN as _P115_STRM_HELPER_PLUGIN,
     RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
     SIDECAR_EXTS as _SIDECAR_EXTS,
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
+    STRM_GEN_DIR_LIMIT,
     STRM_SCAN_LIMIT,
     STRM_VIDEO_EXTENSIONS,
     TOLERATED_EXIT_CODES as _TOLERATED_EXIT_CODES,
@@ -145,7 +158,7 @@ class Rsync115Sync(_PluginBase):
 
         # 多目录映射对列表:
         # [{"name": "电视剧", "src": "/path/TV", "dest": "/mnt/115/TV", "all_ext": False,
-        #   "strm_dir": "/path/strm/TV" 或 ""}]
+        #   "strm_dir": "/path/strm/TV" 或 "", "pan_dir": "/HomeTheater/TV" 或 ""}]
         # Directory mapping pairs. Each entry maps one local source root to one
         # CD2-mounted 115 destination root; `all_ext` disables extension filtering.
         # `strm_dir`（可选，与 src 不同根、由用户配置）启用 strm 交叉验证：
@@ -153,6 +166,16 @@ class Rsync115Sync(_PluginBase):
         # Optional per-pair strm root (different root, user-configured). When set,
         # a successful sync arms a watch: if the matching .strm never appears within
         # the grace window, the file is flagged as a suspected upload failure.
+        #
+        # `pan_dir`（可选）是该映射在 **115 网盘**里的目录，供「先尝试生成 strm」
+        # 把参数传给 strm 助手使用。必须由用户显式填写：
+        #   - 助手只接受它 full_sync_strm_paths 里存在的网盘路径；
+        #   - 本地 strm 目录与网盘目录**不必同构**，无法从前者推导出后者；
+        #   - 反查助手配置属跨插件耦合，对方改字段即静默失效。
+        # `pan_dir` is the mapping's directory **on the 115 cloud**, used when asking
+        # the strm helper to regenerate pointers. It must be explicit: the helper only
+        # accepts its own full-sync paths, and the local and cloud trees need not
+        # correspond, so no derivation from local paths can be sound.
         self._sync_pairs: List[Dict[str, Any]] = []
 
         # ---- strm 交叉验证（利用 strm 插件生成的本地 .strm 作为独立见证）----
@@ -185,6 +208,13 @@ class Rsync115Sync(_PluginBase):
         self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
         self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
         self._strm_notified: bool = False              # 疑似清单是否已推送过通知（防重复打扰）
+        # 已请 strm 助手补生成过的 key → 时间戳。
+        # 记录它的目的是**防止无限重试**：用户可能反复点「尝试生成」，而助手每次
+        # 都会真的去遍历云端目录（有成本）。已请求过的条目在看板标出，让用户先看
+        # 结果再决定是否再试，而不是无痕地重复发起。
+        # Keys already handed to the helper, so repeated clicks do not silently
+        # re-trigger cloud traversals.
+        self._strm_gen_requested: Dict[str, float] = {}
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
         # Parameters strictly inherited from sync_115.sh.
@@ -368,6 +398,9 @@ class Rsync115Sync(_PluginBase):
             # 放在这里而不是只在写入时过滤：写入过滤拦不住升级前已落盘的坏条目，
             # 用户会看到一堆永远处理不掉的东西，只能手工改数据文件。
             self._prune_invalid_strm_suspects()
+        saved_gen = self.get_data("strm_gen_requested") or {}
+        if isinstance(saved_gen, dict):
+            self._strm_gen_requested = saved_gen
         self._strm_notified = bool(self.get_data("strm_notified") or False)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
@@ -850,7 +883,7 @@ class Rsync115Sync(_PluginBase):
             {
                 "cmd": "/rsync_strm",
                 "event": EventType.PluginAction,
-                "desc": "扫描缺 strm 的媒体文件（<文件名> 只查指定文件 / clear 清空清单 / prune 清理无效项）",
+                "desc": "扫描缺 strm 的媒体文件（<文件名> 只查指定文件 / gen 请助手补生成 / clear 清空 / prune 清理无效项）",
                 "category": "工具",
                 "data": {"action": "strm"}
             },
@@ -947,6 +980,7 @@ class Rsync115Sync(_PluginBase):
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_generate", "endpoint": self._api_strm_generate, "methods": ["POST"], "auth": "bear"},
         ]
 
     def _api_get_ignored(self):
@@ -1152,6 +1186,12 @@ class Rsync115Sync(_PluginBase):
                 "strm_watching": len(self._strm_watch),
                 "strm_grace_hours": self._strm_grace_hours,
                 "strm_check_enabled": self._strm_check_enabled,
+                # 已请 strm 助手补生成过的 key → 时间戳，看板据此标出
+                # 「已请求生成，等待结果」，避免用户重复点击（每次都会让助手
+                # 真的去遍历云端目录，是有成本的操作）。
+                "strm_gen_requested": dict(self._strm_gen_requested),
+                "strm_gen_dir_limit": STRM_GEN_DIR_LIMIT,
+                "strm_helper_ok": self._strm_helper_ready(),
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
@@ -2580,13 +2620,21 @@ class Rsync115Sync(_PluginBase):
 
         for k in settled_ok + dropped:
             self._strm_watch.pop(k, None)
+            # 条目已离场（strm 已生成 / 映射失效 / 源端消失），补生成标记随之失效。
+            # 不清理的话这个字典只增不减，长期运行会把每次请求过的 key 全留着 ——
+            # 而看板正是靠它标记「已请求生成」，陈旧标记会让新条目被误标。
+            self._strm_gen_requested.pop(k, None)
         for k in new_suspects:
             self._strm_watch.pop(k, None)
             self._strm_suspects[k] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
+            # ⚠️ 有意**保留** _strm_gen_requested：这些条目正是「已经请助手生成过、
+            # 宽限期到仍无 strm」的那批，标记必须留着，用户才知道这已经是补生成
+            # 之后的结果（判定比首次疑似硬得多），而不是又一轮普通疑似。
 
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
             if new_suspects:
                 logger.warning(f"[Rsync115Sync] 📺 strm 交叉验证发现 {len(new_suspects)} 个疑似上传异常"
                                f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成）: "
@@ -2860,8 +2908,13 @@ class Rsync115Sync(_PluginBase):
         watching = len(self._strm_watch)
         self._strm_suspects = {}
         self._strm_watch = {}
+        # 补生成标记也一并清掉：它与清单是同一份状态的两种视图，清单都没了
+        # 却留着「已请求生成」的标记，会让下一次扫描出的同一条目被误标成
+        # 「补生成过仍失败」—— 而实际上根本没请求过。
+        self._strm_gen_requested = {}
         self.save_data("strm_suspects", self._strm_suspects)
         self.save_data("strm_watch", self._strm_watch)
+        self.save_data("strm_gen_requested", self._strm_gen_requested)
         self._reset_strm_notified_if_clear()
         logger.info(f"[Rsync115Sync] 🧹 已清空 strm 清单：疑似 {suspects} 个 / 待观察 {watching} 个")
         return {"success": True,
@@ -2889,6 +2942,170 @@ class Rsync115Sync(_PluginBase):
         a running rsync, so blocking it during a sync would only hurt diagnostics.
         """
         return self._strm_scan()
+
+    # ---- 借道 strm 助手补生成 / delegating generation to the helper plugin ----
+
+    def _helper_running(self) -> Tuple[bool, str]:
+        """
+        助手插件是否在运行。返回 (是否运行, 不运行时的原因)。
+
+        Why check the running state at all: the helper keys its behaviour off its own
+        login/session. A plugin that is installed but failed to log in will accept the
+        command and do nothing, which from our side looks identical to success.
+        """
+        if _PluginManager is None:
+            return False, "宿主未提供插件管理器，无法确认 strm 助手是否在运行"
+        try:
+            running = _PluginManager().running_plugins or {}
+        except Exception as e:
+            return False, f"读取插件运行态失败：{e}"
+        if not running.get(_P115_STRM_HELPER_PLUGIN):
+            return False, (f"未检测到运行中的「{_P115_STRM_HELPER_PLUGIN}」插件。"
+                           f"请先安装并启用它（本功能借它生成 strm）")
+        return True, ""
+
+    def _strm_helper_ready(self) -> Dict[str, Any]:
+        """
+        看板用：补生成功能是否可用（助手在运行 + 至少一个映射配了网盘目录）。
+
+        Cheap readiness probe so the dashboard can disable the button **and say why**;
+        a button that silently does nothing on click is worse than a disabled one.
+        """
+        ok, reason = self._helper_running()
+        if not ok:
+            return {"ready": False, "reason": reason}
+        configured = [p for p in self._sync_pairs if (p.get("pan_dir") or "").strip()]
+        if not configured:
+            return {"ready": False, "reason": _P115_PAN_DIR_HINT}
+        return {"ready": True, "reason": ""}
+
+    def _api_strm_generate(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        先尝试请 strm 助手补生成指针文件，而不是直接删旧重传。
+
+        Ask the helper plugin to (re)generate the .strm files before resorting to the
+        destructive delete-and-retransfer path.
+
+        为什么值得多这一步：疑似清单的两种成因（助手漏生成 / CD2 假成功）在本地
+        视角**完全无法区分**，但处理成本差好几个数量级 —— 前者重新生成一次指针
+        文件即可，后者要删掉云端文件再完整重传一遍。花一次助手侧的目录遍历换取
+        「大概率免掉整轮重传」，是明显划算的交易。而且它同时给出了判别结果：
+        生成成功 ⇒ 漏生成；仍然没有 ⇒ 云端确实缺文件，此时删旧重传的正当性反而
+        更充分了。
+        One helper-side sweep buys a good chance of avoiding a full delete-and-retransfer,
+        and it doubles as the discriminator between the two indistinguishable causes.
+
+        ⚠️ 参数由**本插件用户显式配置**的「网盘目录」推导，不读助手配置：
+        助手只认它自己 `full_sync_strm_paths` 里的路径，且那两棵树不必同构 ——
+        从本地路径反推云端路径在原理上就不成立（详见 strm.pan_dir_of 的说明）。
+        The cloud path comes from our own explicit config, never from reverse-mapping
+        the helper's config: the helper only accepts paths in its own full-sync list,
+        and the local/cloud trees are not required to correspond.
+
+        只接受已在疑似清单中的 key（与 /strm_retry 同一道越权护栏）。
+        """
+        keys = (body or {}).get("keys") or []
+        if not keys:
+            return {"success": False, "message": "未指定要补生成的文件"}
+        allowed = [k for k in keys if k in self._strm_suspects]
+        not_allowed = [k for k in keys if k not in self._strm_suspects]
+        if not_allowed:
+            logger.warning(f"[Rsync115Sync] strm 补生成请求含非疑似清单条目，已忽略: "
+                           f"{not_allowed[:3]}")
+        if not allowed:
+            return {"success": False, "message": "所选文件不在疑似异常清单中"}
+
+        ok, reason = self._helper_running()
+        if not ok:
+            return {"success": False, "message": reason}
+
+        dirs, matched, unmatched, truncated = _strm.gen_targets_for_suspects(
+            allowed, self._sync_pairs, STRM_GEN_DIR_LIMIT)
+
+        if not dirs:
+            return {"success": False,
+                    "message": "所选文件所属的映射都没有配置「网盘目录」，无法定位云端路径：\n"
+                               + "\n".join(f"• {k}" for k in unmatched[:_MAX_LOGGED_PATHS])
+                               + f"\n{_P115_PAN_DIR_HINT}"}
+
+        # ⚠️ 上限命中时**整批拒绝**，而不是「处理前 N 个、剩下的留给用户猜」。
+        # 达到上限说明疑似条目已散布到很多目录，此时逐目录触发的总开销可能已超过
+        # 一次整库遍历 —— 该由用户明确决策，插件不该自动放大对 115 的访问量。
+        # Refuse the whole batch when the directory cap is hit: at that point the
+        # per-directory cost has likely outgrown a single full sweep, and silently
+        # truncating would leave the user believing the whole list was handled.
+        if truncated:
+            return {"success": False,
+                    "message": f"本次涉及 {len(dirs)}+ 个不同目录，超过单次上限 "
+                               f"{STRM_GEN_DIR_LIMIT} 个，已**整批拒绝**（未发出任何命令）。\n"
+                               f"达到这个量级时逐个目录触发已不划算，请先缩小范围：\n"
+                               f"• 用「清理无效项」移除已不可能恢复的条目\n"
+                               f"• 或在看板上勾选一部分（同一目录的会更划算）分批处理\n"
+                               f"• 若确实是一批文件上传失败，直接用「删旧重传」更合适"}
+
+        sent = 0
+        for target in dirs:
+            if self._send_helper_command(target):
+                sent += 1
+
+        if not sent:
+            return {"success": False,
+                    "message": "补生成命令发送失败（宿主事件总线不可用），请查看日志"}
+
+        now_ts = time.time()
+        moved_back = 0
+        for key in matched:
+            self._strm_gen_requested[key] = now_ts
+            self._strm_suspects.pop(key, None)
+            # 移回「待观察」并重新计时：复用既有巡检状态机，而不是新加一条轮询路径。
+            # strm 出现 ⇒ 自动解除；宽限期到仍无 ⇒ 回到疑似清单，且此时判定更硬
+            # （生成动作已经做过而仍然没有，基本可确定云端真缺该文件）。
+            self._strm_watch[key] = now_ts
+            moved_back += 1
+        self.save_data("strm_suspects", self._strm_suspects)
+        self.save_data("strm_watch", self._strm_watch)
+        self.save_data("strm_gen_requested", self._strm_gen_requested)
+        self._reset_strm_notified_if_clear()
+
+        logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(dirs)} 个目录 / "
+                    f"{moved_back} 个文件（回到观察期）")
+        msg = (f"已向 strm 助手发出 {len(dirs)} 条补生成命令，覆盖 {moved_back} 个文件。\n"
+               f"这些文件已移回「观察中」，重新按宽限期 {self._strm_grace_hours}h 计时：\n"
+               f"• 若 strm 生成 → 说明此前只是助手漏生成，**无需删旧重传**\n"
+               f"• 若宽限期到仍无 strm → 云端确实缺文件，此时再执行「删旧重传」\n"
+               f"注意：助手是异步长任务，生成需要时间，请稍后回来查看。")
+        if unmatched:
+            msg += (f"\n\n⚠️ 另有 {len(unmatched)} 个文件本次未处理"
+                    f"（所属映射未配置「网盘目录」），它们仍留在疑似清单中。")
+        return {"success": True, "message": msg,
+                "data": {"dirs": dirs, "requested": moved_back,
+                         "unmatched": unmatched[: _MAX_LOGGED_PATHS],
+                         "unmatched_count": len(unmatched)}}
+
+    def _send_helper_command(self, pan_path: str) -> bool:
+        """
+        通过宿主命令总线把 `/p115_strm <网盘路径>` 交给助手插件执行。
+
+        Dispatch `/p115_strm <cloud path>` through the host command bus.
+
+        ⚠️ **不直接调用助手的内部方法**：`/p115_strm` 是它对外注册的命令，
+        由宿主解析后转发（`CommandChain.command_event` → `PluginAction`），
+        属于稳定契约；直接 import 它的 `service.servicer` 会随对方升级而失效，
+        而且是**静默失效** —— 本插件这边看起来一切正常。仓库里的 watchsync /
+        agentresourceofficer 都走事件总线，此处保持一致。
+        Dispatch through the event bus (the helper's registered command) rather than
+        calling its internals: the latter breaks silently on their upgrades.
+        """
+        try:
+            eventmanager.send_event(
+                EventType.CommandExcute,
+                {"cmd": f"{_P115_STRM_COMMAND} {pan_path}", "source": None, "user": None},
+            )
+            logger.info(f"[Rsync115Sync] 📺 已请求 strm 助手生成: {pan_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[Rsync115Sync] 请求 strm 助手生成失败（{pan_path}）: {e}")
+            return False
 
     def _api_strm_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -3342,6 +3559,14 @@ class Rsync115Sync(_PluginBase):
             if arg_lower in ("prune", "清理"):
                 result = self._api_strm_prune()
                 self._post_reply(event, "🧹 " + result["message"])
+                return
+            if arg_lower in ("gen", "generate", "生成", "补生成"):
+                # 与看板按钮同一入口：先请 strm 助手补生成，成功了就不必删旧重传。
+                # 远程命令不传 keys 时处理**全部**疑似条目（看板上则可以只勾一部分），
+                # 但仍受同一个目录上限保护 —— 超限整批拒绝，不自动放大访问量。
+                result = self._api_strm_generate({"keys": list(self._strm_suspects.keys())})
+                self._post_reply(event, ("📺 " if result.get("success") else "⚠️ ")
+                                 + result.get("message", "操作失败"))
                 return
             if text_arg:
                 self._reply_strm_keyword(event, text_arg)

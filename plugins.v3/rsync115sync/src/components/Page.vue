@@ -408,6 +408,36 @@
                   已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证
                 </v-tooltip>
               </v-btn>
+              <!-- 先尝试补生成 strm：疑似有两种成因，处理成本差好几个数量级 ——
+                   strm 助手漏生成（重新生成指针即可）与 CD2 假成功（必须删旧重传）。
+                   两者在插件视角完全无法区分，但花一次助手侧目录遍历就能判别，
+                   大概率直接免掉整轮删除重传。因此它排在「删旧重传」**之前**。
+                   助手未就绪时禁用并说明原因（没装 / 装了没配映射），而不是让用户
+                   点下去才发现没反应 -->
+              <v-btn
+                v-if="strmSuspectCount"
+                size="x-small"
+                variant="tonal"
+                color="success"
+                rounded="lg"
+                :loading="itemLoading === 'strm:gen'"
+                :disabled="statusData.is_running || !helperReady"
+                @click="generateStrm"
+              >
+                <v-icon start size="14">mdi-file-refresh-outline</v-icon>
+                先尝试生成 strm ({{ strmSuspectCount }})
+                <v-tooltip activator="parent" location="top" max-width="360">
+                  <template v-if="helperReady">
+                    请 115 网盘 STRM 助手按这些文件所在的网盘目录重新生成一次 .strm。<br>
+                    成功后说明此前只是助手漏生成，<b>无需删旧重传</b>；<br>
+                    若生成后仍无 strm，则云端确实缺该文件，再做删除重传。<br>
+                    比直接删旧重传安全，成本也低得多。
+                  </template>
+                  <template v-else>
+                    不可用：{{ helperReason }}
+                  </template>
+                </v-tooltip>
+              </v-btn>
               <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
               <v-btn
                 v-if="strmSuspectCount"
@@ -476,12 +506,41 @@
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ key }}</div>
                     <div class="text-caption text-medium-emphasis mt-0.5">
-                      同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
+                      <template v-if="genRequested[key]">
+                        已请 strm 助手补生成过一次，仍未生成 —— 云端很可能确实缺该文件
+                      </template>
+                      <template v-else>
+                        同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
+                      </template>
                     </div>
                   </div>
                 </div>
                 <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
-                  <v-chip size="x-small" color="warning" variant="flat" class="font-weight-bold">疑似异常</v-chip>
+                  <!-- 补生成过的条目换一个更硬的标记：判定依据不同，处理建议也不同 -->
+                  <v-chip v-if="genRequested[key]" size="x-small" color="error" variant="tonal" class="font-weight-bold">
+                    补生成无效
+                  </v-chip>
+                  <v-chip v-else size="x-small" color="warning" variant="flat" class="font-weight-bold">疑似异常</v-chip>
+                  <v-btn
+                    size="x-small"
+                    variant="tonal"
+                    color="success"
+                    rounded="lg"
+                    class="px-2"
+                    :loading="itemLoading === 'strmgen:' + key"
+                    :disabled="statusData.is_running || !helperReady"
+                    @click="generateStrmForKey(key)"
+                  >
+                    <v-icon start size="14">mdi-file-refresh-outline</v-icon>
+                    {{ genRequested[key] ? '再试生成' : '尝试生成 strm' }}
+                    <v-tooltip activator="parent" location="top" max-width="340">
+                      <template v-if="helperReady">
+                        请 strm 助手重新生成该文件所在网盘目录的 .strm。
+                        成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。
+                      </template>
+                      <template v-else>不可用：{{ helperReason }}</template>
+                    </v-tooltip>
+                  </v-btn>
                   <v-btn
                     size="x-small"
                     variant="tonal"
@@ -609,6 +668,10 @@ const statusData = ref({
   strm_watch_detail: {},
   strm_watching: 0,
   strm_grace_hours: 6,
+  // 已请 strm 助手补生成过的 key → 时间戳；以及助手就绪状态（含不可用原因）
+  strm_gen_requested: {},
+  strm_gen_dir_limit: 20,
+  strm_helper_ok: { ready: false, reason: '' },
   backfill_total: 0,
   rate_limit_enabled: true,
   upload_window_count: 0,
@@ -678,6 +741,16 @@ const strmWatchingEntries = computed(() => {
 // 比整个区块都不显示更容易让用户明白该怎么配置。
 const strmConfigured = computed(() => statusData.value.strm_check_enabled !== false)
 const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}))
+
+// strm 助手是否就绪（运行中 + 目录映射能对上本插件的 strm_dir）。
+// 不可用时按钮置灰并展示具体原因 —— 让用户点下去才发现没反应，是最糟的交互。
+const helperReady = computed(() => statusData.value.strm_helper_ok?.ready === true)
+const helperReason = computed(
+  () => statusData.value.strm_helper_ok?.reason || 'strm 助手未就绪'
+)
+// 已请求过补生成的 key。看板据此：① 换一个更硬的标记（补生成无效 ⇒ 云端确实缺文件）
+// ② 按钮文案改成「再试生成」，提示这是一次重复尝试（每次都会让助手真的遍历云端目录）
+const genRequested = computed(() => statusData.value.strm_gen_requested || {})
 
 // 选中项中有多少属于 strm 疑似清单。
 // 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，
@@ -951,6 +1024,57 @@ async function batchSyncSelected() {
   }
 }
 
+// 请 strm 助手补生成 .strm —— 删旧重传**之前**该先试的一步。
+//
+// 为什么值得：疑似清单的两种成因（助手漏生成 / CD2 假成功）在插件本地视角完全
+// 无法区分，但处理成本差好几个数量级 —— 前者重新生成指针文件即可，后者要删掉
+// 云端文件再完整重传。花一次助手侧目录遍历换取「大概率免掉整轮重传」明显划算，
+// 而且它顺带给出判别结果。因此这一步不是「多试一次」，而是**判据的补充**。
+//
+// 不做无确认的自动触发：助手会对每个参数遍历整个云端子树，属于对 115 的访问。
+// 清单有几十条时自动触发就等于自动打出几十次遍历，与插件整体的风控保守取向相悖。
+async function generateStrm() {
+  const keys = [...strmSuspectKeys.value]
+  if (!keys.length || statusData.value.is_running) return
+  const ok = window.confirm(
+    `将请 strm 助手按这些文件所在的网盘目录重新生成 .strm：\n\n` +
+    `${keys.length} 个文件\n\n` +
+    `• 生成成功 ⇒ 此前只是助手漏生成，**无需删旧重传**（省下一整轮删除与上传）\n` +
+    `• 生成后仍无 ⇒ 云端确实缺该文件，届时再执行「删旧重传」\n\n` +
+    `这些文件会移回「观察中」，按宽限期 ${statusData.value.strm_grace_hours}h 重新计时。\n` +
+    `助手按目录遍历云端（不是只处理单个文件），最多涉及 ` +
+    `${statusData.value.strm_gen_dir_limit} 个目录，超过会整批拒绝。\n\n确定继续吗？`
+  )
+  if (!ok) return
+  await postStrmGenerate(keys, 'strm:gen')
+}
+
+// 单条：与批量同一后端入口，只是 keys 只有一个
+async function generateStrmForKey(key) {
+  if (statusData.value.is_running) return
+  await postStrmGenerate([key], 'strmgen:' + key)
+}
+
+// 批量与单条共用的提交逻辑，避免两条路径的提示文案与状态处理漂移
+async function postStrmGenerate(keys, loadingKey) {
+  itemLoading.value = loadingKey
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_generate', { keys })
+    if (res && res.success) {
+      strmScanMsg.value = res.message || `已请助手补生成 ${keys.length} 个文件`
+    } else {
+      // 失败时保留后端原文：上限整批拒绝、助手未就绪、无法反查网盘目录
+      // 都是**不同原因**，笼统覆盖会让用户无从处置
+      strmScanMsg.value = res?.message || '补生成请求失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    strmScanMsg.value = '补生成请求出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
+  }
+}
+
 // 主动扫描缺 strm 的文件：从源端出发反查，不依赖「插件曾认为它同步成功」，
 // 因此能发现历史上传失败、从未进入过观察期的盲区文件。
 async function scanStrm() {
@@ -965,7 +1089,10 @@ async function scanStrm() {
       if (d.truncated) {
         msg += `\n⚠️ 已达到单次上限，结果被截断 —— 数量这么大通常说明 strm 插件本身没在工作，请先确认它的开关与媒体识别是否正常。`
       }
-      msg += `\n💡 缺 strm 可能是「从未上传的存量文件」（应走补传），也可能是「上传了但 CD2 假成功」（用删旧重传），请先判断再处理。`
+      msg += `\n💡 缺 strm 有三种可能，处理方式不同：\n` +
+        `• 从未上传的存量文件 → 用 /rsync_backfill 补传\n` +
+        `• strm 助手漏生成 → 点「先尝试生成 strm」，成本最低，多半能直接解决\n` +
+        `• 上传了但 CD2 假成功 → 补生成后仍无 strm，才需要「删旧重传」`
       strmScanMsg.value = msg
     } else {
       strmScanMsg.value = res?.message || '扫描失败'
