@@ -1471,18 +1471,9 @@ onUnmounted(() => {
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
    宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
-   内容区顶部内边距被强制归零，看板首行三个数据卡片的顶部圆角因此被裁掉（实测缺 radius）。
-   故此处：padding-block-start 显式归一化，间距则由 margin-top 提供。
-
-   为什么必须带 !important：宿主该声明本身即 !important，级联顺序是
-   重要度 > 权重 > 源码顺序，普通声明无论权重多高都赢不了 !important，
-   必须同样以 !important + 更高权重才能覆盖。
-   又因该属性非继承、unset 对非继承属性求值等同 initial(0px)，
-   在本页显示效果上通常与宿主一致；但显式声明可避免宿主后续调整该值
-   （如改成非 0）时圆角问题复现，属稳定性加固。
-   经真实页面调试确认，勿凭「理论等价」删除。 */
+   内容区顶部内边距被强制归零。
+   故此处：间距由 margin-top 提供（margin 不受该 padding !important 约束，是稳定生效的方案）。 */
 .header-card-item + .v-card-text {
-  padding-block-start: unset !important;
   margin-top: 16px;
 }
 .header-icon-box {
