@@ -192,6 +192,10 @@
             <v-icon start size="16">mdi-alert-circle-outline</v-icon>
             对账异常清单 ({{ failedCount }})
           </v-tab>
+          <v-tab value="strm">
+            <v-icon start size="16">mdi-television-classic-off</v-icon>
+            strm 疑似异常 ({{ strmSuspectCount }})
+          </v-tab>
           <v-tab value="ignored">
             <v-icon start size="16">mdi-eye-off-outline</v-icon>
             已忽略 ({{ ignoredList.length }})
@@ -354,7 +358,9 @@
             <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
           </div>
 
-          <!-- strm 交叉验证：疑似上传异常（独立于对账，来自 strm 插件视角） -->
+        <!-- 标签 3：strm 疑似上传异常（独立成 tab —— 判据与对账完全不同，
+             来源是 strm 插件的视角；混在「对账异常」里会让用户分不清
+             「对账发现的问题」与「strm 反证出来的问题」，两者处理方式也不同）-->
           <!-- 有配置 strm 目录就渲染本区（即使清单为空）—— 否则用户找不到「主动扫描」
                入口，而扫描正是清单为空时最需要的功能（发现从未被观察过的坏文件） -->
           <div v-if="strmConfigured" class="mt-4">
@@ -468,24 +474,23 @@
                 </div>
               </div>
             </div>
-            <!-- strm 疑似清单独立分页：与上方对账清单数据源不同、长度也不同，
-                 共用页码会让两边互相串位，故单独维护 pageStrm -->
-            <div v-if="strmPaged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+            <!-- 通用分页条：strm 独立成标签后与其它三个标签共用 paged 的绑定 -->
+            <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
               <v-btn
                 size="small" variant="text" rounded="lg" class="pager-btn"
-                :disabled="strmPaged.page <= 1"
-                @click="strmPaged.pageRef.value = strmPaged.page - 1"
+                :disabled="paged.page <= 1"
+                @click="paged.pageRef.value = paged.page - 1"
               >
                 <v-icon start size="16">mdi-chevron-left</v-icon>上一页
               </v-btn>
               <span class="text-caption text-medium-emphasis">
-                第 <strong>{{ strmPaged.page }}</strong> / {{ strmPaged.pages }} 页 ·
-                共 {{ strmPaged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+                第 <strong>{{ paged.page }}</strong> / {{ paged.pages }} 页 ·
+                共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
               </span>
               <v-btn
                 size="small" variant="text" rounded="lg" class="pager-btn"
-                :disabled="strmPaged.page >= strmPaged.pages"
-                @click="strmPaged.pageRef.value = strmPaged.page + 1"
+                :disabled="paged.page >= paged.pages"
+                @click="paged.pageRef.value = paged.page + 1"
               >
                 下一页<v-icon end size="16">mdi-chevron-right</v-icon>
               </v-btn>
@@ -493,7 +498,8 @@
           </div>
         </div>
 
-        <!-- 标签 3：已忽略清单 -->
+
+        <!-- 标签 4：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
             <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
@@ -678,6 +684,7 @@ const strmPaged = computed(() => paginate(strmSuspectKeys.value, pageStrm))
 const paged = computed(() => {
   if (currentTab.value === 'queue') return queuePaged.value
   if (currentTab.value === 'failed') return failedPaged.value
+  if (currentTab.value === 'strm') return strmPaged.value
   return ignoredPaged.value
 })
 
@@ -689,12 +696,13 @@ const selectableItems = computed(() => {
     return queuePaged.value.slice.map((it) => it.key)
   }
   if (currentTab.value === 'failed') {
-    // strm 疑似清单与对账清单在同一个标签页内，故其 key 也算本页可勾选项，
-    // 否则勾了 strm 条目却因不在集合里被「全选本页」清掉
-    return [
-      ...failedPaged.value.slice.map((it) => it.file),
-      ...strmPaged.value.slice,
-    ]
+    return failedPaged.value.slice.map((it) => it.file)
+  }
+  if (currentTab.value === 'strm') {
+    // strm 独立成标签后，本页可勾选集合只含 strm 条目。
+    // 勾选状态仍跨标签保留 —— 用户可以在 strm 标签勾选后切到别处，
+    // 因此批量按钮的分流逻辑（按选中项成分）保持不变。
+    return strmPaged.value.slice
   }
   return []
 })
