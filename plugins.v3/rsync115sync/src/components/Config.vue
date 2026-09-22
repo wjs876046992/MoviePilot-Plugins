@@ -123,17 +123,27 @@
                   hint="若你用 strm 类插件在本地生成指针文件，且 strm 文件名与整理后文件同名，填写其根目录。同步成功后进入观察期（默认 6 小时），到期仍未生成对应 .strm 会标记为「疑似上传异常」。看板上可先请 STRM 助手补生成（成本低、多半能直接解决），确认无效后再删旧重传。观察与扫描全程纯本地，零 115 API。"
                   persistent-hint
                 ></v-text-field>
+                <div class="dep-note dep-free mt-1">
+                  <v-icon size="13">mdi-check-circle-outline</v-icon>
+                  不依赖 P115StrmHelper：任何会生成 .strm 的插件都可以，
+                  甚至完全不用插件、只填一个目录也能工作
+                </div>
               </v-col>
               <v-col cols="12">
                 <v-text-field
                   v-model="pair.pan_dir"
-                  label="网盘目录（可选，用于「先尝试生成 strm」）"
+                  label="网盘目录（可选，仅「先尝试生成 strm」需要）"
                   variant="outlined"
                   density="compact"
                   placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"
                   hint="填写该映射在 115 网盘里的目录（不是 CD2 挂载路径）。看板的「先尝试生成 strm」会据此把参数传给 P115StrmHelper。注意：助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配的话，命令会被助手拒绝（提示路径匹配错误）。本地 strm 目录与网盘目录是两棵独立的树，所以需要单独填、无法自动推导。"
                   persistent-hint
                 ></v-text-field>
+                <div class="dep-note dep-needs-helper mt-1">
+                  <v-icon size="13">mdi-link-variant</v-icon>
+                  <b>依赖 P115StrmHelper</b>：仅「先尝试生成 strm」用得到它。
+                  留空只是该映射不能用补生成，<b>不影响同步、对账、观察与删旧重传</b>
+                </div>
               </v-col>
             </v-row>
           </div>
@@ -319,6 +329,9 @@
         <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2">
           <v-icon size="18" color="warning" class="mr-1">mdi-television-classic</v-icon>
           strm 交叉验证
+          <v-chip size="x-small" variant="tonal" color="success" class="ml-2 font-weight-bold">
+            不依赖任何插件
+          </v-chip>
         </div>
         <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
           <b>它是用来发现「假成功」的</b>：CD2 改名失败时，挂载视图会显示目标文件
@@ -335,19 +348,43 @@
           <b>发现疑似后怎么处理</b>：「缺 strm」有两种成因，处理成本差很多 ——
           <b>①</b> strm 插件自己漏生成（云端文件其实是好的）；<b>②</b> CD2 改名失败假成功
           （云端只有半成品，必须删旧重传）。插件<b>无法从本地视角区分</b>这两者。
-          <br>
-          因此看板提供了「先尝试生成 strm」：它请 <b>P115StrmHelper</b> 按这些文件所在的
-          网盘目录重新生成一次指针文件。生成成功 ⇒ 是情况 ①，<b>无需删旧重传</b>；
-          生成后仍无 ⇒ 是情况 ②，此时再删旧重传。
-          <br>
-          <b>使用前提（两处都要配）</b>：<b>①</b> 上方目录映射里为该映射填写「网盘目录」
+        </v-alert>
+
+        <!-- 依赖边界对照表：本模块是「核心不依赖、可选增强依赖」的典型，
+             分开列出来，避免用户以为整个功能都要装 P115StrmHelper -->
+        <div class="dep-split rounded-lg mb-3">
+          <div class="dep-split-row">
+            <v-chip size="x-small" color="success" variant="tonal" class="font-weight-bold flex-shrink-0">
+              本插件独立完成
+            </v-chip>
+            <span>
+              观察期、主动扫描（全量 / 关键字）、疑似清单、忽略规则、清理无效项、
+              <b>删旧重传</b>、状态通知
+            </span>
+          </div>
+          <div class="dep-split-row">
+            <v-chip size="x-small" color="info" variant="tonal" class="font-weight-bold flex-shrink-0">
+              需要 P115StrmHelper
+            </v-chip>
+            <span>
+              仅「<b>先尝试生成 strm</b>」一项。它请助手按文件所在的网盘目录重新生成
+              一次指针文件：生成成功 ⇒ 是情况 ①，<b>无需删旧重传</b>；
+              生成后仍无 ⇒ 是情况 ②，此时再删旧重传。
+            </span>
+          </div>
+        </div>
+
+        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
+          <b>「先尝试生成 strm」的启用前提（两处都要配）</b>：
+          <br><b>①</b> 上方目录映射里为该映射填写「<b>网盘目录</b>」
           （115 网盘里的真实路径，与本地 strm 目录是两棵独立的树，无法自动推导）；
-          <b>②</b> 该网盘路径必须已在 P115StrmHelper 的<b>「全量同步路径」</b>里配置过 ——
+          <br><b>②</b> 该网盘路径必须已在 P115StrmHelper 的<b>「全量同步路径」</b>里配置过 ——
           助手的 <code>/p115_strm</code> 只接受它自己这个列表里的路径，其它字段
           （如「监控生活路径」）里配的目录传过去会被拒绝。
           <br>
           注意这一步会<b>访问 115 网盘</b>（助手按目录遍历云端），因此看板上是手动触发、
           逐目录去重，且单次涉及目录数有上限（超过则整批拒绝，不会自动放大访问量）。
+          <b>不配也不影响上面「本插件独立完成」的任何一项</b>。
         </v-alert>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
@@ -660,5 +697,50 @@ onMounted(() => {
     flex: 1 1 100%;
     margin-left: 0 !important;
   }
+}
+
+/* ---- 跨插件依赖标注 ----
+   本插件绝大多数功能是自包含的，只有「先尝试生成 strm」需要 P115StrmHelper。
+   用统一的视觉语言标出，避免用户把「可选的协作功能」误当成「必须装的前置依赖」，
+   也避免反过来：不知道某个字段填了才会启用协作。
+   两种底色刻意区分：绿=不依赖任何插件，蓝=需要特定插件。 */
+.dep-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+.dep-note .v-icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.dep-free {
+  color: rgb(var(--v-theme-success));
+  background: rgba(var(--v-theme-success), 0.08);
+}
+.dep-needs-helper {
+  color: rgb(var(--v-theme-info));
+  background: rgba(var(--v-theme-info), 0.1);
+}
+
+/* 依赖边界对照表：一行「本插件独立完成」+ 一行「需要助手」。
+   两行并列呈现而非只列依赖项，是因为用户真正要判断的是「我不装它会少什么」。 */
+.dep-split {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  overflow: hidden;
+}
+.dep-split-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dep-split-row + .dep-split-row {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
 }
 </style>

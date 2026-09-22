@@ -981,6 +981,11 @@ class Rsync115Sync(_PluginBase):
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_retry", "endpoint": self._api_strm_retry, "methods": ["POST"], "auth": "bear"},
+            # ⚠️ 本插件**唯一**依赖外部插件的端点：它把命令交给 P115StrmHelper 执行。
+            # 其余全部端点（含 strm 观察/扫描/清理/删旧重传）都是自包含的 ——
+            # 在 UI 与文档里必须区分清楚，否则用户会以为不装助手就用不了 strm 功能。
+            # The only endpoint that depends on another plugin; everything else,
+            # including the whole strm cross-validation feature, is self-contained.
             {"path": "/strm_generate", "endpoint": self._api_strm_generate, "methods": ["POST"], "auth": "bear"},
         ]
 

@@ -1,21 +1,21 @@
 
-.plugin-page[data-v-45129921] {
+.plugin-page[data-v-c43d7e4a] {
   width: 100%;
   box-sizing: border-box;
   /* 桌面端外边距。原为内联 style 且带 !important，
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
   padding: 18px 22px !important;
 }
-.page-main-card[data-v-45129921] {
+.page-main-card[data-v-c43d7e4a] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-45129921] {
+.header-surface[data-v-c43d7e4a] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-45129921] {
+.header-card-item .header-subtitle[data-v-c43d7e4a] {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
@@ -30,11 +30,11 @@
    在本页显示效果上通常与宿主一致；但显式声明可避免宿主后续调整该值
    （如改成非 0）时圆角问题复现，属稳定性加固。
    经真实页面调试确认，勿凭「理论等价」删除。 */
-.header-card-item + .v-card-text[data-v-45129921] {
+.header-card-item + .v-card-text[data-v-c43d7e4a] {
   padding-block-start: unset !important;
   margin-top: 16px;
 }
-.header-icon-box[data-v-45129921] {
+.header-icon-box[data-v-c43d7e4a] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -43,39 +43,39 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.stat-card[data-v-45129921] {
+.stat-card[data-v-c43d7e4a] {
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.stat-info[data-v-45129921] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+.stat-info[data-v-c43d7e4a] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
 }
-.stat-primary[data-v-45129921] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+.stat-primary[data-v-c43d7e4a] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
 }
-.stat-error[data-v-45129921] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+.stat-error[data-v-c43d7e4a] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
 }
-.action-strip[data-v-45129921] {
+.action-strip[data-v-c43d7e4a] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
-.queue-item-card[data-v-45129921] {
+.queue-item-card[data-v-c43d7e4a] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.batch-bar[data-v-45129921] {
+.batch-bar[data-v-c43d7e4a] {
   border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
 }
-.failed-item-card[data-v-45129921] {
+.failed-item-card[data-v-c43d7e4a] {
   background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
   border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
 }
-.empty-box[data-v-45129921] {
+.empty-box[data-v-c43d7e4a] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }
 /* 分页条：与列表用虚线分隔，弱化存在感，避免抢占内容注意力 */
-.pager-bar[data-v-45129921] {
+.pager-bar[data-v-c43d7e4a] {
   border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
   padding-top: 12px;
 }
-.pager-btn[data-v-45129921] {
+.pager-btn[data-v-c43d7e4a] {
   /* 与说明文字基线对齐，避免按钮内图标把行高撑开 */
   letter-spacing: normal;
 }
@@ -86,7 +86,7 @@
    断点沿用 Vuetify 的 sm（600px），与模板里的 flex-sm-row 保持一致。 */
 @media (max-width: 599.98px) {
   /* 移动端收窄外层留白，把宽度还给内容（外层 + 卡片内层共省下约 36px） */
-.plugin-page[data-v-45129921] {
+.plugin-page[data-v-c43d7e4a] {
     padding: 10px 12px !important;
 }
   /* 顶栏按钮"超出范围"的根因在这里：
@@ -96,50 +96,50 @@
      把 append 列改成 minmax(0, max-content)：优先按内容宽度，宽度不足时允许收缩，
      收缩后按钮组依 .header-append 的 flex-wrap 换行，从而始终留在卡片内。
      必须用 :deep()：.v-card-item__append 由 Vuetify 组件渲染，scoped 选择器匹配不到 */
-[data-v-45129921] .v-card-item {
+[data-v-c43d7e4a] .v-card-item {
     grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
 }
-[data-v-45129921] .v-card-item__content {
+[data-v-c43d7e4a] .v-card-item__content {
     min-width: 0;
 }
-.body-surface[data-v-45129921] {
+.body-surface[data-v-c43d7e4a] {
     padding-left: 10px !important;
     padding-right: 10px !important;
 }
   /* 顶栏右侧按钮组：允许换行并右对齐，避免刷新/配置/关闭三个按钮挤出卡片 */
-.header-append[data-v-45129921] {
+.header-append[data-v-c43d7e4a] {
     flex-wrap: wrap;
     justify-content: flex-end;
 }
   /* 操作工具条：按钮组纵向铺满，按钮本身在窄屏下占满整行更好点按 */
-.action-strip-row[data-v-45129921] {
+.action-strip-row[data-v-c43d7e4a] {
     align-items: stretch;
 }
-.action-group[data-v-45129921] {
+.action-group[data-v-c43d7e4a] {
     width: 100%;
 }
-.action-group > .v-btn[data-v-45129921] {
+.action-group > .v-btn[data-v-c43d7e4a] {
     flex: 1 1 auto;
 }
   /* 操作反馈文字可能很长（含文件数），允许换行而不是把同行按钮顶出去 */
-.action-msg[data-v-45129921] {
+.action-msg[data-v-c43d7e4a] {
     width: 100%;
     margin-right: 0 !important;
     white-space: normal;
     word-break: break-word;
 }
   /* 列表行在窄屏改为纵向堆叠后，左侧信息区需占满整行 */
-.list-row-main[data-v-45129921] {
+.list-row-main[data-v-c43d7e4a] {
     width: 100%;
 }
   /* 右侧操作区占满整行并允许换行；
      注：flex-shrink 在纵向堆叠下作用于纵轴，此处无需覆盖，保持工具类的 flex-shrink-0 即可 */
-.list-row-actions[data-v-45129921] {
+.list-row-actions[data-v-c43d7e4a] {
     width: 100%;
     flex-wrap: wrap;
 }
   /* 批量辅助条说明文字：占满剩余宽度并允许折行 */
-.batch-hint[data-v-45129921] {
+.batch-hint[data-v-c43d7e4a] {
     width: 100%;
     white-space: normal;
     word-break: break-word;

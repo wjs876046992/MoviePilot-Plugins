@@ -372,8 +372,13 @@
               <v-icon size="18" color="warning">mdi-television-classic-off</v-icon>
               <span class="font-weight-bold text-body-2">strm 疑似上传异常 ({{ strmSuspectCount }})</span>
               <span class="text-caption text-medium-emphasis">
-                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 插件本身正常
+                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常
               </span>
+              <!-- 依赖标注：本区绝大多数能力自包含，只有「先尝试生成」要外部助手。
+                   不标出来，用户会误以为整个 strm 功能都依赖 P115StrmHelper。 -->
+              <v-chip size="x-small" variant="tonal" color="success" class="font-weight-bold">
+                观察/扫描/重传 不依赖插件
+              </v-chip>
               <v-spacer></v-spacer>
               <!-- 主动扫描：从**源端**出发反查缺 strm 的文件，因此不依赖「插件曾认为它
                    同步成功」—— 补上「历史上传失败、从未被观察过」的盲区。纯本地比对 -->
@@ -431,8 +436,11 @@
                   请 115 网盘 STRM 助手按这些文件所在的网盘目录重新生成一次 .strm。<br>
                   成功后说明此前只是助手漏生成，<b>无需删旧重传</b>；<br>
                   若生成后仍无 strm，则云端确实缺该文件，再做删除重传。<br>
-                  比直接删旧重传安全，成本也低得多。
+                  比直接删旧重传安全，成本也低得多。<br>
+                  <b>本插件唯一依赖 P115StrmHelper 的功能</b>；右侧「删旧重传」不依赖它。
                 </v-tooltip>
+                <!-- 依赖标记常驻显示：让用户不点也知道这一项与旁边那些不同 -->
+                <v-icon size="12" class="ml-1" color="info">mdi-link-variant</v-icon>
               </v-btn>
               <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
               <v-btn
@@ -470,7 +478,9 @@
                 115 网盘里的真实路径（如 <code>/HomeTheater/TV</code>），不是 CD2 挂载路径；
                 <br>② 该路径还需已配在 P115StrmHelper 的「<b>全量同步路径</b>」里
                 （助手只接受它这个列表中的路径）。
-                <br>未配置时不影响「删旧重传」，那一条始终可用。
+                <br>这只是<b>可选的增强</b>：不配也不影响其它任何能力 ——
+                「扫描缺 strm 的文件」「清理无效项」「删旧重传」以及整条交叉验证链路
+                都由本插件独立完成，不依赖任何外部插件。
               </div>
             </v-alert>
 
