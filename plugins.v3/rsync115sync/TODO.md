@@ -44,7 +44,7 @@
 > ✅ **代码已实施、已提交；尚未发布**（alpha 阶段按仓库策略不占版本号，
 > 三处版本字段保持 `0.1.10`，变更说明暂存 DEVELOPMENT.md 9.13，真机验证清单见 9.12）。
 > 实现见 `webhook.py` + `__init__.py` 的 webhook 段落，
-> 测试 49 项（`tests/v3/rsync115sync/test_webhook_ingest.py`），
+> 测试 62 项（`tests/v3/rsync115sync/test_webhook_ingest.py`），
 > 实施记录与设计差异见 DEVELOPMENT.md 9.10。
 >
 > 下面保留原始设计稿，供对照「设计 vs 实现」；已确认的差异点标在 §9.10。

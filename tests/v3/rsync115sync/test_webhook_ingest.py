@@ -317,6 +317,136 @@ def test_mixed_paths_only_allowlisted_ones_enter(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# 目录型通知：发送端最自然的「通知入库」就是推一个目录
+# --------------------------------------------------------------------------
+#
+# 这一组的由来：目录名没有扩展名，直接进扩展名白名单必然被判 skipped，而端点当时
+# 返回 `success=True, 已入队 0 个` —— 发送端和用户都以为成功了，队列却是空的。
+# 对 9KG 这类场景尤其致命：另一个工程下完一部电影／一季，最自然的通知方式就是
+# 把目录路径发过来；推文件反而是不自然的（它不知道目录里最终有几个文件）。
+
+def _movie_dir(src_root, name="某电影 (2001)", files=("movie.mkv", "movie.zh.srt")):
+    """造一个「电影目录 + 目录内文件」的真实入库形态。"""
+    import os
+    base = os.path.join(src_root, name)
+    os.makedirs(base, exist_ok=True)
+    for fn in files:
+        with open(os.path.join(base, fn), "wb") as fh:
+            fh.write(b"x")
+    return base
+
+
+def test_directory_is_expanded_not_silently_swallowed(tmp_path):
+    """
+    推目录必须展开成文件并入队，且**不能**报 success=True 却 0 入队。
+
+    这是本组最重要的一条：`success=True` + 空队列是最坏的失败形态 ——
+    发送端会认为投递成功而不再重试，用户看日志只看到「成功」。
+    """
+    src = tmp_path / "9kg"
+    d = _movie_dir(str(src))
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    res = _post(plugin, body={"path": d})
+
+    assert res["success"] is True
+    assert res["data"]["added"] == 2, f"目录未被展开：{res}"
+    assert sorted(plugin._pending_queue) == [
+        "TV:某电影 (2001)/movie.mkv", "TV:某电影 (2001)/movie.zh.srt"]
+
+
+def test_directory_with_trailing_slash_expands_too(tmp_path):
+    """尾斜杠是发送端最常见的写法差异，不能只支持其中一种。"""
+    src = tmp_path / "9kg"
+    _movie_dir(str(src))
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    res = _post(plugin, body={"path": str(src / "某电影 (2001)") + "/"})
+
+    assert res["data"]["added"] == 2
+
+
+def test_directory_expansion_respects_extension_whitelist(tmp_path):
+    """展开不是无差别放行：非媒体文件照样被扩展名白名单挡掉。"""
+    src = tmp_path / "9kg"
+    _movie_dir(str(src), files=("movie.mkv", "poster.jpg", "readme.txt"))
+    plugin = _plugin(str(src), allowlist=str(src), media_extensions="mkv")
+
+    res = _post(plugin, body={"path": str(src / "某电影 (2001)")})
+
+    assert res["data"]["added"] == 1
+    assert list(plugin._pending_queue) == ["TV:某电影 (2001)/movie.mkv"]
+
+
+def test_directory_expansion_skips_excluded_dirs(tmp_path):
+    """排除目录（@eaDir 等）在遍历层就剪枝，不把其中的文件捞进来。"""
+    src = tmp_path / "9kg"
+    base = _movie_dir(str(src))
+    import os
+    meta = os.path.join(base, "@eaDir")
+    os.makedirs(meta)
+    with open(os.path.join(meta, "thumb.mkv"), "wb") as fh:
+        fh.write(b"x")
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    res = _post(plugin, body={"path": base})
+
+    assert res["data"]["added"] == 2, "排除目录内的文件不应入队"
+    assert all("@eaDir" not in k for k in plugin._pending_queue)
+
+
+def test_directory_expansion_is_capped_and_reported(tmp_path):
+    """
+    展开有上限，且**截断必须留痕**。
+
+    无上限展开意味着「推一个 9KG 根目录」能把冷却队列一次灌进上万个条目，
+    115 侧风控配额随之被打满。截断还必须是可见的 —— 静默少入队会让用户
+    以为文件已经在排队，实际上永远轮不到。
+    """
+    src = tmp_path / "9kg"
+    d = _movie_dir(str(src), files=tuple(f"e{i:03d}.mkv" for i in range(20)))
+    plugin = _plugin(str(src), allowlist=str(src))
+    plugin.DIR_EXPAND_LIMIT = 5
+
+    res = _post(plugin, body={"path": d})
+
+    assert res["data"]["added"] == 5
+
+
+def test_directory_with_no_media_files_logs_instead_of_lying(tmp_path):
+    """
+    目录存在但里面没有可同步文件 → 不能报「已入队 0 个」就算完。
+
+    必须与「路径根本不存在」区分开：前者是扩展名配错或目录选错，
+    后者是挂载问题。这两种情况的排查方向完全不同。
+    """
+    src = tmp_path / "9kg"
+    _movie_dir(str(src), files=("poster.jpg",))
+    plugin = _plugin(str(src), allowlist=str(src), media_extensions="mkv")
+
+    res = _post(plugin, body={"path": str(src / "某电影 (2001)")})
+
+    assert res["data"]["added"] == 0
+    assert res["data"]["expanded"] == 1
+    assert plugin._webhook_stat["ingested"] == 0
+
+
+def test_directory_expansion_dedups_against_already_queued(tmp_path):
+    """目录展开出的文件仍走同一套幂等：重复推同一目录不刷新冷却计时。"""
+    src = tmp_path / "9kg"
+    d = _movie_dir(str(src))
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    _post(plugin, body={"path": d})
+    first = dict(plugin._pending_queue)
+    res = _post(plugin, body={"path": d})
+
+    assert res["data"]["added"] == 0
+    assert res["data"]["duplicate"] == 2
+    assert plugin._pending_queue == first, "重复推目录不应刷新冷却计时"
+
+
+# --------------------------------------------------------------------------
 # 合流：两条通道共用同一个入队语义（不能各写一份）
 # --------------------------------------------------------------------------
 
@@ -594,6 +724,151 @@ def test_real_route_reports_source_ip(tmp_path):
     assert plugin._webhook_stat["rejected"] == 1
     assert plugin._webhook_stat["last_source"] == "testclient"
 
+
+# --------------------------------------------------------------------------
+# 报文样本：发送端未知时，唯一能拿到「它到底传了什么」的手段
+# --------------------------------------------------------------------------
+#
+# 这一组的由来：发送端往往是**另一个工程**（用户原话：「我不知道发送端会传递
+# 什么样的参数」）。`last_payload_shape` 只给结构与类型，答不出「值长什么样」——
+# 而候选字段表能否命中，恰恰取决于值是否符合路径形态。开发期只能边收边对齐。
+
+def test_unrecognized_payload_is_sampled_with_values(tmp_path):
+    """
+    未识别的报文必须留下**含值**的样本，否则没法对齐字段。
+
+    只留结构摘要时，用户看到的是 `{movie: {name: str, file: str}}` ——
+    知道有 `file` 字段，但不知道值是 `/vol3/...` 还是 `12345`（媒体库 ID）。
+    后者决定了该不该把它加进候选表。
+    """
+    src = tmp_path / "9kg"
+    src.mkdir()
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    _post(plugin, body={"Event": "download.finish",
+                        "movie": {"file": "/vol3/9kg/某电影/movie.mkv"}})
+
+    samples = plugin._webhook_stat_now()["samples"]
+    assert len(samples) == 1
+    sample = samples[0]
+    assert sample["action"] == "未识别", "样本要带结论，用户才知道这条有没有用"
+    assert sample["payload"]["movie"]["file"] == "/vol3/9kg/某电影/movie.mkv"
+
+
+def test_sampled_payload_redacts_secrets(tmp_path):
+    """
+    样本要看板明文展示，密钥类字段必须脱敏。
+
+    发送端复制 curl 命令时常常把 `?token=` 一起带上；原样存进 data 文件再显示在
+    看板上，等于把一个可用的凭据抄在了屏幕上。
+    """
+    src = tmp_path / "9kg"
+    src.mkdir()
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    _post(plugin, body={"pathx": "/vol3/a.mkv", "token": "super-secret",
+                        "authorization": "Bearer xyz"})
+
+    payload = plugin._webhook_stat_now()["samples"][0]["payload"]
+    assert payload["token"] == "***"
+    assert payload["authorization"] == "***"
+    assert "super-secret" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_sampled_payload_truncates_long_values(tmp_path):
+    """超长值截断（附长度后缀）—— 样本是排障窗口，不该把 data 文件撑爆。"""
+    src = tmp_path / "9kg"
+    src.mkdir()
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    _post(plugin, body={"pathx": "/vol3/" + "x" * 5000 + ".mkv"})
+
+    value = plugin._webhook_stat_now()["samples"][0]["payload"]["pathx"]
+    assert len(value) < 400, "超长值未截断"
+    assert value.endswith(")"), "截断应标明省略了多少字符"
+
+
+def test_samples_are_capped_and_newest_first(tmp_path):
+    """
+    样本只留最近若干条，且顺序是**新的在前**。
+
+    顺序错了会让看板显示最旧那条：排障时用户刚推的报文反而看不到，
+    看到的是一条几小时前的历史记录，据此对齐字段必然对错。
+    """
+    src = tmp_path / "9kg"
+    src.mkdir()
+    plugin = _plugin(str(src), allowlist=str(src))
+
+    for i in range(plugin.WEBHOOK_SAMPLE_LIMIT + 3):
+        _post(plugin, body={"pathx": f"/vol3/{i}.mkv"})
+
+    samples = plugin._webhook_stat_now()["samples"]
+    assert len(samples) == plugin.WEBHOOK_SAMPLE_LIMIT
+    assert samples[-1]["payload"]["pathx"] == f"/vol3/{plugin.WEBHOOK_SAMPLE_LIMIT + 2}.mkv"
+
+
+def _status_ready_plugin(src_root):
+    """
+    在 `_plugin` 的基础上补齐 `/status` 还会读到的属性。
+
+    `/status` 是聚合接口，除了 webhook 段还会读 strm 观察期、限流窗口、补传队列等。
+    本文件只关心 webhook 段，因此把这些**与 webhook 无关**的读点给成中性值，
+    让「样本是否吐给看板」这件事能被单独断言。
+
+    ⚠️ 属性清单来自 `_api_get_status` 的实际读点（逐个核对，不是猜的）。
+    若 /status 以后新增读点，本用例会以 AttributeError 失败 —— 那是**期望行为**：
+    它提示你来补一行，而不是让一个聚合接口的意外改动悄悄糊过去。
+    """
+    plugin = _plugin(src_root)
+    plugin._is_running = False
+    plugin._count_queue = lambda *a, **k: (0, 0, 0)
+    # strm 观察期 / 限流 / 补传（与 webhook 无关，给中性值）
+    plugin._strm_check_enabled = True
+    plugin._strm_grace_hours = 6.0
+    plugin._strm_watch = {}
+    plugin._strm_suspects = {}
+    plugin._strm_gen_requested = {}
+    plugin._backfill_queue = []
+    plugin._backfill_total = 0
+    plugin._missed_last_scan = 0.0
+    plugin._missed_scan_enabled = True
+    plugin._rate_limit_enabled = True
+    plugin._upload_window_count = 0
+    plugin._upload_max_per_window = 500
+    plugin._upload_blocked_until = 0.0
+    plugin._last_force_ts = 0.0
+    plugin._force_cooldown_days = 7
+    return plugin
+
+
+def test_status_exposes_samples_newest_first(tmp_path):
+    """
+    /status 必须把样本吐给看板，且倒序（看板直接照抄第一条）。
+    """
+    src = tmp_path / "9kg"
+    src.mkdir()
+    plugin = _status_ready_plugin(str(src))
+    plugin._webhook_path_allowlist = str(src)
+
+    for i in range(2):
+        _post(plugin, body={"pathx": f"/vol3/{i}.mkv"})
+
+    samples = plugin._api_get_status()["data"]["webhook"]["samples"]
+    assert len(samples) == 2
+    assert samples[0]["payload"]["pathx"] == "/vol3/1.mkv", "应新的在前"
+
+    # ⚠️ `reversed()` 返回迭代器，`list(...)` 才生成新列表。若哪天写成
+    # `webhook_stat["samples"] = samples.reverse()` 之类，会**原地**翻转内部状态 ——
+    # 看板每次刷新都翻一次，顺序在「新→旧 / 旧→新」之间来回跳。
+    # 因此这里连续取两次，要求结果稳定且内部顺序不被改动。
+    again = plugin._api_get_status()["data"]["webhook"]["samples"]
+    assert [s["payload"]["pathx"] for s in again] == \
+           [s["payload"]["pathx"] for s in samples], "/status 连续调用返回的顺序必须稳定"
+    internal = plugin._webhook_stat_now()["samples"]
+    assert internal[0]["payload"]["pathx"] == "/vol3/0.mkv", \
+        "内部样本顺序被 /status 的倒序逻辑改动了（应保持旧的在前）"
+
+
 # ===================== 看板契约 =====================
 #
 # 这一组的由来：USAGE.md 的「怎么确认这条路通了」整节把 webhook 的四项计数与
@@ -641,6 +916,27 @@ def test_dashboard_webhook_panel_is_gated_not_always_visible():
     src = _page_source()
     assert "webhookVisible" in src, "看板缺少 webhook 面板的显示条件"
     assert "v-if=\"webhookVisible\"" in src, "webhook 面板未绑定显示条件"
+
+
+def test_dashboard_renders_payload_samples():
+    """
+    报文样本必须出现在看板上。
+
+    这是「发送端会传什么」在开发期唯一可得的答案来源：用户把最近一条样本贴过来，
+    字段名和值的形态就都清楚了。后端返回了而前端不画，等于没做 —— 与前面
+    那组计数用例同一类缺口（后端有字段、文档写了、前端没画）。
+    """
+    src = _page_source()
+    assert "webhookStat.samples" in src, "看板未渲染报文样本"
+    # ⚠️ 断言「调用点」而不是「标识符出现过」：只查 "prettySample" 的话，
+    # 把模板里的调用换掉、只留下函数定义照样能通过（实测该变异逃逸过一次）。
+    assert "prettySample(s.payload)" in src, (
+        "样本未经 JSON 美化，用户没法照着抄字段名"
+    )
+    # 样本要逐字可抄：必须走 <pre>（不折行），否则 item_path 会被断成两行。
+    # 断言**模板里的 class 绑定**而不是「这个类名在文件里出现过」—— 只查后者的话，
+    # 把模板上的 class 摘掉、样式规则还留在 <style> 里照样能通过（实测逃逸过一次）。
+    assert 'class="webhook-sample"' in src, "样本缺少不折行的等宽样式，字段名会被折断"
 
 
 def test_stub_host_status_defaults_align_with_frontend():

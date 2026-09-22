@@ -644,13 +644,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         :param source: 日志里的来源标签（如 `Webhook`）。整理事件链路传空串 ——
             它的来源由 event_desc 里的 `事件=` 体现，再加一个标签只会让日志更长。
-        :return: 各原因计数（added/duplicate/skipped/unmatched/missing）
+        :return: 各原因计数（added/duplicate/skipped/unmatched/missing/upgraded/expanded）
         """
         # 来源标签可能在左侧（"Webhook 监听到 N 个"）或完全没有（整理事件）。
         # 统一在这里拼一次，避免每个分支都要判断有没有来源。
         who = f"{source} " if source else ""
         counts = {"added": 0, "duplicate": 0, "skipped": 0, "unmatched": 0,
-                  "missing": 0, "upgraded": 0}
+                  "missing": 0, "upgraded": 0, "expanded": 0}
         added_paths: List[str] = []
         unmatched_paths: List[str] = []
         missing_paths: List[str] = []
@@ -670,57 +670,49 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             src_root = (own_pair.get("src") or "").strip().rstrip("/")
             pair_name = _pair_name(own_pair)
 
-            if not _wh_valid_extension(own_pair, file_path, self._media_extensions):
-                counts["skipped"] += 1
-                continue
-
             if not os.path.exists(file_path):
                 counts["missing"] += 1
                 missing_paths.append(file_path)
                 continue
 
-            rel_path = os.path.relpath(file_path, src_root)
-            queue_key = f"{pair_name}:{rel_path}"
-            if self._is_ignored(queue_key):
-                # 忽略清单优先级最高：否则被忽略的文件会从 webhook 这条新路
-                # 重新进队，表现为「明明忽略了却还在同步」。
-                counts["skipped"] += 1
+            # 目录展开（webhook 专属前置步骤，见 _expand_ingest_path）。
+            # ⚠️ 必须在扩展名过滤**之前**：目录名没有扩展名，直接进白名单会被判
+            # skipped —— 而发送端最自然的「通知入库」就是推一个目录（下完一部电影
+            # 或一季的文件夹）。那曾表现为 success=True、0 入队、队列为空，
+            # 发送端与用户都以为成功了。展开成文件后走下面同一套判据，不额外放行
+            # 任何东西（非媒体文件照样被扩展名过滤掉）。
+            expanded = self._expand_ingest_path(file_path)
+            if expanded is None:
+                # 普通文件：直接走单文件判据
+                sub = self._enqueue_one_path(
+                    file_path, own_pair, src_root, pair_name, now_ts, counts)
+                if sub:
+                    added_paths.append(sub)
                 continue
-            # 幂等：已在队列中的条目保留原入库时间，不刷新时间戳。
-            # durable outbox 是 at-least-once，webhook 发送端也常带重试；无条件覆盖
-            # 会让「1 小时前入库的文件」永远走不完冷却。
-            #
-            # ⚠️ 本判断必须在下面「待补扫清单升级」**之前**：一个文件可以同时出现在
-            # 冷却队列与待补扫清单里（webhook 抢先入队、随后补齐扫描又发现它）。
-            # 顺序颠倒会让重复投递经由「升级」分支绕过幂等检查，把冷却重新计时。
-            if queue_key in self._pending_queue:
-                counts["duplicate"] += 1
-                continue
-            if queue_key in self._missed_queue:
-                # ⚠️ 这里曾有一处 `continue`（把「已在待补扫清单」也当成重复投递），
-                # 它造成的是一个**静默的永久卡死**：补齐扫描发现文件「源端存在、
-                # 从未同步过」，只把它放进待补扫清单；而真实入库事件到达时又因
-                # 「已在待补扫清单」被判重复而不入冷却队列 —— 该文件从此既不在冷却
-                # 队列、也没被任何一轮同步取走，用户看到清单里永远挂着一条。
-                # 正确语义是「升级」：文件真的入库了就该走正常的冷却流程，
-                # 同时从待补扫清单移出（两处都保留只会让同一文件被两条通道各自处理）。
-                # Upgrading an entry to the real cool-down queue is the whole point:
-                # a plain `continue` left it stranded in neither queue nor sync.
-                counts["upgraded"] += 1
 
-            self._pending_queue[queue_key] = now_ts
-            self._missed_queue.pop(queue_key, None)
-            counts["added"] += 1
-            added_paths.append(rel_path)
+            # 目录：把展开出的文件按同一套判据逐个入队。
+            # ⚠️ 判据是 `is None`，**不是**真值判断 —— 空列表是「目录存在但无可用
+            # 文件」这一合法结果，用 `if expanded:` 会让它掉进下面的单文件分支，
+            # 于是目录被当成文件去做扩展名校验，最终表现为「目录被静默吞掉」
+            # 这个函数本来要修的那个 bug（自己踩过一次，故留此注释）。
+            counts["expanded"] += 1
+            for child in expanded:
+                sub = self._enqueue_one_path(
+                    child, own_pair, src_root, pair_name, now_ts, counts)
+                if sub:
+                    added_paths.append(sub)
 
+        # 看板/日志用：本批是否有目录被展开（不改变入队总数，故单独计数）
         if counts["added"] > 0:
             self.save_data("pending_queue", self._pending_queue)
             if self._missed_queue:
                 self.save_data("missed_queue", self._missed_queue)
             dup_note = f"，其中 {counts['duplicate']} 个已在队列中" if counts["duplicate"] else ""
             up_note = f"，{counts['upgraded']} 个由待补扫清单转入正常冷却" if counts["upgraded"] else ""
+            exp_note = (f"，含 {counts['expanded']} 个目录已展开为 {counts['added']} 个文件"
+                        if counts["expanded"] else "")
             logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}监听到 "
-                        f"{counts['added']} 个新入库文件（{event_desc}{dup_note}）"
+                        f"{counts['added']} 个新入库文件（{event_desc}{dup_note}{up_note}{exp_note}）"
                         f"，已加入 {self._delay_hours}h 延迟冷却队列: "
                         f"{_brief_paths(added_paths)}")
         elif counts["duplicate"]:
@@ -728,6 +720,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}"
                         f"{counts['duplicate']} 个文件已在冷却队列中，未刷新其冷却计时"
                         f"（{event_desc}，队列共 {len(self._pending_queue)} 条）")
+        elif counts["expanded"]:
+            # 展开过目录却一个文件都没进来：目录存在但没有可同步的媒体文件，
+            # 或全在忽略清单里。**必须留 info** —— 否则「推了个目录、什么也没发生」
+            # 与「推了个不存在的路径」在日志上没有区别。
+            logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}目录已展开但无文件入队"
+                        f"（{event_desc}，目录 {counts['expanded']} 个；"
+                        f"可能目录内无媒体文件、扩展名未包含，或全在忽略清单中）")
         elif missing_paths and not unmatched_paths:
             # 归属映射明确、但容器内读不到 —— 最值得警惕的一类（挂载不一致）
             logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}路径在本容器内不可见"
@@ -743,6 +742,128 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             logger.debug(f"[Rsync115Sync] v{self.plugin_version} {who}未入队"
                          f"（{event_desc}，空路径/扩展名被过滤 {counts['skipped']} 个）")
         return counts
+
+    # ---- 目录展开：webhook 发送端最自然的「通知入库」是推一个目录 ----
+
+    # 目录展开的上限。一个 Webhook 报文能带进来的文件数必须有界：发送端若是
+    # 「推整个 9KG 根目录」，无上限展开会让一次请求把冷却队列灌进上万个条目
+    # （115 侧随之而来的是风控配额被瞬间打满）。超出部分**不静默截断** ——
+    # 计数进 truncated，日志里明说少了多少，用户才知道该改成推子目录。
+    DIR_EXPAND_LIMIT = 500
+
+    def _expand_ingest_path(self, file_path: str) -> Optional[List[str]]:
+        """
+        把候选路径按「目录 / 普通文件」分流。
+
+        :return: `None`  = 这是**普通文件**，调用方按单文件判据处理；
+                 `[...]` = 这是**目录**，元素是展开出的文件（空列表表示目录里没有
+                 可同步的文件）。
+
+        ⚠️ 返回值用 `is None` 区分，**不要**用真值判断调用：空列表是「目录存在但
+        无可用文件」这一合法结果，把它当成「普通文件」会让调用方拿目录去做扩展名
+        校验，最终回到「目录被静默吞掉」这个函数本来要修的问题上。
+
+        为什么要按扩展名白名单**就地剪枝**而不是展开后再过滤：
+        `os.walk` 一个 9KG 根目录会遍历其中每个目录项，而绝大多数是无关文件。
+        用同一份扩展名表剪枝后，遍历量与真正要同步的文件数同阶，
+        且语义与后面的过滤完全一致（不会出现「展开时放行、入队时又被拒」的分歧）。
+
+        **目录必须展开**：目录名没有扩展名，直接进扩展名白名单必然被判 skipped ——
+        而发送端最自然的「通知入库」就是推一个目录。那曾表现为
+        `success=True`、入队 0 个、队列为空，发送端和用户都以为成功了。
+        """
+        try:
+            if not os.path.isdir(file_path):
+                return None
+        except Exception:
+            return None
+
+        # 目录本身不需要扩展名校验；展开出的文件逐个交给调用方走同一套判据。
+        # 复用 paths.valid_exts_of —— 与同步/搜索/补齐扫描**同一份口径**，
+        # all_ext 映射返回 None 表示不过滤。自己再解析一次字段迟早会漂移。
+        pair = _pair_for_path(file_path, self._sync_pairs) or {}
+        wanted = _valid_exts_of(self._media_extensions, pair.get("all_ext", False))
+        # 同样复用排除目录口径（@eaDir / #recycle 等），避免走进用户明确排除的目录 ——
+        # 那既是性能问题，也会把排除目录里的文件错误入队。
+        # getattr 兜底：本方法在 webhook 链路上被调用，而 `__new__` 构造的实例
+        # （单测）或跨版本的旧数据文件可能没有该属性 —— 缺属性时不该让整条入库链路崩掉。
+        excluded_dirs = _excluded_dir_names(
+            getattr(self, "_exclude_patterns", self.DEFAULT_EXCLUDE_PATTERNS))
+
+        found: List[str] = []
+        truncated = False
+        try:
+            for root, dirnames, filenames in os.walk(file_path):
+                dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
+                for name in sorted(filenames):
+                    if wanted is not None:
+                        ext = os.path.splitext(name)[-1].lstrip(".").lower()
+                        if ext not in wanted:
+                            continue
+                    found.append(os.path.join(root, name))
+                    if len(found) >= self.DIR_EXPAND_LIMIT:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+        except Exception as err:
+            logger.debug(f"[Rsync115Sync] 展开目录失败（按空目录处理）: {file_path} — {err}")
+            return []
+
+        if truncated:
+            logger.warning(f"[Rsync115Sync] 目录 {file_path} 内可同步文件超过 "
+                           f"{self.DIR_EXPAND_LIMIT} 个上限，本次只处理前 "
+                           f"{self.DIR_EXPAND_LIMIT} 个；建议改为推送具体子目录，"
+                           f"否则一轮同步会同时上传过多文件。")
+        # 排序保证同一目录多次推送的入队顺序稳定（便于对照日志与队列）
+        return sorted(found)
+
+    def _enqueue_one_path(self, file_path: str, own_pair: Dict[str, Any], src_root: str,
+                          pair_name: str, now_ts: float, counts: Dict[str, int]) -> str:
+        """
+        对**单个文件**做完整入队判定，返回入队的相对路径（未入队返回空串）。
+
+        从 `_enqueue_ingest_paths` 的循环体里抽出来，使「直接推文件」与
+        「推目录、展开成文件」走**完全同一套**判据（扩展名 / 忽略清单 / 幂等 /
+        待补扫升级）。分开写迟早出现两条路径的行为漂移。
+        """
+        if not _wh_valid_extension(own_pair, file_path, self._media_extensions):
+            counts["skipped"] += 1
+            return ""
+
+        rel_path = os.path.relpath(file_path, src_root)
+        queue_key = f"{pair_name}:{rel_path}"
+        if self._is_ignored(queue_key):
+            # 忽略清单优先级最高：否则被忽略的文件会从 webhook 这条新路
+            # 重新进队，表现为「明明忽略了却还在同步」。
+            counts["skipped"] += 1
+            return ""
+        # 幂等：已在队列中的条目保留原入库时间，不刷新时间戳。
+        # durable outbox 是 at-least-once，webhook 发送端也常带重试；无条件覆盖
+        # 会让「1 小时前入库的文件」永远走不完冷却。
+        #
+        # ⚠️ 本判断必须在下面「待补扫清单升级」**之前**：一个文件可以同时出现在
+        # 冷却队列与待补扫清单里（webhook 抢先入队、随后补齐扫描又发现它）。
+        # 顺序颠倒会让重复投递经由「升级」分支绕过幂等检查，把冷却重新计时。
+        if queue_key in self._pending_queue:
+            counts["duplicate"] += 1
+            return ""
+        if queue_key in self._missed_queue:
+            # ⚠️ 这里曾有一处 `continue`（把「已在待补扫清单」也当成重复投递），
+            # 它造成的是一个**静默的永久卡死**：补齐扫描发现文件「源端存在、
+            # 从未同步过」，只把它放进待补扫清单；而真实入库事件到达时又因
+            # 「已在待补扫清单」被判重复而不入冷却队列 —— 该文件从此既不在冷却
+            # 队列、也没被任何一轮同步取走，用户看到清单里永远挂着一条。
+            # 正确语义是「升级」：文件真的入库了就该走正常的冷却流程，
+            # 同时从待补扫清单移出（两处都保留只会让同一文件被两条通道各自处理）。
+            # Upgrading an entry to the real cool-down queue is the whole point:
+            # a plain `continue` left it stranded in neither queue nor sync.
+            counts["upgraded"] += 1
+
+        self._pending_queue[queue_key] = now_ts
+        self._missed_queue.pop(queue_key, None)
+        counts["added"] += 1
+        return rel_path
 
     def _handle_webhook_event(self, event: Event):
         """
@@ -798,8 +919,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         if not raw_paths:
             # 拿不到路径 = 报文结构还没对齐。只记 debug，不刷 info：
             # 播放类噪声已经挡在前面了，这里能剩下的通常只是刮削更新之类。
+            # **留样本**：这正是「发送端字段猜不对」的现场，结构摘要不够用。
             self._note_webhook(channel=channel, event=event_name, source=server_name,
-                               shape=shape, unrecognized=True)
+                               shape=shape, unrecognized=True,
+                               sample=event_data, action="未识别")
             logger.debug(f"[Rsync115Sync] webhook 未取到入库路径"
                          f"（event={event_name}，channel={channel}，报文结构={shape}）")
             return
@@ -809,7 +932,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             event_desc=f"event={event_name}，channel={channel}，"
                        f"server={server_name or '未知'}，路径来源={path_source}")
         self._note_webhook(channel=channel, event=event_name, source=server_name,
-                           shape=shape, ingested=counts.get("added", 0))
+                           shape=shape, ingested=counts.get("added", 0),
+                           sample=event_data,
+                           action="入队" if counts.get("added", 0) else "未入队")
 
     def _handle_transfer_event(self, event: Event):
         """
@@ -1337,7 +1462,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             "last_event": "",
             "last_source": "",
             "last_payload_shape": "",
+            # 最近若干条报文的**样本**（含值，已截断脱敏）。发送端是另一个工程时，
+            # 「它到底传了什么」在开发期是未知的 —— 只留结构摘要答不出这个问题。
+            "samples": [],
         }
+
+    # 报文样本保留条数。取小值：这是排障用的「最近发生了什么」，不是审计日志；
+    # 留太多只会把 data 文件撑大（每条都可能带完整 JSON）。
+    WEBHOOK_SAMPLE_LIMIT = 5
 
     def _webhook_stat_now(self) -> Dict[str, Any]:
         """
@@ -1359,7 +1491,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
     def _note_webhook(self, *, channel: str = "", event: str = "", source: str = "",
                       shape: str = "", ingested: int = 0, rejected: bool = False,
-                      unrecognized: bool = False) -> None:
+                      unrecognized: bool = False, sample: Any = None,
+                      action: str = "") -> None:
         """
         记录一次 webhook 到达/入队/被拒，供看板与日志回答「这条路到底通不通」。
 
@@ -1384,6 +1517,28 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             stat["last_source"] = source
         if shape:
             stat["last_payload_shape"] = shape
+        # 报文样本：只在**收到带路径的报文**时采（见 _handle_webhook_event 的调用点）。
+        # 每条都记的话，播放类事件会把样本环形缓冲刷满 —— 那正是最不需要看的一类。
+        if sample:
+            try:
+                entry = _wh.sample_payload(sample)
+            except Exception:
+                entry = None
+            if entry:
+                items = stat.get("samples")
+                if not isinstance(items, list):
+                    items = []
+                items.append({
+                    "ts": time.time(),
+                    "channel": channel,
+                    "event": event,
+                    "source": source,
+                    "action": action,       # 入队 / 未识别 / 被拒 —— 直接看结论
+                    "ingested": max(0, int(ingested)),
+                    "payload": entry,
+                })
+                # 只留最近 N 条（环形）：这是排障窗口，不是审计日志
+                stat["samples"] = items[-self.WEBHOOK_SAMPLE_LIMIT:]
         try:
             self.save_data("webhook_stat", stat)
         except Exception:
@@ -1528,7 +1683,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         raw_paths, path_source = _wh.extract_paths(event_data)
         if not raw_paths:
             self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                               unrecognized=True)
+                               unrecognized=True, sample=event_data, action="未识别")
             logger.info(f"[Rsync115Sync] 自建 webhook 未取到路径"
                         f"（来源 {client_ip or '未知'}，报文结构={shape}）")
             return {"success": False, "message": "未能从报文中取到文件路径（详见插件日志中的报文结构）"}
@@ -1543,7 +1698,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                            f"；当前白名单: {_brief_paths(roots)}")
         if not allowed:
             self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                               rejected=True)
+                               rejected=True, sample=event_data, action="被拒")
             return {"success": False,
                     "message": "路径不在允许的目录白名单内（请在配置页填写「webhook 允许的入库目录」）"}
 
@@ -1551,7 +1706,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             allowed, source="Webhook(自建)",
             event_desc=f"来源={client_ip or '未知'}，路径来源={path_source}")
         self._note_webhook(event=event_name, source=client_ip, shape=shape,
-                           ingested=counts.get("added", 0))
+                           ingested=counts.get("added", 0), sample=event_data,
+                           action="入队" if counts.get("added", 0) else "未入队")
         return {
             "success": True,
             "data": counts,
@@ -1735,11 +1891,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         webhook_stat["self_enabled"] = bool(getattr(self, "_webhook_self_enabled", False))
         webhook_stat["secret_set"] = bool(getattr(self, "_webhook_secret", ""))
         webhook_stat["allow_roots"] = _brief_paths(self._webhook_allowed_roots())
+        # 报文样本（含值、已截断脱敏）：发送端是另一个工程时，「它到底传了什么」
+        # 在开发期是未知的。结构摘要能告诉你字段名，但只有样本能告诉你值长什么样 ——
+        # 而候选字段表能否命中取决于值的形态。按时间倒序，看板直接照抄最近一条。
+        samples = webhook_stat.get("samples")
+        webhook_stat["samples"] = list(reversed(samples)) if isinstance(samples, list) else []
         return {
             "success": True,
             "data": {
                 "is_running": self._is_running,
-                # webhook 运行态：收入计数 + 最近一次报文的**结构摘要**（不含路径值）
+                # webhook 运行态：计数 + 结构摘要 + 最近报文样本（样本含值，已截断脱敏）
                 "webhook": webhook_stat,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,

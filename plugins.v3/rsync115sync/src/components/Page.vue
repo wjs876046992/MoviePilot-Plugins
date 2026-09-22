@@ -149,6 +149,43 @@
               · 自建端点未开启（用 Emby 的话无需开启）
             </template>
           </div>
+
+          <!-- 最近报文样本。存在的理由只有一条：发送端往往是**另一个工程**，
+               开发期没人知道它会传什么字段（「我不知道发送端会传递什么样的参数」）。
+               结构摘要给出字段名，但答不出「值长什么样」—— 而候选字段表能否命中
+               恰恰取决于值的形态（`/vol3/x.mkv` 是路径，`12345` 是媒体库 ID）。
+               把最近几条原样留下来，对齐字段就不必靠猜、也不必来回问。
+               值已由后端截断 + 脱敏（token/secret 等显示为 ***）。 -->
+          <div v-if="(webhookStat.samples || []).length" class="mt-2">
+            <div class="d-flex align-center">
+              <span class="font-weight-medium">最近报文（新 → 旧）</span>
+              <v-spacer />
+              <span class="text-caption text-medium-emphasis">
+                只留最近 {{ (webhookStat.samples || []).length }} 条，值已截断、密钥已隐去
+              </span>
+            </div>
+            <v-expansion-panels variant="accordion" class="mt-1">
+              <v-expansion-panel
+                v-for="(s, i) in (webhookStat.samples || [])"
+                :key="i"
+              >
+                <v-expansion-panel-title class="text-caption py-1">
+                  <span
+                    class="mr-2"
+                    :class="s.action === '入队' ? 'text-success' : 'text-warning'"
+                  >{{ s.action || '已收到' }}</span>
+                  <span class="text-medium-emphasis">
+                    {{ s.source || '未知来源' }}
+                    <template v-if="s.event"> · {{ s.event }}</template>
+                    <template v-if="s.ingested"> · 入队 {{ s.ingested }} 个</template>
+                  </span>
+                </v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <pre class="webhook-sample">{{ prettySample(s.payload) }}</pre>
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
+          </div>
         </v-alert>
 
         <!-- 快捷操作工具条 -->
@@ -885,6 +922,17 @@ const statusData = ref({
 // 而不是「webhook 功能已启用」—— 后者的默认值就是启用（渠道默认 emby），
 // 用它判断会让这块面板对每个用户都常驻显示，等于没做门控。
 const webhookStat = computed(() => statusData.value.webhook || {})
+
+// 报文样本缩进展示。走 `<pre>` 而不是把 JSON 塞进普通文本，是因为样本要**照着
+// 逐字抄字段名** —— 折行会把 `"item_path"` 断成两行，抄过去就对不上了。
+// 用 Vue 的文本插值（而非 v-html）输出，内容会被自动转义，不存在注入问题。
+function prettySample(payload) {
+  try {
+    return JSON.stringify(payload ?? {}, null, 2)
+  } catch (e) {
+    return String(payload)
+  }
+}
 const webhookVisible = computed(() =>
   (Number(webhookStat.value.received) || 0) > 0 || Boolean(webhookStat.value.self_enabled)
 )
@@ -1735,5 +1783,19 @@ onUnmounted(() => {
     white-space: normal;
     word-break: break-word;
   }
+}
+/* 报文样本：**不折行**、超宽横向滚动。
+   这里刻意与上面那批「允许折行」的规则相反：样本的用途是让用户逐字抄字段名，
+   折行会把 "item_path" 断成两行，抄过去就变成两个错字段。 */
+.webhook-sample {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
 }
 </style>
