@@ -127,6 +127,58 @@ ORIGIN_SCAN = "scan"        # 主动扫描发现源端有、strm 端没有（**�
 # provenance, so it lives in its own dict on the instance.
 
 
+def _path_parts(path: Optional[str]) -> Tuple[str, ...]:
+    """把绝对路径拆成非空分量元组，供逐分量比较（绕开字符串前缀的陷阱）。"""
+    return tuple(p for p in str(path or "").strip().rstrip("/").split("/") if p)
+
+
+def is_under_any(path: str, roots: List[str]) -> bool:
+    """
+    判断某个路径是否落在给定的任一根目录之下（**逐路径分量**比较）。
+
+    Whether `path` lies under any of `roots`, compared on path boundaries.
+
+    ⚠️ 不能用字符串 `startswith`：`/HomeTheater/TV2` 会被 `/HomeTheater/TV`
+    误判为「在其之下」，从而放行一条助手其实会拒绝的路径 —— 与本模块其它
+    路径判定同一条教训（见 paths.pair_for_path）。
+    Plain startswith would let "/HomeTheater/TV" swallow "/HomeTheater/TV2".
+    """
+    target = _path_parts(path)
+    if not target:
+        return False
+    for root in roots:
+        root_parts = _path_parts(root)
+        if root_parts and target[: len(root_parts)] == root_parts:
+            return True
+    return False
+
+
+def parse_pan_mappings(raw: Any) -> List[Tuple[str, str]]:
+    """
+    解析助手配置里的映射串（换行分隔的 `本地目录#网盘目录[#标记]`）。
+
+    Parse the helper's newline-separated `local#cloud[#flag]` mapping string.
+
+    ⚠️ **仅用于发送前预检**，绝不用于推导参数 —— 参数只能来自用户在本插件里
+    显式配置的 pan_dir（理由见 pan_dir_of）。行尾的 `#0`/`#1` 标记只是助手
+    对「是否参与全量」的取舍，不影响该路径是否被接受，故此处丢弃。
+    Used for pre-flight validation only, never to derive the parameter. The trailing
+    `#0`/`#1` flag governs the helper's own full-sweep policy, not path acceptance.
+    """
+    mappings: List[Tuple[str, str]] = []
+    for line in str(raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("#", 2)
+        if len(parts) < 2:
+            continue
+        local_root, pan_root = parts[0].strip(), parts[1].strip()
+        if local_root and pan_root:
+            mappings.append((local_root, pan_root))
+    return mappings
+
+
 def pan_dir_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
     """
     取队列 key 所属映射配置的**网盘目录**（用户在本插件里显式填的），未配置返回 None。

@@ -251,14 +251,20 @@ const strmWatchingEntries = computed(() => {
 const strmConfigured = computed(() => statusData.value.strm_check_enabled !== false);
 const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}));
 
-// strm 助手是否就绪（运行中 + 目录映射能对上本插件的 strm_dir）。
-// 不可用时按钮置灰并展示具体原因 —— 让用户点下去才发现没反应，是最糟的交互。
+// strm 助手是否就绪（运行中 + 至少一个映射配了网盘目录）。
+// 不可用时按钮置灰**并在区块内常驻说明原因** —— tooltip 在 disabled 元素上
+// 根本不会弹出（不派发鼠标事件），只放 tooltip 等于没有提示。
 const helperReady = computed(() => statusData.value.strm_helper_ok?.ready === true);
 const helperReason = computed(
   () => statusData.value.strm_helper_ok?.reason || 'strm 助手未就绪'
 );
-// 已请求过补生成的 key。看板据此：① 换一个更硬的标记（补生成无效 ⇒ 云端确实缺文件）
-// ② 按钮文案改成「再试生成」，提示这是一次重复尝试（每次都会让助手真的遍历云端目录）
+// 已请求过补生成的 key。
+//
+// ⚠️ 这里**不能**推论成「补生成无效 ⇒ 云端确实缺文件」。助手可能压根没执行
+// （路径不在它的「全量同步路径」里就被它直接拒绝），而拒绝提示只发给助手侧、
+// 本插件收不到 —— 那种情况下 strm 不会出现，但云端文件是完好的。
+// 把「命令已发出」当成「生成已失败」，会诱导用户去删掉一个好文件。
+// 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
 const genRequested = computed(() => statusData.value.strm_gen_requested || {});
 
 // 选中项中有多少属于 strm 疑似清单。
@@ -1858,7 +1864,7 @@ return (_ctx, _cache) => {
                                   _createElementVNode("div", _hoisted_63, [
                                     (genRequested.value[key])
                                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                          _createTextVNode(" 已请 strm 助手补生成过一次，仍未生成 —— 云端很可能确实缺该文件 ")
+                                          _createTextVNode(" 已请求 strm 助手补生成，尚未看到结果 —— 请到助手侧确认它是 真的在生成，还是报了「匹配目录失败」 ")
                                         ], 64))
                                       : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                                           _createTextVNode(" 同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成 ")
@@ -1871,12 +1877,12 @@ return (_ctx, _cache) => {
                                   ? (_openBlock(), _createBlock(_component_v_chip, {
                                       key: 0,
                                       size: "x-small",
-                                      color: "error",
+                                      color: "info",
                                       variant: "tonal",
                                       class: "font-weight-bold"
                                     }, {
                                       default: _withCtx(() => [...(_cache[76] || (_cache[76] = [
-                                        _createTextVNode(" 补生成无效 ", -1)
+                                        _createTextVNode(" 已请求生成 ", -1)
                                       ]))]),
                                       _: 1
                                     }))
@@ -2165,6 +2171,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-857f7bac"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-45129921"]]);
 
 export { App as default };

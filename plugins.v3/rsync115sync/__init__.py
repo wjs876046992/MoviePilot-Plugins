@@ -90,6 +90,7 @@ from .constants import (  # noqa: E402
     MISSED_SCAN_ENABLED_DEFAULT as _MISSED_SCAN_ENABLED_DEFAULT,
     MISSED_SCAN_INTERVAL as _MISSED_SCAN_INTERVAL,
     P115_PAN_DIR_HINT as _P115_PAN_DIR_HINT,
+    P115_PAN_MAPPING_FIELD as _P115_PAN_MAPPING_FIELD,
     P115_STRM_COMMAND as _P115_STRM_COMMAND,
     P115_STRM_HELPER_PLUGIN as _P115_STRM_HELPER_PLUGIN,
     RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
@@ -2979,6 +2980,37 @@ class Rsync115Sync(_PluginBase):
             return {"ready": False, "reason": _P115_PAN_DIR_HINT}
         return {"ready": True, "reason": ""}
 
+    def _helper_accepted_pan_roots(self) -> Tuple[List[str], Optional[str]]:
+        """
+        读助手「全量同步路径」里的网盘目录，用于**发送前预检**。
+
+        Read the helper's accepted cloud roots, used only to pre-validate.
+
+        ⚠️ 用途边界：这里**只做校验**，绝不参与「网盘目录从哪来」的推导 ——
+        参数仍然全部来自本插件用户在映射里显式填的 `pan_dir`（见 strm.pan_dir_of）。
+        校验之所以必须做：助手对不在该列表里的路径**直接拒绝**，而它的拒绝提示
+        只发给自己那边的用户，本插件拿不到，表现为用户视角的「点了没反应」。
+        This is validation only — never a source for the parameter itself.
+
+        **读不到时返回 (空, None) 表示「不阻塞」**：不能因为对方改了字段名就把
+        整个功能判死。宁可退化成「照发」（旧行为），也不要让用户完全用不了。
+        Returns an empty list with no error when unreadable, so a helper-side rename
+        degrades to the old send-anyway behaviour instead of breaking the feature.
+        """
+        if _PluginManager is None:
+            return [], None
+        try:
+            cfg = self.systemconfig.get(f"plugin.{_P115_STRM_HELPER_PLUGIN}") or {}
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 读取助手配置失败，跳过发送前预检: {e}")
+            return [], None
+        if not isinstance(cfg, dict):
+            return [], None
+        raw = cfg.get(_P115_PAN_MAPPING_FIELD)
+        if not raw:
+            return [], None
+        return [pan for _, pan in _strm.parse_pan_mappings(raw)], None
+
     def _api_strm_generate(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """
         先尝试请 strm 助手补生成指针文件，而不是直接删旧重传。
@@ -3028,6 +3060,37 @@ class Rsync115Sync(_PluginBase):
                                + "\n".join(f"• {k}" for k in unmatched[:_MAX_LOGGED_PATHS])
                                + f"\n{_P115_PAN_DIR_HINT}"}
 
+        # ⚠️ **发送前预检**：助手只接受它 full_sync_strm_paths 里的网盘路径，
+        # 不在列表里的会被它拒绝（用户实测：`匹配目录失败，请检查输入路径和插件配置！`）。
+        # 若不预检，命令发出去必然失败，而**失败提示只发给助手侧用户**，本插件
+        # 完全看不到 —— 用户看到的是「点了按钮，疑似条目消失了，然后什么都没发生」。
+        # 提前拦下并把助手的配置状态摆出来，是本插件唯一能给出有用信息的位置。
+        # Pre-flight: the helper rejects any path outside its own full-sync list, and
+        # its rejection notice never reaches us. Catching it here is the only point
+        # where we can tell the user anything actionable.
+        accepted, accepted_err = self._helper_accepted_pan_roots()
+        if accepted_err:
+            return {"success": False, "message": accepted_err}
+        # ⚠️ `accepted` 为空 = **未知**，不是「什么都不接受」。
+        # 早先写成无条件过滤时踩了这个坑：读不到助手配置（对方改了字段名、
+        # 或本插件读配置失败）会让**每一个**目录都被判为「不在列表里」，
+        # 于是功能整体失效 —— 恰好是预检想避免的、却更严重的一种失败。
+        # 空列表必须跳过预检，退回「照发」的旧行为。
+        # An empty list means "unknown", not "nothing allowed": filtering against it
+        # would reject every path and disable the whole feature.
+        rejected = ([d for d in dirs if not _strm.is_under_any(d, accepted)]
+                    if accepted else [])
+        if rejected:
+            listed = "\n".join(f"• {d}" for d in rejected[:_MAX_LOGGED_PATHS])
+            return {"success": False,
+                    "message": f"这些网盘目录不在 P115StrmHelper 的「全量同步路径」里，"
+                               f"发过去会被它拒绝（未发出任何命令）：\n{listed}\n\n"
+                               f"该助手只接受它自己「全量同步路径」中的路径。\n"
+                               f"它当前配置的网盘目录：\n"
+                               + "\n".join(f"• {p}" for p in accepted[:_MAX_LOGGED_PATHS])
+                               + f"\n\n请在助手配置页为这些网盘目录补上对应映射行，"
+                                 f"或在本插件里把该映射的「网盘目录」改成上面已有的路径。"}
+
         # ⚠️ 上限命中时**整批拒绝**，而不是「处理前 N 个、剩下的留给用户猜」。
         # 达到上限说明疑似条目已散布到很多目录，此时逐目录触发的总开销可能已超过
         # 一次整库遍历 —— 该由用户明确决策，插件不该自动放大对 115 的访问量。
@@ -3052,33 +3115,38 @@ class Rsync115Sync(_PluginBase):
             return {"success": False,
                     "message": "补生成命令发送失败（宿主事件总线不可用），请查看日志"}
 
+        # ⚠️ **条目留在疑似清单，不移进观察期**。
+        #
+        # 早先的做法是「请求即移入观察期」，结果用户看到条目凭空消失、宽限期到
+        # 又带着「补生成无效」回来。那个设计错在**把「命令已发出」当成了「生成已
+        # 执行」**：助手可能拒绝（路径不在它的全量列表里）、可能没收到，这两种
+        # 情况下 strm 当然不会出现，于是条目被扣上「云端确实缺文件」的帽子 ——
+        # 而云端其实有。顺着这个结论去「删旧重传」，删掉的正是一个好文件。
+        # The entry must not leave the list: a sent command is not a performed one, and
+        # treating the two as equivalent manufactures a false "the cloud lacks it".
+        #
+        # 现在的语义：请求只是**打上标记**（看板显示「已请求生成，等待结果」），
+        # 条目照旧留在清单里可继续操作。若 strm 真的因这次请求而生成，下一轮
+        # 主动扫描自然会把它判为「已有 strm」而解除 —— **不需要我们替它移动**。
         now_ts = time.time()
-        moved_back = 0
         for key in matched:
             self._strm_gen_requested[key] = now_ts
-            self._strm_suspects.pop(key, None)
-            # 移回「待观察」并重新计时：复用既有巡检状态机，而不是新加一条轮询路径。
-            # strm 出现 ⇒ 自动解除；宽限期到仍无 ⇒ 回到疑似清单，且此时判定更硬
-            # （生成动作已经做过而仍然没有，基本可确定云端真缺该文件）。
-            self._strm_watch[key] = now_ts
-            moved_back += 1
-        self.save_data("strm_suspects", self._strm_suspects)
-        self.save_data("strm_watch", self._strm_watch)
         self.save_data("strm_gen_requested", self._strm_gen_requested)
-        self._reset_strm_notified_if_clear()
 
         logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(dirs)} 个目录 / "
-                    f"{moved_back} 个文件（回到观察期）")
-        msg = (f"已向 strm 助手发出 {len(dirs)} 条补生成命令，覆盖 {moved_back} 个文件。\n"
-               f"这些文件已移回「观察中」，重新按宽限期 {self._strm_grace_hours}h 计时：\n"
-               f"• 若 strm 生成 → 说明此前只是助手漏生成，**无需删旧重传**\n"
-               f"• 若宽限期到仍无 strm → 云端确实缺文件，此时再执行「删旧重传」\n"
-               f"注意：助手是异步长任务，生成需要时间，请稍后回来查看。")
+                    f"{len(matched)} 个文件（条目保留在疑似清单，等待结果）")
+        msg = (f"已向 strm 助手发出 {len(dirs)} 条补生成命令，覆盖 {len(matched)} 个文件。\n"
+               f"• strm 助手会按目录遍历云端并重新生成指针文件\n"
+               f"• 若生成成功，文件会出现在 strm 目录，届时点「扫描缺 strm 的文件」"
+               f"即可看到它们被判定为正常\n"
+               f"• 若助手报「匹配目录失败」，说明该网盘路径不在它的「全量同步路径」里，"
+               f"请在助手配置页补上（详见配置页说明）\n"
+               f"助手是异步长任务，生成需要时间，请稍后回来查看。")
         if unmatched:
             msg += (f"\n\n⚠️ 另有 {len(unmatched)} 个文件本次未处理"
                     f"（所属映射未配置「网盘目录」），它们仍留在疑似清单中。")
         return {"success": True, "message": msg,
-                "data": {"dirs": dirs, "requested": moved_back,
+                "data": {"dirs": dirs, "requested": len(matched),
                          "unmatched": unmatched[: _MAX_LOGGED_PATHS],
                          "unmatched_count": len(unmatched)}}
 

@@ -43,14 +43,29 @@ def _plugin(root, *, conf=None):
     return plugin
 
 
-def _stub_helper(monkeypatch, module, *, running=True):
-    """把助手的运行态注入被测代码（不打桩业务逻辑本身）。"""
+def _stub_helper(monkeypatch, module, *, running=True, helper_cfg=True):
+    """
+    注入助手的运行态与（可选的）「全量同步路径」配置。
+
+    预检要读助手配置，因此这里必须能模拟「助手在跑但路径不在它列表里」这种情况 ——
+    那正是用户实测踩到的坑（9KG 不在助手的 full_sync_strm_paths 里）。
+    """
 
     class _PM:
         def __init__(self):
             self.running_plugins = {"P115StrmHelper": object()} if running else {}
 
     monkeypatch.setattr(module, "_PluginManager", _PM)
+
+    class _SC:
+        def get(self, key):
+            if not helper_cfg:
+                return {}
+            return {"full_sync_strm_paths":
+                    "/media/strms/Movies#/HomeTheater/Movies#1\n"
+                    "/media/strms/TV#/HomeTheater/TV#1"}
+
+    return _SC()
 
 
 def _sent(monkeypatch, module):
@@ -67,7 +82,7 @@ def _sent(monkeypatch, module):
 def test_helper_ready_when_configured(monkeypatch, tmp_path):
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = _plugin(str(tmp_path))
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
 
     assert plugin._strm_helper_ready()["ready"] is True
 
@@ -76,7 +91,7 @@ def test_helper_not_ready_when_plugin_absent(monkeypatch, tmp_path):
     """助手没装时必须给出**具体**原因，而不是让按钮静默失效。"""
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = _plugin(str(tmp_path))
-    _stub_helper(monkeypatch, module, running=False)
+    plugin.systemconfig = _stub_helper(monkeypatch, module, running=False)
 
     ready = plugin._strm_helper_ready()
     assert ready["ready"] is False
@@ -91,7 +106,7 @@ def test_rejects_keys_outside_suspect_list(monkeypatch, tmp_path):
     """不在疑似清单里的 key 一律拒绝 —— 防止构造任意路径让助手去遍历云端目录。"""
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = _plugin(str(tmp_path))
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": ["电视剧:随便/造的/路径.mkv"]})
@@ -103,8 +118,56 @@ def test_rejects_keys_outside_suspect_list(monkeypatch, tmp_path):
 def test_rejects_empty_keys(monkeypatch, tmp_path):
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = _plugin(str(tmp_path))
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     assert plugin._api_strm_generate({"keys": []})["success"] is False
+
+
+def test_preflight_rejects_path_not_in_helper_full_sync(monkeypatch, tmp_path):
+    """
+    用户实测踩到的坑：网盘目录不在助手的「全量同步路径」里。
+
+    助手会回「匹配目录失败，请检查输入路径和插件配置！」，但**这条提示只发给
+    助手侧用户，本插件收不到** —— 不预检的话，用户看到的是「点了按钮，
+    条目还在，然后什么都没发生」，完全无从判断。
+
+    这里必须**在发送前拦下**，并把助手当前配置的目录列出来供对照。
+    """
+    module = importlib.import_module("app.plugins.rsync115sync")
+    key = "9KG:未知演员/FC2-2132144/FC2-2132144-C.mp4"
+    plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
+    plugin._sync_pairs[0] = {"name": "9KG", "src": os.path.join(str(tmp_path), "src"),
+                            "dest": "/115/9KG", "strm_dir": "/media/strms/9KG",
+                            "pan_dir": "/HomeTheater/9KG", "all_ext": True}
+    # 助手配置里只有 Movies / TV，没有 9KG
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
+    sent = _sent(monkeypatch, module)
+
+    res = plugin._api_strm_generate({"keys": [key]})
+
+    assert res["success"] is False
+    assert sent == [], "注定被拒绝的命令不得发出"
+    assert "/HomeTheater/9KG" in res["message"], "要指出是哪个路径不被接受"
+    assert "/HomeTheater/TV" in res["message"], "要把助手当前配置列出来供对照"
+    assert key in plugin._strm_suspects, "失败时条目必须留在疑似清单"
+
+
+def test_preflight_degrades_when_helper_config_unreadable(monkeypatch, tmp_path):
+    """
+    读不到助手配置时**不阻塞**（退回旧行为），而不是把功能判死。
+
+    理由：预检读的是对方配置的字段名，属实现细节。对方改个字段名就让本功能
+    完全不可用，比「照发、可能失败」更糟 —— 后者至少还有成功的机会。
+    """
+    module = importlib.import_module("app.plugins.rsync115sync")
+    key = "电视剧:日番/A/Season 01/E01.mkv"
+    plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
+    plugin.systemconfig = _stub_helper(monkeypatch, module, helper_cfg=False)
+    sent = _sent(monkeypatch, module)
+
+    res = plugin._api_strm_generate({"keys": [key]})
+
+    assert res["success"] is True, "读不到助手配置时不应阻塞"
+    assert len(sent) == 1
 
 
 def test_rejects_when_helper_not_running(monkeypatch, tmp_path):
@@ -112,7 +175,7 @@ def test_rejects_when_helper_not_running(monkeypatch, tmp_path):
     module = importlib.import_module("app.plugins.rsync115sync")
     key = "电视剧:a.mkv"
     plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
-    _stub_helper(monkeypatch, module, running=False)
+    plugin.systemconfig = _stub_helper(monkeypatch, module, running=False)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": [key]})
@@ -126,17 +189,19 @@ def test_rejects_when_helper_not_running(monkeypatch, tmp_path):
 # 正常路径：命令发出 + 条目回到观察期
 # --------------------------------------------------------------------------
 
-def test_requests_helper_and_moves_entries_back_to_watch(monkeypatch, tmp_path):
+def test_requests_helper_and_keeps_entry_in_list(monkeypatch, tmp_path):
     """
-    核心行为：向助手发出目录参数，并把条目从疑似移回「待观察」重新计时。
+    核心行为：向助手发出目录参数，**条目留在疑似清单里**（只打标记）。
 
-    重新计时是为了复用既有巡检状态机（strm 出现 ⇒ 自动解除；宽限期到仍无 ⇒
-    回到疑似且判定更硬），不需要为异步的助手再加一条轮询路径。
+    ⚠️ 早先的实现把条目移进观察期，用户看到的是「点了一下，条目不见了」。
+    更糟的是宽限期到它还会带着「补生成无效」回来 —— 而那个结论建立在
+    「命令已发出 = 生成已执行」的错误假设上：助手完全可能压根没执行。
+    条目必须留在原地，用户才能看到它、继续操作它。
     """
     module = importlib.import_module("app.plugins.rsync115sync")
     key = "电视剧:日番/黄泉的使者/Season 01/E03.mkv"
     plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": [key]})
@@ -145,8 +210,8 @@ def test_requests_helper_and_moves_entries_back_to_watch(monkeypatch, tmp_path):
     assert len(sent) == 1
     etype, data = sent[0]
     assert data["cmd"] == "/p115_strm /HomeTheater/TV/日番/黄泉的使者/Season 01"
-    assert key not in plugin._strm_suspects, "应移出疑似清单"
-    assert key in plugin._strm_watch, "应回到观察期"
+    assert key in plugin._strm_suspects, "条目必须留在疑似清单（不得凭空消失）"
+    assert key not in plugin._strm_watch, "不得移进观察期（命令发出 ≠ 生成已执行）"
     assert key in plugin._strm_gen_requested, "应留下「已请求生成」标记"
 
 
@@ -155,7 +220,7 @@ def test_same_directory_files_share_one_command(monkeypatch, tmp_path):
     module = importlib.import_module("app.plugins.rsync115sync")
     keys = [f"电视剧:剧A/Season 01/E0{i}.mkv" for i in range(1, 4)]
     plugin = _plugin(str(tmp_path), conf={k: {"ts": time.time(), "origin": "scan"} for k in keys})
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": keys})
@@ -163,7 +228,8 @@ def test_same_directory_files_share_one_command(monkeypatch, tmp_path):
     assert res["success"] is True
     assert len(sent) == 1, "三个同目录文件应合并为一条命令"
     assert res["data"]["requested"] == 3
-    assert len(plugin._strm_watch) == 3
+    assert all(k in plugin._strm_suspects for k in keys), "条目都应留在清单里"
+    assert plugin._strm_watch == {}, "不得移进观察期"
 
 
 # --------------------------------------------------------------------------
@@ -182,7 +248,7 @@ def test_over_directory_limit_rejects_whole_batch(monkeypatch, tmp_path):
 
     keys = [f"电视剧:剧{i}/Season 01/E01.mkv" for i in range(STRM_GEN_DIR_LIMIT + 5)]
     plugin = _plugin(str(tmp_path), conf={k: {"ts": time.time(), "origin": "scan"} for k in keys})
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": keys})
@@ -193,6 +259,7 @@ def test_over_directory_limit_rejects_whole_batch(monkeypatch, tmp_path):
     # 清单**不动**：条目仍留在疑似里，用户缩小范围后可以重新发起
     assert len(plugin._strm_suspects) == len(keys)
     assert plugin._strm_watch == {}
+    assert plugin._strm_gen_requested == {}
 
 
 def test_limit_not_hit_still_processes(monkeypatch, tmp_path):
@@ -202,7 +269,7 @@ def test_limit_not_hit_still_processes(monkeypatch, tmp_path):
 
     keys = [f"电视剧:剧{i}/Season 01/E01.mkv" for i in range(STRM_GEN_DIR_LIMIT)]
     plugin = _plugin(str(tmp_path), conf={k: {"ts": time.time(), "origin": "scan"} for k in keys})
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": keys})
@@ -221,7 +288,7 @@ def test_unmapped_keys_are_reported_not_silently_dropped(monkeypatch, tmp_path):
     key = "电视剧:a.mkv"
     plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
     plugin._sync_pairs[0]["pan_dir"] = ""
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     res = plugin._api_strm_generate({"keys": [key]})
@@ -244,7 +311,7 @@ def test_missing_pan_dir_never_falls_back_to_derivation(monkeypatch, tmp_path):
     plugin = _plugin(str(tmp_path), conf={key: {"ts": time.time(), "origin": "scan"}})
     plugin._sync_pairs[0]["pan_dir"] = ""
     plugin._sync_pairs[0]["strm_dir"] = "/media/strms/TV"
-    _stub_helper(monkeypatch, module)
+    plugin.systemconfig = _stub_helper(monkeypatch, module)
     sent = _sent(monkeypatch, module)
 
     plugin._api_strm_generate({"keys": [key]})
