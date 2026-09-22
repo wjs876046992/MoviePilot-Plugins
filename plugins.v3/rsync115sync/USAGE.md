@@ -203,10 +203,24 @@ curl -X POST "http://<mp>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115
 **先把这条路单独打通，再去调那个工程**（发送端还没摸清时，这能省下大量来回）：
 
 ```bash
-curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook?token=<API_TOKEN>&source=rsync115sync" \
+curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync" \
   -H "Content-Type: application/json" \
   -d '{"event":"download.finish","data":{"title":"某电影 (2024)","source_path":"/volume3/9KG/某电影 (2024)"}}'
 ```
+
+> ⚠️⚠️ **注意 `webhook` 后面那个 `/` —— 少一个斜杠就全部失效。**
+> 宿主把端点注册为 `/`（`app/api/endpoints/webhook.py` 的 `@router.post("/")`），
+> 最终地址是 `/api/v1/webhook/`。写成 `/api/v1/webhook?token=...`（缺尾斜杠）
+> 会在**路由层**被 starlette 重定向：
+>
+> ```
+> POST /api/v1/webhook?token=...&source=rsync115sync HTTP/1.1 307 Temporary Redirect
+> ```
+>
+> 此时请求**没有到达插件**，插件一行日志都不会有 —— 现象和「发送端没配」完全一样。
+> 这是真机第二次踩到的坑，且比 Content-Type 那个更隐蔽：**307 看起来像「已成功投递」**
+> （静默跟随后结果确实是 200），只有插件侧的彻底沉默暴露了问题。
+> 改法：地址补上尾斜杠，其余不动。
 
 期望：HTTP **200** + body `{"success":true}`，插件日志出现一条
 `监听到 N 个新入库文件（... 路径来源=候选字段）`，看板「平台解析入口到达」+1、
@@ -218,10 +232,21 @@ curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook?token=<API_TOKEN>&source
 > 它会把你当前配置的全部映射源目录列出来，照着改报文即可。
 
 **如果发送端的 Content-Type 根本改不了**（有些工具把它写死），改用自建端点
-（通道 B，即上面的 `POST /api/v1/plugin/Rsync115Sync/webhook`）：它**不受这个坑影响** ——
+（通道 B，即 `POST /api/v1/plugin/Rsync115Sync/webhook`）：它**不受这个坑影响** ——
 收到「声明 multipart 却发裸 JSON」的请求时仍能正常解析入队（已实测，
 见 `test_self_endpoint_survives_the_same_bad_content_type`）。
 代价是要自己在插件配置页开启端点并配好密钥/IP 白名单。
+
+> ⚠️ **两个地址的斜杠要求正好相反，照抄时最容易搞错：**
+>
+> | 通道 | 地址 | 尾斜杠 |
+> |---|---|---|
+> | A 平台链路 | `/api/v1/webhook/?token=...&source=rsync115sync` | **必须带** |
+> | B 自建端点 | `/api/v1/plugin/Rsync115Sync/webhook` | **不能带** |
+>
+> 两边写反都会拿到一个 307 重定向 + 插件零日志。已各有一条用例钉住
+> （`test_host_route_with_trailing_slash_is_the_only_working_form`、
+> `test_self_endpoint_requires_no_trailing_slash`）。
 
 **报文形态参考**（另一个工程常用的形态，字段名不必完全一致，见下）：
 
@@ -258,9 +283,17 @@ curl -i -X POST "http://192.168.1.8:3001/api/v1/webhook?token=<API_TOKEN>&source
 
 | 看板现象 | 结论 |
 |---|---|
-| 「平台解析入口到达」= 0 | 报文**没到插件**：查 Content-Type（见上）、地址、API Token |
+| 「平台解析入口到达」= 0 | 报文**没到插件**：查地址尾斜杠、Content-Type、API Token |
 | 到达 > 0，但「收到事件」= 0 | 到了但**没认领**：日志会写明原因（取不到路径 / 路径不在映射内） |
 | 到达 > 0 且有入队日志 | 正常 |
+
+「到达 = 0」时，**按这个顺序查**（前两个都踩过，第三个最常见）：
+
+1. **地址有没有尾斜杠** —— 见上面的 307。发送端日志里的 `307 Temporary Redirect`
+   就是它的指纹。
+2. **Content-Type 是否与 body 形态匹配** —— 见上面的 400。宿主日志里一条
+   内容为空的 400 就是它的指纹。
+3. `token` 是否为宿主的 API Token、`source` 是否**恰好**是 `rsync115sync`。
 
 一次推多个文件时，报文的 `paths` 数组会被**全部**入队（不是只取第一个）。
 

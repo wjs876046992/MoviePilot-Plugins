@@ -733,6 +733,129 @@ def test_multipart_without_boundary_but_json_content_type_works(tmp_path):
     assert list(plugin._pending_queue), "报文应被认领并成功入队"
 
 
+# --------------------------------------------------------------------------
+# 缺尾斜杠 → 307：比 400 更隐蔽，因为「到过宿主」这件事在客户端侧被隐藏了
+# --------------------------------------------------------------------------
+#
+# 真机现象（用户第二次实测）：
+#     POST /api/v1/webhook?token=...&source=rsync115sync HTTP/1.1 307 Temporary Redirect
+#     插件日志什么也看不到
+#
+# 成因：宿主把 webhook 端点注册在 "/"(app/api/endpoints/webhook.py 的 @router.post("/"))，
+# 再由 app.include_router(prefix="/api/v1/webhook") 挂上，最终路径是 **带尾斜杠** 的
+# `/api/v1/webhook/`。请求少了尾斜杠时 starlette 在**路由层**就返回 307 并指向带斜杠
+# 的地址 —— 此时既没有解析请求体、更没有调用 provider，插件一行日志都不会有。
+#
+# 与 400 的区别（也是它更难查的原因）：400 至少留下一条状态码，而 307 在
+# 多数发送端（含界面里那种「高级设置」）看起来像「已成功投递」—— 因为静默跟随后
+# 结果确实是 200。真正的失败只体现在**重定向会丢掉 POST body 与部分请求头**，
+# 以及插件侧彻底的静默。用户的发送端日志里那条 307 就是唯一线索。
+
+def _host_chain_route_noredirect(plugin):
+    """与 `_host_chain_route` 同形，但客户端**不自动跟随重定向**。
+
+    ⚠️ starlette 的 `TestClient` 默认 `follow_redirects=True` —— 用它测尾斜杠问题
+    会**静默掩盖**这个 bug：请求被自动跟到带斜杠的地址并返回 200，测试全绿，
+    而真机上的发送端未必跟随。因此这一组必须显式关掉跟随。
+    """
+    pytest.importorskip("fastapi", reason="本环境无 fastapi，跳过路由层契约验证")
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+    module = importlib.import_module("app.plugins.rsync115sync")
+    app = FastAPI()
+
+    @app.post("/api/v1/webhook/")
+    async def host_webhook(request: Request):
+        body = await request.body()
+        form = await request.form()
+        args = request.query_params
+        info = plugin.webhook_parser(body=body, form=form, args=args)
+        if info:
+            plugin._handle_webhook_event(SimpleNamespace(
+                event_type=SimpleNamespace(value="webhook.message"),
+                event_data=info))
+        return {"success": True}
+
+    return TestClient(app, raise_server_exceptions=False,
+                      follow_redirects=False), module
+
+
+def test_host_route_without_trailing_slash_307_and_plugin_is_blind(tmp_path):
+    """
+    **缺尾斜杠 → 307，且插件完全不知道有请求来过。**
+
+    这是用户第二次实测的现象，也是本组用例存在的理由：第一次的 400 至少有状态码
+    可查，这一次连「报文有没有到」都要靠推断。因此把两件事同时钉住：
+    ① 地址少一个斜杠就是 307（不是 200、也不是 404）；
+    ② 插件侧 `claimed` 保持 0 —— 与「报文没到插件」在现象上完全一致。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route_noredirect(plugin)
+
+    payload = json.dumps({"event": "download.finish",
+                          "data": {"source_path": str(src / "某电影")}})
+    res = client.post("/api/v1/webhook?token=t&source=rsync115sync",
+                      content=payload,
+                      headers={"Content-Type": "application/json"})
+
+    assert res.status_code == 307, (
+        "缺尾斜杠应被 starlette 重定向；若变成 200，说明宿主改了路由定义，"
+        "文档里「地址必须带尾斜杠」的说明需要同步修改"
+    )
+    assert res.headers.get("location", "").endswith(
+        "/api/v1/webhook/?token=t&source=rsync115sync"), "重定向目标应补上尾斜杠"
+    assert plugin._webhook_stat_now().get("claimed", 0) == 0, (
+        "重定向发生在路由层，插件不应看到任何东西 —— 这正是它难查的地方"
+    )
+
+
+def test_host_route_with_trailing_slash_is_the_only_working_form(tmp_path):
+    """
+    补上尾斜杠即可 → 200 + 正常入队。**尾斜杠不是风格问题，是必需。**
+
+    与本组第一条配对：同一个 URL、同一个报文，只差一个 `/`，行为天差地别。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    path = _media(str(src), "movie.mkv")
+    plugin = _parser_plugin(str(src))
+    client, _ = _host_chain_route_noredirect(plugin)
+
+    res = client.post("/api/v1/webhook/?token=t&source=rsync115sync",
+                      json={"event": "download.finish",
+                            "data": {"source_path": path}})
+
+    assert res.status_code == 200
+    assert plugin._webhook_stat_now().get("claimed", 0) == 1
+    assert list(plugin._pending_queue), "带尾斜杠时整条链应当通畅"
+
+
+def test_self_endpoint_requires_no_trailing_slash(tmp_path):
+    """
+    **自建端点与宿主相反：不能带尾斜杠。** 两个地址的斜杠要求正好相反。
+
+    这一条是照抄宿主习惯时最可能踩的坑：用户若把 `.../Rsync115Sync/webhook/`
+    填进发送端（因为宿主那边必须带斜杠），会同样拿到一个 307、同样看不到日志。
+    在此显式钉住「自建端点不带斜杠」，并让 USAGE 给出可直接照抄的两个地址。
+    """
+    src = tmp_path / "9KG"
+    src.mkdir()
+    plugin = _plugin(str(src), allowlist=str(src))
+    client, _ = _real_route(plugin)
+    client.follow_redirects = False
+
+    ok = client.post("/webhook", json={"paths": [str(src / "a.mkv")]})
+    assert ok.status_code == 200, "自建端点地址不带尾斜杠"
+
+    bad = client.post("/webhook/", json={"paths": [str(src / "a.mkv")]})
+    assert bad.status_code == 307, (
+        "自建端点带尾斜杠会被重定向；若这里不再是 307，说明宿主注册方式变了，"
+        "USAGE 里「两个地址斜杠要求相反」的提醒需要复核"
+    )
+
+
 def test_self_endpoint_survives_the_same_bad_content_type(tmp_path):
     """
     **发送端的 Content-Type 改不了时，自建端点是可用的退路。**
