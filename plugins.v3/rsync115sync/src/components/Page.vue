@@ -496,8 +496,34 @@
             </v-alert>
 
             <!-- 观察期明细：这些文件刚同步成功、还在等 strm 生成（宽限期内），
-                 属正常等待 —— 展示出来是为了让用户知道「谁在等、还要等多久」，
-                 因此**不带任何操作按钮**（此时删除重传毫无意义，还会白白消耗配额） -->
+                 属正常等待 —— 展示出来是为了让用户知道「谁在等、还要等多久」。
+
+                 ⚠️ 只放**只读**的「检查」按钮，不放删旧重传：后者会诱导用户删掉
+                 刚传好的文件、白耗一次删除 API 与重传配额。当初拒绝在观察期放
+                 操作按钮，拒的正是这类破坏性操作；「检查一下 strm 出来没有」
+                 纯本地读取、零副作用，没有这个风险，而且用户常常**已经知道**
+                 strm 出来了（刚跑完生成任务），却只能干等下一轮巡检（最长 30 分钟）。 -->
+            <div v-if="strmWatchingEntries.length" class="d-flex align-center flex-wrap ga-2 mb-2">
+              <span class="text-caption text-medium-emphasis">
+                观察期 {{ strmWatchingEntries.length }} 个文件
+              </span>
+              <v-btn
+                size="x-small"
+                variant="text"
+                color="primary"
+                rounded="lg"
+                :loading="itemLoading === 'strmchk:all'"
+                @click="checkAllWatching"
+              >
+                <v-icon start size="14">mdi-refresh</v-icon>
+                立即检查全部
+                <v-tooltip activator="parent" location="top" max-width="320">
+                  立刻比对这 {{ strmWatchingEntries.length }} 个文件的 .strm 是否已生成，
+                  不必等下一轮巡检（最长 30 分钟）。纯本地读取，不访问 115。
+                  已生成的会即时解除观察；宽限期已过的会转入疑似清单。
+                </v-tooltip>
+              </v-btn>
+            </div>
             <div v-if="strmWatchingEntries.length" class="d-flex flex-column ga-2 mb-3">
               <div v-for="entry in strmWatchingEntries" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
                 <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
@@ -510,10 +536,23 @@
                 </div>
                 <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                   <v-chip size="x-small" color="info" variant="tonal" class="font-weight-bold">观察中</v-chip>
-                  <v-tooltip activator="parent" location="top" max-width="320">
-                    宽限期内不判定、不报警：strm 生成不实时（可能还在上传或刮削中）。
-                    到期仍未生成会自动转入下方「疑似异常」清单，届时才需要处理。
-                  </v-tooltip>
+                  <v-btn
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    rounded="lg"
+                    class="px-2"
+                    :loading="itemLoading === 'strmchk:' + entry.key"
+                    @click="checkWatching(entry.key)"
+                  >
+                    <v-icon start size="14">mdi-refresh</v-icon>
+                    检查 strm
+                    <v-tooltip activator="parent" location="top" max-width="320">
+                      立刻看这个文件的 .strm 出来了没有，不必等下一轮巡检。<br>
+                      已生成 ⇒ 立即解除观察；仍未生成 ⇒ 继续等待（宽限期内不报警）。<br>
+                      纯本地读取，不访问 115、不消耗配额。
+                    </v-tooltip>
+                  </v-btn>
                 </div>
               </div>
             </div>
@@ -1061,6 +1100,49 @@ async function batchSyncSelected() {
     actionMsg.value = '批量触发出错: ' + e.message
   } finally {
     batchSyncing.value = false
+  }
+}
+
+// 立即检查观察期条目的 strm 是否已生成（不等下一轮巡检，最长要等 30 分钟）。
+//
+// 纯本地文件读取：不访问 115、不占配额、不与同步冲突，因此**不做运行中拦截** ——
+// 用户在同步跑着的时候照样可以查。检查结果会即时反映在看板上：
+// 已生成的解除观察，宽限期已过的转入疑似清单。
+async function checkWatching(key) {
+  if (itemLoading.value.startsWith('strmchk')) return
+  await postStrmCheck([key], 'strmchk:' + key)
+}
+
+async function checkAllWatching() {
+  if (itemLoading.value.startsWith('strmchk')) return
+  const keys = strmWatchingEntries.value.map((e) => e.key)
+  if (!keys.length) return
+  await postStrmCheck(keys, 'strmchk:all')
+}
+
+// 单条与全量共用，避免两条路径的提示文案与状态处理漂移
+async function postStrmCheck(keys, loadingKey) {
+  itemLoading.value = loadingKey
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/strm_check', { keys })
+    if (res && res.success) {
+      strmScanMsg.value = res.message || '已检查'
+      // 被检查的条目若已离场（生成成功或转疑似），勾选状态要一并清掉，
+      // 否则它们会留在 selectedKeys 里，让后续「批量操作」对着不存在的条目提交
+      const gone = new Set([
+        ...(res.data?.settled || []),
+        ...(res.data?.suspects || []),
+        ...(res.data?.removed || []),
+      ])
+      if (gone.size) selectedKeys.value = selectedKeys.value.filter((k) => !gone.has(k))
+    } else {
+      strmScanMsg.value = res?.message || '检查失败'
+    }
+    await fetchStatus()
+  } catch (e) {
+    strmScanMsg.value = '检查出错: ' + e.message
+  } finally {
+    itemLoading.value = ''
   }
 }
 

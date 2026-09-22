@@ -884,7 +884,7 @@ class Rsync115Sync(_PluginBase):
             {
                 "cmd": "/rsync_strm",
                 "event": EventType.PluginAction,
-                "desc": "扫描缺 strm 的媒体文件（<文件名> 只查指定文件 / gen 请助手补生成 / clear 清空 / prune 清理无效项）",
+                "desc": "strm 相关操作（无参=扫描缺 strm / <文件名> 只查该文件 / check 立即检查观察期 / gen 请助手补生成 / prune 清理无效项 / clear 清空）",
                 "category": "工具",
                 "data": {"action": "strm"}
             },
@@ -977,6 +977,7 @@ class Rsync115Sync(_PluginBase):
             # strm_suspects 字段一并返回，看板只依赖 /status 一处取数；
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
+            {"path": "/strm_check", "endpoint": self._api_strm_check, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
@@ -2595,7 +2596,7 @@ class Rsync115Sync(_PluginBase):
         new_suspects: List[str] = []
         dropped: List[str] = []
 
-        for key, synced_ts in list(self._strm_watch.items()):
+        for key in list(self._strm_watch.keys()):
             # 忽略清单是最高优先级：用户在观察期内加了忽略规则时，这里必须让位，
             # 否则条目仍会到期转疑似并触发通知 —— 用户会收到自己忽略过的文件的告警。
             # `_add_ignore_rule` 已经会主动清理两个清单，这里是兜底（例如规则由
@@ -2605,15 +2606,9 @@ class Rsync115Sync(_PluginBase):
             if self._is_ignored(key):
                 dropped.append(key)
                 continue
-            # 两个探测值先算好再交给纯函数判定：三态边界因而可以在单测里穷举，
-            # 不需要真实文件系统。
-            strm_exists = os.path.exists(self._strm_expected_path(key) or "")
-            src_root = _strm.source_root_of(key, self._sync_pairs)
-            src_exists = (not src_root) or os.path.exists(
-                os.path.join(src_root, key.split(":", 1)[1]))
-            state, record = _strm.classify_watch(
-                key, synced_ts, now_ts, grace_secs, self._sync_pairs,
-                strm_exists=strm_exists, src_exists=src_exists)
+            # 判定委托给 check_one：它与看板「立即检查」是**同一份实现**，
+            # 否则「手动说已生成、巡检仍判观察中」这类分歧迟早出现。
+            state, record = self.check_one(key, now_ts, grace_secs)
             if state == _strm.SUSPECT:
                 new_suspects.append(record)
             elif state == _strm.WATCHING:
@@ -2936,6 +2931,115 @@ class Rsync115Sync(_PluginBase):
             msg = f"没有发现无效条目（当前 {len(self._strm_suspects)} 个）。"
         return {"success": True, "message": msg,
                 "data": {"removed": removed, "remaining": len(self._strm_suspects)}}
+
+    def _check_watch_now(self, keys: List[str]) -> Dict[str, Any]:
+        """
+        看板入口：立刻检查指定观察期条目的 strm 是否已生成（**不走巡检节流**）。
+
+        Dashboard entry point: check the given watching entries right now, bypassing
+        the sweep's throttle.
+
+        为什么需要它：观察期长达数小时，而用户往往**知道** strm 已经出来了
+        （刚跑完助手、或在文件管理器里看到了）。此时唯一的反馈渠道是等下一轮
+        巡检（最多 30 分钟），而且巡检还是「全量」的 —— 用户想确认这一个，
+        却要等整轮。这里给它一条即时通道。
+
+        ⚠️ 与巡检共用同一套判定，不另写一份：`check_one()` 抽出的正是巡检循环体，
+        两处若各写一遍，「手动检查说已生成、自动巡检却仍判观察中」这类分歧迟早出现。
+        Shares the exact per-entry judgement with the sweep — a second implementation
+        would eventually disagree with it.
+
+        纯本地文件检查，零 115 API，因此**不加执行锁**（不占配额、不与同步冲突）。
+        """
+        now_ts = time.time()
+        grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
+        targets = [k for k in (keys or []) if k in self._strm_watch]
+        if not targets:
+            return {"success": False, "message": "所选文件已不在观察期（可能已被处理或解除）"}
+
+        changed = False
+        results: List[Dict[str, Any]] = []
+        for key in targets:
+            state, record = self.check_one(key, now_ts, grace_secs)
+            if state == _strm.SETTLED:
+                self._strm_watch.pop(key, None)
+                self._strm_gen_requested.pop(key, None)
+                changed = True
+                results.append({"key": key, "state": state})
+            elif state in (_strm.NO_STRM_DIR, _strm.SOURCE_GONE):
+                self._strm_watch.pop(key, None)
+                self._strm_gen_requested.pop(key, None)
+                changed = True
+                results.append({"key": key, "state": state})
+            elif state == _strm.SUSPECT:
+                # 到期未生成：与巡检同一处置（转疑似 + 通知）
+                self._strm_watch.pop(key, None)
+                self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
+                changed = True
+                results.append({"key": key, "state": state})
+            else:
+                results.append({"key": key, "state": state})
+
+        if changed:
+            self.save_data("strm_watch", self._strm_watch)
+            self.save_data("strm_suspects", self._strm_suspects)
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
+
+        settled = [r["key"] for r in results if r["state"] == _strm.SETTLED]
+        suspects = [r["key"] for r in results if r["state"] == _strm.SUSPECT]
+        gone = [r["key"] for r in results if r["state"] == _strm.SOURCE_GONE]
+        no_dir = [r["key"] for r in results if r["state"] == _strm.NO_STRM_DIR]
+        still = [r["key"] for r in results if r["state"] == _strm.WATCHING]
+
+        if settled:
+            msg = f"✅ 已生成 strm：{len(settled)} 个，已解除观察"
+            if still:
+                msg += f"；另有 {len(still)} 个仍未生成，继续等待"
+        elif suspects:
+            msg = (f"⚠️ 宽限期已过且仍无 strm：{len(suspects)} 个已转入疑似异常清单"
+                   f"（此时才需要判断是否删旧重传）")
+        elif gone:
+            msg = f"🗑️ 源端文件已不存在：{len(gone)} 个已移出观察（无从验证也无从重传）"
+        elif no_dir:
+            msg = f"🗑️ 所属映射已取消 strm 目录：{len(no_dir)} 个已移出观察"
+        else:
+            msg = (f"⏳ 仍未生成 strm（{len(still)} 个）。"
+                   f"strm 生成不实时 —— 若刚跑完生成任务请稍等再试；"
+                   f"宽限期内属正常等待。")
+
+        if settled or suspects or gone or no_dir:
+            self._reset_strm_notified_if_clear()
+            logger.info(f"[Rsync115Sync] 📺 手动检查观察期条目：{len(targets)} 个 → "
+                        f"已生成 {len(settled)} / 转疑似 {len(suspects)} / "
+                        f"清理 {len(gone) + len(no_dir)} / 仍等待 {len(still)}")
+        return {"success": True, "message": msg,
+                "data": {"settled": settled, "suspects": suspects,
+                         "still_watching": still,
+                         "removed": gone + no_dir, "results": results}}
+
+    def check_one(self, key: str, now_ts: float, grace_secs: float) -> Tuple[str, Optional[str]]:
+        """
+        对单个观察期条目做一次探测与判定（**巡检与手动检查的唯一共用实现**）。
+
+        Probe and classify one watching entry — the single shared implementation used
+        by both the periodic sweep and the dashboard's manual check.
+
+        调用方负责持久化与通知；本方法只做「探测文件系统 → 交给纯函数判定」。
+        抽出来的原因：两处若各写一份，「手动说已生成、巡检仍判观察中」这类
+        分歧会随着后续改动逐渐出现，而它极难排查（两边看着都对）。
+        """
+        strm_exists = os.path.exists(self._strm_expected_path(key) or "")
+        src_root = _strm.source_root_of(key, self._sync_pairs)
+        src_exists = (not src_root) or os.path.exists(
+            os.path.join(src_root, key.split(":", 1)[1]))
+        synced_ts = self._strm_watch.get(key, now_ts)
+        return _strm.classify_watch(
+            key, synced_ts, now_ts, grace_secs, self._sync_pairs,
+            strm_exists=strm_exists, src_exists=src_exists)
+
+    def _api_strm_check(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """看板入口：立即检查观察期条目的 strm 是否已生成。"""
+        return self._check_watch_now((body or {}).get("keys") or [])
 
     def _api_strm_scan(self) -> Dict[str, Any]:
         """
@@ -3632,6 +3736,12 @@ class Rsync115Sync(_PluginBase):
             if arg_lower in ("prune", "清理"):
                 result = self._api_strm_prune()
                 self._post_reply(event, "🧹 " + result["message"])
+                return
+            if arg_lower in ("check", "检查"):
+                # 立即检查观察期条目的 strm 是否已生成（不等下一轮巡检）
+                result = self._check_watch_now(list(self._strm_watch.keys()))
+                self._post_reply(event, ("📺 " if result.get("success") else "⚠️ ")
+                                 + result.get("message", "检查失败"))
                 return
             if arg_lower in ("gen", "generate", "生成", "补生成"):
                 # 与看板按钮同一入口：先请 strm 助手补生成，成功了就不必删旧重传。
