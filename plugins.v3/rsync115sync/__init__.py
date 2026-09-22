@@ -978,6 +978,7 @@ class Rsync115Sync(_PluginBase):
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
             {"path": "/strm_check", "endpoint": self._api_strm_check, "methods": ["POST"], "auth": "bear"},
+            {"path": "/strm_probe", "endpoint": self._api_strm_probe, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_clear", "endpoint": self._api_strm_clear, "methods": ["POST"], "auth": "bear"},
@@ -2655,6 +2656,10 @@ class Rsync115Sync(_PluginBase):
             # ⚠️ 有意**保留** _strm_gen_requested：这些条目正是「已经请助手生成过、
             # 宽限期到仍无 strm」的那批，标记必须留着，用户才知道这已经是补生成
             # 之后的结果（判定比首次疑似硬得多），而不是又一轮普通疑似。
+        if new_suspects:
+            # 给这批新疑似附上云端可见性结论。用户拿到清单的同时就知道该不该动手，
+            # 不必再去 115 里翻一遍 —— 纯本地读取，失败也不影响清单本身。
+            self._annotate_dest(new_suspects)
 
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
@@ -2828,6 +2833,9 @@ class Rsync115Sync(_PluginBase):
             added += 1
 
         if added:
+            # 附上云端可见性结论：用户看到清单时同时知道「该不该动手」，
+            # 不必再自己去 115 里翻。纯本地读取，失败也不影响清单本身。
+            self._annotate_dest(candidates[:added])
             self.save_data("strm_suspects", self._strm_suspects)
         logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
                     f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
@@ -3045,6 +3053,12 @@ class Rsync115Sync(_PluginBase):
                 results.append({"key": key, "state": state, "clock": clock})
             else:
                 results.append({"key": key, "state": state, "clock": clock})
+        # 本次转入疑似的条目：附上云端可见性结论。
+        # 放在**判定之后**（而不是移动时）是关键：探测本身要读挂载点，
+        # 与「strm 是否已生成」的判定无关，早探一步只是白白多读一次。
+        if results:
+            self._annotate_dest([r["key"] for r in results
+                                 if r["state"] == _strm.SUSPECT])
 
         if changed:
             self.save_data("strm_watch", self._strm_watch)
@@ -3100,6 +3114,107 @@ class Rsync115Sync(_PluginBase):
                 "data": {"settled": settled, "suspects": suspects,
                          "still_watching": still,
                          "removed": gone + no_dir, "results": results}}
+
+    def _dest_visibility(self, keys: List[str]) -> Dict[str, str]:
+        """
+        探测这些文件在**目标端（CD2 挂载）**的可见性，返回 key → 结论。
+
+        Probe destination visibility for the given keys (pure local reads).
+
+        **为什么值得做**：补生成之后仍无 strm 时，本地视角分不出四种成因，
+        用户只能猜「云端到底有没有这个文件」。而目标端就在挂载里，读它的大小是
+        纯本地调用、零 115 API —— 这一步把其中三种直接分开，用户不用再去 115 里找。
+
+        两种边界都按「探测无效」处理，绝不硬给结论：
+
+        - **挂载未就绪**：`dest` 根目录都读不到时（CD2 没挂上 / 容器里路径变了），
+          `os.path.exists` 对每个文件都返回 False —— 若照此判定，整批会被扣上
+          「云端没有文件」的帽子，而这只是挂载没就绪。必须先验证根目录。
+        - **读不到大小**：挂载点抖动时 `getsize` 会抛 OSError，这与「确实不存在」
+          是两回事，一并归入 unknown。
+
+        源码端（`src`）消失的文件也归 unknown：既无从重传，也没必要给建议。
+        Reads only; never deletes or uploads (see strm.dest_probe_outcome for why the
+        "same size" verdict may only ever be used to *recommend inaction*).
+        """
+        roots_ready: Dict[str, bool] = {}
+        out: Dict[str, str] = {}
+        for key in keys:
+            dest_root = _strm.dest_root_of(key, self._sync_pairs)
+            if dest_root not in roots_ready:
+                try:
+                    roots_ready[dest_root] = bool(dest_root) and os.path.isdir(dest_root)
+                except OSError:
+                    roots_ready[dest_root] = False
+            if not roots_ready.get(dest_root):
+                # 挂载未就绪：整组（同一 dest 根）一律不给结论
+                out[key] = _strm.DEST_UNKNOWN
+                continue
+
+            dest_file = _strm.dest_path_of(key, self._sync_pairs)
+            if not dest_file:
+                out[key] = _strm.DEST_UNKNOWN
+                continue
+            dest_missing = not os.path.exists(dest_file)
+
+            src_root = _strm.source_root_of(key, self._sync_pairs)
+            rel = key.split(":", 1)[1] if ":" in key else key
+            src_file = os.path.join(src_root, rel) if src_root else None
+
+            def _size(path):
+                if not path:
+                    return None
+                try:
+                    return os.path.getsize(path)
+                except OSError:
+                    return None
+
+            out[key] = _strm.dest_probe_outcome(
+                _size(dest_file), _size(src_file), dest_missing)
+        return out
+
+    def _annotate_dest(self, keys: List[str]) -> Dict[str, str]:
+        """
+        给新入疑似清单的条目附上云端可见性结论（写进条目自身，看板直接读)。
+
+        Attach the destination verdict to freshly created suspect entries so the
+        dashboard can show it without a second round-trip.
+
+        ⚠️ 这个结论**只影响展示与建议**，不得参与任何清单清理判据：它的假阳性
+        方向是「把坏文件看成好的」，据此把条目从清单里删掉，就会让一个真正的
+        坏文件从此不再被提醒 —— 与「忽略」的后果一样严重而更隐蔽。
+        Display-only: the verdict's false-positive direction is "bad file looks fine",
+        so it must never feed a pruning or skipping decision.
+        """
+        try:
+            verdicts = self._dest_visibility(keys)
+        except Exception as e:
+            # 探测失败不能影响清单维护本身（它只是个附加信息）
+            logger.warning(f"[Rsync115Sync] 目标端可见性探测异常（已忽略）: {e}")
+            return {}
+        for key, verdict in verdicts.items():
+            entry = self._strm_suspects.get(key)
+            if isinstance(entry, dict):
+                entry["dest"] = verdict
+        return verdicts
+
+    def _api_strm_probe(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        看板入口：探测疑似文件的云端可见性（只读，零 115 API）。
+
+        与 `_api_strm_scan` 同样**不加执行锁**：它只读挂载点与源目录，
+        不启动 rsync、不占窗口配额，同步跑着的时候照样能查。
+        """
+        keys = [k for k in ((body or {}).get("keys") or [])
+                if k in self._strm_suspects]
+        if not keys:
+            return {"success": False, "message": "所选文件不在疑似异常清单中"}
+        verdicts = self._dest_visibility(keys)
+        counts: Dict[str, int] = {}
+        for v in verdicts.values():
+            counts[v] = counts.get(v, 0) + 1
+        logger.info(f"[Rsync115Sync] 🔎 目标端可见性探测：{len(keys)} 个 → {counts}")
+        return {"success": True, "data": {"verdicts": verdicts, "counts": counts}}
 
     def check_one(self, key: str, now_ts: float, grace_secs: float) -> Tuple[str, Optional[str]]:
         """
@@ -3383,7 +3498,15 @@ class Rsync115Sync(_PluginBase):
                f"• 不必干等：在观察期点「检查 strm」即可立即比对结果\n"
                f"• 若助手报「匹配目录失败」，说明该网盘路径不在它的「全量同步路径」里，"
                f"请在助手配置页补上（详见配置页说明）\n"
-               f"助手是异步长任务，生成需要时间。")
+               f"助手是异步长任务，生成需要时间。\n\n"
+               f"⚠️ 提前说明「窗口到了仍没有 strm」意味着什么，本插件**分不出**下面几种，"
+               f"所以不会替你下结论、也不会自动动手：\n"
+               f"• 云端**本来就没有**这个文件（从未传成功，或改名失败只剩 ..xxx 残留）"
+               f"→ 删旧重传正是对症的，且云端没文件时删除是空操作，不会白删\n"
+               f"• 云端**有**这个文件，只是助手没识别出媒体 / 压根没执行 → "
+               f"删了纯属白删（rsync 也会因 --size-only 跳过）\n"
+               f"看板会在条目回到清单时给出「云端可见性」探测结论帮你区分；"
+               f"若探测显示「可见且大小一致」，请先查生成侧，别急着删。")
         if unmatched:
             msg += (f"\n\n⚠️ 另有 {len(unmatched)} 个文件本次未处理"
                     f"（所属映射未配置「网盘目录」），它们仍留在疑似清单中。")
@@ -3437,6 +3560,51 @@ class Rsync115Sync(_PluginBase):
             logger.warning(f"[Rsync115Sync] strm 重传请求含非疑似清单条目，已忽略: {not_allowed[:3]}")
         if not allowed:
             return {"success": False, "message": "所选文件不在疑似异常清单中"}
+
+        # ⚠️ 删旧重传前**重新探一次**云端可见性，而不是复用清单里那份陈旧结论。
+        #
+        # 清单里那份是「入清单那一刻」的探测结果（可能是一小时前），而用户是看到
+        # 建议之后才点的按钮 —— 中间完全可能又跑过一次同步，文件已经传好了。
+        # 拿旧结论去决定「要不要删」，等于用一个过期的事实做破坏性判断。
+        #
+        # 只有「云端可见且大小一致」才拦。**这是本插件唯一一处让探测结果影响
+        # 行为的地方**，且方向是「少做一次破坏性操作」：
+        #   · 假阳性（CD2 视图过期，其实只有残留）→ 用户被引导去查助手，
+        #     损失是几秒钟，重启同步任务即可照常删旧重传；
+        #   · 若反过来拿它做「已同步」的依据，就会真的漏掉坏文件 —— 不做。
+        # Re-probe right before deleting: the stored verdict may predate a sync that
+        # already fixed the file. The verdict is only ever allowed to *block* a
+        # destructive action, never to justify skipping one.
+        try:
+            fresh = self._dest_visibility(allowed)
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 重传前可见性探测异常（按原逻辑继续）: {e}")
+            fresh = {}
+        intact = [k for k in allowed if fresh.get(k) == _strm.DEST_OK]
+        if intact:
+            listed = "\n".join(f"• {k}" for k in intact[:_MAX_LOGGED_PATHS])
+            more = (f"\n（另有 {len(intact) - _MAX_LOGGED_PATHS} 个未列出）"
+                    if len(intact) > _MAX_LOGGED_PATHS else "")
+            logger.warning(f"[Rsync115Sync] ⛔ 已拦下 {len(intact)} 个「云端文件完好」的删旧重传请求："
+                           f"{_brief_paths(intact)}")
+            return {"success": False,
+                    "message": f"这些文件的云端副本**可见且大小与源端一致**，"
+                               f"删掉纯属白删（rsync 也会因 --size-only 跳过，传不上去）：\n"
+                               f"{listed}{more}\n\n"
+                               f"也就是说云端很可能是好的，问题出在 strm **生成**环节。"
+                               # ⚠️ 文案里**不写**助手插件的类名（写成「STRM 助手插件」）：
+                               # `test_helper_dependency_boundary` 是按字符串标记做的
+                               # 结构性检查，写进去会让它把「提了一句」误判成「运行时依赖」，
+                               # 而这条检查存在的意义正是不让依赖悄悄扩散 —— 宁可换个说法，
+                               # 也不要让它因为误报被放宽（放宽一次它就再也挡不住真的扩散）。
+                               f"请先检查：\n"
+                               f"• STRM 助手插件是否把该网盘目录配在「全量同步路径」里\n"
+                               f"• 助手的媒体识别是否正常（生成日志里「总共生成 N 个 STRM」的 N）\n"
+                               f"• 该目录的网盘路径与本插件「网盘目录」是否填的是同一个\n\n"
+                               f"确认云端确实有问题时，可先重启同步任务再重试本操作"
+                               f"（届时会重新探测）。\n"
+                               f"⚠️ 本判定基于 CD2 挂载视图，存在「视图过期」的已知假阳性；"
+                               f"若你已在 115 上确认文件是坏的，请优先相信你自己的判断。"}
 
         deleted, undeletable = self._delete_dest_files_for_retry(allowed)
         if undeletable:

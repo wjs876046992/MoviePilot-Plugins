@@ -608,6 +608,12 @@
                       <template v-else>
                         同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
                       </template>
+                      <!-- 云端可见性结论：入清单时探测一次（纯本地读，零 115 API）。
+                           有了它，用户不必先去 115 里翻一遍才知道该怎么处理。 -->
+                      <template v-if="destHint(key)">
+                        <br>
+                        <span :class="`text-${destColor(key)}`">🔎 {{ destHint(key) }}</span>
+                      </template>
                     </div>
                   </div>
                 </div>
@@ -871,6 +877,31 @@ const helperReason = computed(
 // 把「命令已发出」当成「生成已失败」，会诱导用户去删掉一个好文件。
 // 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
 const genRequested = computed(() => statusData.value.strm_gen_requested || {})
+
+// 条目的**云端可见性**结论（入清单时探测一次，纯本地读取）。
+//
+// 它回答的是用户最想问的那个问题：「点进 115 看过没有，云端到底有没有这个文件？」
+//   云端不可见 / 大小不符 → 删旧重传正是对症的，删除要么是空操作要么真的清了脏文件
+//   可见且大小一致     → 文件是好的，删了纯属白删（rsync 还会 --size-only 跳过）
+//
+// ⚠️ 它带一个**已知的假阳性方向**：CD2 视图过期时（3.11 的「假成功」形态），
+// 坏文件也会显示成大小一致。因此这里只用来做「别动手」的建议，
+// 绝不作为「已经同步好了」的结论 —— 文案里也不许写成后者。
+const destVerdict = (key) => (statusData.value.strm_suspects?.[key] || {}).dest || ''
+
+const destHint = (key) => ({
+  absent: '云端不可见（可能从未传成功，或改名失败只剩残留）—— 删旧重传可修',
+  mismatch: '云端有文件但大小不符（传到一半）—— 删旧重传可修',
+  ok: '云端可见且大小一致 —— 文件很可能完好，删了纯属白删；请先查 strm 生成侧',
+  unknown: '云端可见性未知（CD2 挂载未就绪或读不到）',
+}[destVerdict(key)] || '')
+
+const destColor = (key) => ({
+  absent: 'warning',
+  mismatch: 'warning',
+  ok: 'success',
+  unknown: 'grey',
+}[destVerdict(key)] || 'grey')
 
 // 选中项中有多少属于 strm 疑似清单。
 // 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，

@@ -172,6 +172,98 @@ def watch_state_of(key: str, watch: Dict[str, Any],
     return "sync", now_ts
 
 
+# 「目标端探测」的结论。四个取值都要能被调用方区分开，理由见 dest_probe_outcome。
+DEST_OK = "ok"                    # 可见且大小一致 → 云端文件是好的（对 rsync 而言）
+DEST_SIZE_MISMATCH = "mismatch"   # 可见但大小不符 → 传到一半
+DEST_ABSENT = "absent"            # 不可见 → 云端没有正式文件
+DEST_UNKNOWN = "unknown"          # 探测无效（挂载未就绪 / 源端没了 / 读不到大小）
+
+
+def dest_probe_outcome(dest_size: Optional[int], src_size: Optional[int],
+                       dest_missing: bool) -> str:
+    """
+    把一个文件的「目标端可见性探测」折算成结论。
+
+    Turn one file's destination-visibility probe into a verdict.
+
+    **为什么需要它**：补生成之后仍无 strm 时，本地视角分不出四种成因，用户只能
+    自己猜「到底云端有没有这个文件」。而目标端是 CD2 挂载点 —— 读它的大小是
+    **纯本地调用、零 115 API**，这一步探测能把其中三种直接分开：
+
+    | 探测结果 | 云端情况 | 该不该删旧重传 |
+    |---|---|---|
+    | 不可见 | 没有正式文件（从未传成功 / 改名失败只剩残留） | ✅ 正确（且删除是空操作） |
+    | 大小不符 | 传到一半 | ✅ 正确 |
+    | 大小一致 | 文件是好的（rsync 会跳过） | ⚠️ **纯属白删**，且 rsync 照样跳过 |
+
+    **⚠️ 它只能用来「排除删旧重传」，绝不能当作「已同步」的证据。**
+    3.11 记录的「CD2 假成功」正是：挂载视图显示大小正常，而 115 上只有改名
+    失败的残留（残留大小与正式文件完全一致，见 3.10 —— 用大小根本分不出来）。
+    也就是说本函数最右边那一列的「大小一致」有一个已知的假阳性方向：
+    它会把「改名失败 + 视图过期」误判成「文件完好」。
+    这个方向的错误**只导致「建议你先别删」**，代价是多查一次助手，可接受；
+    反过来若拿它去触发删除或跳过上传，就会真的漏掉坏文件 —— 因此调用方
+    只允许用它做「不要动手」的建议，不允许用它做「已经好了」的结论。
+    Only safe for the "don't delete" direction: the fake-success case makes
+    "same size" optimistic, and optimistically skipping work is harmless only
+    when the work skipped is a deletion.
+
+    参数用 `None` 表达「读不到」，而不是布尔值：`os.path.getsize` 在挂载点抖动时
+    会抛 OSError，把它压成 False 会与「确实不存在」混为一谈。
+    "Unreadable" is expressed as None rather than collapsed into a boolean, because
+    a flaky mount and a genuinely absent file must not look the same.
+
+    ⚠️ 三个分支的**先后顺序不影响结果**（已把 `dest_size/src_size ∈ {None, 数字}`
+    × `dest_missing ∈ {True, False}` 全部 8 种组合枚举比对过，重排前后行为完全一致；
+    变异测试里把顺序改掉也不会失败）。别把它当承重逻辑去推理，
+    写成现在这样只是为了从上到下的可读性。
+    The branch order is NOT load-bearing — it was exhaustively verified to be an
+    equivalent mutant. Kept for readability only; do not reason from it.
+    """
+    if dest_missing:
+        return DEST_ABSENT
+    if dest_size is None or src_size is None:
+        return DEST_UNKNOWN
+    return DEST_OK if dest_size == src_size else DEST_SIZE_MISMATCH
+
+
+def dest_path_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    队列 key → 目标端（CD2 挂载内）对应文件的绝对路径；无法归属时返回 None。
+
+    Map a queue key to its absolute destination path on the CD2 mount.
+
+    与 `_delete_dest_files_for_retry` 的构造口径一致（同样按映射名前缀归属、
+    同样 `dest` 根 + 相对路径），但不做任何删除动作 —— 这里只是读。
+    """
+    from .paths import pair_name as _pair_name
+    for pair in pairs:
+        pn = _pair_name(pair)
+        if pn and key.startswith(f"{pn}:"):
+            dest_root = (pair.get("dest") or "").strip().rstrip("/")
+            if not dest_root:
+                return None
+            rel = key.split(f"{pn}:", 1)[1].lstrip("/")
+            if not rel:
+                return None
+            return posixpath.join(dest_root, rel)
+    return None
+
+
+def dest_root_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
+    """队列 key 所属映射的目标端根目录；无法归属时返回 None。
+
+    The mapping's destination root — used as the mount-readiness probe: if even the
+    root is unreadable the whole verdict set must degrade to DEST_UNKNOWN.
+    """
+    from .paths import pair_name as _pair_name
+    for pair in pairs:
+        pn = _pair_name(pair)
+        if pn and key.startswith(f"{pn}:"):
+            return (pair.get("dest") or "").strip().rstrip("/") or None
+    return None
+
+
 def _ts_or(value: Any, fallback: float) -> float:
     """把可能是 null / 字符串 / 任意对象的持久化时间戳解析成 float，失败即兜底。"""
     try:
