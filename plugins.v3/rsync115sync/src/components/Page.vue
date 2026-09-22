@@ -412,8 +412,9 @@
                    strm 助手漏生成（重新生成指针即可）与 CD2 假成功（必须删旧重传）。
                    两者在插件视角完全无法区分，但花一次助手侧目录遍历就能判别，
                    大概率直接免掉整轮删除重传。因此它排在「删旧重传」**之前**。
-                   助手未就绪时禁用并说明原因（没装 / 装了没配映射），而不是让用户
-                   点下去才发现没反应 -->
+                   ⚠️ 不可用时的原因**不能只放 tooltip**：Vuetify 的 disabled 元素
+                   不派发鼠标事件，tooltip 永远不会弹出 —— 用户只能看到一个灰按钮，
+                   完全不知道要配什么。原因必须直接显示在按钮旁边。 -->
               <v-btn
                 v-if="strmSuspectCount"
                 size="x-small"
@@ -426,16 +427,11 @@
               >
                 <v-icon start size="14">mdi-file-refresh-outline</v-icon>
                 先尝试生成 strm ({{ strmSuspectCount }})
-                <v-tooltip activator="parent" location="top" max-width="360">
-                  <template v-if="helperReady">
-                    请 115 网盘 STRM 助手按这些文件所在的网盘目录重新生成一次 .strm。<br>
-                    成功后说明此前只是助手漏生成，<b>无需删旧重传</b>；<br>
-                    若生成后仍无 strm，则云端确实缺该文件，再做删除重传。<br>
-                    比直接删旧重传安全，成本也低得多。
-                  </template>
-                  <template v-else>
-                    不可用：{{ helperReason }}
-                  </template>
+                <v-tooltip v-if="helperReady" activator="parent" location="top" max-width="360">
+                  请 115 网盘 STRM 助手按这些文件所在的网盘目录重新生成一次 .strm。<br>
+                  成功后说明此前只是助手漏生成，<b>无需删旧重传</b>；<br>
+                  若生成后仍无 strm，则云端确实缺该文件，再做删除重传。<br>
+                  比直接删旧重传安全，成本也低得多。
                 </v-tooltip>
               </v-btn>
               <!-- 一键处理全部：清单规模小时最实用，避免逐条点击确认 -->
@@ -453,6 +449,30 @@
                 全部删旧重传 ({{ strmSuspectCount }})
               </v-btn>
             </div>
+
+            <!-- 补生成不可用时的说明。
+                 必须是**常驻可见**的文案而不是 tooltip：disabled 按钮不响应鼠标，
+                 tooltip 弹不出来；而用户最需要的恰恰是「为什么点不了、我该配什么」。
+                 同时给出可复制的配置指引，避免只报「不可用」让人无从下手。 -->
+            <v-alert
+              v-if="strmSuspectCount && !helperReady"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="rounded-lg mb-2 text-body-2"
+            >
+              <div class="font-weight-medium mb-1">
+                「先尝试生成 strm」当前不可用：{{ helperReason }}
+              </div>
+              <div class="text-caption">
+                配好即可用它免掉整轮删除重传（生成成功 ⇒ 只是助手漏生成，无需重传）：
+                <br>① 在本插件<b>配置页</b>为该映射填写「<b>网盘目录</b>」——
+                115 网盘里的真实路径（如 <code>/HomeTheater/TV</code>），不是 CD2 挂载路径；
+                <br>② 该路径还需已配在 P115StrmHelper 的「<b>全量同步路径</b>」里
+                （助手只接受它这个列表中的路径）。
+                <br>未配置时不影响「删旧重传」，那一条始终可用。
+              </div>
+            </v-alert>
 
             <!-- 扫描结果提示（含截断警告与两种成因的说明） -->
             <v-alert
@@ -533,12 +553,11 @@
                   >
                     <v-icon start size="14">mdi-file-refresh-outline</v-icon>
                     {{ genRequested[key] ? '再试生成' : '尝试生成 strm' }}
-                    <v-tooltip activator="parent" location="top" max-width="340">
-                      <template v-if="helperReady">
-                        请 strm 助手重新生成该文件所在网盘目录的 .strm。
-                        成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。
-                      </template>
-                      <template v-else>不可用：{{ helperReason }}</template>
+                    <!-- tooltip 仅在可用时挂载：disabled 元素不派发鼠标事件，
+                         挂上去也弹不出来（原因见区块上方那条常驻说明） -->
+                    <v-tooltip v-if="helperReady" activator="parent" location="top" max-width="340">
+                      请 strm 助手重新生成该文件所在网盘目录的 .strm。
+                      成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。
                     </v-tooltip>
                   </v-btn>
                   <v-btn
