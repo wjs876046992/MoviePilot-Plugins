@@ -287,6 +287,9 @@ def _bare_plugin():
     plugin._media_extensions = "mkv"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    # 观察期清单必须存在：扫描会跳过处于观察期的条目 —— 否则刚从疑似移回
+    # 观察期的补生成条目会被同一次扫描立刻打回疑似，补生成功能表现为没作用。
+    plugin._strm_watch = {}
     plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False
@@ -425,6 +428,7 @@ def test_strm_scan_end_to_end_excludes_subtitles_and_images():
     plugin._media_extensions = "mkv,srt,ssa,ass"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    plugin._strm_watch = {}
     plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False
@@ -464,6 +468,7 @@ def test_strm_scan_end_to_end_ignores_all_ext(tmp_path):
     plugin._media_extensions = "mkv"
     plugin._strm_check_enabled = True
     plugin._strm_suspects = {}
+    plugin._strm_watch = {}
     plugin._ignored_rules = []
     plugin._notify = False
     plugin._strm_notified = False

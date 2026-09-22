@@ -8,6 +8,7 @@ boundaries are worth exhausting here rather than discovering in production.
 """
 
 import os
+import time
 
 import pytest
 
@@ -186,3 +187,89 @@ def test_grace_secs_of_invalid_input_falls_back_to_default(bad):
 def test_grace_secs_of_accepts_numeric_string():
     """前端 v-model 可能传来字符串，必须能解析。"""
     assert strm.grace_secs_of("3") == 10800.0
+
+
+# --------------------------------------------------------------------------
+# watch_state_of —— 计时基准（双钟问题的唯一防线）
+# --------------------------------------------------------------------------
+
+def test_watch_state_prefers_gen_clock_when_requested():
+    """
+    有补生成记录时，基准取**请求时刻**，不是 watch 里的同步时刻。
+
+    两个时间戳差得很远（同步是几小时前、请求是刚刚），取错哪一个都会让
+    重新计时窗口算出一个完全不同的到期时间。
+    """
+    now = time.time()
+    watch = {"TV:a.mkv": now - 7200}
+    gen = {"TV:a.mkv": now - 60}
+
+    kind, ts = strm.watch_state_of("TV:a.mkv", watch, gen, now)
+
+    assert kind == "gen"
+    assert ts == gen["TV:a.mkv"]
+
+
+def test_watch_state_falls_back_to_sync_clock():
+    """没有补生成记录时用同步时刻 —— 普通观察期的原有语义不得被改变。"""
+    now = time.time()
+    watch = {"TV:a.mkv": now - 100}
+
+    kind, ts = strm.watch_state_of("TV:a.mkv", watch, {}, now)
+
+    assert kind == "sync"
+    assert ts == watch["TV:a.mkv"]
+
+
+def test_watch_state_unknown_key_defaults_to_now():
+    """
+    两个字典都没有这个 key 时退回 now（= 仍在宽限期内）。
+
+    与 classify_watch 里那个同类的兜底同一取向：宁可让一个不该存在的条目多留
+    一轮，也不要把「不知道」当成「已到期」而误报上传异常。
+    """
+    now = time.time()
+
+    kind, ts = strm.watch_state_of("TV:x.mkv", {}, {}, now)
+
+    assert kind == "sync"
+    assert ts == now
+
+
+@pytest.mark.parametrize("bad", [None, "abc", object()])
+def test_watch_state_tolerates_corrupt_timestamps(bad):
+    """数据文件里出现非数字时间戳时不得抛异常 —— 巡检会因此整轮中断。"""
+    now = time.time()
+    kind, ts = strm.watch_state_of("TV:a.mkv", {"TV:a.mkv": bad}, {}, now)
+    assert kind == "sync"
+    assert ts == now
+
+
+# --------------------------------------------------------------------------
+# regrace_secs —— 以请求时刻为锚，绝不随读取顺延
+# --------------------------------------------------------------------------
+
+def test_regrace_counts_down_from_request_time():
+    now = time.time()
+    assert strm.regrace_secs(now - 600, now) == pytest.approx(strm.REGRACE_HOURS * 3600 - 600)
+
+
+def test_regrace_is_anchored_not_rebased_on_read():
+    """
+    ⚠️ 承重断言：剩余时间**只**由请求时刻决定，与「现在几点」无关 ——
+    换句话说，同一请求连读两次，剩余量必须严格递减（而不是每次刷新都重置）。
+
+    写反的后果不是误差，而是功能失效：看板每 30 秒读一次状态，若每次读取都把
+    窗口顺延一次，条目永远到不了期，用户看到的是「怎么等都不出结果」，
+    而且越看越久。
+    """
+    req = time.time() - 1800
+    first = strm.regrace_secs(req, req + 1800)
+    second = strm.regrace_secs(req, req + 2400)
+
+    assert second < first, "再次读取必须得到更短的剩余时间，而不是重置窗口"
+
+
+def test_regrace_goes_non_positive_after_window():
+    now = time.time()
+    assert strm.regrace_secs(now - strm.REGRACE_HOURS * 3600 - 10, now) <= 0

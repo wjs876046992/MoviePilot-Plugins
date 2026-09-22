@@ -173,12 +173,21 @@ P115_PAN_MAPPING_FIELD = "full_sync_strm_paths"
 # that entire cloud subtree, so the directory count drives the real cost.
 STRM_GEN_DIR_LIMIT = 20
 
-# 补生成期间该条目的去向：从疑似清单移回「待观察」并按现有宽限期重新计时。
+# 补生成期间该条目的去向：从疑似清单移回「待观察」并重新计时。
 # strm 助手是异步长任务，插件侧拿不到完成回调；重新计时可以复用已有的巡检状态机
-# （strm 出现 ⇒ 自动解除；宽限期到仍无 ⇒ 回到疑似清单，且此时判定更硬 ——
-# 生成动作已经做过而仍然没有，基本可以确定是云端真缺文件）。
+# （strm 出现 ⇒ 自动解除；窗口到仍无 ⇒ 回到疑似清单，且此时判定更硬 ——
+# 生成动作已经做过而仍然没有，基本可以确定是云端真缺文件），用户也能顺手用
+# 「检查 strm」按钮即时查看结果，而不必手动刷新去猜。
 # Re-arming the existing watch reuses the whole state machine instead of adding a
 # second, parallel polling path.
+#
+# ⚠️ 移动的时机是「命令**确实发出**之后」，不是「收到请求时」。顺序写反会让助手
+# 拒收的条目也从清单里消失（用户实测过），详见 _api_strm_generate 里的说明。
+# The move happens only after the command is actually sent: doing it on request made
+# entries vanish even when the helper rejected the path outright.
+#
+# ⚠️ 重新计时的窗口用的是 strm.REGRACE_HOURS，**不是**宽限期配置值 —— 两者
+# 度量的是不同的延迟（刮削入库 vs 助手遍历云端目录），见 strm.py 的说明。
 #
 # ⚠️ 「已补生成过」**不记为新的 origin**：它与来源是正交的两个维度，
 # 见 strm.py 顶部的说明。状态由插件实例上的 _strm_gen_requested 单独承载。

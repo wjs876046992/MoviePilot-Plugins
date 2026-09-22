@@ -1190,6 +1190,15 @@ class Rsync115Sync(_PluginBase):
                 # 却不知道是哪个文件、等了多久 —— 明细让观察状态可见、可预期
                 # （对照宽限期就能算出还剩多久出结果）。
                 "strm_watch_detail": {k: ts for k, ts in self._strm_watch.items()},
+                # 每个观察条目的计时基准：key → "sync" | "gen"。
+                # 看板必须用它决定「还剩多久」以及该跟哪个窗口比 —— 补生成重新
+                # 计时过的条目若仍按同步时刻算，用户会看到「入口说还有 5 小时、
+                # 另一个入口说已到期」。判定与显示走同一个 strm.watch_state_of。
+                "strm_watch_clocks": {
+                    k: _strm.watch_state_of(k, self._strm_watch,
+                                            self._strm_gen_requested, time.time())[0]
+                    for k in self._strm_watch},
+                "strm_regrace_hours": _strm.REGRACE_HOURS,
                 "strm_watching": len(self._strm_watch),
                 "strm_grace_hours": self._strm_grace_hours,
                 "strm_check_enabled": self._strm_check_enabled,
@@ -2536,6 +2545,13 @@ class Rsync115Sync(_PluginBase):
 
         Arm a strm watch for successfully synced files. A key already in the suspect
         list is removed on success — the re-transfer cleared it.
+
+        ⚠️ 同时**清除补生成标记**：此刻这个文件刚被完整重传过，之前的「已请求
+        助手补生成」记录已经过期 —— 留着它会让看板把一条全新的观察标成「生成
+        过仍失败」，而这轮观察跟那次补生成毫无关系（比 `_strm_check` 里有意
+        保留标记的情形更彻底的失效：重传已经改变了事实基础）。
+        The regenerate marker is invalidated here: a fresh transfer means any earlier
+        "already asked the helper" note no longer describes this file's situation.
         """
         armed = 0
         now_ts = time.time()
@@ -2558,6 +2574,9 @@ class Rsync115Sync(_PluginBase):
             if k in self._strm_suspects:
                 self._strm_suspects.pop(k, None)
                 self.save_data("strm_suspects", self._strm_suspects)
+            if k in self._strm_gen_requested:
+                self._strm_gen_requested.pop(k, None)
+                self.save_data("strm_gen_requested", self._strm_gen_requested)
             armed += 1
         if armed:
             self.save_data("strm_watch", self._strm_watch)
@@ -2594,6 +2613,9 @@ class Rsync115Sync(_PluginBase):
         grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
         settled_ok: List[str] = []
         new_suspects: List[str] = []
+        # 其中「补生成后仍无」的那部分：与普通到期分开计数，日志与通知里
+        # 才能体现判定强度的差别（生成动作做过而仍没有，基本可确认云端缺文件）。
+        gen_suspects: List[str] = []
         dropped: List[str] = []
 
         for key in list(self._strm_watch.keys()):
@@ -2611,6 +2633,8 @@ class Rsync115Sync(_PluginBase):
             state, record = self.check_one(key, now_ts, grace_secs)
             if state == _strm.SUSPECT:
                 new_suspects.append(record)
+                if key in self._strm_gen_requested:
+                    gen_suspects.append(record)
             elif state == _strm.WATCHING:
                 continue
             elif state == _strm.SETTLED:
@@ -2637,8 +2661,12 @@ class Rsync115Sync(_PluginBase):
             self.save_data("strm_suspects", self._strm_suspects)
             self.save_data("strm_gen_requested", self._strm_gen_requested)
             if new_suspects:
+                # 日志里把「补生成后仍无」单独标出来：排查时这一条的信息量远大于
+                # 普通到期，混在一起的计数会让人误以为两者同样可疑。
+                gen_note = (f"，其中 {len(gen_suspects)} 个是补生成后仍无"
+                            if gen_suspects else "")
                 logger.warning(f"[Rsync115Sync] 📺 strm 交叉验证发现 {len(new_suspects)} 个疑似上传异常"
-                               f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成）: "
+                               f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成{gen_note}）: "
                                f"{_brief_paths(new_suspects)}")
                 self._notify_strm_suspects(new_suspects)
             elif settled_ok:
@@ -2674,7 +2702,9 @@ class Rsync115Sync(_PluginBase):
                     f"{listed}{more}\n\n"
                     f"判定依据：同步已报告成功，但 {self._strm_grace_hours}h 内未在 strm 目录生成对应文件。\n"
                     f"💡 请先确认 strm 插件本身是否正常（媒体是否识别、功能是否开启），\n"
-                    f"   再前往看板「对账异常清单」标签使用「删旧重传」处理。"
+                    f"   再前往看板「strm 疑似异常」标签处理：\n"
+                    f"   ① 先点「先尝试生成 strm」——若只是漏生成，这一步就能解决，无需重传；\n"
+                    f"   ② 补生成后仍无，再对该条目使用「删旧重传」。"
                 ),
             )
             self._strm_notified = True
@@ -2768,6 +2798,7 @@ class Rsync115Sync(_PluginBase):
         now_ts = time.time()
         added = 0
         skipped_ignored = 0
+        skipped_watching = 0
         for key in candidates:
             # 已被用户加入忽略清单的文件不产生疑似条目 —— 「忽略」的语义就是
             # 「不要再为这个文件报警」，而疑似清单是一种报警。用户在 /rsync_ignore
@@ -2775,6 +2806,19 @@ class Rsync115Sync(_PluginBase):
             # Ignored files never become suspects: ignoring means "stop alerting".
             if self._is_ignored(key):
                 skipped_ignored += 1
+                continue
+            # ⚠️ 已在观察期的条目**不降级**为疑似（scan → suspect 会把「刚同步
+            # 成功、还在等生成」错判成「有问题」）。
+            #
+            # 这条闸门是补生成功能带来的：请求补生成后条目会被移回观察期，而它
+            # 此刻的 .strm 按定义还不存在，任何一次主动扫描都会立刻把它打回疑似
+            # —— 用户点完按钮看到的仍是同一批疑似条目，功能表现为完全没作用。
+            # 观察期自带到期机制，让扫过的条目自己走完窗口即可。
+            # Never demote a watching entry to a suspect: right after a regenerate
+            # request its .strm does not exist yet by definition, so a sweep would
+            # instantly undo the re-arm and make the feature look inert.
+            if key in self._strm_watch:
+                skipped_watching += 1
                 continue
             # 已在疑似清单里的不重复计数，但**不刷新时间戳**
             # （刷新会让「首次疑似时间」失去意义，用户无从判断它挂了多久）
@@ -2787,13 +2831,20 @@ class Rsync115Sync(_PluginBase):
             self.save_data("strm_suspects", self._strm_suspects)
         logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
                     f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
-                    f"{f'，因忽略规则跳过 {skipped_ignored} 个' if skipped_ignored else ''}")
+                    f"{f'，因忽略规则跳过 {skipped_ignored} 个' if skipped_ignored else ''}"
+                    f"{f'，{skipped_watching} 个仍在观察期未降级' if skipped_watching else ''}")
 
         if added:
             self._notify_strm_suspects(candidates[:added])
 
         msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
                f"（新增 {added} 个）。")
+        if skipped_watching:
+            # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
+            # 而是**故意**交给观察期自己判定（可能是刚请求补生成、也可能是
+            # 刚同步成功还没生成）。
+            msg += (f"\n⏳ 另有 {skipped_watching} 个文件已处于观察期（刚同步成功或"
+                    f"已请求补生成），未重复计入疑似 —— 它们由观察窗口自行判定。")
         if skipped_ignored:
             msg += f"\n🚫 其中 {skipped_ignored} 个已命中忽略规则，未计入疑似。"
         if truncated:
@@ -2853,10 +2904,17 @@ class Rsync115Sync(_PluginBase):
         now_ts = time.time()
         added = 0
         skipped_ignored = 0
+        skipped_watching = 0
         for key in missing:
             # 与主动扫描同口径：被忽略的文件不产生疑似条目（忽略即「不再报警」）
             if self._is_ignored(key):
                 skipped_ignored += 1
+                continue
+            # 与主动扫描同口径：观察期内的条目不得降级为疑似。
+            # 否则用户刚请助手补生成（条目被移回观察期、strm 按定义还不存在），
+            # 用它自己的文件名查一下就会把它打回疑似 —— 等于把刚做的操作撤销掉。
+            if key in self._strm_watch:
+                skipped_watching += 1
                 continue
             if key in self._strm_suspects:
                 continue
@@ -2878,8 +2936,10 @@ class Rsync115Sync(_PluginBase):
         if non_video:
             # 字幕等非视频文件不会有 .strm，本就不该参与检查；明确告知而非静默丢弃
             lines.append(f"⏭️ 非视频文件（字幕等，不会生成 strm），已跳过: {len(non_video)} 个")
+        if skipped_watching:
+            lines.append(f"⏳ 已在观察期（刚同步成功或已请求补生成），未重复计入疑似: {skipped_watching} 个")
         if skipped_ignored:
-            lines.append(f"🚫 命中忽略规则，未计入疑似: {len(skipped_ignored) if False else skipped_ignored} 个")
+            lines.append(f"🚫 命中忽略规则，未计入疑似: {skipped_ignored} 个")
         if missing:
             lines.append("--------------------------------")
             lines.append("缺 strm 的文件：")
@@ -2889,7 +2949,9 @@ class Rsync115Sync(_PluginBase):
                 lines.append(f"…（共 {len(missing)} 个）")
             lines.append("")
             lines.append("💡 可能是「从未上传」或「上传了但 CD2 假成功」。")
-            lines.append("   已在看板「对账异常清单」的 strm 疑似区，可勾选批量「删旧重传」。")
+            lines.append("   已在看板「strm 疑似异常」标签内，可勾选批量处理：")
+            lines.append("   ① 先点「先尝试生成 strm」，漏生成的话这一步就够了；")
+            lines.append("   ② 仍无 strm 再「删旧重传」。")
         self._post_reply(event, "\n".join(lines))
 
     def _api_strm_clear(self) -> Dict[str, Any]:
@@ -2960,25 +3022,29 @@ class Rsync115Sync(_PluginBase):
         changed = False
         results: List[Dict[str, Any]] = []
         for key in targets:
+            # clock 随结果一并回传：调用方要靠它区分「普通观察到期」与
+            # 「补生成后仍无」（后者判定硬得多），而这两种状态名都叫 suspect。
+            clock = _strm.watch_state_of(
+                key, self._strm_watch, self._strm_gen_requested, now_ts)[0]
             state, record = self.check_one(key, now_ts, grace_secs)
             if state == _strm.SETTLED:
                 self._strm_watch.pop(key, None)
                 self._strm_gen_requested.pop(key, None)
                 changed = True
-                results.append({"key": key, "state": state})
+                results.append({"key": key, "state": state, "clock": clock})
             elif state in (_strm.NO_STRM_DIR, _strm.SOURCE_GONE):
                 self._strm_watch.pop(key, None)
                 self._strm_gen_requested.pop(key, None)
                 changed = True
-                results.append({"key": key, "state": state})
+                results.append({"key": key, "state": state, "clock": clock})
             elif state == _strm.SUSPECT:
                 # 到期未生成：与巡检同一处置（转疑似 + 通知）
                 self._strm_watch.pop(key, None)
                 self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
                 changed = True
-                results.append({"key": key, "state": state})
+                results.append({"key": key, "state": state, "clock": clock})
             else:
-                results.append({"key": key, "state": state})
+                results.append({"key": key, "state": state, "clock": clock})
 
         if changed:
             self.save_data("strm_watch", self._strm_watch)
@@ -2996,16 +3062,34 @@ class Rsync115Sync(_PluginBase):
             if still:
                 msg += f"；另有 {len(still)} 个仍未生成，继续等待"
         elif suspects:
-            msg = (f"⚠️ 宽限期已过且仍无 strm：{len(suspects)} 个已转入疑似异常清单"
-                   f"（此时才需要判断是否删旧重传）")
+            # 两种情况必须分开说：补生成之后仍没有，才是「生成动作做过而仍然
+            # 没有」的硬判据；而普通观察到期只说明刮削/生成侧可能有别的毛病。
+            # 混成一句话会让用户以为前者已经有了结论，而实际上这次可能压根
+            # 没请求过生成。
+            gen_base = [r["key"] for r in results
+                        if r["state"] == _strm.SUSPECT and r.get("clock") == "gen"]
+            if gen_base:
+                msg = (f"⚠️ 补生成后仍未见 strm：{len(gen_base)} 个已转入疑似清单 —— "
+                       f"生成动作已经做过而指针文件仍不出现，云端确实缺该文件的可能性很高，"
+                       f"此时「删旧重传」的正当性比首次疑似充分得多")
+            else:
+                msg = (f"⚠️ 宽限期已过且仍无 strm：{len(suspects)} 个已转入疑似异常清单"
+                       f"（此时才需要判断是否删旧重传）")
         elif gone:
             msg = f"🗑️ 源端文件已不存在：{len(gone)} 个已移出观察（无从验证也无从重传）"
         elif no_dir:
             msg = f"🗑️ 所属映射已取消 strm 目录：{len(no_dir)} 个已移出观察"
         else:
-            msg = (f"⏳ 仍未生成 strm（{len(still)} 个）。"
-                   f"strm 生成不实时 —— 若刚跑完生成任务请稍等再试；"
-                   f"宽限期内属正常等待。")
+            gen_wait = [r["key"] for r in results
+                        if r["state"] == _strm.WATCHING and r.get("clock") == "gen"]
+            if gen_wait:
+                msg = (f"⏳ 仍未生成 strm（{len(gen_wait)} 个为补生成请求中）。"
+                       f"助手按目录遍历云端需要时间 —— {_strm.REGRACE_HOURS:g} 小时"
+                       f"内属正常等待，稍后再点「检查 strm」即可。")
+            else:
+                msg = (f"⏳ 仍未生成 strm（{len(still)} 个）。"
+                       f"strm 生成不实时 —— 若刚跑完生成任务请稍等再试；"
+                       f"宽限期内属正常等待。")
 
         if settled or suspects or gone or no_dir:
             self._reset_strm_notified_if_clear()
@@ -3027,15 +3111,58 @@ class Rsync115Sync(_PluginBase):
         调用方负责持久化与通知；本方法只做「探测文件系统 → 交给纯函数判定」。
         抽出来的原因：两处若各写一份，「手动说已生成、巡检仍判观察中」这类
         分歧会随着后续改动逐渐出现，而它极难排查（两边看着都对）。
+
+        ⚠️ 计时基准**不是**固定的同步时刻：被请过补生成的条目改用请求时刻重新
+        计时（见 `_rearm_after_gen_request`）。基准由 `strm.watch_state_of` 统一
+        解析，看板显示走的是**同一个函数** —— 否则会出现「看板说还剩 5 小时、
+        巡检已判到期转疑似」的双钟问题。
+        The clock depends on whether the entry was re-armed by a regenerate request;
+        both the sweep and the dashboard resolve it through the same helper.
         """
         strm_exists = os.path.exists(self._strm_expected_path(key) or "")
         src_root = _strm.source_root_of(key, self._sync_pairs)
         src_exists = (not src_root) or os.path.exists(
             os.path.join(src_root, key.split(":", 1)[1]))
-        synced_ts = self._strm_watch.get(key, now_ts)
+        base_kind, base_ts = _strm.watch_state_of(
+            key, self._strm_watch, self._strm_gen_requested, now_ts)
+        # 判定窗口：补生成后换用较短的固定窗口，理由见 strm.REGRACE_HOURS
+        window = grace_secs if base_kind == "sync" else _strm.REGRACE_HOURS * 3600
         return _strm.classify_watch(
-            key, synced_ts, now_ts, grace_secs, self._sync_pairs,
+            key, base_ts, now_ts, window, self._sync_pairs,
             strm_exists=strm_exists, src_exists=src_exists)
+
+    def _rearm_after_gen_request(self, keys: List[str], now_ts: float) -> None:
+        """
+        补生成请求发出后，把条目从疑似清单移回观察期，并以**请求时刻**重新计时。
+
+        Move the requested entries back to the watch list after the regenerate
+        command has actually been sent.
+
+        ⚠️ 与「请求即移动」的旧实现的区别，只在**移动位置**：旧代码在发命令前
+        无条件移动，即便助手随后拒收（路径不在它的全量列表里）也已经移走，
+        用户看到条目凭空消失。现在由调用方在命令**确实发出之后**才调用本方法，
+        且只对真正上了车的 key 调用（见 `_api_strm_generate` 的发送循环）。
+        The difference from the old design is *where* the move happens: after the
+        command is actually sent, not before — a rejected command must not make the
+        entry disappear.
+
+        为什么请求过的条目值得回到观察期：用户要的正是「等一会儿再点一下检查」。
+        留在疑似清单里只能靠手动刷新去猜结果，而观察期本身就带着巡检 + 手动检查
+        两套现成的判定机制；而且即使一次都不点，宽限期内无人处理，watcher 到期
+        仍会把它送回来（此时带着已验证过判别结果的身份），等于**零人工兜底**。
+        Re-arming reuses the existing sweep/dashboard checks and guarantees the entry
+        comes back on its own if nobody looks at it.
+        """
+        moved = 0
+        for key in keys:
+            self._strm_suspects.pop(key, None)
+            self._strm_watch[key] = now_ts
+            moved += 1
+        if moved:
+            self.save_data("strm_watch", self._strm_watch)
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.info(f"[Rsync115Sync] 📺 {moved} 个条目已从疑似清单移回观察期，"
+                        f"按 {_strm.REGRACE_HOURS}h 窗口重新计时（可用「检查 strm」即时查看结果）")
 
     def _api_strm_check(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """看板入口：立即检查观察期条目的 strm 是否已生成。"""
@@ -3215,47 +3342,53 @@ class Rsync115Sync(_PluginBase):
                                f"• 或在看板上勾选一部分（同一目录的会更划算）分批处理\n"
                                f"• 若确实是一批文件上传失败，直接用「删旧重传」更合适"}
 
-        sent = 0
-        for target in dirs:
-            if self._send_helper_command(target):
-                sent += 1
-
-        if not sent:
+        sent_dirs = [target for target in dirs if self._send_helper_command(target)]
+        if not sent_dirs:
             return {"success": False,
                     "message": "补生成命令发送失败（宿主事件总线不可用），请查看日志"}
+        # 逐条反查「哪些 key 的目录确实上了车」。用 sent_dirs 而不是 dirs：
+        # 发送是逐目录调用的，某一目录失败时若仍按全量收尾，它下面的文件会被
+        # 移进观察期 —— 而那条命令根本没发出去，用户会在窗口内等一个永远不会
+        # 到来的结果。这里与发送循环共用 strm.gen_target_of_key 的推导，
+        # 保证「发出去的是什么」与「认为覆盖了什么」不可能分叉。
+        sent_set = set(sent_dirs)
+        matched = [k for k in allowed if _strm.gen_target_of_key(k, self._sync_pairs) in sent_set]
 
-        # ⚠️ **条目留在疑似清单，不移进观察期**。
+        # 只有**确实发过命令**的条目才允许离场。
         #
-        # 早先的做法是「请求即移入观察期」，结果用户看到条目凭空消失、宽限期到
-        # 又带着「补生成无效」回来。那个设计错在**把「命令已发出」当成了「生成已
-        # 执行」**：助手可能拒绝（路径不在它的全量列表里）、可能没收到，这两种
-        # 情况下 strm 当然不会出现，于是条目被扣上「云端确实缺文件」的帽子 ——
-        # 而云端其实有。顺着这个结论去「删旧重传」，删掉的正是一个好文件。
-        # The entry must not leave the list: a sent command is not a performed one, and
-        # treating the two as equivalent manufactures a false "the cloud lacks it".
+        # 这里的历史坑值得留一笔：最早的做法是「请求即移入观察期」，而移动发生在
+        # 发命令之前，于是助手拒收（路径不在它的全量列表里）时条目照样消失，
+        # 用户看到「点了一下，东西不见了」，宽限期到它又带着「补生成无效」回来
+        # （助手那边其实打印的是「匹配目录失败」）。那个设计错在**把「命令已发出」
+        # 当成了「生成已执行」**，并顺着这个错误结论把好文件推去删旧重传。
         #
-        # 现在的语义：请求只是**打上标记**（看板显示「已请求生成，等待结果」），
-        # 条目照旧留在清单里可继续操作。若 strm 真的因这次请求而生成，下一轮
-        # 主动扫描自然会把它判为「已有 strm」而解除 —— **不需要我们替它移动**。
+        # 现在两道闸门：发送前预检拦掉必然被拒的路径；发送后按「实际发出命令的
+        # 目录」反查命中哪些 key，只有它们才移回观察期。没上车的条目原样留在
+        # 疑似清单，用户仍能看到并操作。
+        # Only entries whose directory actually got a command may leave the suspect
+        # list; anything the helper would have rejected is still sitting there.
         now_ts = time.time()
         for key in matched:
             self._strm_gen_requested[key] = now_ts
         self.save_data("strm_gen_requested", self._strm_gen_requested)
+        self._rearm_after_gen_request(matched, now_ts)
 
-        logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(dirs)} 个目录 / "
-                    f"{len(matched)} 个文件（条目保留在疑似清单，等待结果）")
-        msg = (f"已向 strm 助手发出 {len(dirs)} 条补生成命令，覆盖 {len(matched)} 个文件。\n"
+        logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(sent_dirs)} 个目录 / "
+                    f"{len(matched)} 个文件（已移回观察期，等待结果）")
+        msg = (f"已向 strm 助手发出 {len(sent_dirs)} 条补生成命令，覆盖 {len(matched)} 个文件，"
+               f"它们已移回「观察中」。\n"
                f"• strm 助手会按目录遍历云端并重新生成指针文件\n"
-               f"• 若生成成功，文件会出现在 strm 目录，届时点「扫描缺 strm 的文件」"
-               f"即可看到它们被判定为正常\n"
+               f"• strm 一出现就自动判为正常；若 {_strm.REGRACE_HOURS:g} 小时后仍未出现，"
+               f"会回到疑似清单（此时才是「生成过仍没有」，判定更硬）\n"
+               f"• 不必干等：在观察期点「检查 strm」即可立即比对结果\n"
                f"• 若助手报「匹配目录失败」，说明该网盘路径不在它的「全量同步路径」里，"
                f"请在助手配置页补上（详见配置页说明）\n"
-               f"助手是异步长任务，生成需要时间，请稍后回来查看。")
+               f"助手是异步长任务，生成需要时间。")
         if unmatched:
             msg += (f"\n\n⚠️ 另有 {len(unmatched)} 个文件本次未处理"
                     f"（所属映射未配置「网盘目录」），它们仍留在疑似清单中。")
         return {"success": True, "message": msg,
-                "data": {"dirs": dirs, "requested": len(matched),
+                "data": {"dirs": sent_dirs, "requested": len(matched),
                          "unmatched": unmatched[: _MAX_LOGGED_PATHS],
                          "unmatched_count": len(unmatched)}}
 
@@ -3781,8 +3914,9 @@ class Rsync115Sync(_PluginBase):
                 f"--------------------------------\n"
                 f"💡 缺 strm 有**两种**可能，处理方式不同：\n"
                 f"• 从未上传过的存量文件 → 用 /rsync_backfill 补传\n"
-                f"• 上传了但 CD2 假成功（云端可能有 ..xxx 残留）→ 用看板「删旧重传」\n"
-                f"💡 疑似清单已在看板「对账异常清单」标签内，可勾选批量处理。"
+                f"• 上传了但 CD2 假成功（云端可能有 ..xxx 残留）→ 先试 /rsync_strm gen 补生成，\n"
+                f"  仍无 strm 再用看板「删旧重传」\n"
+                f"💡 疑似清单已在看板「strm 疑似异常」标签内，可勾选批量处理。"
             )
             self._post_reply(event, reply)
 

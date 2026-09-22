@@ -91,6 +91,10 @@ def test_only_the_generate_endpoint_depends_on_helper():
         "_send_helper_command",       # 实际下发命令
         "_api_strm_generate",         # 补生成入口
         "_strm_helper_ready",         # 派生的就绪检查（调用 _helper_running）
+        # 补生成成功后的收尾：它自己不调用助手，只是把条目移回观察期。
+        # 出现在这里的原因是「补生成这件事」被有意收成一个方法，而不是说
+        # 这里产生了新的依赖 —— 若要在这里读助手配置，就应该重新审视整个边界。
+        "_rearm_after_gen_request",
         # get_api 只在路由表的注释里点名了助手（说明该端点是唯一依赖点），
         # 不构成运行时依赖；注释本身就是 UI 标注的契约来源。
         "get_api",

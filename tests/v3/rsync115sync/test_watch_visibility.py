@@ -118,3 +118,28 @@ def test_watch_detail_is_raw_timestamps_for_frontend_math():
 
     assert isinstance(detail["电视剧:a.mkv"], float)
     assert abs(detail["电视剧:a.mkv"] - ts) < 1
+
+
+# --------------------------------------------------------------------------
+# 计时基准的外发：前端「还剩多久」必须与巡检判到期用同一把尺子
+# --------------------------------------------------------------------------
+
+def test_status_exposes_per_entry_clock():
+    """
+    /status 必须给出每个条目的计时基准，前端据此选窗口。
+
+    ⚠️ 这是**双钟问题**的唯一防线。补生成会把条目移回观察期并以请求时刻重新
+    计时（窗口 1h），而普通观察用的是宽限期配置（可能 24h）。前端若一律按宽限期
+    算剩余时间，用户会看到「看板说还要等 5 小时」，而下一轮巡检已经判它到期转疑似
+    —— 两个数字各自自洽，用户完全无从判断该信谁。
+    """
+    root = tempfile.mkdtemp()
+    now = time.time()
+    plugin = _plugin(root, watch={"电视剧:a.mkv": now, "电视剧:b.mkv": now})
+    plugin._strm_gen_requested = {"电视剧:a.mkv": now - 60}  # a 是补生成重新计时过的
+
+    data = plugin._api_get_status()["data"]
+
+    assert data["strm_watch_clocks"]["电视剧:a.mkv"] == "gen"
+    assert data["strm_watch_clocks"]["电视剧:b.mkv"] == "sync"
+    assert isinstance(data["strm_regrace_hours"], (int, float))

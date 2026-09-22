@@ -36,6 +36,20 @@ SOURCE_GONE = "source_gone"    # 清理：源端文件已消失，无从验证�
 MIN_GRACE_HOURS = 0.5
 DEFAULT_GRACE_HOURS = 6.0
 
+# 补生成（请 strm 助手重生成指针文件）后的重新计时窗口（小时）。
+#
+# 为什么**不沿用**宽限期的配置值：两者度量的是完全不同的东西。
+# 宽限期量的是「rsync 已报成功 → strm 出现」的刮削/入库传播延迟；
+# 而补生成的等待对象是助手的一次**云端目录遍历**，跟这个配置毫无因果。
+# 用户把宽限期调大（比如 24h）的理由是「我的刮削很慢」，不该连带让补生成
+# 之后的结果在半天内不可判定 —— 那才是真的把功能调坏了。
+# 反过来取一个小的固定值，代价只是「稍早一点给出结果」，而且结果会即时
+# 覆盖读取：已生成就直接解除，无需等窗口结束（见 watch_state_of）。
+# A separate, fixed window: the configured grace measures scrape/ingest lag, not
+# the helper's directory walk, so reusing it would make a "slow scraping" setting
+# silently cripple the regenerate feature.
+REGRACE_HOURS = 1.0
+
 
 def expected_path(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
     """
@@ -102,6 +116,68 @@ def classify_watch(key: str, synced_ts: float, now_ts: float, grace_secs: float,
     if now_ts - synced_ts >= grace_secs:
         return SUSPECT, key
     return WATCHING, key
+
+
+def regrace_secs(gen_requested_ts: Any, now_ts: float) -> float:
+    """
+    补生成之后的重新计时窗口：请求时刻 → 请求 + REGRACE_HOURS 之间的剩余秒数。
+
+    Seconds left in the post-request regrace window; <= 0 once it has elapsed.
+
+    ⚠️ **以请求时刻为基准，不是「此刻 + 窗口」**。若按后者，每看一次都顺延一次，
+    条目就永远不会到期 —— 用户看到的是一条无限停留在「观察中」的记录。
+    看板每 30 秒刷新一次状态，这个错误会立刻显形为「怎么等都不出结果」，
+    而且越看越久。
+    Anchored to the request timestamp, never to "now": re-anchoring on every read
+    would push the deadline forward forever and the entry could never resolve.
+
+    已生成（SETTLED）的情形根本不会走到这里，所以窗口到期只是**下界**——
+    助手快的时候结果会在下一轮巡检就出来。
+    """
+    try:
+        base = float(gen_requested_ts)
+    except (TypeError, ValueError):
+        base = now_ts
+    return base + REGRACE_HOURS * 3600 - now_ts
+
+
+def watch_state_of(key: str, watch: Dict[str, Any],
+                   gen_requested: Dict[str, Any], now_ts: float) -> Tuple[str, float]:
+    """
+    判定某个观察期条目的**计时基准**，返回 (基准种类, 基准时间戳)。
+
+    Decide which clock an observation entry is running on: ("sync"|"gen", ts).
+
+    ⚠️ 这不是可有可无的细节，而是两处显示分歧的来源。补生成把条目从疑似清单
+    移回观察期后，它的登记时刻来自 `gen_requested`（请求那一刻），**不是**
+    `watch` 里的同步成功时刻。若显示端仍拿同步时刻去算剩余时间，用户会看到
+    「入口 A 说还要等 5 小时、入口 B 说已到期」—— 两边算的都不是同一个钟。
+    The display side and the sweep must resolve the clock the same way, or the same
+    entry shows two different remaining times depending on where it is looked at.
+
+    `gen_requested` 无记录时返回同步时刻；两个字典都缺（正常巡检不会出现，
+    因为循环就是遍历 watch 的键）时退回 now_ts，保证宽限期内不会误判。
+
+    ⚠️ 坏时间戳（null、字符串、被手工改坏的 JSON）一律**退回 now_ts**，绝不抛
+    异常：这两个字典直接来自持久化文件，而调用点散布在巡检、手动检查、看板
+    状态三处 —— 任何一处抛异常，代价分别是「整轮巡检中断」「按钮点了报错」
+    「整个看板打不开」，而原因只是一个条目的时间戳格式不对。
+    取值失败时按「刚登记」处理（而非 0 → 立即到期），与 classify_watch 的兜底
+    同一取向：宁可多留一轮，也不要把坏数据变成一次「上传异常」误报。
+    """
+    if key in gen_requested:
+        return "gen", _ts_or(gen_requested[key], now_ts)
+    if key in watch:
+        return "sync", _ts_or(watch[key], now_ts)
+    return "sync", now_ts
+
+
+def _ts_or(value: Any, fallback: float) -> float:
+    """把可能是 null / 字符串 / 任意对象的持久化时间戳解析成 float，失败即兜底。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def grace_secs_of(grace_hours: Any) -> float:
@@ -205,6 +281,39 @@ def pan_dir_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def gen_target_of_key(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    单个疑似文件对应的助手参数（**目录**），无法归属时返回 None。
+
+    The helper argument (a directory) for one suspect key, or None if unattributable.
+
+    与 `gen_targets_for_suspects` 共用同一份推导：调用方在命令发出后要用它反查
+    「哪些 key 命中了成功发出的目录」，两处若各写一遍，一旦推导规则改动
+    （例如空格折叠的判据）就会出现「命令发了 A 目录、却被认为覆盖了 B 目录的文件」。
+    Shared with the batch builder so the post-send reverse lookup can never disagree
+    with what was actually derived and sent.
+    """
+    rel = key.split(":", 1)[1] if ":" in key else key
+    pan_root = pan_dir_of(key, pairs)
+    if not pan_root:
+        return None
+    # 相对路径里的目录部分（去掉文件名）拼到网盘根下 —— 只把参数收窄到
+    # 该文件所在的季/集目录，不上升为整个映射根。
+    rel_dir = posixpath.dirname(rel)
+    target = posixpath.join(pan_root, rel_dir) if rel_dir else pan_root
+    # ⚠️ 命令通道对「连续空格」不是无损的：宿主把命令串按空白切分后再用单个
+    # 空格拼回 args（command.py: `cmd.split()[0]` / `" ".join(...)`），因此
+    # `/TV/剧  名` 到达助手时会变成 `/TV/剧 名`，路径匹配失败。而失败消息只
+    # 发给助手侧的用户、本插件收不到 —— 表现为「点了按钮什么都没发生」。
+    # 这类路径宁可明确列为未处理，也不要发一条注定失败的假命令。
+    # The host splits the command line on whitespace and rejoins with single
+    # spaces, so runs of spaces inside a directory name are collapsed and the
+    # path silently stops matching on the helper side.
+    if target != " ".join(target.split()):
+        return None
+    return target
+
+
 def gen_targets_for_suspects(keys: List[str], pairs: List[Dict[str, Any]],
                              limit: int) -> Tuple[List[str], List[str], List[str], bool]:
     """
@@ -242,24 +351,8 @@ def gen_targets_for_suspects(keys: List[str], pairs: List[Dict[str, Any]],
     truncated = False
 
     for key in keys:
-        rel = key.split(":", 1)[1] if ":" in key else key
-        pan_root = pan_dir_of(key, pairs)
-        if not pan_root:
-            unmatched.append(key)
-            continue
-        # 相对路径里的目录部分（去掉文件名）拼到网盘根下 —— 只把参数收窄到
-        # 该文件所在的季/集目录，不上升为整个映射根。
-        rel_dir = posixpath.dirname(rel)
-        target = posixpath.join(pan_root, rel_dir) if rel_dir else pan_root
-        # ⚠️ 命令通道对「连续空格」不是无损的：宿主把命令串按空白切分后再用单个
-        # 空格拼回 args（command.py: `cmd.split()[0]` / `" ".join(...)`），因此
-        # `/TV/剧  名` 到达助手时会变成 `/TV/剧 名`，路径匹配失败。而失败消息只
-        # 发给助手侧的用户、本插件收不到 —— 表现为「点了按钮什么都没发生」。
-        # 这类路径宁可在这里就明确列为未处理，也不要发一条注定失败的假命令。
-        # The host splits the command line on whitespace and rejoins with single
-        # spaces, so runs of spaces inside a directory name are collapsed and the
-        # path silently stops matching on the helper side.
-        if target != " ".join(target.split()):
+        target = gen_target_of_key(key, pairs)
+        if target is None:
             unmatched.append(key)
             continue
         if target not in seen_dirs:

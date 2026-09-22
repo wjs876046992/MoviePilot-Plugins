@@ -498,11 +498,19 @@
             <!-- 观察期明细：这些文件刚同步成功、还在等 strm 生成（宽限期内），
                  属正常等待 —— 展示出来是为了让用户知道「谁在等、还要等多久」。
 
+                 观察期里有两类条目，来源不同、等的对象也不同：
+                   · 刚同步成功 → 等刮削/入库传播，窗口 = 宽限期配置值
+                   · 已请求助手补生成 → 等助手遍历云端目录，窗口 = 补生成窗口
+                 两者的「还要等多久」必须按各自的窗口算（entry.clock 决定），
+                 否则同一批条目会显示成互相矛盾的剩余时间。
+
                  ⚠️ 只放**只读**的「检查」按钮，不放删旧重传：后者会诱导用户删掉
                  刚传好的文件、白耗一次删除 API 与重传配额。当初拒绝在观察期放
                  操作按钮，拒的正是这类破坏性操作；「检查一下 strm 出来没有」
                  纯本地读取、零副作用，没有这个风险，而且用户常常**已经知道**
-                 strm 出来了（刚跑完生成任务），却只能干等下一轮巡检（最长 30 分钟）。 -->
+                 strm 出来了（刚跑完生成任务），却只能干等下一轮巡检（最长 30 分钟）。
+                 补生成之后的等待尤其需要这个按钮：助手是异步长任务，用户想知道
+                 「到底出来了没」只能靠它。 -->
             <div v-if="strmWatchingEntries.length" class="d-flex align-center flex-wrap ga-2 mb-2">
               <span class="text-caption text-medium-emphasis">
                 观察期 {{ strmWatchingEntries.length }} 个文件
@@ -530,12 +538,25 @@
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-truncate">{{ entry.key }}</div>
                     <div class="text-caption text-medium-emphasis mt-0.5">
-                      同步成功，等待 strm 生成（宽限期 {{ statusData.strm_grace_hours }}h） · {{ entry.remainingText }}
+                      <template v-if="entry.clock === 'gen'">
+                        已请 strm 助手补生成，等待新生成的 .strm 出现
+                        （窗口 {{ statusData.strm_regrace_hours }}h） · {{ entry.remainingText }}
+                      </template>
+                      <template v-else>
+                        同步成功，等待 strm 生成（宽限期 {{ statusData.strm_grace_hours }}h） · {{ entry.remainingText }}
+                      </template>
                     </div>
                   </div>
                 </div>
                 <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
-                  <v-chip size="x-small" color="info" variant="tonal" class="font-weight-bold">观察中</v-chip>
+                  <v-chip
+                    size="x-small"
+                    :color="entry.clock === 'gen' ? 'primary' : 'info'"
+                    variant="tonal"
+                    class="font-weight-bold"
+                  >
+                    {{ entry.clock === 'gen' ? '已请求生成' : '观察中' }}
+                  </v-chip>
                   <v-btn
                     size="x-small"
                     variant="tonal"
@@ -549,7 +570,7 @@
                     检查 strm
                     <v-tooltip activator="parent" location="top" max-width="320">
                       立刻看这个文件的 .strm 出来了没有，不必等下一轮巡检。<br>
-                      已生成 ⇒ 立即解除观察；仍未生成 ⇒ 继续等待（宽限期内不报警）。<br>
+                      已生成 ⇒ 立即解除观察；仍未生成 ⇒ 继续等待（窗口内不报警）。<br>
                       纯本地读取，不访问 115、不消耗配额。
                     </v-tooltip>
                   </v-btn>
@@ -575,9 +596,14 @@
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ key }}</div>
                     <div class="text-caption text-medium-emphasis mt-0.5">
+                      <!-- 走到这条分支说明补生成**请求过**且重新计时的窗口也走完了，
+                           亦即「生成动作做过而指针文件仍不出现」。但依然不能写成
+                           「补生成无效 ⇒ 云端缺文件」：助手可能压根没执行（路径不在
+                           它的全量列表里就直接拒绝），那种情况下 strm 当然不会出现，
+                           而云端文件是好的。只陈述已发生的事实，判断留给用户。 -->
                       <template v-if="genRequested[key]">
-                        已请求 strm 助手补生成，尚未看到结果 —— 请到助手侧确认它是
-                        真的在生成，还是报了「匹配目录失败」
+                        已请求 strm 助手补生成，窗口内仍未看到 .strm ——
+                        请到助手侧确认它是真的生成了（可能漏生成），还是报了「匹配目录失败」
                       </template>
                       <template v-else>
                         同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
@@ -592,7 +618,7 @@
                        出现，但云端文件是好的。把「命令发出」当成「生成失败」会误导
                        用户去删一个完好的云端文件。 -->
                   <v-chip v-if="genRequested[key]" size="x-small" color="info" variant="tonal" class="font-weight-bold">
-                    已请求生成
+                    补生成后仍无
                   </v-chip>
                   <v-chip v-else size="x-small" color="warning" variant="flat" class="font-weight-bold">疑似异常</v-chip>
                   <v-btn
@@ -739,6 +765,10 @@ const statusData = ref({
   stale_count: 0,
   strm_suspects: {},
   strm_watch_detail: {},
+  // key → 'sync' | 'gen'：该观察条目的计时基准。补生成移回观察期的条目用的是
+  // 「请求时刻 + strm_regrace_hours」，不是宽限期配置值。
+  strm_watch_clocks: {},
+  strm_regrace_hours: 1,
   strm_watching: 0,
   strm_grace_hours: 6,
   // 已请 strm 助手补生成过的 key → 时间戳；以及助手就绪状态（含不可用原因）
@@ -788,12 +818,23 @@ const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspec
 // 观察期条目明细：显示在疑似清单上方，带「观察中」tag、不可操作。
 // 宽限期从同步成功时刻起算，这里换算出剩余时间让用户对「还要等多久」有预期；
 // 剩余时间只在每次 fetchStatus（30 秒轮询）时刷新，精度足够。
+//
+// ⚠️ 计时窗口**按基准分两种**，与后端 strm.watch_state_of 一一对应：
+//   基准 sync：宽限期配置值（刮削/入库传播延迟）
+//   基准 gen ：补生成窗口 strm_regrace_hours（等待助手遍历云端目录）
+// 后端用哪把尺子判到期，这里就必须用哪把尺子算剩余；否则会出现「看板说还剩
+// 5 小时、下一轮巡检却已判到期转疑似」—— 两边各自都自洽，用户完全无从判断
+// 该信谁，而这正是双钟问题最难排查的地方。
 const strmWatchingEntries = computed(() => {
   const detail = statusData.value.strm_watch_detail || {}
-  const grace = (Number(statusData.value.strm_grace_hours) || 6) * 3600
+  const clocks = statusData.value.strm_watch_clocks || {}
+  const graceSync = (Number(statusData.value.strm_grace_hours) || 6) * 3600
+  const graceGen = (Number(statusData.value.strm_regrace_hours) || 1) * 3600
   const now = Date.now() / 1000
   return Object.entries(detail)
     .map(([key, syncedTs]) => {
+      const clock = clocks[key] === 'gen' ? 'gen' : 'sync'
+      const grace = clock === 'gen' ? graceGen : graceSync
       const remainingSec = Math.max(0, grace - (now - Number(syncedTs)))
       const remainingMin = Math.ceil(remainingSec / 60)
       let remainingText
@@ -804,7 +845,7 @@ const strmWatchingEntries = computed(() => {
       } else {
         remainingText = `约 ${remainingMin} 分钟后判定`
       }
-      return { key, remainingText }
+      return { key, clock, remainingText }
     })
     .sort((a, b) => a.key.localeCompare(b.key))
 })
@@ -1163,7 +1204,8 @@ async function generateStrm() {
     `${keys.length} 个文件\n\n` +
     `• 生成成功 ⇒ 此前只是助手漏生成，**无需删旧重传**（省下一整轮删除与上传）\n` +
     `• 生成后仍无 ⇒ 云端确实缺该文件，届时再执行「删旧重传」\n\n` +
-    `这些文件会移回「观察中」，按宽限期 ${statusData.value.strm_grace_hours}h 重新计时。\n` +
+    `这些文件会移回「观察中」，按 ${statusData.value.strm_regrace_hours}h 窗口重新计时，` +
+    `期间可用「检查 strm」立即查看结果（不必干等）。\n` +
     `助手按目录遍历云端（不是只处理单个文件），最多涉及 ` +
     `${statusData.value.strm_gen_dir_limit} 个目录，超过会整批拒绝。\n\n确定继续吗？`
   )
