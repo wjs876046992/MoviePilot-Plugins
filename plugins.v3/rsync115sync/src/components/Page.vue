@@ -360,10 +360,12 @@
             <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
           </div>
 
-        <!-- 标签 3：strm 疑似上传异常（独立成 tab —— 判据与对账完全不同，
-             来源是 strm 插件的视角；混在「对账异常」里会让用户分不清
-             「对账发现的问题」与「strm 反证出来的问题」，两者处理方式也不同）-->
-          <!-- 有配置 strm 目录就渲染本区（即使清单为空）—— 否则用户找不到「主动扫描」
+        </div>
+
+        <!-- 标签 3：strm 疑似上传异常（判据与对账完全不同：来源是 strm 插件的视角，
+             处理方式也不同 —— 前者走普通重传，这里必须删旧重传） -->
+        <div v-if="currentTab === 'strm'">
+<!-- 有配置 strm 目录就渲染本区（即使清单为空）—— 否则用户找不到「主动扫描」
                入口，而扫描正是清单为空时最需要的功能（发现从未被观察过的坏文件） -->
           <div v-if="strmConfigured" class="mt-4">
             <div class="d-flex align-center flex-wrap ga-2 mb-2">
@@ -500,8 +502,7 @@
           </div>
         </div>
 
-
-        <!-- 标签 4：已忽略清单 -->
+<!-- 标签 4：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
             <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
