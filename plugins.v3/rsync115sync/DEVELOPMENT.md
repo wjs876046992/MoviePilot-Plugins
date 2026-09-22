@@ -1552,6 +1552,42 @@ def get_module(self) -> Dict[str, Any]:
 - **`_diagnose_callable` 也不会抱怨** —— 它只在**已被收集**的 provider 上检查签名，
   没被收集的根本走不到那一步。
 
+#### 排查中还暴露了一个部署层面的坑：改了没推 = 真机没变
+
+前三轮修复（Content-Type 文档、尾斜杠文档、`get_module()` 声明）都只落在**本地提交**里，
+`origin/main` 上始终没有 `get_module`。于是 NAS 拉到的仍是没有声明的版本，
+真机现象**一个字都没变** —— 而每轮我都以为「修好了，你再试」。
+
+判据（真机日志里一眼可辨）：
+
+| 现象 | 含义 |
+|---|---|
+| 有 `请求插件 xxx 执行：webhook_parser` | 声明生效，provider 已被收集 |
+| 只有 `请求系统模块执行：webhook_parser` | **没有任何插件 provider** —— 声明没生效（或版本没更新） |
+
+第二条日志是宿主在 `execute_system_modules` 里打的（`dispatcher.py`），
+与插件那条 `info` 级「请求插件 … 执行」是**两条不同的日志**；后者没出现，
+就说明插件根本没被收集进 provider 列表。
+
+> 补充：真机日志级别为 DEBUG 时，`dispatcher.py` 会额外打出
+> `模块方法契约：webhook_parser -> integration` —— 那只是**契约查表**，
+> 不代表任何 provider 被调用。**不要把它当成「插件已被调用」的证据**
+> （这正是本次误判的一个诱因）。
+
+**对策（已实现）**：`init_plugin` 的启动摘要里增加一行**正面确认**：
+
+```
+INFO [Rsync115Sync] 认领钩子已注册（webhook_parser 已向宿主声明）：source=rsync115sync 的平台 webhook 报文会被本插件接管…
+```
+
+声明缺失时改为 `error` 级告警。这样「版本对不对」不再需要人肉去核对一条
+**不存在**的日志，而是有一条明确的存在性断言。
+
+> 教训：**「我修好了」必须以「产物真的到了运行环境」收尾。**
+> 只在本地 commit 而不 push/deploy，等于没修 —— 而由于每轮现象完全一样，
+> 这种失误在排查过程中**几乎不可察觉**。跨环境调试时，先确认代码真的到位，
+> 再解释现象。
+
 #### 已加的两道哨兵
 
 1. `test_registration_contract.py::test_webhook_parser_is_declared_in_get_module`

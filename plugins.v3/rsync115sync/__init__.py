@@ -514,6 +514,28 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 f"限流={'开' if self._rate_limit_enabled else '关'}"
                 f"({self._upload_batch_size}/批, {self._upload_max_per_window}/窗口)"
             )
+            # 单独一行报告「认领钩子是否真的声明出去了」。
+            # 为什么要专门报这个：2026-09-22 真机排查了三轮（Content-Type 400、
+            # 尾斜杠 307、映射配置）才定位到真因 —— 插件实现了 webhook_parser
+            # 却没在 get_module() 里声明，于是**宿主的模块调度器根本看不到本插件**
+            # （宿主会打「请求插件 X 执行：webhook_parser」而那条日志从不出现，
+            # 但没人会平白无故去核对一条**不存在**的日志）。这类失效不报错、
+            # 无堆栈、grep 方法名还命中，只能靠一条明确的正面日志来自证。
+            # 同时它还能立刻暴露「NAS 上的插件不是最新版」这种部署问题 ——
+            # 启动摘要里的版本号与这行是否出现，两者一对就能判断。
+            try:
+                declared = self.get_module() or {}
+            except Exception:
+                declared = {}
+            if "webhook_parser" in declared:
+                logger.info("[Rsync115Sync] 认领钩子已注册（webhook_parser 已向宿主声明）："
+                            "source=rsync115sync 的平台 webhook 报文会被本插件接管。"
+                            "若此后再看不到任何 webhook 日志，请按 USAGE 的「到达=0 排查清单」逐项检查")
+            else:
+                logger.error("[Rsync115Sync] 认领钩子**未注册** —— get_module() 没有声明 "
+                             "webhook_parser，宿主的模块调度器看不到本插件，"
+                             "source=rsync115sync 的报文将完全无响应且无任何日志。"
+                             "这通常意味着你跑的不是最新版插件（见 DEVELOPMENT §9.17）")
         except Exception as log_err:  # 摘要日志失败绝不能影响插件加载
             logger.warning(f"[Rsync115Sync] 初始化摘要日志输出失败（已忽略）: {log_err}")
 

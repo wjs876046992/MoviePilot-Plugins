@@ -1364,6 +1364,50 @@ def test_webhook_parser_exists_with_host_signature():
     )
 
 
+def test_startup_reports_claim_hook_registration(tmp_path, caplog):
+    """
+    启动时必须**正面确认**认领钩子已注册，而不是等真机上去核对一条不存在的日志。
+
+    由来：2026-09-22 排查了三轮才发现真因是 `get_module()` 没声明 `webhook_parser`
+    —— 那是「一条本该出现的日志从不出现」的失效形态，没有任何堆栈或错误可看。
+    这条用例把「启动时自证」固定下来：`init_plugin` 之后日志里必须有一行
+    明确说明钩子已注册；反过来若声明丢了，必须出现 `error` 级的告警。
+
+    顺带它也覆盖「NAS 上跑的不是最新版」这种部署问题：版本号与这行日志是否出现，
+    两者一对就能判断。
+    """
+    import logging
+
+    # 插件用的是宿主注入的 logger（生产环境名叫 moviepilot，桩环境叫 stubhost），
+    # 因此按**实例上的 logger 对象名**取，别把环境细节写死在用例里。
+    importlib.import_module("app.plugins.rsync115sync")
+    plugin = _plugin(str(tmp_path / "TV"))
+    logger_name = __import__(
+        "app.plugins.rsync115sync", fromlist=["logger"]).logger.name
+
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        plugin.init_plugin({"enabled": True, "listen_transfer": True,
+                            "sync_pairs": []})
+
+    text = caplog.text
+    assert "认领钩子已注册" in text, (
+        "启动日志必须正面确认 webhook_parser 已向宿主声明 —— 缺了这条确认，"
+        "真机上的静默失效就只能靠人肉核对「哪条日志没出现」"
+    )
+    assert "认领钩子**未注册**" not in text
+
+    # 反向：声明被拿掉时必须报 error 级（而不是继续静默）
+    broken = _plugin(str(tmp_path / "TV"))
+    broken.get_module = lambda: {}          # 模拟漏声明
+    with caplog.at_level(logging.ERROR, logger=logger_name):
+        caplog.clear()
+        broken.init_plugin({"enabled": True, "listen_transfer": True,
+                            "sync_pairs": []})
+        assert "认领钩子**未注册**" in caplog.text, (
+            "声明缺失时必须报 error —— 这正是真机上「什么也看不到」的那种失效"
+        )
+
+
 def test_webhook_parser_returns_none_for_unnamed_payload(tmp_path):
     """
     **最关键的一条**：未显式声明收件人的报文必须返回 None。
