@@ -33,6 +33,17 @@ Naming/identity rules (all three must agree):
 - `plugin_version` (in the class), the index `version`, and the newest `history` entry must match
 - `history` is newest-first, semantic-version descending
 
+A Vue-mode plugin has **two more** version fields the gate does *not* read: its own
+`package.json` `version` and the version chip hardcoded in `Config.vue`. Bump all five or the UI
+and the plugin's own manifest drift while the version gate still reports success — a false green
+(v0.2.2 shipped a fix for exactly this drift). `check_plugin_versions.py` only compares
+`plugin_version` against the index `version`.
+
+Plugin source directories are copied wholesale into release zips — `release.yml` excludes only
+`__pycache__` and `*.pyc` — so sibling modules, `dist/`, frontend sources, and any `*.md` inside
+the plugin directory all ship to users. That is also why tests must live outside the plugin
+directory, and why splitting a plugin into sibling modules needs no packaging change.
+
 Version numbering rule — **each numeric segment of `x.y.z` may only be a single digit 0-9**
 (so the maximum is `9.9.9`). When a segment would reach 10, carry into the next segment instead:
 `0.0.10` is forbidden, use `0.1.0`; `0.9.10` is forbidden, use `1.0.0`. This overrides the usual
