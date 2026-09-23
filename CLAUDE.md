@@ -83,6 +83,8 @@ python3 -m py_compile plugins.v3/<plugin_id>/__init__.py
 python3 -m compileall plugins.v3/<plugin_id>
 
 # Version gate: index version vs plugin_version across all three indexes
+# (package.json / package.v2.json only fully check release:true entries;
+#  package.v3.json checks every entry + V3 history/major-bump contract)
 python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 
 # Federated component CSS gate (required after building Vue frontend artifacts)
@@ -94,19 +96,22 @@ python3 scripts/check_new_plugin_tests.py --base-ref origin/main
 # V3 dependency install gate (per platform; manifest-declared platform subsets supported)
 uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py --python 3.14 --platform linux-x64
 
-# Vue federated frontend (inside a plugin that ships one)
-yarn typecheck && yarn build     # build output goes to dist/assets/
+# Vue federated frontend (inside a plugin that ships one) — run from the plugin directory.
+# Package manager and scripts vary by plugin: check its package.json first (yarn or pnpm;
+# not every plugin defines typecheck). Build output must land in dist/assets/.
+yarn build    # or: pnpm build / yarn typecheck && yarn build when those scripts exist
 
-git diff --check                 # whitespace check, part of the pre-commit routine
+git diff --check                 # whitespace check; recommended before commit (no hook runs it)
 ```
 
-`.githooks/pre-push` runs the version gate and the federation CSS gate on every push. Enable it with
-`git config core.hooksPath .githooks` if it is not already active.
+`.githooks/pre-push` runs the version gate and the federation CSS gate on every push (it does not run
+tests). Enable it with `git config core.hooksPath .githooks` if it is not already active.
 
 Note: the backend may not exist locally. `py_compile`, the version gate, `check_federation_css.py`,
 and the standalone scripts under `scripts/` and `.github/scripts/` run without it. Any pytest run
 does not: `tests/conftest.py` imports `tests/_bootstrap.py`, which resolves the backend path at
-import time and raises `RuntimeError` before collection — this applies to `tests/ci` too.
+import time and raises `RuntimeError` before collection — this applies to `tests/ci` too, even though
+`tests/ci` never initializes the MoviePilot runtime (it only needs the backend on disk for bootstrap).
 
 ## Test Conventions
 
@@ -123,6 +128,7 @@ import time and raises `RuntimeError` before collection — this applies to `tes
   `unittest.main()`, or `if __name__ == "__main__"` entry points (`unittest.mock` is still fine).
 - Prefer `object.__new__(<ClassName>)` to bypass `__init__` and test pure logic without the runtime.
 - New V3 plugins must ship matching tests; CI enforces it.
+- New classes and methods need doc comments that state their responsibility (repo commit rule).
 
 ## Plugin Architecture (V3)
 
@@ -136,7 +142,7 @@ Entry points on `_PluginBase` — the ones that matter most:
 - `get_render_mode()` returns `("vuetify", None)` or `("vue", "dist/assets")`; Vue-mode plugins ship
   a module-federated build under `dist/assets/` (`remoteEntry.js` + `__federation_expose_*`) and keep
   their frontend sources (`src/`, `vite.config.js`, `package.json`, lockfile) in the plugin directory.
-  The `../rsync115sync` plugin is the working reference for this layout.
+  `plugins.v3/rsync115sync` is the working reference for this layout.
 
 Host access boundaries:
 
@@ -182,7 +188,9 @@ declare `">=3.0.0"`.
 
 When copying a V2 plugin into a V3-specific implementation, bump `x.y.z -> (x+1).0.0` (a generation
 contract change is not a patch), add the `package.v3.json` entry, and set `"v3": false` on the old
-entry.
+entry. The version gate enforces this major jump for `package.v3.json` entries that still have a
+legacy counterpart in `package.v2.json`/`package.json`, and also enforces that the newest `history`
+key equals `version` and history is semver-descending.
 
 ## CI Gates (PR to main)
 
