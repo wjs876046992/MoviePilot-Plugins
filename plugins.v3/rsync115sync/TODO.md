@@ -150,8 +150,9 @@ strm 五态流转、忽略规则语义、主动扫描、补生成目标折算与
 
 ### [ ] 4. 修复 fork 推送不触发 Release 工作流
 
-**背景**：本仓库是 fork，push 到 main 不触发 Plugin Release，每次发版需手动
-`gh workflow run`。
+**背景**：本仓库是 fork，push 到 main 不触发 Plugin Release（0.2.0 发布时再次确认：
+push d66b905 后 runs 列表无新条目，仍需手动 dispatch），每次发版需手动
+`gh workflow run "Plugin Release"`。
 
 **方案**：在仓库 Settings → Actions 中开启 fork 的 push 触发（需仓库管理员权限，
 非代码改动）。
