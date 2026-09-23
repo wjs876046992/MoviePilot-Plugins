@@ -1956,7 +1956,7 @@ return (_ctx, _cache) => {
                             _: 1
                           }),
                           _createElementVNode("span", _hoisted_58, "strm 疑似上传异常 (" + _toDisplayString(strmSuspectCount.value) + ")", 1),
-                          _createElementVNode("span", _hoisted_59, " 观察期 " + _toDisplayString(statusData.value.strm_grace_hours) + "h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常 ", 1),
+                          _createElementVNode("span", _hoisted_59, " 观察期 " + _toDisplayString(statusData.value.strm_grace_hours) + "h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常。 仅视频文件参与（字幕/图片/元数据不会有 strm，不纳入监控） ", 1),
                           _createVNode(_component_v_chip, {
                             size: "x-small",
                             variant: "tonal",
@@ -2654,6 +2654,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-615f2bed"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-742da8d5"]]);
 
 export { App as default };

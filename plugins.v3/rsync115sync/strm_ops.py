@@ -44,6 +44,9 @@ from .constants import (  # noqa: E402
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
     STRM_SCAN_LIMIT as STRM_SCAN_LIMIT,
     STRM_VIDEO_EXTENSIONS as STRM_VIDEO_EXTENSIONS,
+    # 「不值得进入 strm 交叉验证」的原因码，常量的唯一归属地见其定义处说明
+    SKIP_NON_VIDEO as SKIP_NON_VIDEO,
+    SKIP_NO_STRM_DIR as SKIP_NO_STRM_DIR,
     STRM_GEN_DIR_LIMIT as STRM_GEN_DIR_LIMIT,
     P115_STRM_HELPER_PLUGIN as _P115_STRM_HELPER_PLUGIN,
     P115_STRM_COMMAND as _P115_STRM_COMMAND,
@@ -144,20 +147,19 @@ class StrmOpsMixin:
         up entries written by earlier, buggy versions.
         """
         removed = 0
-        video_exts = self._strm_video_exts()
         for key in list(self._strm_suspects.keys()):
             reason = None
 
             # 前缀匹配还原相对路径（任务名可含冒号）；归属不明时退回原 key，
             # 只用于取扩展名，判错的最坏后果是「没被判为非视频」而非删错文件。
             rel = _rel_path_of_key(key, self._sync_pairs) or key
-            ext = os.path.splitext(rel)[-1].lstrip(".").lower()
-            if ext not in video_exts:
-                reason = f"非视频文件（.{ext} 不会生成 strm）"
+            # 前两条判据与登记闸门**共用** `_strm_watchable`：字幕/图片既不该进
+            # 观察期，也不该留在疑似清单里，两处写两份判据迟早在扩展名上漂移。
+            watchable, _skip_code, skip_text = self._strm_watchable(key)
+            if not watchable:
+                reason = skip_text
             elif self._is_ignored(key):
                 reason = "已命中忽略规则"
-            elif self._strm_expected_path(key) is None:
-                reason = "所属映射未配置 strm 目录"
             else:
                 src_root = _strm.source_root_of(key, self._sync_pairs)
                 if src_root and not os.path.exists(os.path.join(src_root, rel)):
@@ -177,9 +179,89 @@ class StrmOpsMixin:
             self._reset_strm_notified_if_clear()
         return removed
 
+    def _prune_invalid_strm_watch(self) -> int:
+        """
+        清洗**观察清单**里不可能有 strm 的条目（非视频），返回清理数量。
+
+        Prune watching entries that can never produce a .strm; returns how many were
+        removed.
+
+        为什么与疑似清单分开清洗：观察清单在旧版本里同样会混入字幕/图片
+        （`_strm_arm_watch` 原先只挡「映射没配 strm_dir」，不挡文件类型）。
+        这批条目升级后不会再被巡检处理掉 —— 巡检会清理它们，但要等到用户
+        下一次同步触发巡检；而载入时清掉可以让看板立刻不再显示
+        「N 个文件处于观察期」这种由字幕凑出来的假象。
+        判据与登记闸门共用 `_strm_watchable`，因此清洗口径与入口闸门一致。
+
+        Legacy watches can hold subtitles/images too: the arm gate used to filter only
+        by "pair has no strm_dir", not by file kind.
+        """
+        removed = 0
+        for key in list(self._strm_watch.keys()):
+            watchable, _skip_code, skip_text = self._strm_watchable(key)
+            if watchable:
+                continue
+            self._strm_watch.pop(key, None)
+            # 补生成标记随之失效：它描述的是一次针对该文件的生成请求，
+            # 而该文件本就不该被观察（与巡检清理出口同一处置）。
+            self._strm_gen_requested.pop(key, None)
+            removed += 1
+            logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 观察条目（{skip_text}）: {key}")
+        if removed:
+            self.save_data("strm_watch", self._strm_watch)
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
+            logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 观察条目"
+                           f"（非视频文件不会生成 strm），剩余 {len(self._strm_watch)} 个")
+        return removed
+
     def _strm_expected_path(self, key: str) -> Optional[str]:
         """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
         return _strm.expected_path(key, self._sync_pairs)
+
+    def _strm_watchable(self, key: str) -> Tuple[bool, str, str]:
+        """
+        该 key 是否**值得**进入 strm 交叉验证。返回 (可否参与, 跳过原因码, 原因说明)。
+
+        Whether this key can ever be represented by a .strm. Returns
+        (watchable, skip_code, skip_text).
+
+        ⚠️ 原因**分成「码」与「人话」两段**：码用于判定分支（例如「这批里有多少个
+        是非视频」），人话只用于日志。若让调用方去匹配中文文案来判断分支，文案一改
+        分支就静默失效 —— 这正是一类难查的回归。
+        The code drives branching while the text is log-only, so rewording a message
+        can never silently change behaviour.
+
+        为什么需要它：strm 助手只为**视频**生成指针文件，字幕/图片/元数据
+        （srt/ass/jpg/nfo…）永远不会有 .strm —— 而这正是「strm 疑似上传异常」
+        标签页的判据。把它们纳入监控等于给每个字幕判一个**永远无法满足**的条件：
+        用户看到一批永远不会消失的「疑似上传异常」，而它们本来就该没有 strm。
+
+        为什么这条闸门必须放在**登记/进入清单**处，而不是展示层：疑似清单是
+        「可执行操作」的数据源 —— 「删旧重传」会去删 115 端的对应文件，「忽略」
+        又需要用户为一条本就正常的记录做手工豁免。只在展示层过滤，这些操作
+        仍会作用在字幕上（用户实测反馈正是「清单里混着非视频文件」）。
+
+        ⚠️ 与 `_prune_invalid_strm_suspects` 的关系：那是**载入时清洗历史脏数据**
+        的兜底（老版本落盘的非视频条目），本方法是把闸门前移到写入路径，让新条目
+        从一开始就不产生。两者判据都是「视频扩展名」，因此共用 `_strm_video_exts`
+        与 `_rel_path_of_key`，不各写一份 —— 两份判据迟早会漂移。
+
+        Returns
+        -------
+        Tuple[bool, str]
+            (是否可参与 strm 交叉验证, 不可参与的原因；可参与时原因为空串)
+        """
+        # 取出相对路径只看扩展名。归属不明时退回原 key：判错的最坏后果是
+        # 「没被判为非视频」而非误删记录（与 _prune_invalid_strm_suspects 同取向）。
+        rel = _rel_path_of_key(key, self._sync_pairs) or key
+        ext = os.path.splitext(rel)[-1].lstrip(".").lower()
+        if ext not in self._strm_video_exts():
+            return False, SKIP_NON_VIDEO, f"非视频文件（.{ext} 不会生成 strm）"
+        # 所属映射未配 strm_dir —— 本来的判据是「推导不出期望路径」，保持原判
+        # （与 _strm_expected_path 一致），否则会把「映射没配」误报成「非视频」。
+        if self._strm_expected_path(key) is None:
+            return False, SKIP_NO_STRM_DIR, "所属映射未配置 strm 目录"
+        return True, "", ""
 
     def _strm_arm_watch(self, keys: List[str]) -> int:
         """
@@ -196,10 +278,20 @@ class StrmOpsMixin:
         "already asked the helper" note no longer describes this file's situation.
         """
         armed = 0
+        skipped_non_video = 0
         now_ts = time.time()
         for k in keys:
-            if self._strm_expected_path(k) is None:
-                continue  # 该映射未配 strm_dir，不参与交叉验证
+            watchable, skip_code, skip_text = self._strm_watchable(k)
+            if not watchable:
+                # 非视频文件（字幕/图片/元数据）永远不会有 .strm，登记观察只会
+                # 在宽限期后产出一条**永远无法解除**的疑似异常。计数而非静默
+                # 丢弃：入库一批带字幕的剧集时，「同步 10 个、只观察 3 个」需要
+                # 一个可解释的数字，否则排查时只能靠猜。
+                # Non-video files can never get a .strm; arming them would only
+                # produce a suspect that can never be resolved.
+                if skip_code == SKIP_NON_VIDEO:
+                    skipped_non_video += 1
+                continue
             # 已加入忽略清单的文件不登记观察。
             #
             # 为什么要在**最上游**拦：「忽略」的语义是「这个文件不要再报警」，
@@ -224,6 +316,10 @@ class StrmOpsMixin:
             self.save_data("strm_watch", self._strm_watch)
             # 疑点被解除后，若清单已清空则重置通知标志，让下次新发现能再次提醒
             self._reset_strm_notified_if_clear()
+        if skipped_non_video:
+            # 只在真的跳过了才记；这是用户核对「入库数与观察数对不上」的唯一线索
+            logger.debug(f"[Rsync115Sync] 📺 已跳过 {skipped_non_video} 个非视频文件"
+                         f"（字幕/图片等永远不会生成 strm，不纳入交叉验证）")
         return armed
 
     def _strm_check(self) -> Dict[str, Any]:
@@ -268,6 +364,15 @@ class StrmOpsMixin:
             # Ignore rules win: a rule added during the grace window must not let the
             # entry turn into a suspect (and notify) anyway.
             if self._is_ignored(key):
+                dropped.append(key)
+                continue
+            # 非视频条目直接清理（兜底）：登记闸门已在 `_strm_arm_watch` 拦掉新的，
+            # 但**旧版本落盘**的观察清单（含 srt/jpg）仍会被载入。它与"疑似清单载入
+            # 即清洗"是同一个理由 —— 写入路径的过滤拦不住升级前已存在的数据。
+            # 这类条目永远等不到 .strm，留着只会走完宽限期后变成一条无法解除的疑似。
+            watchable, _skip_code, skip_text = self._strm_watchable(key)
+            if not watchable:
+                logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 观察条目（{skip_text}）: {key}")
                 dropped.append(key)
                 continue
             # 判定委托给 check_one：它与看板「立即检查」是**同一份实现**，
@@ -633,6 +738,17 @@ class StrmOpsMixin:
         entered: List[str] = []          # 本次因到期而转入疑似的 key
         results: List[Dict[str, Any]] = []
         for key in targets:
+            # 非视频条目：与巡检同一出口（清理而非转疑似）。走到这里说明它是
+            # 旧版本落盘的脏数据 —— 登记闸门已保证新条目不会是非视频文件。
+            # 手动检查也不该把它推到疑似清单里，否则用户点一下就多一条永远不消失的记录。
+            watchable, _skip_code, skip_text = self._strm_watchable(key)
+            if not watchable:
+                logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 观察条目（{skip_text}）: {key}")
+                self._strm_watch.pop(key, None)
+                self._strm_gen_requested.pop(key, None)
+                changed = True
+                results.append({"key": key, "state": _strm.NOT_WATCHABLE, "clock": ""})
+                continue
             # clock 随结果一并回传：调用方要靠它区分「普通观察到期」与
             # 「补生成后仍无」（后者判定硬得多），而这两种状态名都叫 suspect。
             clock = _strm.watch_state_of(
@@ -673,6 +789,7 @@ class StrmOpsMixin:
         suspects = [r["key"] for r in results if r["state"] == _strm.SUSPECT]
         gone = [r["key"] for r in results if r["state"] == _strm.SOURCE_GONE]
         no_dir = [r["key"] for r in results if r["state"] == _strm.NO_STRM_DIR]
+        non_video = [r["key"] for r in results if r["state"] == _strm.NOT_WATCHABLE]
         still = [r["key"] for r in results if r["state"] == _strm.WATCHING]
 
         if settled:
@@ -697,6 +814,11 @@ class StrmOpsMixin:
             msg = f"🗑️ 源端文件已不存在：{len(gone)} 个已移出观察（无从验证也无从重传）"
         elif no_dir:
             msg = f"🗑️ 所属映射已取消 strm 目录：{len(no_dir)} 个已移出观察"
+        elif non_video:
+            # 旧版本落盘的非视频条目：明确告知并说明「本就不该监控」，
+            # 否则用户会以为是自己操作不当把条目弄丢了。
+            msg = (f"🗑️ 非视频文件（字幕/图片等不会生成 strm）：{len(non_video)} 个已移出观察。"
+                   f"这类文件本就不参与 strm 交叉验证 —— 它们没有指针文件是正常的。")
         else:
             # 仍在窗口内：strm 没出来是正常的，但用户真正想知道的往往不是
             # 「还要等多久」，而是「等下去会怎样」。**顺手探一次云端可见性**

@@ -1,22 +1,22 @@
 
-.plugin-config[data-v-568b7db2] {
+.plugin-config[data-v-b7b3f197] {
   width: 100%;
   box-sizing: border-box;
   /* 桌面端外边距。原为内联 style 且带 !important，
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
   padding: 18px 22px !important;
 }
-.config-main-card[data-v-568b7db2] {
+.config-main-card[data-v-b7b3f197] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-568b7db2] {
+.header-surface[data-v-b7b3f197] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-568b7db2] {
+.header-card-item .header-subtitle[data-v-b7b3f197] {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
@@ -24,10 +24,10 @@
    内容区顶部内边距被强制归零，与看板同源，间距由 margin-top 提供。
    此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
    故直接按内容区类名设置，保证提示条出现时间距依然稳定。 */
-.config-body[data-v-568b7db2] {
+.config-body[data-v-b7b3f197] {
   margin-top: 16px;
 }
-.header-icon-box[data-v-568b7db2] {
+.header-icon-box[data-v-b7b3f197] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -36,15 +36,15 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.settings-group-card[data-v-568b7db2] {
+.settings-group-card[data-v-b7b3f197] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
-.pair-card[data-v-568b7db2] {
+.pair-card[data-v-b7b3f197] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.empty-hint-box[data-v-568b7db2] {
+.empty-hint-box[data-v-b7b3f197] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }
 
@@ -54,41 +54,41 @@
    断点沿用 Vuetify 的 sm（600px）。 */
 @media (max-width: 599.98px) {
   /* 移动端收窄外层留白，把宽度还给表单内容 */
-.plugin-config[data-v-568b7db2] {
+.plugin-config[data-v-b7b3f197] {
     padding: 10px 12px !important;
 }
   /* 同看板：.v-card-item 的 append 列按 max-content 固定宽度、不会收缩，
      窄屏下关闭按钮会被顶出卡片并被 overflow-hidden 裁掉。
      改为 minmax(0, max-content)，允许在宽度不足时收缩。 */
-[data-v-568b7db2] .v-card-item {
+[data-v-b7b3f197] .v-card-item {
     grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
 }
-[data-v-568b7db2] .v-card-item__content {
+[data-v-b7b3f197] .v-card-item__content {
     min-width: 0;
 }
   /* 开关类设置行：改为纵向排列，控件左对齐，避免被挤出右边界 */
-.setting-row[data-v-568b7db2] {
+.setting-row[data-v-b7b3f197] {
     flex-direction: column;
     align-items: flex-start !important;
     gap: 8px;
 }
-.setting-row > .v-switch[data-v-568b7db2] {
+.setting-row > .v-switch[data-v-b7b3f197] {
     margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
 }
   /* 模块标题行（标题 + 右侧操作按钮）：标题允许收缩换行，按钮不被迫溢出 */
-.section-header[data-v-568b7db2] {
+.section-header[data-v-b7b3f197] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.section-header > div[data-v-568b7db2] {
+.section-header > div[data-v-b7b3f197] {
     min-width: 0;
 }
   /* 底部操作条：查看看板 / 保存配置 两个按钮在窄屏各占一行 */
-.config-actions[data-v-568b7db2] {
+.config-actions[data-v-b7b3f197] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.config-actions .v-btn[data-v-568b7db2] {
+.config-actions .v-btn[data-v-b7b3f197] {
     flex: 1 1 100%;
     margin-left: 0 !important;
 }
@@ -99,7 +99,7 @@
    用统一的视觉语言标出，避免用户把「可选的协作功能」误当成「必须装的前置依赖」，
    也避免反过来：不知道某个字段填了才会启用协作。
    两种底色刻意区分：绿=不依赖任何插件，蓝=需要特定插件。 */
-.dep-note[data-v-568b7db2] {
+.dep-note[data-v-b7b3f197] {
   display: flex;
   align-items: flex-start;
   gap: 4px;
@@ -108,26 +108,26 @@
   padding: 5px 8px;
   border-radius: 6px;
 }
-.dep-note .v-icon[data-v-568b7db2] {
+.dep-note .v-icon[data-v-b7b3f197] {
   margin-top: 1px;
   flex-shrink: 0;
 }
-.dep-free[data-v-568b7db2] {
+.dep-free[data-v-b7b3f197] {
   color: rgb(var(--v-theme-success));
   background: rgba(var(--v-theme-success), 0.08);
 }
-.dep-needs-helper[data-v-568b7db2] {
+.dep-needs-helper[data-v-b7b3f197] {
   color: rgb(var(--v-theme-info));
   background: rgba(var(--v-theme-info), 0.1);
 }
 
 /* 依赖边界对照表：一行「本插件独立完成」+ 一行「需要助手」。
    两行并列呈现而非只列依赖项，是因为用户真正要判断的是「我不装它会少什么」。 */
-.dep-split[data-v-568b7db2] {
+.dep-split[data-v-b7b3f197] {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   overflow: hidden;
 }
-.dep-split-row[data-v-568b7db2] {
+.dep-split-row[data-v-b7b3f197] {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -135,6 +135,6 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.dep-split-row + .dep-split-row[data-v-568b7db2] {
+.dep-split-row + .dep-split-row[data-v-b7b3f197] {
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
 }

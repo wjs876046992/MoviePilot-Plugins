@@ -481,7 +481,8 @@
               <v-icon size="18" color="warning">mdi-television-classic-off</v-icon>
               <span class="font-weight-bold text-body-2">strm 疑似上传异常 ({{ strmSuspectCount }})</span>
               <span class="text-caption text-medium-emphasis">
-                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常
+                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常。
+                仅视频文件参与（字幕/图片/元数据不会有 strm，不纳入监控）
               </span>
               <!-- 依赖标注：本区绝大多数能力自包含，只有「先尝试生成」要外部助手。
                    不标出来，用户会误以为整个 strm 功能都依赖 P115StrmHelper。 -->

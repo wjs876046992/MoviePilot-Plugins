@@ -163,7 +163,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.2"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -464,6 +464,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         saved_gen = self.get_data("strm_gen_requested") or {}
         if isinstance(saved_gen, dict):
             self._strm_gen_requested = saved_gen
+        # 观察清单同样要载入即清洗（非视频文件永远不会生成 strm）。
+        # ⚠️ 必须放在 `_strm_gen_requested` 恢复**之后**：清洗会连带失效该文件的
+        # 补生成标记，早于此处调用就只能清掉一个空的标记字典，旧标记会留下来，
+        # 看板据此把新条目误标成「补生成后仍无」。
+        self._prune_invalid_strm_watch()
         self._strm_notified = bool(self.get_data("strm_notified") or False)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："

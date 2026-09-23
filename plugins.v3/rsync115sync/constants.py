@@ -133,6 +133,22 @@ STRM_VIDEO_EXTENSIONS = (
     "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v"
 )
 
+# 「不值得进入 strm 交叉验证」的两种原因**码**。
+#
+# 为什么用码而不是直接拿中文文案去分支：文案是给人看的，随时可能改；
+# 一旦调用方靠 `"非视频" in reason` 这类匹配来分支，改一次措辞就会让分支静默失效
+# （那正是「跳过计数突然全为零」这类难查回归的来源）。码负责判定，文案只管日志。
+# Skip reasons as codes, kept apart from the human-readable text so that rewording a
+# message can never silently change a branch.
+#
+# ⚠️ 放在 constants.py 而不是 strm_ops.py：`test_split_contract.test_mixins_are_stateless`
+# 禁止 Mixin 模块出现**任何**模块级赋值（宿主按实例重建命名空间时，模块级可变状态
+# 会被分身共用），常量按拆分约定一律归本模块，再由协作方显式导入。
+# These live here, not in the mixin module: the split contract forbids module-level
+# assignments there, and constants belong in this module by the stage-1 split rule.
+SKIP_NON_VIDEO = "non_video"          # 字幕/图片/元数据：永远不会有 .strm
+SKIP_NO_STRM_DIR = "no_strm_dir"      # 所属映射未配置 strm 目录：验证前提不存在
+
 # ---- 借道 strm 助手补生成 / delegating strm generation to the helper plugin ----
 # 「疑似上传异常」有两种成因，处理成本差三个数量级：
 #   a) strm 插件自身漏生成 —— 云端文件其实是好的，重新生成一次指针文件即可

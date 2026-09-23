@@ -448,3 +448,209 @@ def test_strm_command_prune_mode():
 
     assert list(plugin._strm_suspects) == ["电视剧:a.mkv"]
     assert any("清理" in r for r in replies)
+
+
+# --------------------------------------------------------------------------
+# 非视频文件不参与 strm 交叉验证（登记闸门，用户实测：清单里混着非视频）
+# --------------------------------------------------------------------------
+
+def test_arm_watch_skips_non_video_files():
+    """
+    字幕/图片/元数据永远不会有 .strm，不得登记观察。
+
+    **为什么必须在登记处拦**：疑似清单是「可执行操作」的数据源 ——
+    「删旧重传」会去删 115 端的对应文件，「忽略」又需要用户为一条本就正常的
+    记录做手工豁免。只在展示层过滤，这些操作仍会落在字幕上。
+    用户实测反馈正是「strm 疑似上传异常里混着非视频文件」。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv", "a.zh.srt", "poster.jpg", "tvshow.nfo"])
+    plugin = _plugin(root)
+
+    armed = plugin._strm_arm_watch([
+        "电视剧:a.mkv", "电视剧:a.zh.srt", "电视剧:poster.jpg", "电视剧:tvshow.nfo",
+    ])
+
+    assert armed == 1, "只有视频应被登记观察"
+    assert list(plugin._strm_watch) == ["电视剧:a.mkv"]
+
+
+def test_arm_watch_respects_all_ext_mapping():
+    """
+    all_ext 映射勾了「同步所有类型」也不改变结论：jpg/nfo 仍不会生成 strm。
+
+    这条单独钉住，是因为 all_ext 的语义是「同步哪些文件」，与
+    「哪些文件会生成 strm」是两个不同的问题（见 constants.STRM_VIDEO_EXTENSIONS）。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv", "poster.jpg"])
+    plugin = _plugin(root, all_ext=True)
+
+    assert plugin._strm_arm_watch(["电视剧:poster.jpg"]) == 0
+    assert plugin._strm_watch == {}
+
+
+def test_watchable_reports_no_strm_dir_separately():
+    """
+    映射没配 strm_dir 与「非视频」是两个原因，不能混为一谈。
+
+    混起来会让日志与看板失去定位能力：用户看到「跳过 N 个」却分不清
+    是该去配网盘目录，还是这批文件本来就不该被监控。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv", "a.zh.srt"])
+    plugin = _plugin(root)
+    module = importlib.import_module("app.plugins.rsync115sync")
+    strm_ops = importlib.import_module("app.plugins.rsync115sync.strm_ops")
+
+    ok, code, text = plugin._strm_watchable("电视剧:a.zh.srt")
+    assert ok is False and code == strm_ops.SKIP_NON_VIDEO and text
+
+    plugin._sync_pairs[0]["strm_dir"] = ""
+    ok, code, text = plugin._strm_watchable("电视剧:a.mkv")
+    assert ok is False and code == strm_ops.SKIP_NO_STRM_DIR
+
+    plugin._sync_pairs[0]["strm_dir"] = os.path.join(root, "strm")
+    ok, code, text = plugin._strm_watchable("电视剧:a.mkv")
+    assert ok is True and code == "" and text == ""
+
+
+def test_prune_invalid_watch_removes_non_video_and_clears_gen_marker():
+    """
+    旧版本落盘的观察清单同样可能含字幕（登记闸门原先不按文件类型过滤），
+    载入时必须清洗，并连带失效补生成标记。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.mkv", "a.zh.srt"])
+    plugin = _plugin(root)
+    plugin._strm_watch = {"电视剧:a.mkv": 1.0, "电视剧:a.zh.srt": 1.0}
+    plugin._strm_gen_requested = {"电视剧:a.zh.srt": 1.0}
+
+    removed = plugin._prune_invalid_strm_watch()
+
+    assert removed == 1
+    assert list(plugin._strm_watch) == ["电视剧:a.mkv"]
+    assert plugin._strm_gen_requested == {}, "非视频条目的补生成标记必须一并失效"
+
+
+def test_prune_invalid_watch_is_idempotent_and_keeps_videos():
+    """清洗不能变成变相清空：真正该观察的视频必须留下。"""
+    root = tempfile.mkdtemp()
+    _make_src(root, ["bad.mkv", "a.zh.srt"])
+    plugin = _plugin(root)
+    plugin._strm_watch = {"电视剧:bad.mkv": 1.0, "电视剧:a.zh.srt": 1.0}
+
+    assert plugin._prune_invalid_strm_watch() == 1
+    assert list(plugin._strm_watch) == ["电视剧:bad.mkv"]
+    assert plugin._prune_invalid_strm_watch() == 0
+
+
+def test_sweep_drops_non_video_watch_entry_instead_of_turning_it_into_suspect():
+    """
+    巡检遇到非视频观察条目 → 清理，**不转疑似**。
+
+    转成疑似等于给字幕判一个永远无法满足的条件：它永远不会有 .strm，
+    因此这条记录永远出不了清单，只能靠用户手工忽略。
+    """
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.zh.srt"])
+    plugin = _plugin(root)
+    plugin._strm_watch = {"电视剧:a.zh.srt": 1.0}   # 早已过期
+    plugin._strm_last_check = 0.0
+
+    result = plugin._strm_check()
+
+    assert plugin._strm_suspects == {}, "非视频不得转为疑似"
+    assert "电视剧:a.zh.srt" not in plugin._strm_watch, "非视频应被清理出观察清单"
+    assert result["new_suspects"] == 0
+
+
+def test_manual_check_drops_non_video_entry_with_explanation():
+    """手动「检查 strm」同一出口，并且要说明「本就不该监控」。"""
+    root = tempfile.mkdtemp()
+    _make_src(root, ["a.zh.srt"])
+    plugin = _plugin(root)
+    plugin._strm_watch = {"电视剧:a.zh.srt": 1.0}
+
+    result = plugin._check_watch_now(["电视剧:a.zh.srt"])
+
+    assert plugin._strm_watch == {} and plugin._strm_suspects == {}
+    assert "非视频" in result["message"], (
+        "必须说明原因，否则用户以为是自己操作不当把条目弄丢了"
+    )
+
+
+def test_prune_invalid_watch_runs_automatically_on_plugin_load():
+    """
+    观察清单的非视频条目也必须在**载入**时清洗，而不是等下一轮巡检。
+
+    两个清单都有「旧版本落盘的非视频条目」这个历史问题，但处置时机不同：
+    疑似清单在载入时清洗（用户立刻看不到脏条目），观察清单若只靠巡检，
+    用户升级后还要先触发一次同步才会消失。本用例走完整载入路径，把
+    `init_plugin` 里那行调用钉住 —— 以及它必须在 `_strm_gen_requested`
+    恢复**之后**才执行（否则清不掉的旧标记会把新条目误标成「补生成后仍无」）。
+    """
+    import importlib
+    import tempfile
+
+    module = importlib.import_module("app.plugins.rsync115sync")
+    root = tempfile.mkdtemp()
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    for name in ("bad.mkv", "a.zh.srt"):
+        with open(os.path.join(src, name), "wb") as fh:
+            fh.write(b"x")
+
+    stored = {
+        "strm_watch": {"电视剧:bad.mkv": 1.0, "电视剧:a.zh.srt": 1.0},
+        "strm_gen_requested": {"电视剧:a.zh.srt": 1.0},
+    }
+    saved = {}
+
+    plugin = module.Rsync115Sync.__new__(module.Rsync115Sync)
+    plugin._sync_pairs = [{
+        "name": "电视剧", "src": src, "dest": "/115/TV",
+        "strm_dir": os.path.join(root, "strm"), "all_ext": False,
+    }]
+    plugin._exclude_patterns = "@eaDir/"
+    plugin._media_extensions = "mkv,srt"
+    plugin._ignored_rules = []
+    plugin._notify = False
+    plugin._strm_notified = False
+    plugin._strm_gen_requested = {}
+    plugin._strm_watch = {}
+    plugin._strm_suspects = {}
+    plugin._strm_grace_hours = 6.0
+    plugin._strm_check_enabled = True
+    plugin._strm_last_check = 0.0
+    plugin._enabled = True
+    plugin._listen_transfer = True
+    plugin._delay_hours = 2.0
+    plugin._cron = "0 */2 * * *"
+    plugin._rsync_timeout = 600
+    plugin._task_timeout = 3600
+    plugin._rate_limit_enabled = True
+    plugin._upload_batch_size = 200
+    plugin._upload_max_per_window = 500
+    plugin._upload_window_secs = 1800
+    plugin._backoff_secs = 3600
+    plugin._rate_limit_keywords = "429"
+    plugin._force_cooldown_days = 7
+    plugin._pending_queue = {}
+    plugin._backfill_queue = []
+    plugin._missed_queue = {}
+    plugin._last_status = {}
+    plugin.get_data = lambda k: stored.get(k)
+    plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]
+    plugin.update_config = lambda c: True
+
+    plugin.init_plugin({"enabled": True, "sync_pairs": plugin._sync_pairs})
+
+    assert "电视剧:a.zh.srt" not in plugin._strm_watch, (
+        "载入时未自动清洗观察清单里的非视频条目 —— "
+        "init_plugin 里的 _prune_invalid_strm_watch 调用可能被移除"
+    )
+    assert "电视剧:bad.mkv" in plugin._strm_watch, "视频观察项必须保留"
+    assert "电视剧:a.zh.srt" not in plugin._strm_gen_requested, (
+        "清洗必须留下补生成标记的残留 —— 该调用需放在 _strm_gen_requested 恢复之后"
+    )

@@ -126,8 +126,7 @@ def test_merge_uses_post_audit_for_attempted():
 
 def test_merge_does_not_lose_unattempted_corrupt():
     pre_c = ["TV:deferred_corrupt.mkv"]
-    final_m, final_c = paths.merge_force_anomalies(
-        [], pre_c, attempted_keys=[], post_m=[], post_c=[])
+    final_m, final_c = paths.merge_force_anomalies([], pre_c, [], [], [])
     assert final_c == ["TV:deferred_corrupt.mkv"]
     assert final_m == []
 
@@ -145,10 +144,15 @@ def test_merge_reclassifies_when_post_disagrees_with_pre():
 
 
 def test_merge_all_fixed_returns_empty():
+    # ⚠️ 位置传参：本函数的参数是「预对账 → 尝试 → 复检」三段，调用方一律按
+    # 位置传（见 __init__.py 的 force 分支）。此处曾用 post_m=/post_c= 关键字
+    # 调用，而形参名实际是 post_missing/post_corrupt，于是这两条用例一直抛
+    # TypeError 却无人发现 —— 关键字名与形参名解耦不了，改为位置传参后
+    # 形参改名不会再让它静默失效。
     final_m, final_c = paths.merge_force_anomalies(
         ["TV:a.mkv"], ["TV:b.mkv"],
         ["TV:a.mkv", "TV:b.mkv"],
-        post_m=[], post_c=[])
+        [], [])
     assert final_m == [] and final_c == []
 
 # --------------------------------------------------------------------------

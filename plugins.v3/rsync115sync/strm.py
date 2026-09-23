@@ -29,6 +29,13 @@ SUSPECT = "suspect"            # 疑似异常：宽限期到期仍未生成 strm
 SETTLED = "settled"            # 已解除：strm 已生成（正常出口）
 NO_STRM_DIR = "no_strm_dir"    # 清理：该映射被改成没有 strm_dir，观察已无意义
 SOURCE_GONE = "source_gone"    # 清理：源端文件已消失，无从验证也无从重传
+# 清理：**非视频文件**（字幕/图片/元数据）不可能有 .strm。与上面两个清理出口
+# 分开命名，是因为成因完全不同 —— 前两者是「验证前提消失」，这条是「判据本身
+# 就不适用于该文件」。合并计数会让排查时看不到「清单里混了非视频」这一独立问题。
+# Cleanup: the file kind can never have a .strm at all. Kept distinct from the other
+# two cleanup exits because the cause differs — this one means the criterion itself
+# never applied to the file.
+NOT_WATCHABLE = "not_watchable"
 
 # 宽限期下限（小时）。防止 0 值把「上传中/刮削中」直接判成异常。
 # Lower bound on the grace window, so a 0 value cannot turn "still uploading"
