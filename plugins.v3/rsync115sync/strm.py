@@ -385,7 +385,10 @@ def gen_target_of_key(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
     Shared with the batch builder so the post-send reverse lookup can never disagree
     with what was actually derived and sent.
     """
-    rel = key.split(":", 1)[1] if ":" in key else key
+    # 用前缀匹配还原相对路径（任务名可含冒号，split(":", 1) 会切错）；
+    # 无法归属时退回原 key —— 下方 pan_dir_of 同样会返回 None，最终结果一致。
+    from .paths import rel_path_of_key as _rel_path_of_key
+    rel = _rel_path_of_key(key, pairs) or key
     pan_root = pan_dir_of(key, pairs)
     if not pan_root:
         return None

@@ -658,7 +658,10 @@ CD2 一抖动用户就完全无法处理疑似清单 —— 而那批条目很�
 1. 对每个映射先做**只读全量对账**（`rel_paths=None`）—— 这是 7 天冷却真正约束的「全树遍历」；
 2. 把缺失 ∪ 残缺收成相对路径，经批次上限截断后走 `--files-from` 定向传输；
 3. 传输后只复检本批，再与预对账未尝试部分 `merge_force_anomalies` 合并进最终异常清单；
-4. 配额耗尽时 **force 不 break 后续映射**：关掉传输（`force_transfer_allowed=False`），继续只读对账 —— 否则剩余映射要再等一个 7 天冷却才能被核对。
+4. 配额**中途**耗尽时 **force 不 break 后续映射**：关掉传输（`force_transfer_allowed=False`），
+   继续只读对账 —— 否则剩余映射要再等一个 7 天冷却才能被核对。
+   ⚠️ 与入口闸门区分：**进入时**已耗尽/处于退避期 → 整轮 `return`，连对账都不做
+   （闸门在映射循环之前，对所有模式含 force 生效）。本条只描述「跑到一半才耗尽」。
 
 旧实现对整棵源树做无 `--files-from` 的 rsync，`pair_files` 恒为空，预扣与批次上限全部旁路；已移除 include/exclude 整树传输分支。
 
@@ -921,7 +924,7 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 
 | 版本 | 类型 | 内容 |
 |---|---|---|
-| v0.2.1 | fix+feat | **P0-1** 出队/strm 登记与退出码解耦（对账通过即结算）；**P0-2** force 改为「只读全量对账 + files-from 定向传输 + 配额预扣」，配额耗尽仍继续剩余映射对账 |
+| v0.2.1 | fix+feat | **P0-1** 出队/strm 登记与退出码解耦（对账通过即结算）；**P0-2** force 改为「只读全量对账 + files-from 定向传输 + 配额预扣」，配额耗尽仍继续剩余映射对账；**review 修复** 补齐清单出账时机（批次截断后 + rsync 执行后）、队列 key 反向解析统一走 `rel_path_of_key` |
 | v0.2.0 | feat+fix | Webhook 入库（补充来源，仅平台链路）：认领宿主 `webhook_parser`、目录展开、报文样本与失败可区分；拆除自建匿名端点；`all_ext` 映射补齐同目录文件；新增 355 项测试（**alpha，尚未构建 dist**） |
 | v0.0.4 | fix | 看板按钮永久禁用；弹窗标题间距 |
 | v0.0.5 | fix | 间距改用 margin（宿主 `padding !important` 覆盖 padding 方案） |
@@ -959,8 +962,16 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 2c. **对账前必须确认 src/dest 仍存在** —— `_audit_files_integrity` 在目录缺失时返回
    **空清单**而非报错；若不拦截，挂载掉线会被当成「全部通过」→ 错误出队 / arm strm /
    经 `audited_keys` 清掉历史异常。结算段有 `audit_valid` 门禁（v0.2.1 review 修复）。
-2d. **队列 key 只能正向拼接，禁止 `split(":", 1)` 反解析** —— 任务名可含冒号
-   （见 `paths.split_pair_key`）。出队日志用 `pair_files` 正向构造 key。
+2d. **队列 key 的反向解析一律走 `paths.rel_path_of_key()`** —— 任务名可含冒号，
+   `split(":", 1)` 在第一个冒号处切开会把 `TV:主库:S01E01.mkv` 切成
+   `主库:S01E01.mkv`，相对路径凭空多一段，拼出的文件系统路径永远不存在
+   （表现为 strm 条目被判 `source_gone` 清理、可见性探测报 unknown）。
+   出队日志用 `pair_files` **正向**构造 key，根本不反解析。
+   > 📌 v0.2.1 的 commit message 曾写成「禁止 `split(":", 1)` 反解析」，
+   > 但当时全仓仍有 5 处未迁移（`strm.py` 1 处、`strm_ops.py` 4 处）。
+   > 本次 review 已全部收口到 `rel_path_of_key`，该表述现在才成立。
+   > 另注：`paths.split_pair_key` 目前**全仓无生产调用者**（仅测试引用），
+   > 真正在用的是 `rel_path_of_key` 与 `pair_for_path`。
 3. **补传队列不要并入 `pending_queue`** —— 会污染冷却计时与看板统计。
 4. **退出码 23/24 是有意容忍的** —— 不要改成「非 0 即失败」，那会让正常的
    源文件变动频繁告警。容忍的是**整轮失败判定**；单文件是否出队/进 strm

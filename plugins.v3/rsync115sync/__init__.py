@@ -2451,26 +2451,20 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     # the cool-down check and sync in this run.
                     missed_here = [k for k in list(self._missed_queue.keys())
                                    if k.startswith(f"{pair_name}:")]
-                    missed_taken = 0
                     for key in missed_here:
                         rel_p = key.split(f"{pair_name}:", 1)[1]
                         if os.path.exists(os.path.join(src, rel_p)):
                             if rel_p not in pair_files:
                                 pair_files.append(rel_p)
-                            # 仅在**确实纳入本轮**时才移出清单：
-                            # 若本轮批次上限/配额已满、该文件不会真正被处理，
-                            # 提前移除会让它彻底丢失（既不在冷却队列，也不在补齐清单）
-                            if rel_p in pair_files:
-                                self._missed_queue.pop(key, None)
-                                missed_taken += 1
                         else:
-                            # 文件已不在源端（被删除/移动），清掉避免长期堆积
+                            # 文件已不在源端（被删除/移动），清掉避免长期堆积。
+                            # 这一支与批次上限无关：源端确实没有它，留着只会长期挂账。
                             self._missed_queue.pop(key, None)
-                    if missed_taken:
-                        # 立即落盘，避免记录只在内存里、重载即丢
-                        self.save_data("missed_queue", self._missed_queue)
-                        logger.info(f"[Rsync115Sync] [{pair_name}] 🕳️ 本轮纳入 {missed_taken} 个"
-                                    f"错过的入库文件（含字幕等，不参与冷却）")
+                    # ⚠️ 移出补齐清单**必须等批次上限截断之后**（见下方 settle 段）：
+                    # 截断掉的条目本轮不会真正传输，此时移出会让它彻底丢失
+                    # ——既不在冷却队列、也不在补齐清单，任何一轮同步都不会再取它。
+                    # 本处原先把 pop 写在这个循环里（截断之前），于是那句「仅在确实
+                    # 纳入本轮时才移出」的注释**并未生效**（v0.2.1 review 发现）。
 
                 elif mode in ("retry", "backfill"):
                     # 重试/补传模式：若指定了 custom_files 优先按其处理，
@@ -2629,6 +2623,26 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                         os.remove(temp_list_file)
                     except Exception:
                         pass
+
+                # ---- 补齐清单出账：本批确实交给 rsync 之后才移出 ----
+                # 两处顺序都是刻意的：
+                #   · 在**批次上限截断之后** —— 被截断的条目本轮不会传输，移出即永久丢失
+                #     （既不在冷却队列、也不在补齐清单，任何一轮同步都不会再取它）；
+                #   · 在**rsync 真正执行之后** —— 若在启动前移出，Popen 失败/超时等路径
+                #     会让条目既没传、又没进异常清单，同样静默丢失。
+                # 传输失败的条目会由紧随其后的对账落进异常清单，可经 /rsync_retry 继续。
+                # Settle the missed-ingest list only after the batch was actually
+                # handed to rsync; failures fall through to the anomaly audit.
+                if mode == "ready" and self._missed_queue:
+                    missed_settled = 0
+                    for rel_p in pair_files:
+                        if self._missed_queue.pop(f"{pair_name}:{rel_p}", None) is not None:
+                            missed_settled += 1
+                    if missed_settled:
+                        # 立即落盘，避免记录只在内存里、重载即丢
+                        self.save_data("missed_queue", self._missed_queue)
+                        logger.info(f"[Rsync115Sync] [{pair_name}] 🕳️ 本轮纳入 {missed_settled} 个"
+                                    f"错过的入库文件（含字幕等，不参与冷却）")
 
                 # ---- 风控特征检测：stderr 命中限流关键词立刻进入退避并终止本轮 ----
                 # Rate-limit detection: a keyword hit in stderr triggers back-off

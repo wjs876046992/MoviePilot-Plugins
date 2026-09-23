@@ -150,3 +150,68 @@ def test_merge_all_fixed_returns_empty():
         ["TV:a.mkv", "TV:b.mkv"],
         post_m=[], post_c=[])
     assert final_m == [] and final_c == []
+
+# --------------------------------------------------------------------------
+# 补齐清单出账时机 — 必须在「批次上限截断之后」且「rsync 真正执行之后」
+# --------------------------------------------------------------------------
+
+def _execute_sync_source() -> str:
+    """取 _execute_sync 的源码（只做结构断言，不执行）。"""
+    import importlib
+    from pathlib import Path
+    module = importlib.import_module("app.plugins.rsync115sync")
+    src = Path(module.__file__).read_text(encoding="utf-8")
+    import ast
+    tree = ast.parse(src)
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)
+               and n.name == "Rsync115Sync")
+    fn = next(n for n in cls.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_execute_sync")
+    return ast.get_source_segment(src, fn) or ""
+
+
+def test_missed_queue_is_settled_after_batch_cap():
+    """
+    补齐清单的出账必须晚于批次上限截断（v0.2.1 review 修复的静默丢失）。
+
+    原实现把 `self._missed_queue.pop(...)` 写在**构建 pair_files 的循环里**，
+    而那之后才按 `_upload_batch_size` 截断 —— 于是注释里承诺的「仅在确实纳入
+    本轮时才移出」并未生效：被截断的条目既不在冷却队列、也不在补齐清单，
+    任何一轮同步都不会再取它，永久丢失。
+
+    这条断言的是**源码顺序**而不是行为：_execute_sync 500+ 行、依赖 rsync 与
+    CD2 挂载，无法在单测里跑通；而顺序错位恰恰是这类 bug 的唯一形态。
+    """
+    src = _execute_sync_source()
+    if not src:
+        import pytest
+        pytest.skip("无法取得 _execute_sync 源码")
+
+    cap_idx = src.index("_upload_batch_size > 0")
+    settle_idx = src.index("missed_settled")
+    # 出账段必须出现在截断之后
+    assert settle_idx > cap_idx, (
+        "补齐清单出账早于批次上限截断：被截断的条目会被静默移出，永久丢失")
+
+    # 且必须在 rsync 启动/执行之后（Popen 之前移出会在启动失败时同样丢失）
+    popen_idx = src.index("subprocess.Popen")
+    assert settle_idx > popen_idx, (
+        "补齐清单出账早于 rsync 执行：Popen 失败/超时的条目会既没传、又没进异常清单")
+
+
+def test_missed_queue_settle_is_scoped_to_ready_mode():
+    """
+    出账只对 ready 模式生效。
+
+    retry/backfill 的 pair_files 来自历史异常清单或显式传入的候选，
+    与补齐清单无关；对它们做 pop 会把用户尚未处理的补齐条目误清。
+    """
+    src = _execute_sync_source()
+    if not src:
+        import pytest
+        pytest.skip("无法取得 _execute_sync 源码")
+    settle_idx = src.index("missed_settled")
+    # 前置条件写在赋值**之前**（`if mode == "ready" and self._missed_queue:`），
+    # 因此向前取窗口，而不是向后。
+    window = src[max(0, settle_idx - 200):settle_idx]
+    assert 'mode == "ready"' in window, "出账段必须以 mode == \"ready\" 为前置条件"

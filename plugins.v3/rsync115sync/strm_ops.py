@@ -56,6 +56,7 @@ from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
     pair_name as _pair_name,
+    rel_path_of_key as _rel_path_of_key,
     valid_exts_of as _valid_exts_of,
 )
 
@@ -147,7 +148,9 @@ class StrmOpsMixin:
         for key in list(self._strm_suspects.keys()):
             reason = None
 
-            rel = key.split(":", 1)[1] if ":" in key else key
+            # 前缀匹配还原相对路径（任务名可含冒号）；归属不明时退回原 key，
+            # 只用于取扩展名，判错的最坏后果是「没被判为非视频」而非删错文件。
+            rel = _rel_path_of_key(key, self._sync_pairs) or key
             ext = os.path.splitext(rel)[-1].lstrip(".").lower()
             if ext not in video_exts:
                 reason = f"非视频文件（.{ext} 不会生成 strm）"
@@ -534,7 +537,8 @@ class StrmOpsMixin:
         for key in result["matched"]:
             # _search_target_files 用的是**同步口径**（含字幕），而 strm 只对视频
             # 生成指针文件，因此这里必须再按视频扩展名筛一次，否则字幕会误报。
-            ext = os.path.splitext(key.split(":", 1)[-1])[-1].lstrip(".").lower()
+            ext = os.path.splitext(
+                _rel_path_of_key(key, self._sync_pairs) or key)[-1].lstrip(".").lower()
             if ext not in self._strm_video_exts():
                 non_video.append(key)
                 continue
@@ -786,7 +790,9 @@ class StrmOpsMixin:
             dest_missing = not os.path.exists(dest_file)
 
             src_root = _strm.source_root_of(key, self._sync_pairs)
-            rel = key.split(":", 1)[1] if ":" in key else key
+            # 相对路径必须由前缀匹配还原：任务名含冒号时 split(":", 1) 会多切出
+            # 一段，拼出的源端路径永远不存在 → 误报「源端已消失」。
+            rel = _rel_path_of_key(key, self._sync_pairs) or key
             src_file = os.path.join(src_root, rel) if src_root else None
 
             def _size(path):
@@ -846,8 +852,10 @@ class StrmOpsMixin:
         """
         strm_exists = os.path.exists(self._strm_expected_path(key) or "")
         src_root = _strm.source_root_of(key, self._sync_pairs)
+        # 同 _dest_visibility：相对路径用前缀匹配还原，否则任务名含冒号时
+        # 会把仍在源端的文件判成 source_gone 而清理掉观察记录。
         src_exists = (not src_root) or os.path.exists(
-            os.path.join(src_root, key.split(":", 1)[1]))
+            os.path.join(src_root, _rel_path_of_key(key, self._sync_pairs) or ""))
         base_kind, base_ts = _strm.watch_state_of(
             key, self._strm_watch, self._strm_gen_requested, now_ts)
         # 判定窗口：补生成后换用较短的固定窗口，理由见 strm.REGRACE_HOURS

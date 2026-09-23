@@ -83,6 +83,41 @@ def split_pair_key(key: str, pairs: List[Dict[str, Any]]) -> Optional[tuple]:
     return None
 
 
+def rel_path_of_key(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    把队列 key 还原成**相对路径**；无法归属到任何已知映射时返回 None。
+
+    Resolve a queue key back to its relative path, or None when unattributable.
+
+    为什么必须存在这个函数，而不是各处写 `key.split(":", 1)[1]`：
+    `split(":", 1)` 在**第一个**冒号处切开，而任务名本身可以含冒号
+    （`split_pair_key` 的 docstring 已注明）。任务名形如 `TV:主库` 时，
+    key `TV:主库:S01E01.mkv` 被切开得到 `主库:S01E01.mkv` —— 相对路径凭空
+    多出一段，用于拼文件系统路径时永远不存在，表现为「文件明明在、却判为
+    源端已消失」（strm 条目被判 `source_gone` 清理、可见性探测报 unknown）。
+
+    正解与前缀匹配同源：只有「已知映射名 + 冒号」的前缀匹配才可靠，
+    因此这里复用 `pair_name` 逐对比较，与 `split_pair_key` 保持同一判据。
+
+    ⚠️ 多个映射名互为前缀时必须取**最长**匹配：映射 `TV` 与 `TV:主库` 并存时，
+    key `TV:主库:S01E01.mkv` 同时满足两者的前缀条件。若按遍历顺序取第一个，
+    得到的是 `主库:S01E01.mkv` —— 与 `split(":", 1)` 的错误结果一模一样。
+    最长匹配是唯一自洽的解释：越具体的映射名越能解释这个 key。
+
+    Longest-prefix wins: with pairs `TV` and `TV:主库`, the more specific name
+    is the only self-consistent interpretation of the key.
+
+    Prefix matching against known pair names is the only reliable form, because
+    both the label and the relative path may legitimately contain a colon.
+    """
+    best_name = ""
+    for pair in pairs or []:
+        pn = pair_name(pair)
+        if pn and key.startswith(f"{pn}:") and len(pn) > len(best_name):
+            best_name = pn
+    return key[len(best_name) + 1:] if best_name else None
+
+
 def abs_under(root: str, rel_path: str) -> str:
     """把相对路径拼到根目录下，并同步去掉相对路径的前导斜杠（防 os.path 逃逸）。"""
     return os.path.join(root, (rel_path or "").lstrip("/"))

@@ -143,6 +143,11 @@ strm 五态流转、忽略规则语义、主动扫描、补生成目标折算与
 - [ ] `_execute_sync` 端到端（仍需拆分/桩 rsync）；批次结算纯函数已由 `test_batch_settlement.py` 覆盖（P0-1/P0-2）
 - [x] ~~force 绕过配额预扣/批次上限~~ → v0.2.1（P0-2）
 - [x] ~~exit 23/24 时对账通过文件不出队/不 arm strm~~ → v0.2.1（P0-1）
+- [x] ~~补齐清单出账早于批次上限截断（被截断条目永久丢失）~~ → v0.2.1 review 修复
+- [x] ~~队列 key 反向解析 split(":", 1) 切错（任务名含冒号）~~ → v0.2.1 review 修复，收口 `paths.rel_path_of_key`
+- [ ] 版本字段漂移的**门禁盲区**：`check_plugin_versions.py` 不校验插件目录内的
+      `package.json` 与 `Config.vue` 版本 chip，二者漏改时门禁仍"通过"（v0.2.1 踩过）。
+      可考虑加一条检查，或在 CLAUDE.md 的发布清单里显式列出这两个字段。
 - [ ] `_build_backfill_candidates` 候选口径（排除队列/异常/忽略项）
 - [ ] `_delete_dest_files_for_retry` 删除护栏（**破坏性操作，优先级应提前**）
 - [ ] `_migrate_legacy_defaults` 自定义值保护（**重点：自定义值必须不动**）

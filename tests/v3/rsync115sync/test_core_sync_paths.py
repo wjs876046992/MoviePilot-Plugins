@@ -174,3 +174,59 @@ def test_brief_paths_truncates_long_paths_keeping_tail():
 
 def test_brief_paths_empty_list():
     assert paths.brief_paths([]) == ""
+
+# --------------------------------------------------------------------------
+# rel_path_of_key — 队列 key 还原相对路径必须用前缀匹配
+# --------------------------------------------------------------------------
+
+def test_rel_path_of_key_plain_name():
+    assert paths.rel_path_of_key("TV:S01E01.mkv", [_pair(name="TV")]) == "S01E01.mkv"
+
+
+def test_rel_path_of_key_label_containing_colon():
+    """
+    任务名含冒号时 `split(":", 1)` 会切错 —— 这是本函数存在的唯一理由。
+
+    key `TV:主库:S01E01.mkv` 在**第一个**冒号处切开得到 `主库:S01E01.mkv`，
+    相对路径凭空多出一段；用它拼文件系统路径时该文件永远不存在，表现为
+    「文件明明在、却判为源端已消失」（strm 条目被 source_gone 清理、
+    目标端可见性探测报 unknown）。前缀匹配才可靠（同 split_pair_key 判据）。
+    """
+    pairs = [_pair(name="TV:主库")]
+    key = "TV:主库:S01E01.mkv"
+    assert paths.rel_path_of_key(key, pairs) == "S01E01.mkv"
+    # 对照：旧实现在同一输入上是错的，锁住这条差异
+    assert key.split(":", 1)[1] == "主库:S01E01.mkv"
+
+
+def test_rel_path_of_key_relative_path_containing_colon():
+    """相对路径本身含冒号（罕见但合法）也必须完整保留。"""
+    pairs = [_pair(name="TV")]
+    assert paths.rel_path_of_key("TV:S01E:alt.mkv", pairs) == "S01E:alt.mkv"
+
+
+def test_rel_path_of_key_unknown_mapping_returns_none():
+    assert paths.rel_path_of_key("Other:x.mkv", [_pair(name="TV")]) is None
+
+
+def test_rel_path_of_key_empty_pairs_returns_none():
+    assert paths.rel_path_of_key("TV:x.mkv", []) is None
+    assert paths.rel_path_of_key("TV:x.mkv", None) is None
+
+
+def test_rel_path_of_key_prefers_longest_matching_prefix():
+    """
+    两个映射名互为前缀时（TV 与 TV:主库），key 必须归属到**真正匹配的那个**。
+
+    逐对比较按 `startswith(f"{pn}:")`，`TV:主库:S01E01.mkv` 同时满足
+    `TV:` 前缀 —— 但只有 `TV:主库:` 是完整的一段，因此取到的相对路径
+    才是对的。这条同时钉住「不能退化成按第一个冒号切」。
+    """
+    pairs = [_pair(name="TV"), _pair(name="TV:主库")]
+    assert paths.rel_path_of_key("TV:主库:S01E01.mkv", pairs) == "S01E01.mkv"
+
+
+def test_rel_path_of_key_trailing_slash_in_src_label():
+    """未填备注名时回退到源目录；带尾斜杠的 src 也必须能匹配上。"""
+    pairs = [{"name": "", "src": "/media/TV/", "dest": "/115/TV"}]
+    assert paths.rel_path_of_key("/media/TV:S01E01.mkv", pairs) == "S01E01.mkv"
