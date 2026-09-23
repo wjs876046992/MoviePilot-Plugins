@@ -144,9 +144,12 @@ from .ignore import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
+    force_problem_rel_paths as _force_problem_rel_paths,
     is_junk_file_name as _is_junk_file_name,
+    merge_force_anomalies as _merge_force_anomalies,
     pair_for_path as _pair_for_path,
     pair_name as _pair_name,
+    success_keys_after_audit as _success_keys_after_audit,
     valid_exts_of as _valid_exts_of,
 )
 # Webhook 报文解析（纯逻辑，无状态）。认领判据也在这里（判定「这条报文是不是发给
@@ -160,7 +163,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -2258,21 +2261,23 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                      retry the anomaly list or user-specified files, also --files-from
           backfill — 处理存量补传队列，同样走 --files-from
                      drain the back-fill queue, also --files-from
-          force    — 全量校验，遍历 115 全目录（最重，受 7 天冷却限制）
-                     full verification, walks the whole 115 tree (heaviest; gated
-                     by a 7-day cool-down)
+          force    — 先全量只读对账，再只对问题文件走 --files-from + 配额预扣
+                     （P0-2：不再整树盲传；全量遍历仍受 7 天冷却约束）
+                     full read-only audit first, then transfer only problem files
+                     via --files-from with quota pre-charge (no more blind full-tree
+                     rsync; the full walk stays gated by the 7-day cool-down)
 
         防风控设计（贯穿全流程）/ anti-abuse design applied throughout:
           1) 入口闸门：退避期或配额用尽时整轮直接返回，一次 API 都不发；
              entry gate — return early on back-off or exhausted quota, zero API calls
-          2) 批次上限：单次 rsync 提交量有界，超出部分留待下轮；
-             per-run batch cap, remainder deferred to the next run
-          3) 配额预扣：启动 rsync 前先扣减并落盘，防止重载绕过；
-             quota pre-charged and persisted before rsync starts
+          2) 批次上限：单次 rsync 提交量有界，超出部分留待下轮（force 同样适用）；
+             per-run batch cap, remainder deferred (force included)
+          3) 配额预扣：启动 rsync 前先扣减并落盘，防止重载绕过（force 同样适用）；
+             quota pre-charged and persisted before rsync starts (force included)
           4) stderr 风控检测：命中关键词立即退避并终止本轮；
-             stderr rate-limit detection aborts the run immediately
-          5) 配额中途耗尽：停止处理后续映射对。
-             stop before the next mapping pair once the quota is gone
+             stderr rate-limit detection aborts the whole run immediately
+          5) 配额中途耗尽：非 force 停止后续映射；force 只关传输、继续只读对账。
+             ready/retry/backfill stop further pairs; force keeps auditing only.
         """
         if not shutil.which("rsync"):
             self._post_reply(channel_event, "❌ 系统未安装 rsync 命令，请在终端执行: apt update && apt install -y rsync")
@@ -2345,6 +2350,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     # 补齐失败不能影响正常同步
                     logger.warning(f"[Rsync115Sync] 源端补齐扫描异常（已忽略，不影响本轮同步）: {scan_err}")
 
+            # force 在配额耗尽后仍应完成**剩余映射的只读全量对账**（不传输）：
+            # 对账是 force 的语义核心，且不再产生上传；若直接 break，剩余映射要等
+            # 下一个 7 天冷却才能被核对。传输侧由 force_transfer_allowed 关掉。
+            force_transfer_allowed = True
+
             for idx, pair in enumerate(self._sync_pairs):
                 src = (pair.get("src") or "").strip().rstrip("/")
                 dest = (pair.get("dest") or "").strip().rstrip("/")
@@ -2354,6 +2364,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 if not os.path.exists(src) or not os.path.exists(dest):
                     logger.warning(f"[Rsync115Sync] [{pair_name}] 目录无效或 CD2 挂载未就绪，跳过本组映射: {src} -> {dest}")
                     continue
+
+                # 配额已尽且非 force：维持原「停止后续映射」语义
+                if (mode != "force"
+                        and self._rate_limit_enabled
+                        and self._upload_window_count >= self._upload_max_per_window):
+                    logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
+                                   f"（{self._upload_window_count}/{self._upload_max_per_window}），"
+                                   f"剩余映射留待下一轮")
+                    break
 
                 # 严格按照 sync_115.sh 黄金参数构建：绝不加 --inplace / --partial / --temp-dir
                 cmd = [
@@ -2375,36 +2394,47 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 if "::" in dest or dest.startswith("rsync://"):
                     cmd.append("--contimeout=30")
 
-                # 全量模式（force）没有 --files-from 清单，必须靠 include/exclude
-                # 过滤才能限定传输范围。rsync 规则按顺序首条匹配生效，因此
-                # --include 必须全部排在 --exclude 之前，且 --exclude="*" 放最后兜底。
-                # The force mode has no --files-from list, so include/exclude rules
-                # are the only thing bounding the transfer. rsync applies the FIRST
-                # matching rule, so every --include must precede --exclude and the
-                # catch-all --exclude="*" must come last. Ordering is load-bearing:
-                # swapping them would silently disable the whole filter.
-                if mode not in ("ready", "retry", "backfill"):
-                    cmd.append("--include=*/")
-                    if not all_ext:
-                        for _ext in [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]:
-                            cmd.append(f"--include=*.{_ext}")
-
-                # 排除目录参数
+                # 排除目录参数（所有模式共用）
                 for ex in self._exclude_patterns.splitlines():
                     ex_clean = ex.strip()
                     if ex_clean:
                         cmd.append(f"--exclude={ex_clean}")
 
-                # 全量模式兜底：过滤掉未显式 include 的一切，避免无差别整树传输
-                if mode not in ("ready", "retry", "backfill"):
-                    cmd.append("--exclude=*")
-
                 temp_list_file = None
                 pair_files = []
+                # force 预对账结果：批次上限未覆盖的问题必须原样保留在最终清单
+                force_pre_missing: List[str] = []
+                force_pre_corrupt: List[str] = []
                 now_ts = time.time()
                 threshold = self._delay_hours * 3600
 
-                if mode == "ready":
+                if mode == "force":
+                    # ---- P0-2：先全盘对账（只读遍历），再只传问题文件 ----
+                    # 旧路径对整棵源树做无 --files-from 的 rsync，pair_files 恒为空，
+                    # 配额预扣与批次上限全部旁路。现改为：
+                    #   全量对账 → 问题相对路径 → 与 ready/retry 共用 files-from + 预扣。
+                    # 全量遍历仍受命令入口的 7 天冷却约束；传输受窗口配额约束。
+                    force_pre_missing, force_pre_corrupt = self._audit_files_integrity(
+                        src, dest, pair_name, all_ext, rel_paths=None)
+                    pair_files = _force_problem_rel_paths(
+                        pair_name, force_pre_missing, force_pre_corrupt)
+                    if not pair_files:
+                        logger.info(f"[Rsync115Sync] [{pair_name}] 🔍 force 全量对账通过，"
+                                    f"无需传输（缺失 0 / 残缺 0）")
+                        continue
+                    if not force_transfer_allowed or (
+                            self._rate_limit_enabled
+                            and self._upload_window_count >= self._upload_max_per_window):
+                        # 只读对账已完成；本映射的问题原样进最终清单，不发起上传
+                        total_missing.extend(force_pre_missing)
+                        total_corrupt.extend(force_pre_corrupt)
+                        logger.warning(f"[Rsync115Sync] [{pair_name}] 🚦 配额已尽，force 仅完成对账："
+                                       f"{len(pair_files)} 个问题文件留待 /rsync_retry 或下轮 force")
+                        continue
+                    logger.info(f"[Rsync115Sync] [{pair_name}] 🔍 force 预对账发现 "
+                                f"{len(pair_files)} 个问题文件，转入定向传输（受批次上限与配额约束）")
+
+                elif mode == "ready":
                     for key, ts in list(self._pending_queue.items()):
                         if key.startswith(f"{pair_name}:") and (now_ts - ts >= threshold):
                             rel_p = key.split(f"{pair_name}:", 1)[1]
@@ -2510,35 +2540,30 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                         else:
                             logger.info(f"[Rsync115Sync] [{pair_name}] 🆕 目标端不存在，执行首次上传: {rel_p}")
 
-                # 生成 --files-from 清单文件
-                # 关键：ready/retry/backfill 一律走 --files-from，只让 rsync 处理
-                # 指定文件，绝不整目录遍历 115 挂载点（那是风控的主要来源）
-                if mode in ["ready", "retry", "backfill"]:
-                    if not pair_files:
-                        # 本次没有需要处理的文件，跳过该目录（不做全盘对账，避免历史存量文件误报）
-                        logger.info(f"[Rsync115Sync] [{pair_name}] 本组无待传输文件，跳过（不做全量对账，避免历史存量误报）")
-                        continue
+                # ---- 所有模式（含 force）统一：files-from + 批次上限 + 配额预扣 ----
+                if not pair_files:
+                    # 本次没有需要处理的文件，跳过该目录（不做全盘对账，避免历史存量文件误报）
+                    logger.info(f"[Rsync115Sync] [{pair_name}] 本组无待传输文件，跳过（不做全量对账，避免历史存量误报）")
+                    continue
 
-                    # ---- 批次上限：单次 rsync 处理量有界，避免命令行过长与瞬时峰值 ----
-                    # Per-run batch cap: bound how much a single rsync handles, to
-                    # avoid an over-long command line and a burst of target-side
-                    # stat requests. Trimmed files stay in the source queue/list and
-                    # are picked up by the next cron tick or the next manual trigger.
-                    deferred = 0
-                    if len(pair_files) > self._upload_batch_size > 0:
-                        deferred = len(pair_files) - self._upload_batch_size
-                        pair_files = pair_files[:self._upload_batch_size]
-                        logger.info(f"[Rsync115Sync] [{pair_name}] ✂ 本批受批次上限限制，"
-                                    f"本次处理 {len(pair_files)} 个，剩余 {deferred} 个留待下轮")
+                # ---- 批次上限：单次 rsync 处理量有界，避免命令行过长与瞬时峰值 ----
+                # force 截断的问题文件不会进 pending_queue：由预对账清单 +
+                # merge_force_anomalies 留在异常清单，供 /rsync_retry 继续。
+                deferred = 0
+                if len(pair_files) > self._upload_batch_size > 0:
+                    deferred = len(pair_files) - self._upload_batch_size
+                    pair_files = pair_files[:self._upload_batch_size]
+                    logger.info(f"[Rsync115Sync] [{pair_name}] ✂ 本批受批次上限限制，"
+                                f"本次处理 {len(pair_files)} 个，剩余 {deferred} 个留待下轮")
 
-                    logger.info(f"[Rsync115Sync] [{pair_name}] 待传输 {len(pair_files)} 个文件:")
-                    for _p in pair_files:
-                        logger.info(f"[Rsync115Sync] [{pair_name}]   - {_p}")
-                    temp_list_file = f"/tmp/rsync_files_{int(time.time())}_{idx}.txt"
-                    with open(temp_list_file, "w", encoding="utf-8") as f:
-                        for item in pair_files:
-                            f.write(f"{item}\n")
-                    cmd.append(f"--files-from={temp_list_file}")
+                logger.info(f"[Rsync115Sync] [{pair_name}] 待传输 {len(pair_files)} 个文件:")
+                for _p in pair_files:
+                    logger.info(f"[Rsync115Sync] [{pair_name}]   - {_p}")
+                temp_list_file = f"/tmp/rsync_files_{int(time.time())}_{idx}.txt"
+                with open(temp_list_file, "w", encoding="utf-8") as f:
+                    for item in pair_files:
+                        f.write(f"{item}\n")
+                cmd.append(f"--files-from={temp_list_file}")
 
                 cmd.extend([f"{src}/", dest])
 
@@ -2579,7 +2604,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     if len(up_files) > 20:
                         logger.info(f"[Rsync115Sync] [{pair_name}]   ... 其余 {len(up_files) - 20} 条已省略")
                 elif exit_code in self._TOLERATED_EXIT_CODES:
-                    # 23=部分未传输、24=源文件消失，属可容忍告警：记录但不判定整轮失败
+                    # 23=部分未传输、24=源文件消失，属可容忍告警：记录但不判定整轮失败。
+                    # 只影响「整轮是否算失败」，**不**阻止本批对账通过的文件出队与
+                    # 登记 strm（P0-1，见 paths.success_keys_after_audit）。
                     logger.warning(f"[Rsync115Sync] [{pair_name}] ⚠ rsync 退出码 {exit_code}"
                                    f"（{'源文件传输中消失' if exit_code == 24 else '部分文件未传输'}），"
                                    f"耗时 {rsync_cost} 秒，按可容忍处理")
@@ -2618,22 +2645,57 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # could scan every mapping pair back-to-back with no ceiling.
                 if (self._rate_limit_enabled
                         and self._upload_window_count >= self._upload_max_per_window):
-                    logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
-                                   f"（{self._upload_window_count}/{self._upload_max_per_window}），"
-                                   f"剩余映射留待下一轮")
-                    break
+                    if mode == "force":
+                        force_transfer_allowed = False
+                        logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
+                                       f"（{self._upload_window_count}/{self._upload_max_per_window}），"
+                                       f"force 后续映射只做对账、不再上传")
+                    else:
+                        logger.warning(f"[Rsync115Sync] 🚦 本窗口配额已用尽"
+                                       f"（{self._upload_window_count}/{self._upload_max_per_window}），"
+                                       f"剩余映射留待下一轮")
+                        break
 
-                # 双向对账审计：ready/retry 仅核对本次同步的文件；force 才做全量扫描
+                # 双向对账：ready/retry/backfill 核对本批；force 核对本批传输结果，
+                # 再与预对账未尝试部分合并（不重跑整树，避免二次全量遍历）。
+                #
+                # ⚠️ audit 在 src/dest 任一不存在时返回**空清单**（不是「全部通过」）。
+                # 若不拦截，会把本批全部当成成功：错误出队、arm strm，并因
+                # audited_keys 清掉历史异常 —— 挂载掉线时的静默数据丢失。
+                attempted_keys = [f"{pair_name}:{p}" for p in pair_files]
+                audit_valid = os.path.exists(src) and os.path.exists(dest)
+                if not audit_valid:
+                    logger.warning(
+                        f"[Rsync115Sync] [{pair_name}] ⚠ 源/目标目录不可用，跳过对账结算"
+                        f"（不出队、不 arm strm、不改历史异常）: {src} -> {dest}")
+                    if mode == "force":
+                        total_missing.extend(force_pre_missing)
+                        total_corrupt.extend(force_pre_corrupt)
+                    elif mode in ("ready", "retry", "backfill"):
+                        # 保守：本批记为仍缺失，留待下轮/重试；不更新 audited_keys
+                        total_missing.extend(attempted_keys)
+                    if mode == "backfill":
+                        for rel_p in pair_files:
+                            k = f"{pair_name}:{rel_p}"
+                            if k not in self._backfill_done_keys:
+                                self._backfill_done_keys.add(k)
+                    continue
+
+                m_list, c_list = self._audit_files_integrity(
+                    src, dest, pair_name, all_ext, rel_paths=pair_files)
                 if mode == "force":
-                    m_list, c_list = self._audit_files_integrity(src, dest, pair_name, all_ext, rel_paths=None)
+                    final_m, final_c = _merge_force_anomalies(
+                        force_pre_missing, force_pre_corrupt,
+                        attempted_keys, m_list, c_list)
+                    total_missing.extend(final_m)
+                    total_corrupt.extend(final_c)
+                    succeeded = _success_keys_after_audit(pair_name, pair_files, m_list, c_list)
+                    synced_count += len(succeeded)
                 else:
-                    if not pair_files:
-                        continue
                     synced_count += len(pair_files)
-                    audited_keys.update(f"{pair_name}:{p}" for p in pair_files)
-                    m_list, c_list = self._audit_files_integrity(src, dest, pair_name, all_ext, rel_paths=pair_files)
-                total_missing.extend(m_list)
-                total_corrupt.extend(c_list)
+                    audited_keys.update(attempted_keys)
+                    total_missing.extend(m_list)
+                    total_corrupt.extend(c_list)
 
                 logger.info(f"[Rsync115Sync] [{pair_name}] 🔍 对账结果: 本次核对 {len(pair_files)} 个，"
                             f"缺失 {len(m_list)} 个，残缺 {len(c_list)} 个")
@@ -2642,28 +2704,32 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 for k in c_list:
                     logger.warning(f"[Rsync115Sync] [{pair_name}]   ✗ 大小残缺: {k}")
 
-                # 同步成功则将已完成的文件移除出冷却队列
-                if exit_code == 0 and mode == "ready":
-                    succeeded_keys = []
+                # ---- P0-1：出队与 strm 登记只看对账，不看退出码 ----
+                # exit 23/24 是整批告警；批内已就绪文件若被 `exit_code == 0`
+                # 拦住，会永不出队、也永不进入 strm 观察。
+                if mode == "ready":
+                    succeeded_keys = set(_success_keys_after_audit(
+                        pair_name, pair_files, m_list, c_list))
+                    # 用 pair_files 正向拼 key，不用 split(":",1) 反解析 ——
+                    # 任务名本身可能含冒号（paths.split_pair_key 已注明）。
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
-                        if k not in m_list and k not in c_list:
-                            self._pending_queue.pop(k, None)
-                            succeeded_keys.append(k)
-                            logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
+                        if k not in succeeded_keys:
+                            continue
+                        self._pending_queue.pop(k, None)
+                        logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
                     # strm 交叉验证：登记待观察（有 strm_dir 的映射才实际生效）
                     if succeeded_keys:
-                        armed = self._strm_arm_watch(succeeded_keys)
+                        armed = self._strm_arm_watch(sorted(succeeded_keys))
                         if armed:
                             logger.info(f"[Rsync115Sync] [{pair_name}] 📺 已登记 {armed} 个文件进入 "
                                         f"strm 观察期（{self._strm_grace_hours}h 内未生成 strm 将标记疑似异常）")
 
                 # 重试模式成功：同样登记 strm 观察（重传后自动复核 strm 是否生成，
                 # 生成即自动解除疑点，无需用户再确认）
-                if exit_code == 0 and mode == "retry":
-                    succeeded_retry = [f"{pair_name}:{rel_p}" for rel_p in pair_files
-                                       if f"{pair_name}:{rel_p}" not in m_list
-                                       and f"{pair_name}:{rel_p}" not in c_list]
+                if mode == "retry":
+                    succeeded_retry = _success_keys_after_audit(
+                        pair_name, pair_files, m_list, c_list)
                     if succeeded_retry:
                         self._strm_arm_watch(succeeded_retry)
 

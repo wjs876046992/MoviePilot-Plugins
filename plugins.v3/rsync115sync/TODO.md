@@ -140,7 +140,9 @@ strm 五态流转、忽略规则语义、主动扫描、补生成目标折算与
 
 **仍待补**（按价值排序）：
 
-- [ ] `_execute_sync` 的批次上限与配额闸门（方法 572 行，需先按阶段拆分才好测）
+- [ ] `_execute_sync` 端到端（仍需拆分/桩 rsync）；批次结算纯函数已由 `test_batch_settlement.py` 覆盖（P0-1/P0-2）
+- [x] ~~force 绕过配额预扣/批次上限~~ → v0.2.1（P0-2）
+- [x] ~~exit 23/24 时对账通过文件不出队/不 arm strm~~ → v0.2.1（P0-1）
 - [ ] `_build_backfill_candidates` 候选口径（排除队列/异常/忽略项）
 - [ ] `_delete_dest_files_for_retry` 删除护栏（**破坏性操作，优先级应提前**）
 - [ ] `_migrate_legacy_defaults` 自定义值保护（**重点：自定义值必须不动**）

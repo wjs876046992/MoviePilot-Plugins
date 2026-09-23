@@ -10,7 +10,7 @@ docs/Plugin_Development.md 7.4). All state lives on the plugin instance.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import MAX_LOGGED_PATHS, MAX_PATH_CHARS
 
@@ -135,6 +135,86 @@ def valid_exts_of(media_extensions: str, all_ext: bool) -> Optional[set]:
     if all_ext:
         return None
     return {x.strip().lower() for x in (media_extensions or "").split(",") if x.strip()}
+
+
+def success_keys_after_audit(
+        pair_name: str,
+        rel_paths: List[str],
+        missing_keys: List[str],
+        corrupt_keys: List[str],
+) -> List[str]:
+    """
+    从本批相对路径里选出「对账通过」的队列 key。
+
+    Queue keys from this batch that passed audit (neither missing nor corrupt).
+
+    用于冷却出队与 strm 观察登记。**判据只有对账结果，不含 rsync 退出码** ——
+    退出码 23/24 是整批级告警（部分未传 / 源文件中途消失），与「这一份文件
+    目标端是否已就绪」不是同一维度。曾用 `exit_code == 0` 作外层门禁，导致
+    批内混合成败时已传成功的文件永不出队、也永不进入 strm 观察（P0-1）。
+
+    Audit outcome is the only criterion — deliberately independent of the rsync
+    exit code, which describes the whole batch rather than each file.
+    """
+    bad = set(missing_keys) | set(corrupt_keys)
+    return [
+        f"{pair_name}:{rel_p}"
+        for rel_p in rel_paths
+        if f"{pair_name}:{rel_p}" not in bad
+    ]
+
+
+def force_problem_rel_paths(
+        pair_name: str,
+        missing_keys: List[str],
+        corrupt_keys: List[str],
+) -> List[str]:
+    """
+    从 force 全量对账结果里取出**本映射**的相对路径清单（缺失 ∪ 残缺）。
+
+    Relative paths for this pair from a force full-audit key list (missing ∪ corrupt).
+
+    force 先全盘对账、再只对问题文件走 ``--files-from`` + 配额预扣（P0-2）：
+    上传路径与 ready/retry 共用同一套批次上限与窗口配额，不再整树盲传。
+    """
+    prefix = f"{pair_name}:"
+    rels: List[str] = []
+    seen = set()
+    for key in list(missing_keys) + list(corrupt_keys):
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+        rel_p = key[len(prefix):]
+        if rel_p and rel_p not in seen:
+            seen.add(rel_p)
+            rels.append(rel_p)
+    return rels
+
+
+def merge_force_anomalies(
+        pre_missing: List[str],
+        pre_corrupt: List[str],
+        attempted_keys: List[str],
+        post_missing: List[str],
+        post_corrupt: List[str],
+) -> Tuple[List[str], List[str]]:
+    """
+    合并 force「预对账 → 定向传输 → 复检」三段结果为最终异常清单。
+
+    Merge force pre-audit, attempted transfer, and post-audit into final anomaly lists.
+
+    - 本批未尝试的预异常（批次上限 / 配额截断）原样保留；
+    - 本批已尝试的以复检为准：修好则移出，仍坏则留下。
+    未尝试却因预对账已知的问题绝不能在合并时丢失（P0-2）。
+    """
+    attempted = set(attempted_keys)
+    final_missing = [k for k in pre_missing if k not in attempted]
+    final_corrupt = [k for k in pre_corrupt if k not in attempted]
+    final_missing.extend(k for k in post_missing if k not in final_missing)
+    final_corrupt.extend(k for k in post_corrupt if k not in final_corrupt)
+    # 同一 key 不应同时出现在缺失与残缺：复检若改判类型，以复检为准
+    final_missing = [k for k in final_missing if k not in set(post_corrupt)]
+    final_corrupt = [k for k in final_corrupt if k not in set(post_missing)]
+    return final_missing, final_corrupt
 
 
 def pair_for_path(file_path: str, pairs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
