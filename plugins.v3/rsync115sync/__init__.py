@@ -2111,6 +2111,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
+                # 窗口长度：看板用它把"还剩几个窗口"换算成分钟数
+                # （`预计需要约 N 个窗口（N × M 分钟）`）。此前看板读的是
+                # `statusData.upload_window_secs || 1800` —— 而 /status 从来不返回
+                # 这个键，于是那行文案**永远按 1800 秒算**，即使用户把窗口改成了
+                # 其它值。默认值恰好正确，所以这个缺口一直没被发现。
+                "upload_window_secs": self._upload_window_secs,
                 "upload_blocked_until": self._upload_blocked_until,
                 "last_force_ts": self._last_force_ts,
                 "force_cooldown_days": self._force_cooldown_days,
