@@ -1173,9 +1173,19 @@ return (_ctx, _cache) => {
                 _cache[64] || (_cache[64] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "来源渠道（channel 过滤）"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
-                    _createTextVNode(" 多个插件会同时订阅宿主广播的 webhook 事件，因此必须各自声明自己的来源。 一般保持 "),
+                    _createElementVNode("b", null, "走 Emby 原生链路时才需要它"),
+                    _createTextVNode("，用来指明哪些媒体服务器推来的事件可以入队， 一个就够了，一般保持 "),
                     _createElementVNode("code", null, "emby"),
-                    _createTextVNode(" 即可。 ")
+                    _createTextVNode(" 即可（多个用逗号分隔）。"),
+                    _createElementVNode("br"),
+                    _createElementVNode("b", null, [
+                      _createTextVNode("自定义发送端（"),
+                      _createElementVNode("code", null, "source=rsync115sync"),
+                      _createTextVNode("）不受这一项影响")
+                    ]),
+                    _createTextVNode(" —— 那条路按收件人标识认领，与渠道无关，即使这里没写 "),
+                    _createElementVNode("code", null, "emby"),
+                    _createTextVNode(" 也照常入库。 ")
                   ])
                 ], -1)),
                 _createVNode(_component_v_text_field, {
@@ -1282,6 +1292,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-45803919"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-393dea40"]]);
 
 export { Config as default };

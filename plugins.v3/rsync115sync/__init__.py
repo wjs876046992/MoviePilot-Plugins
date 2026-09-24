@@ -1052,10 +1052,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         if not raw_paths:
             # 拿不到路径 = 报文结构还没对齐。只记 debug，不刷 info：
             # 播放类噪声已经挡在前面了，这里能剩下的通常只是刮削更新之类。
-            # **留样本**：这正是「发送端字段猜不对」的现场，结构摘要不够用。
+            # 留结构摘要（`last_payload_shape`）：这是「字段名对不对得上」的最小线索，
+            # 而完整报文的值形态属于开发期对齐字段用的信息，不进运行态。
             self._note_webhook(channel=channel, event=event_name, source=server_name,
-                               shape=shape, unrecognized=True,
-                               sample=event_data, action="未识别")
+                               shape=shape, unrecognized=True, action="未识别")
             logger.debug(f"[Rsync115Sync] webhook 未取到入库路径"
                          f"（event={event_name}，channel={channel}，报文结构={shape}）")
             return
@@ -1066,7 +1066,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                        f"server={server_name or '未知'}，路径来源={path_source}")
         self._note_webhook(channel=channel, event=event_name, source=server_name,
                            shape=shape, ingested=counts.get("added", 0),
-                           sample=event_data,
                            action="入队" if counts.get("added", 0) else "未入队")
 
     def _handle_transfer_event(self, event: Event):
@@ -1538,11 +1537,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self.save_data("webhook_stat", stat)
         except Exception:
             pass
-        # 保留一条样本：这一条**必然**是用户关心的（他显式声明发给我们），
-        # 无论最终认领成功与否都值得留下，是「看不到任何日志」最直接的解药。
+        # 记一条「平台解析入口到达」（不带报文值）。它是「请求到底有没有到插件」
+        # 的唯一凭据 —— 与「收到事件」之差就是「到了却没认领」，那次排查缺的正是它。
         try:
             self._note_webhook(source="宿主解析入口", shape=stat["last_claimed_shape"],
-                               sample=payload, action="已到达·待认领")
+                               action="已到达·待认领")
         except Exception:
             pass
         logger.debug(f"[Rsync115Sync] webhook 报文声明发往本插件，开始认领判定："
@@ -1721,9 +1720,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             "last_event": "",
             "last_source": "",
             "last_payload_shape": "",
-            # 最近若干条报文的**样本**（含值，已截断脱敏）。发送端是另一个工程时，
-            # 「它到底传了什么」在开发期是未知的 —— 只留结构摘要答不出这个问题。
-            "samples": [],
+            # 注：曾有一份「最近报文样本（含值）」的环形缓冲。它随看板样本区一并
+            # 移除 —— 样本的唯一消费者就是那块看板区域，留着只会让插件持续
+            # 抓取并落盘完整报文体（截断脱敏后仍是用户数据），而没有任何人读它。
+            # 排查仍靠 last_payload_shape（字段结构）与四个计数。
             # 平台 webhook 端点**正在返回非 200**：多为发送端 Content-Type 与
             # body 形态不匹配（如 multipart 却没有 boundary），请求在进入
             # webhook_parser 之前就被拒。详见 _log_webhook_route_failure。
@@ -1739,10 +1739,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             "last_claimed_ts": 0.0,
             "last_claimed_shape": "",
         }
-
-    # 报文样本保留条数。取小值：这是排障用的「最近发生了什么」，不是审计日志；
-    # 留太多只会把 data 文件撑大（每条都可能带完整 JSON）。
-    WEBHOOK_SAMPLE_LIMIT = 5
 
     def _webhook_stat_now(self) -> Dict[str, Any]:
         """
@@ -1764,15 +1760,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
     def _note_webhook(self, *, channel: str = "", event: str = "", source: str = "",
                       shape: str = "", ingested: int = 0, rejected: bool = False,
-                      unrecognized: bool = False, sample: Any = None,
+                      unrecognized: bool = False,
                       action: str = "") -> None:
         """
         记录一次 webhook 到达/入队/被拒，供看板与日志回答「这条路到底通不通」。
 
         为什么值得专门做一份运行态：webhook 是全插件唯一**由外部发起**的入口，
         出问题时用户手里没有任何可自查的证据 —— 发送端显示 200、插件日志一片
-        安静、看板队列不增长。把「收到几条 / 入队几条 / 拒了几条 / 最后一次的
-        报文长什么样」记下来，才能把问题定位到具体是哪一环。
+        安静、看板队列不增长。把「收到几条 / 入队几条 / 拒了几条 / 最后一次报文的
+        字段结构」记下来，才能把问题定位到具体是哪一环。
         """
         stat = self._webhook_stat_now()
         stat["received"] = int(stat.get("received", 0)) + 1
@@ -1790,28 +1786,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             stat["last_source"] = source
         if shape:
             stat["last_payload_shape"] = shape
-        # 报文样本：只在**收到带路径的报文**时采（见 _handle_webhook_event 的调用点）。
-        # 每条都记的话，播放类事件会把样本环形缓冲刷满 —— 那正是最不需要看的一类。
-        if sample:
-            try:
-                entry = _wh.sample_payload(sample)
-            except Exception:
-                entry = None
-            if entry:
-                items = stat.get("samples")
-                if not isinstance(items, list):
-                    items = []
-                items.append({
-                    "ts": time.time(),
-                    "channel": channel,
-                    "event": event,
-                    "source": source,
-                    "action": action,       # 入队 / 未识别 / 被拒 —— 直接看结论
-                    "ingested": max(0, int(ingested)),
-                    "payload": entry,
-                })
-                # 只留最近 N 条（环形）：这是排障窗口，不是审计日志
-                stat["samples"] = items[-self.WEBHOOK_SAMPLE_LIMIT:]
+        # 注：这里曾有「最近报文样本」的采集（含值、截断脱敏）。随看板样本区
+        # 一并移除 —— 它的唯一消费者就是那块区域。保留采集等于让插件持续抓取
+        # 并落盘完整报文体（再脱敏也仍是用户数据）而无人读取。
         try:
             self.save_data("webhook_stat", stat)
         except Exception:
@@ -1950,16 +1927,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 而 0 次既可能是没配、也可能是配错地址 —— 报文的最后结构摘要
         # 正是用来区分这两者的（没请求 = 没配好；有请求但未识别 = 字段名要加）。
         webhook_stat["channels"] = list(getattr(self, "_webhook_channels", None) or ["emby"])
-        # 报文样本（含值、已截断脱敏）：发送端是另一个工程时，「它到底传了什么」
-        # 在开发期是未知的。结构摘要能告诉你字段名，但只有样本能告诉你值长什么样 ——
-        # 而候选字段表能否命中取决于值的形态。按时间倒序，看板直接照抄最近一条。
-        samples = webhook_stat.get("samples")
-        webhook_stat["samples"] = list(reversed(samples)) if isinstance(samples, list) else []
         return {
             "success": True,
             "data": {
                 "is_running": self._is_running,
-                # webhook 运行态：计数 + 结构摘要 + 最近报文样本（样本含值，已截断脱敏）
+                # webhook 运行态：计数 + 最近报文的**字段结构**（不记值）。
+                # `channels` 仍一并返回但看板已不显示它（那一行按要求去掉了）；
+                # 留着是因为/status 是运行态的完整快照，排查时「当前生效的渠道
+                # 列表是什么」要能一眼查到，而不必去翻配置文件。
                 "webhook": webhook_stat,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,

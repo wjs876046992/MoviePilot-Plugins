@@ -99,14 +99,17 @@
           </div>
         </v-alert>
 
-        <!-- Webhook 入库运行态（第二来源）：只在**配过** webhook 时才出现。
+        <!-- Webhook 入库运行态（第二来源）：只在**收到过请求**时才出现。
              平时不占位 —— 绝大多数用户走的是宿主的整理事件，给他们看一块永远
-             是 0 的面板只会让人怀疑自己配错了什么。这里不显示计数就安静地不显示。
+             是 0 的面板只会让人怀疑自己配错了什么。
 
-             「收到 / 入队 / 被拒 / 未识别」这四个数字的组合本身就是诊断结论：
-             收到=0 说明请求没到；收到>0 而入队=0 且未识别>0 说明字段名对不上。
-             与「last_payload_shape」配合，用户不必翻日志、不必来回问，照摘要把
-             字段名报过来就能扩展候选表。 -->
+             「收到 / 入队 / 平台解析入口到达 / 被拒 / 未识别」这组数字本身就是诊断结论：
+             全为 0 说明请求没到；claimed>0 而 received 少说明到了但没认领；
+             received>0 而入队=0 且未识别>0 说明字段名对不上。
+             与「last_payload_shape」配合，用户不必翻日志、不必来回问。
+
+             注：此处曾有一块「最近报文（含值）」的样本区，按要求移除（连带后端采集）。
+             完整报文值属于开发期对齐字段用的信息，不该常驻看板并持续落盘。 -->
         <v-alert
           v-if="webhookVisible"
           :type="webhookStat.rejected > 0 ? 'warning' : 'info'"
@@ -115,26 +118,23 @@
           class="rounded-lg mb-3 text-body-2"
         >
           <div class="font-weight-medium">
-            🪝 Webhook 入库（第二来源）：
-            <template v-if="webhookStat.received > 0">
+            🪝 Webhook 入库：
+            <template v-if="webhookStat.received > 0 || webhookStat.claimed > 0">
               收到 <strong>{{ webhookStat.received }}</strong> 条 ·
-              入队 <strong>{{ webhookStat.ingested }}</strong> 个文件
+              入队 <strong>{{ webhookStat.ingested }}</strong> 个文件 ·
+              🎯 平台解析入口到达 <strong>{{ webhookStat.claimed }}</strong> 条
             </template>
             <template v-else>
               暂无请求
             </template>
           </div>
-          <!-- 「到达解析入口」与「收到事件」是两个不同的点位，必须分别显示：
-               前者是宿主**调用 webhook_parser** 的次数（认领成功与否都算），
-               后者是认领成功后宿主**广播回来**的次数。二者之差就是「到了但没认领」——
-               那次「插件看不到任何日志」的排查里，缺的正是这个能区分二者的数字。 -->
-          <div v-if="webhookStat.claimed > 0" class="mt-1">
-            🎯 平台解析入口到达 <strong>{{ webhookStat.claimed }}</strong> 条
-            <template v-if="Number(webhookStat.received) < Number(webhookStat.claimed)">
-              —— 其中 <strong>{{ Number(webhookStat.claimed) - Number(webhookStat.received) }}</strong> 条
-              <b>既未入队也未产生事件</b>（路径不在映射内、或插件未启用），下方样本可看到它们的内容
-            </template>
-          </div>
+          <!-- 三行诊断各对应一种「静默无反应」，数字自己就能指出断点在哪：
+               · claimed>0 而 received 少 → 到了解析入口却没认领（路径不在映射内 / 未启用）
+               · rejected>0          → 报文不合入库类事件，或路径不在任何映射内
+               · unrecognized>0      → 到了、字段名没对上，需要扩展候选字段表
+               原先这层解释由下方「最近报文」样本承担，样本已按要求移除 —— 因此
+               未识别时保留字段结构摘要：它是缩小范围用的最小线索，而样本的完整
+               值形态属于开发期对齐字段用的信息，不该常驻看板。 -->
           <div v-if="webhookStat.rejected > 0" class="mt-1">
             ⛔ 被拒 <strong>{{ webhookStat.rejected }}</strong> 条（报文不合入库类事件、
             或路径不在任何映射内，插件未认领），具体是哪一条见日志。
@@ -145,49 +145,6 @@
             <template v-if="webhookStat.last_payload_shape">
               最近报文的字段结构：<code>{{ webhookStat.last_payload_shape }}</code>
             </template>
-          </div>
-          <div class="text-caption text-medium-emphasis mt-1">
-            来源渠道：{{ (webhookStat.channels || []).join('、') || '未配置' }}
-            · 入口：宿主 webhook 端点（<code>/api/v1/webhook/</code>）——
-            本插件不再自带端点，发送端只用把 <code>source</code> 指到
-            <code>rsync115sync</code>，鉴权交给宿主。
-          </div>
-
-          <!-- 最近报文样本。存在的理由只有一条：发送端往往是**另一个工程**，
-               开发期没人知道它会传什么字段（「我不知道发送端会传递什么样的参数」）。
-               结构摘要给出字段名，但答不出「值长什么样」—— 而候选字段表能否命中
-               恰恰取决于值的形态（`/vol3/x.mkv` 是路径，`12345` 是媒体库 ID）。
-               把最近几条原样留下来，对齐字段就不必靠猜、也不必来回问。
-               值已由后端截断 + 脱敏（token/secret 等显示为 ***）。 -->
-          <div v-if="(webhookStat.samples || []).length" class="mt-2">
-            <div class="d-flex align-center">
-              <span class="font-weight-medium">最近报文（新 → 旧）</span>
-              <v-spacer />
-              <span class="text-caption text-medium-emphasis">
-                只留最近 {{ (webhookStat.samples || []).length }} 条，值已截断、密钥已隐去
-              </span>
-            </div>
-            <v-expansion-panels variant="accordion" class="mt-1">
-              <v-expansion-panel
-                v-for="(s, i) in (webhookStat.samples || [])"
-                :key="i"
-              >
-                <v-expansion-panel-title class="text-caption py-1">
-                  <span
-                    class="mr-2"
-                    :class="s.action === '入队' ? 'text-success' : 'text-warning'"
-                  >{{ s.action || '已收到' }}</span>
-                  <span class="text-medium-emphasis">
-                    {{ s.source || '未知来源' }}
-                    <template v-if="s.event"> · {{ s.event }}</template>
-                    <template v-if="s.ingested"> · 入队 {{ s.ingested }} 个</template>
-                  </span>
-                </v-expansion-panel-title>
-                <v-expansion-panel-text>
-                  <pre class="webhook-sample">{{ prettySample(s.payload) }}</pre>
-                </v-expansion-panel-text>
-              </v-expansion-panel>
-            </v-expansion-panels>
           </div>
         </v-alert>
 
@@ -986,16 +943,6 @@ const statusData = ref({
 // 对每个用户都常驻显示，等于没做门控。
 const webhookStat = computed(() => statusData.value.webhook || {})
 
-// 报文样本缩进展示。走 `<pre>` 而不是把 JSON 塞进普通文本，是因为样本要**照着
-// 逐字抄字段名** —— 折行会把 `"item_path"` 断成两行，抄过去就对不上了。
-// 用 Vue 的文本插值（而非 v-html）输出，内容会被自动转义，不存在注入问题。
-function prettySample(payload) {
-  try {
-    return JSON.stringify(payload ?? {}, null, 2)
-  } catch (e) {
-    return String(payload)
-  }
-}
 const webhookVisible = computed(() =>
   (Number(webhookStat.value.received) || 0) > 0
   // `claimed` 必须一并作为显示条件：只用 received 的话，**认领失败**的用户
@@ -1989,19 +1936,5 @@ onUnmounted(() => {
     white-space: normal;
     word-break: break-word;
   }
-}
-/* 报文样本：**不折行**、超宽横向滚动。
-   这里刻意与上面那批「允许折行」的规则相反：样本的用途是让用户逐字抄字段名，
-   折行会把 "item_path" 断成两行，抄过去就变成两个错字段。 */
-.webhook-sample {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 260px;
-  overflow: auto;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
-  border-radius: 6px;
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.05);
 }
 </style>

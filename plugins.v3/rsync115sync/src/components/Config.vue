@@ -442,8 +442,10 @@
             <div>
               <div class="font-weight-bold text-body-2">来源渠道（channel 过滤）</div>
               <div class="text-caption text-medium-emphasis">
-                多个插件会同时订阅宿主广播的 webhook 事件，因此必须各自声明自己的来源。
-                一般保持 <code>emby</code> 即可。
+                <b>走 Emby 原生链路时才需要它</b>，用来指明哪些媒体服务器推来的事件可以入队，
+                一个就够了，一般保持 <code>emby</code> 即可（多个用逗号分隔）。<br>
+                <b>自定义发送端（<code>source=rsync115sync</code>）不受这一项影响</b> ——
+                那条路按收件人标识认领，与渠道无关，即使这里没写 <code>emby</code> 也照常入库。
               </div>
             </div>
             <v-text-field
@@ -720,6 +722,25 @@ onMounted(() => {
 }
 .empty-hint-box {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+}
+
+/* 设置行的宽度分配：说明文字可收缩换行，右侧控件**不被挤压**。
+   背景：设置行是 `justify-space-between` 的横排（左说明 + 右控件）。flex 子项
+   默认 `min-width: auto`，即「不得窄于内容的最小可排布宽度」—— 长说明段落
+   （如「源端补齐扫描」那四行）在窗口不够宽时拒绝收缩，于是把右侧的开关
+   压成一条细缝甚至顶出卡片。给它 min-width:0 才允许折行，再让控件
+   flex-shrink:0 保持自身尺寸，两者合起来才是「文字让位、控件不动」。
+   Long description blocks cannot shrink by default (min-width:auto), so they
+   squeeze the trailing control out of the card; allow the text to wrap instead. */
+.setting-row > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.setting-row > .v-switch,
+.setting-row > .v-text-field,
+.setting-row > .v-chip,
+.setting-row > .v-btn {
+  flex: 0 0 auto;
 }
 
 /* ===== 移动端适配 =====

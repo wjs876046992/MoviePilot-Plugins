@@ -787,8 +787,12 @@ def test_unclaimable_addressed_payload_still_leaves_a_trace(tmp_path):
     assert info is None, "路径不在映射内时不应认领（避免短路宿主解析器）"
     stat = plugin._webhook_stat_now()
     assert stat["claimed"] == 1, "声明发往本插件的报文必须计入 claimed"
-    assert stat["samples"], "认领失败也必须留下报文样本，否则用户无从自查"
-    assert stat["samples"][-1]["action"] == "已到达·待认领"
+    # ⚠️ 这里原先断言「必须留下报文样本」。样本随看板的样本区一并移除（它的
+    # 唯一消费者就是那块区域），改由 claimed + last_claimed_shape 承担自查：
+    # 两者配合足以区分「请求没到」与「到了但路径不在映射内」。
+    assert stat["last_claimed_shape"], (
+        "认领失败也必须留下字段结构摘要，否则用户无从自查是哪个字段没对上"
+    )
 
 
 def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
@@ -877,230 +881,66 @@ def test_host_route_enqueues_every_path_in_the_list(tmp_path):
     assert sorted(plugin._pending_queue) == ["TV:e01.mkv", "TV:e02.mkv", "TV:e03.mkv"]
 
 
-# --------------------------------------------------------------------------
-# 报文样本：发送端未知时，唯一能拿到「它到底传了什么」的手段
-# --------------------------------------------------------------------------
-#
-# 这一组的由来：发送端往往是**另一个工程**（用户原话：「我不知道发送端会传递
-# 什么样的参数」）。`last_payload_shape` 只给结构与类型，答不出「值长什么样」——
-# 而候选字段表能否命中，恰恰取决于值是否符合路径形态。开发期只能边收边对齐。
-#
-# 采样点与「是否成功入队」无关：认领阶段的解码失败、以及认领成功后被广播回来的
-# 报文，两者都会留下样本（见 `_note_webhook_claim_attempt` 与 `_note_webhook`）。
 
-def test_unrecognized_payload_is_sampled_with_values(tmp_path):
+
+def _page_source():
     """
-    未识别的报文必须留下**含值**的样本，否则没法对齐字段。
+    读看板组件的**源码**（不是构建产物）。
 
-    只留结构摘要时，用户看到的是 `{movie: {name: str, file: str}}` ——
-    知道有 `file` 字段，但不知道值是 `/vol3/...` 还是 `12345`（媒体库 ID）。
-    后者决定了该不该把它加进候选表。
+    这些看板断言是纯文本检查（模板里有没有某个字段绑定），读源码即可；读 dist
+    产物会把断言绑到文件名哈希上，构建一变就全红。
+
+    ⚠️ 用「向上逐级找」而不是固定的 `parents[N]`：本文件早先的版本写了硬编码
+    层数，一旦测试目录或本文件位置调整（例如按插件拆子目录），断言就会读到错的
+    路径 —— 表现为「找不到文件」或更糟的「读到了别的文件却仍然通过」。
+    `test_dashboard_stat_row_border.py` 用的是同一套找法。
     """
-    src = tmp_path / "9kg"
-    src.mkdir()
-    plugin = _plugin(str(src))
-
-    _claim(plugin, {"Event": "download.finish",
-                    "movie": {"file": "/vol3/9kg/某电影/movie.mkv"}})
-
-    samples = plugin._webhook_stat_now()["samples"]
-    assert len(samples) == 1
-    sample = samples[0]
-    assert sample["action"] == "已到达·待认领", "样本要带结论，用户才知道这条有没有用"
-    assert sample["payload"]["movie"]["file"] == "/vol3/9kg/某电影/movie.mkv"
-
-
-def test_sampled_payload_redacts_secrets(tmp_path):
-    """
-    样本要看板明文展示，密钥类字段必须脱敏。
-
-    发送端复制 curl 命令时常常把 `?token=` 一起带上；原样存进 data 文件再显示在
-    看板上，等于把一个可用的凭据抄在了屏幕上。
-    """
-    src = tmp_path / "9kg"
-    src.mkdir()
-    plugin = _plugin(str(src))
-
-    _claim(plugin, {"pathx": "/vol3/a.mkv", "token": "super-secret",
-                    "authorization": "Bearer xyz"})
-
-    payload = plugin._webhook_stat_now()["samples"][0]["payload"]
-    assert payload["token"] == "***"
-    assert payload["authorization"] == "***"
-    assert "super-secret" not in json.dumps(payload, ensure_ascii=False)
-
-
-def test_sampled_payload_truncates_long_values(tmp_path):
-    """超长值截断（附长度后缀）—— 样本是排障窗口，不该把 data 文件撑爆。"""
-    src = tmp_path / "9kg"
-    src.mkdir()
-    plugin = _plugin(str(src))
-
-    _claim(plugin, {"pathx": "/vol3/" + "x" * 5000 + ".mkv"})
-
-    value = plugin._webhook_stat_now()["samples"][0]["payload"]["pathx"]
-    assert len(value) < 400, "超长值未截断"
-    assert value.endswith(")"), "截断应标明省略了多少字符"
-
-
-def test_samples_are_capped_and_newest_first(tmp_path):
-    """
-    样本只留最近若干条，且顺序是**新的在前**。
-
-    顺序错了会让看板显示最旧那条：排障时用户刚推的报文反而看不到，
-    看到的是一条几小时前的历史记录，据此对齐字段必然对错。
-    """
-    src = tmp_path / "9kg"
-    src.mkdir()
-    plugin = _plugin(str(src))
-
-    for i in range(plugin.WEBHOOK_SAMPLE_LIMIT + 3):
-        _claim(plugin, {"pathx": f"/vol3/{i}.mkv"})
-
-    samples = plugin._webhook_stat_now()["samples"]
-    assert len(samples) == plugin.WEBHOOK_SAMPLE_LIMIT
-    assert samples[-1]["payload"]["pathx"] == f"/vol3/{plugin.WEBHOOK_SAMPLE_LIMIT + 2}.mkv"
-
-
-def _status_ready_plugin(src_root):
-    """
-    在 `_plugin` 的基础上补齐 `/status` 还会读到的属性。
-
-    `/status` 是聚合接口，除了 webhook 段还会读 strm 观察期、限流窗口、补传队列等。
-    本文件只关心 webhook 段，因此把这些**与 webhook 无关**的读点给成中性值，
-    让「样本是否吐给看板」这件事能被单独断言。
-
-    ⚠️ 属性清单来自 `_api_get_status` 的实际读点（逐个核对，不是猜的）。
-    若 /status 以后新增读点，本用例会以 AttributeError 失败 —— 那是**期望行为**：
-    它提示你来补一行，而不是让一个聚合接口的意外改动悄悄糊过去。
-    """
-    plugin = _plugin(src_root)
-    plugin._is_running = False
-    plugin._count_queue = lambda *a, **k: (0, 0, 0)
-    # strm 观察期 / 限流 / 补传（与 webhook 无关，给中性值）
-    plugin._strm_check_enabled = True
-    plugin._strm_grace_hours = 6.0
-    plugin._strm_watch = {}
-    plugin._strm_suspects = {}
-    plugin._strm_gen_requested = {}
-    plugin._backfill_queue = []
-    plugin._backfill_total = 0
-    plugin._missed_last_scan = 0.0
-    plugin._missed_scan_enabled = True
-    plugin._rate_limit_enabled = True
-    plugin._upload_window_count = 0
-    plugin._upload_max_per_window = 500
-    plugin._upload_blocked_until = 0.0
-    plugin._last_force_ts = 0.0
-    plugin._force_cooldown_days = 7
-    return plugin
-
-
-def test_status_exposes_samples_newest_first(tmp_path):
-    """
-    /status 必须把样本吐给看板，且倒序（看板直接照抄第一条）。
-    """
-    src = tmp_path / "9kg"
-    src.mkdir()
-    plugin = _status_ready_plugin(str(src))
-
-    for i in range(2):
-        _claim(plugin, {"pathx": f"/vol3/{i}.mkv"})
-
-    samples = plugin._api_get_status()["data"]["webhook"]["samples"]
-    assert len(samples) == 2
-    assert samples[0]["payload"]["pathx"] == "/vol3/1.mkv", "应新的在前"
-
-    # ⚠️ `reversed()` 返回迭代器，`list(...)` 才生成新列表。若哪天写成
-    # `webhook_stat["samples"] = samples.reverse()` 之类，会**原地**翻转内部状态 ——
-    # 看板每次刷新都翻一次，顺序在「新→旧 / 旧→新」之间来回跳。
-    # 因此这里连续取两次，要求结果稳定且内部顺序不被改动。
-    again = plugin._api_get_status()["data"]["webhook"]["samples"]
-    assert [s["payload"]["pathx"] for s in again] == \
-           [s["payload"]["pathx"] for s in samples], "/status 连续调用返回的顺序必须稳定"
-    internal = plugin._webhook_stat_now()["samples"]
-    assert internal[0]["payload"]["pathx"] == "/vol3/0.mkv", \
-        "内部样本顺序被 /status 的倒序逻辑改动了（应保持旧的在前）"
-
-
-# ===================== 看板契约 =====================
-#
-# 这一组的由来：USAGE.md 的「怎么确认这条路通了」整节把 webhook 的四项计数与
-# 「最近报文结构」写成看板上可见，而 Page.vue 实际上没有渲染它们 —— 文档承诺了
-# 一个不存在的界面。 用户按文档去"看板确认"，看到的是一个空无一物的看板，
-# 只能得到「是不是没生效」这个错误结论。
-#
-# 这类「文档描述了、后端也返回了、前端却没画」的缺口不会让任何测试变红：
-# 后端用例只查 /status 的字段，而字段确实在。所以这里必须从**模板**侧断言。
-
-_PLUGIN_SRC = Path(__file__).resolve().parents[3] / "plugins.v3" / "rsync115sync" / "src"
-
-
-def _page_source() -> str:
-    path = _PLUGIN_SRC / "components" / "Page.vue"
-    assert path.is_file(), f"找不到看板源码：{path}"
-    return path.read_text(encoding="utf-8")
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "plugins.v3" / "rsync115sync" / "src" / "components" / "Page.vue"
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    pytest.skip("未找到 rsync115sync 的 Page.vue 源码")
 
 
 def test_dashboard_renders_webhook_counters():
     """
-    USAGE.md 承诺的四项计数必须真的出现在看板上。
+    看板必须把三个计数都画出来：收到 / 入队 / 平台解析入口到达。
 
-    只断言 `statusData.webhook` 在 /status 里存在是不够的 —— 后端多返回一个字段
-    而前端从不读取，用户看到的东西与功能没做时完全一样。
+    后端算了字段、文档也写了、前端没画 —— 这类缺口在本项目反复出现过
+    （「后端有字段、前端没画」与「后端没字段、前端画了」都算）。
     """
     src = _page_source()
-    for field in ("received", "ingested", "rejected", "unrecognized"):
-        assert f"webhookStat.{field}" in src or f"webhookStat.value.{field}" in src, (
-            f"看板未渲染 webhook 的 {field} 计数，但 USAGE.md 承诺用户能在这里看到它"
-        )
-    # `claimed`（平台解析入口到达数）必须显示：它是唯一能区分
-    # 「报文没到插件」与「到了但认领失败」的数字，而这两者的修法完全不同。
-    assert "webhookStat.claimed" in src, (
-        "看板未渲染 claimed 计数 —— 认领失败的用户将无从判断报文是否到达"
-    )
-    assert "last_payload_shape" in src, (
-        "看板未展示最近报文的字段结构摘要 —— 用户遇到「未识别」时唯一的自查依据"
-    )
+    for field in ("webhookStat.received", "webhookStat.ingested", "webhookStat.claimed"):
+        assert field in src, f"看板未渲染 {field}"
+    assert "Webhook 入库" in src, "看板缺少 webhook 区域标题"
 
 
 def test_dashboard_webhook_panel_is_gated_not_always_visible():
     """
-    面板必须有显示条件，不能常驻。
+    面板只在**曾经收到过请求**时出现，不能常驻。
 
-    反向陷阱：判据若写成「webhook 功能已启用」，由于渠道默认就是 emby，
-    这块面板会对**每一个**用户常驻显示一条「收到 0 条」—— 等于没有门控，
-    还会让没配 webhook 的人以为自己配漏了什么。
+    否则绝大多数用户会一直看到一块永远是 0 的面板，反而怀疑自己配错了什么。
     """
     src = _page_source()
-    assert "webhookVisible" in src, "看板缺少 webhook 面板的显示条件"
-    assert "v-if=\"webhookVisible\"" in src, "webhook 面板未绑定显示条件"
-    # 判据必须包含 claimed：只用 received 的话，**认领失败**（received 为 0）
-    # 的用户看不到这块面板 —— 而那正是最需要它的场景。
-    assert "webhookStat.value.claimed" in src, (
-        "显示条件未包含 claimed —— 认领失败的用户将看不到这块面板"
-    )
+    assert "webhookVisible" in src, "webhook 面板缺少可见性门控"
+    assert "v-if=\"webhookVisible\"" in src, "门控没有挂到面板上"
 
 
-def test_dashboard_renders_payload_samples():
+def test_dashboard_no_longer_renders_payload_samples():
     """
-    报文样本必须出现在看板上。
+    看板**不再**显示「最近报文」样本（按要求移除）。
 
-    这是「发送端会传什么」在开发期唯一可得的答案来源：用户把最近一条样本贴过来，
-    字段名和值的形态就都清楚了。后端返回了而前端不画，等于没做 —— 与前面
-    那组计数用例同一类缺口（后端有字段、文档写了、前端没画）。
+    样本连同其后端采集一并删除：它唯一的消费者就是这块区域，留着采集等于
+    让插件持续抓取并落盘完整报文体（截断脱敏后仍是用户数据）而无人读取。
+    排查改靠 `last_payload_shape`（字段结构）+ 三个计数。
+
+    ⚠️ 这条用例是**反向**的（断言某物不再存在）。它同样重要：样本区一旦被
+    重新加回模板，就等于把那份无人读取的采集也带回来 —— 需要同时恢复后端。
     """
     src = _page_source()
-    assert "webhookStat.samples" in src, "看板未渲染报文样本"
-    # ⚠️ 断言「调用点」而不是「标识符出现过」：只查 "prettySample" 的话，
-    # 把模板里的调用换掉、只留下函数定义照样能通过（实测该变异逃逸过一次）。
-    assert "prettySample(s.payload)" in src, (
-        "样本未经 JSON 美化，用户没法照着抄字段名"
-    )
-    # 样本要逐字可抄：必须走 <pre>（不折行），否则 item_path 会被断成两行。
-    # 断言**模板里的 class 绑定**而不是「这个类名在文件里出现过」—— 只查后者的话，
-    # 把模板上的 class 摘掉、样式规则还留在 <style> 里照样能通过（实测逃逸过一次）。
-    assert 'class="webhook-sample"' in src, "样本缺少不折行的等宽样式，字段名会被折断"
+    for gone in ("webhookStat.samples", "prettySample", "webhook-sample",
+                 "最近报文（新 → 旧）"):
+        assert gone not in src, f"{gone} 属于已移除的报文样本区，不该再出现在看板里"
 
 
 def test_stub_host_status_defaults_align_with_frontend():
@@ -1110,20 +950,22 @@ def test_stub_host_status_defaults_align_with_frontend():
     前端 statusData 的初值是空对象 `webhook: {}`：首帧（尚未拉到 /status）时
     模板里所有 `webhookStat.x` 都会取到 undefined。`v-if="webhookVisible"` 依赖
     `webhookStat.received` 与 `webhookStat.claimed` 读取 undefined 而不抛错 ——
-    这条用例把「模板用到的字段都允许缺失」这件事钉住，防止将来有人写成
-    `webhookStat.channels.join(...)` 而在首帧崩掉整个看板。
+    这条用例把「模板用到的字段都允许缺失」这件事钉住，防止将来有人直接调用
+    某个数组字段的方法而在首帧崩掉整个看板。
     """
     src = _page_source()
-    # channels 是唯一被直接调用的数组字段，模板里必须带默认值兜底。
-    assert "(webhookStat.channels || [])" in src, (
-        "webhookStat.channels 未做空值兜底，首帧会抛 TypeError 并让整个看板白屏"
-    )
     # 自建端点移除后，看板不该再渲染它的任何字段（allow_roots / secret_set /
     # self_enabled）：这些键已不再由 /status 返回，模板里留着只会恒取 undefined。
     for gone in ("webhookStat.self_enabled", "webhookStat.secret_set",
                  "webhookStat.allow_roots"):
         assert gone not in src, (
             f"{gone} 是自建端点的字段，已随端点移除 —— 看板不该再引用它"
+        )
+    # `channels` 曾用于看板展示，展示已随「来源渠道」一行移除；若将来重新展示，
+    # 必须带 `|| []` 兜底（首帧 undefined 会让整个看板白屏）。
+    if "webhookStat.channels" in src:
+        assert "(webhookStat.channels || [])" in src, (
+            "webhookStat.channels 未做空值兜底，首帧会抛 TypeError 并让整个看板白屏"
         )
 
 # ===================== webhook_parser 认领契约 =====================
