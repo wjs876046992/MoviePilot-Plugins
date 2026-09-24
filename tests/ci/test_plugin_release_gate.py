@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -280,3 +281,102 @@ def test_release_workflow_packages_missing_target_tag_from_v2_first() -> None:
     assert workflow.index('process_package "package.json"') < workflow.index(
         'process_package "package.v3.json"'
     )
+
+
+# --------------------------------------------------------------------------
+# 门禁盲区：插件自带 package.json 与 Config.vue 版本 chip
+# --------------------------------------------------------------------------
+#
+# 原先只比 package ↔ plugin_version，而 Vue 模式下这两个字段也会随版本推进，
+# 漏改时门禁照旧「通过」（v0.2.2 踩过）。下面钉住三件事：
+#   1) 漂移能被发现；
+#   2) 无关插件的历史漂移**只警告、不阻断** —— 首次启用时仓库里已有 5 个插件
+#      带着历史漂移，直接判失败会让任何人的 push 都过不去，而一个「一上来就
+#      堵死所有人」的检查，下场一定是被绕过或放宽，那它就再也挡不住真正的漂移；
+#   3) 被点名严格检查的插件（CHECK_STRICT_PLUGINS，pre-push 钩子按改动范围注入）
+#      一旦漂移必须失败。
+
+
+def _add_manifest(repo: Path, version: str) -> None:
+    (repo / "plugins.v2/example/package.json").write_text(
+        json.dumps({"name": "example", "version": version}) + "\n", encoding="utf-8"
+    )
+
+
+def _add_vue_chip(repo: Path, version: str) -> None:
+    target = repo / "plugins.v2/example/src/components/Config.vue"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"<v-chip>v{version}</v-chip>\n", encoding="utf-8")
+
+
+def _run_checker_strict(repo: Path, strict: str, *package_files: Path | str):
+    """以 CHECK_STRICT_PLUGINS 指定的插件做严格判定。"""
+    args = ["python3", str(CHECKER)]
+    args.extend(str(f) for f in package_files)
+    env = dict(os.environ, CHECK_STRICT_PLUGINS=strict)
+    return subprocess.run(args, cwd=repo, text=True, capture_output=True,
+                          check=False, env=env)
+
+
+def test_manifest_drift_is_noticed_but_does_not_block(tmp_path: Path) -> None:
+    """无关插件的清单漂移只提醒 —— 不能一上来就堵死所有人的 push。"""
+    _write_fixture(tmp_path, package_version="2.0.0", source_version="2.0.0")
+    _add_manifest(tmp_path, "1.0.0")
+
+    result = _run_checker(tmp_path, "package.json", "package.v2.json")
+
+    assert result.returncode == 0, result.stdout
+    assert "package.json 版本漂移" in result.stdout
+    assert "不阻断" in result.stdout
+
+
+def test_manifest_drift_blocks_when_plugin_is_strict(tmp_path: Path) -> None:
+    """正在改的插件漂移时必须失败，否则新引入的漂移照样溜过去。"""
+    _write_fixture(tmp_path, package_version="2.0.0", source_version="2.0.0")
+    _add_manifest(tmp_path, "1.0.0")
+
+    result = _run_checker_strict(tmp_path, "example", "package.json", "package.v2.json")
+
+    assert result.returncode == 1
+    assert "package.json 版本漂移" in result.stdout
+
+
+def test_ui_chip_drift_is_detected(tmp_path: Path) -> None:
+    """
+    配置页的版本 chip 漂移必须被发现。
+
+    它是最容易被漏掉的一处：改了 plugin_version 与 package.json，界面却仍显示
+    旧版本号 —— 用户据此判断「我装的到底是不是新版」，会直接误导排查。
+    """
+    _write_fixture(tmp_path, package_version="2.0.0", source_version="2.0.0")
+    _add_vue_chip(tmp_path, "1.0.0")
+
+    result = _run_checker_strict(tmp_path, "example", "package.json", "package.v2.json")
+
+    assert result.returncode == 1
+    assert "版本 chip 漂移" in result.stdout
+
+
+def test_ui_chip_matching_is_accepted(tmp_path: Path) -> None:
+    """chip 与版本一致时不得误报。"""
+    _write_fixture(tmp_path, package_version="2.0.0", source_version="2.0.0")
+    _add_vue_chip(tmp_path, "2.0.0")
+
+    result = _run_checker_strict(tmp_path, "example", "package.json", "package.v2.json")
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_plugins_without_manifest_or_chip_are_skipped(tmp_path: Path) -> None:
+    """
+    没有自带 package.json / 没有版本 chip 的插件一律跳过。
+
+    这是刻意为之：本仓 V3 目录下多数插件没有自带清单，若把这些判成漂移，
+    门禁会立刻失败一大片，随即被放宽 —— 那就再也挡不住真正的漂移。
+    """
+    _write_fixture(tmp_path, package_version="2.0.0", source_version="2.0.0")
+
+    result = _run_checker_strict(tmp_path, "example", "package.json", "package.v2.json")
+
+    assert result.returncode == 0, result.stdout
+    assert "漂移" not in result.stdout

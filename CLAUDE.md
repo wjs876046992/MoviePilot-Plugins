@@ -59,6 +59,22 @@ to every segment of it, including `n`** (so `0.1.0-alpha.10` is forbidden, use `
 is alpha: commit the code but do **not** build (`vite build` / `dist/`), do **not** deploy, and do
 **not** dispatch the `Plugin Release` workflow.
 
+⚠️ **Exception — Vue-mode plugins (`get_render_mode()` returns `"vue"`).** For those, `dist/` *is*
+the running code: the host loads the bundle, not the `.vue` sources. Skipping `vite build` does not
+"hold back a release", it ships **stale UI that silently does not match the backend** — the user then
+reports a bug against code that is not running. Build `dist/` for any change that touches `src/`,
+alpha or not. (Verified on `Rsync115Sync`: a frontend fix without a rebuild left the old bundle on
+the NAS and produced exactly that false report.) The "don't deploy" half of the rule still holds.
+
+⚠️ **Caveat on "no version bump" (per-plugin, decided 2026-09-24).** If a plugin is deployed by
+`git pull` into `local_plugins` rather than through the market, an un-bumped version is harmless:
+the user gets the code on pull regardless. It is **not** harmless if the plugin is expected to update
+via the market — the host's update check is `installed_version < index_version`
+(`app/runtime/extensions/plugin/metadata.py`), so an unchanged version means **the market never
+offers the update**. `Rsync115Sync` hit exactly this: alpha fixes shipped with no version change and
+were unreachable. So "no version bump during alpha" is a decision that must be paired with
+"deployed by pull", never made on its own.
+
 **Decided policy (B): an alpha label never goes into a version field.** It is recorded only in commit
 messages and docs — the three version fields (`plugin_version`, `package.json` `version`, index
 `version` + newest `history` key) always stay a plain `x.y.z`. Per the user: "这类版本仅我们自己知道

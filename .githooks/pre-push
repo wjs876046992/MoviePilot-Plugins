@@ -5,5 +5,40 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
+# 本次改动涉及的插件 ID（小写、逗号分隔），交给版本门禁做**严格**判定。
+#
+# 为什么需要：门禁新增的「插件自带 package.json / Config.vue 版本 chip」两项
+# 默认只警告 —— 仓库里已有 5 个插件带着历史漂移，一律判失败会让任何人的 push
+# 都过不去。但对**你正在改的那个插件**必须严格，否则新引入的漂移照样溜过去。
+# Plugins touched by this push get strict version checking; others only warn, so
+# pre-existing drift in unrelated plugins cannot block anyone's push.
+#
+# 与 main 比较取并集：只比 HEAD~1 会漏掉一次 push 里的多个提交。
+strict_plugins=""
+for base in "$(git rev-parse --verify -q origin/main 2>/dev/null || true)" HEAD~1; do
+    [ -n "$base" ] || continue
+    changed="$(git diff --name-only "$base" HEAD 2>/dev/null || true)"
+    # ⚠️ 插件目录是**第 2 段**：`plugins.v3/<插件ID>/…`（改动可能在任意深度，
+    # 如 `plugins.v3/id/src/components/Page.vue`），所以按前缀匹配、取第 2 段，
+    # 而不是去数路径层数 —— 数层数时 `…/__init__.py` 会被切成文件名当 ID，
+    # 于是严格模式永远不生效（这条一次就踩中过）。
+    # The plugin id is the *second* segment regardless of how deep the change is.
+    for path in $changed; do
+        case "$path" in
+            plugins/*|plugins.v2/*|plugins.v3/*)
+                plugin_id="$(printf '%s' "$path" | cut -d/ -f2 | tr 'A-Z' 'a-z')"
+                case "$plugin_id" in
+                    ""|*.py|*.json|*.md|dist) continue ;;
+                esac
+                case ",$strict_plugins," in
+                    *",$plugin_id,"*) ;;
+                    *) strict_plugins="${strict_plugins:+$strict_plugins,}$plugin_id" ;;
+                esac
+                ;;
+        esac
+    done
+done
+
+CHECK_STRICT_PLUGINS="$strict_plugins" \
+    python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 python3 .github/scripts/check_federation_css.py

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import sys
 import warnings
@@ -22,6 +23,19 @@ PACKAGE_PLUGIN_DIRS = {
     "package.v2.json": Path("plugins.v2"),
     "package.v3.json": Path("plugins.v3"),
 }
+
+
+def _strict_plugins() -> set[str]:
+    """本次改动涉及的插件 ID（小写）；由 ``CHECK_STRICT_PLUGINS`` 注入。
+
+    Plugins whose version fields are checked strictly (comma-separated, injected by
+    the pre-push hook). Empty means "warn everywhere" — see check_package.
+    """
+    raw = os.environ.get("CHECK_STRICT_PLUGINS", "")
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+_STRICT_PLUGINS = _strict_plugins()
 
 
 def _load_package(path: Path) -> dict:
@@ -127,8 +141,50 @@ def _check_v3_release_contract(path: Path, plugin_id: str, meta: dict) -> list[s
     return errors
 
 
-def check_package(path: Path) -> list[str]:
-    """校验单个 package 文件，返回所有错误文本。"""
+def _manifest_version(plugin_dir: Path) -> str | None:
+    """读插件**自带** `package.json` 的 version；无该文件或解析失败时返回 None。
+
+    Read the plugin's own manifest version. None means "nothing to check" — a
+    plugin without its own manifest must not be reported as a mismatch.
+    """
+    manifest = plugin_dir / "package.json"
+    if not manifest.is_file():
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = str(data.get("version") or "").strip()
+    return version or None
+
+
+def _ui_version_literal(plugin_dir: Path) -> str | None:
+    """在插件前端的 Config.vue 里找硬编码的版本号 chip（形如 `v1.2.3`）。
+
+    Find the hard-coded version chip in the plugin's Config.vue. Vue-mode plugins
+    render that chip, so it drifts silently from the real version whenever someone
+    forgets it (not covered by any other check).
+
+    只认**插件源码目录内**的文件；`dist/` 是构建产物、内容随构建变化，不参与校验。
+    Only sources are inspected; dist/ is a build artefact.
+    """
+    for candidate in (plugin_dir / "Config.vue", plugin_dir / "src" / "components" / "Config.vue"):
+        if not candidate.is_file():
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        match = re.search(r"v(\d+\.\d+\.\d+)", text)
+        return match.group(1) if match else None
+    return None
+
+
+def check_package(path: Path, warn: list[str] | None = None) -> list[str]:
+    """校验单个 package 文件，返回所有错误文本；非阻断项追加到 ``warn``。"""
+    warnings_ = warn if warn is not None else []
     errors: list[str] = []
     package = _load_package(path)
     for plugin_id, meta in package.items():
@@ -155,6 +211,44 @@ def check_package(path: Path) -> list[str]:
                 f"{path}: {plugin_id} 版本不一致，package={package_version}, "
                 f"plugin_version={source_version} ({init_file})"
             )
+        # 两个**门禁盲区**字段。原先只比 package ↔ plugin_version，而在 Vue 模式下
+        # 插件自带的 package.json 与 Config.vue 版本 chip 也会随版本推进 ——
+        # 二者漏改时门禁照旧「通过」，界面与自报清单却停在旧版本（v0.2.2 踩过）。
+        # Two fields the original gate could not see: a plugin's own manifest and its
+        # rendered version chip. Both must be bumped with plugin_version, but neither
+        # was compared, so a miss stayed green.
+        #
+        # ⚠️ 只在**字段存在时**比对：缺 package.json / 无版本 chip 的插件一律跳过，
+        # 绝不凭空报错（V3 目录下多数插件没有自带清单）。这是刻意为之 ——
+        # 一个会把既有插件全部判失败的门禁，只会被人绕过或放宽，那它就再也挡不住
+        # 真正的漂移。Only compare what exists; a gate that fails unrelated plugins
+        # would simply get relaxed, and then it stops catching the real drift.
+        #
+        # ⚠️ 默认**只警告、不失败**：首次启用时仓库里已有 5 个插件带着历史漂移
+        # （AgentResourceOfficer / BrushFlow / FullScreenPosterWall / WatchSync ×2），
+        # 直接判失败会让任何人的 push 都过不去，而他们并没有碰这些插件。
+        # 一个「一上来就堵死所有人」的检查，下场一定是被绕过或放宽 ——
+        # 那它就再也挡不住真正的漂移。因此：不阻断 → 但仍打印；
+        # 而**本次正在改的插件**（CHECK_STRICT_PLUGINS，由 pre-push 钩子注入）
+        # 一律严格判定，保证新引入的漂移当场被挡住。
+        # Warn by default because five plugins already carry historical drift; a gate
+        # that blocks every push on day one gets relaxed and then catches nothing.
+        # The plugin currently being changed is checked strictly instead.
+        strict = plugin_id.lower() in _STRICT_PLUGINS
+        manifest_version = _manifest_version(plugin_dir)
+        if manifest_version and manifest_version != source_version:
+            report = (
+                f"{path}: {plugin_id} 插件自带 package.json 版本漂移，"
+                f"package.json={manifest_version}, plugin_version={source_version}"
+            )
+            (errors if strict else warnings_).append(report)
+        ui_version = _ui_version_literal(plugin_dir)
+        if ui_version and ui_version != source_version:
+            report = (
+                f"{path}: {plugin_id} 配置页版本 chip 漂移，Config.vue 显示 v{ui_version}, "
+                f"plugin_version={source_version} —— 界面会与真实版本不一致"
+            )
+            (errors if strict else warnings_).append(report)
         if path.name == "package.v3.json":
             errors.extend(_check_v3_release_contract(path, plugin_id, meta))
     return errors
@@ -168,8 +262,16 @@ def main() -> int:
         Path("package.v3.json"),
     ]
     errors: list[str] = []
+    notices: list[str] = []
     for package_file in package_files:
-        errors.extend(check_package(package_file))
+        errors.extend(check_package(package_file, notices))
+    if notices:
+        # 非阻断：只报告，不改退出码。见 check_package 里对「为何不直接失败」的说明。
+        print(f"插件版本门禁提醒（{len(notices)} 项版本漂移，不阻断）：")
+        for notice in notices:
+            print(f"- {notice}")
+        print("  修复方式：把插件自带 package.json 与 Config.vue 版本 chip 对齐 plugin_version。")
+        print("  若漂移发生在你本次改动的插件上，门禁会直接失败（CHECK_STRICT_PLUGINS）。")
     if errors:
         print("插件版本门禁失败：")
         for error in errors:

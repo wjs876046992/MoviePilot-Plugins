@@ -1957,8 +1957,10 @@ class StrmOpsMixin:
 
             if dest_size is None:
                 # 目标端本就没有**正式文件**：无需删除，可直接重传。
-                # ⚠️ 但改名失败的场景正是「正式名不存在、只剩残留」—— 残留要单独清，
-                # 否则它永远留在云端，且会让后续每一次可见性探测都判成 DEST_RESIDUE。
+                # ⚠️ 但改名失败的**典型形态**正是「正式名不存在、只剩残留」——
+                # 残留必须在这里就清掉：否则它永远留在云端，且让之后每一次
+                # 可见性探测都判成 DEST_RESIDUE（用户会看到清单上一直挂着
+                # 「有残留」的注记，却找不到可删的东西）。
                 self._remove_dest_residues(dest_file, pair_name, rel_p)
                 logger.info(f"[Rsync115Sync] [{pair_name}] 目标端无正式文件，无需清理，直接重传: {rel_p}")
                 deleted.append(key)
