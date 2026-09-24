@@ -17,6 +17,7 @@ MRO 保证同名覆盖不会发生（本 Mixin 不与主类/基类重名）。
 """
 import os
 import re
+import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1363,29 +1364,52 @@ class StrmOpsMixin:
         if not keys:
             return {"success": False, "message": "未指定文件"}
         in_watch = [k for k in keys if k in self._strm_watch]
-        outside = [k for k in keys if k not in self._strm_watch]
+        # ⚠️ **已经在疑似清单里的条目也要认**：用户的确认不该因为「它恰好已经
+        # 到期进了清单」而失效。原先只收观察期条目，于是提示里那句
+        # 「条目已在疑似清单 → 直接点删旧重传」在插件侧根本无处落地 ——
+        # 而普通疑似条目（origin=watch）既没有 force 通道，也确实不该有
+        # （它没有任何「用户确认过」的记录）。用户被夹在中间，两边都是死路。
+        # 现在把疑似条目一并打上 confirmed 标记，等于补上那个缺失的动作。
+        # Suspects are accepted too: the user's confirmation must not depend on
+        # whether the entry happened to expire into the list already.
+        already = [k for k in keys if k in self._strm_suspects]
+        outside = [k for k in keys if k not in self._strm_watch and k not in self._strm_suspects]
         if outside:
             # 记日志而不是静默忽略：这条日志是「用户以为点了、其实什么也没发生」
             # 的唯一线索（例如被另一个标签页的操作先一步解除了观察）。
             logger.warning(f"[Rsync115Sync] 确认失败的请求含非观察期条目，已忽略: {outside[:3]}")
-        if not in_watch:
+        if not in_watch and not already:
             return {"success": False,
-                    "message": "所选文件已不在观察期（可能刚被检查解除或已入疑似清单）"}
+                    "message": "所选文件既不在观察期也不在疑似清单中"}
 
         res = self._promote_watch_to_suspects(in_watch, _strm.ORIGIN_CONFIRMED,
                                               "确认「上传未完成」")
         moved, restored = res["moved"], res["restored"]
+
+        # 已在清单里的：就地改 origin，让它同样获得「被用户确认过」的身份。
+        # 时间戳保留 —— 首次疑似时间不该因为补一次确认而往后跳。
+        marked = 0
+        for key in already:
+            entry = self._strm_suspects.get(key)
+            if not isinstance(entry, dict) or entry.get("origin") == _strm.ORIGIN_CONFIRMED:
+                continue
+            entry["origin"] = _strm.ORIGIN_CONFIRMED
+            marked += 1
+        if marked:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.warning(f"[Rsync115Sync] 📺 {marked} 个已在疑似清单的条目被用户确认"
+                           f"「上传未完成」，已标记为 confirmed: {_brief_paths(already)}")
+
+        total = len(moved) + len(restored) + marked
         # 不调用 _reset_strm_notified_if_clear：本操作只会让清单变长，
         # 「清空后重置通知闩锁」在这里恒为空操作 —— 写上去只会让人以为
         # 它在这一步有作用，下次改动时按这个错误前提去推理。
-        msg = (f"已按你的确认把 {len(moved) + len(restored)} 个文件转入疑似清单"
-               f"（未等观察窗口）。\n"
-               f"⚠️ 插件的云端可见性探测显示「可见且大小一致」时，"
-               f"删旧重传默认会被拦下 —— 你已在 115 上亲眼确认过，"
-               f"点「删旧重传」再确认一次即可照常执行。")
+        msg = (f"已按你的确认处理 {total} 个文件（未等观察窗口）。\n"
+               f"接下来点「删旧重传」：插件的云端可见性探测若显示「可见且大小一致」，"
+               f"插件会先把那次探测结论摊给你看，再点一次即照常删除并重传。")
         return {"success": True, "message": msg,
                 "data": {"moved": moved, "restored": restored,
-                         "ignored": outside}}
+                         "marked": already, "ignored": outside}}
 
     def _api_strm_scan(self) -> Dict[str, Any]:
         """
@@ -1676,10 +1700,10 @@ class StrmOpsMixin:
                                f"\n"
                                f"本判定基于 CD2 挂载视图，存在「视图过期」的已知假阳性"
                                f"（云端只剩改名失败的残留时它照样显示完好）。"
-                               f"若你已在 115 上确认文件是坏的：\n"
-                               f"· 条目在观察期里 → 先点「确认失败」，再回来点「删旧重传」；\n"
-                               f"· 条目已在疑似清单 → 直接点「删旧重传」，插件会再确认一次后照常执行。\n"
-                               f"两条路都不必重启同步任务。"}
+                               f"若你已在 115 上确认文件是坏的，先点「确认失败」"
+                               f"（它在这一行按钮里），再点「删旧重传」—— 插件会先把那次"
+                               f"探测结论摊给你看，再点一次即照常删除并重传。\n"
+                               f"不必重启同步任务。"}
 
         if intact_confirmed and not force:
             # 走到这里说明批里**没有未确认的**条目（上面那支已整批返回），
@@ -1703,6 +1727,24 @@ class StrmOpsMixin:
                            f"放行 {len(intact_confirmed)} 个探测为「可见且大小一致」的"
                            f"删旧重传请求（CD2 视图假成功的预期形态）: "
                            f"{_brief_paths(intact_confirmed)}")
+
+        # ---- 删旧**之前**先确认这轮传得动 ----
+        #
+        # 顺序是承重的：先删后传的实现里，任何一条前置闸门（执行锁、风控退避、
+        # 窗口配额、目录未就绪）都会让**文件已经被删掉、却没有重传**。
+        # 用户看到的却是「已删除 N 个文件并开始定向重传」——因为看板这条路径
+        # 不传 channel_event，`_post_reply` 直接 return，`_execute_sync` 里所有
+        # 拦截都是静默的（用户实测「似乎没有重传」的成因之一）。
+        # 先做只读预检，把「删了却传不了」变成「根本不会删」。
+        # Pre-flight: every gate inside _execute_sync would otherwise fire *after*
+        # the delete, leaving the file gone with no retry and no visible error.
+        blocked_reason = self._retry_preflight([])
+        if blocked_reason:
+            logger.warning(f"[Rsync115Sync] ⛔ 删旧重传未执行（{blocked_reason}），未删除任何文件")
+            return {"success": False,
+                    "message": f"本次删旧重传未执行，未删除任何文件。\n\n原因：{blocked_reason}\n\n"
+                               f"（先把这道闸门挡在前面，是为了避免「文件已删、却没传上去」"
+                               f"—— 等条件满足后重新点即可。）"}
 
         deleted, undeletable = self._delete_dest_files_for_retry(allowed)
         if undeletable:
@@ -1758,6 +1800,65 @@ class StrmOpsMixin:
                 break
         return {"matched": matched, "truncated": truncated,
                 "total": len(matched) + (1 if truncated else 0) if truncated else len(matched)}
+
+    def _retry_preflight(self, keys: List[str]) -> str:
+        """
+        删旧重传的前置预检：能传才让删。返回阻塞原因（空串=可执行）。
+
+        Read-only pre-flight for delete-then-retransfer. Returns "" when the run
+        would actually happen, otherwise a human-readable reason.
+
+        **为什么必须放在删除之前**：先删后传的每一步前置闸门都住在
+        `_execute_sync` 里 —— 执行锁、风控退避、窗口配额、映射目录未就绪。
+        它们在删除**之后**才判，一旦命中就是「文件已经从云端删掉、却没有重传」，
+        而看板这条路径不传 `channel_event`，`_post_reply` 直接 return，
+        所以连一句提示都发不出来（用户实测「似乎没有重传」即此）。
+        把闸门搬到前面，最坏结果是「没删也没传」，用户重试即可 ——
+        与「删了没传」相比，这是能接受的失败形态。
+        The gates live inside _execute_sync, i.e. *after* the delete. Moving the same
+        checks in front turns "deleted but never uploaded" (unrecoverable, silent)
+        into "nothing happened, try again" (safe).
+
+        ⚠️ 与 `_execute_sync` 的判据**不能漂移**：这里只做只读判断，真正的执行
+        仍由那边的闸门决定。这里放行、那边拦下，仍是「删了没传」；因此两处引用
+        的是同一批状态（`_rate_limit_allows` 就是那边用的那个函数）。
+        Reuses `_rate_limit_allows` — the very function the run itself calls — so the
+        two cannot disagree.
+        """
+        if not shutil.which("rsync"):
+            return "系统未安装 rsync 命令（请在容器内执行 apt install -y rsync）"
+        if not self._sync_pairs:
+            return "未配置任何同步目录对"
+        # 执行锁：`_execute_sync` 拿不到锁就整轮 return，而删除已经发生。
+        # ⚠️ `getattr` 兜底而不是直接取属性：`_lock` 由 `init_plugin` 建立，
+        # 而本方法也被裸实例（测试、以及任何在初始化前调用到的路径）走到 ——
+        # 一个缺失的属性会抛异常，把「预检」变成「删除前的新故障点」。
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            if not lock.acquire(blocking=False):
+                return "当前已有同步任务正在运行，请等它结束后再试"
+            lock.release()
+        # ⚠️ 预检是**尽力而为**的附加保护，绝不能自己变成一个新的故障点：
+        # 它引用的状态（限流计数、窗口配置……）都由 `init_plugin` 建立，
+        # 而本方法在任何初始化不完整的路径上也可能被走到。任何异常都按
+        # 「放行」处理并记日志 —— 预检的职责是**把已知的阻塞提前说出来**，
+        # 不是发明新的阻塞。真要说「最坏情况」，放行等于回到改动前的行为，
+        # 而不放行会让重传永久不可用。
+        # Best-effort only: any failure here means "proceed", never "block".
+        try:
+            allowed, reason = self._rate_limit_allows()
+            if not allowed:
+                return reason
+            # 映射目录未就绪：`_execute_sync` 会 `continue` 掉这一组，同样什么都不传
+            ready = [p for p in self._sync_pairs
+                     if os.path.exists((p.get("src") or "").strip().rstrip("/"))
+                     and os.path.exists((p.get("dest") or "").strip().rstrip("/"))]
+            if not ready:
+                return ("所有映射的源目录或目标端（CD2 挂载）都不可用 —— "
+                        "请检查挂载是否正常，此时重传不会发生")
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 删旧重传预检异常（按放行处理）: {e}")
+        return ""
 
     def _delete_dest_files_for_retry(self, keys: List[str]) -> Tuple[List[str], List[str]]:
         """

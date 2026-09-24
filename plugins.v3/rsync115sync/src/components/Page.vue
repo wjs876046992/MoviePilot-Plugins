@@ -747,8 +747,8 @@
                            「补生成后仍无」，而是当事人已经去 115 看过了。把它混进
                            另外两种说法里，用户会以为这是插件自己判出来的。 -->
                       <template v-if="confirmedKeys[key]">
-                        你已确认该文件未真正上传（越过观察窗口转入）——
-                        删旧重传时会再做一次二次确认，之后再执行
+                        你已确认该文件未真正上传 —— 点「删旧重传」时插件会先把云端
+                        探测结论摊给你看，再点一次即照常执行
                       </template>
                       <template v-else-if="genRequested[key]">
                         已请求 strm 助手补生成，窗口内仍未看到 .strm ——
@@ -796,6 +796,26 @@
                     <v-tooltip v-if="helperReady" activator="parent" location="top" max-width="340">
                       请 strm 助手重新生成该文件所在网盘目录的 .strm。
                       成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。
+                    </v-tooltip>
+                  </v-btn>
+                  <v-btn
+                    v-if="!confirmedKeys[key]"
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    rounded="lg"
+                    class="px-2"
+                    :loading="itemLoading === 'strmcf:' + key"
+                    @click="confirmSuspectFailed(key)"
+                  >
+                    <v-icon start size="14">mdi-alert-circle-check-outline</v-icon>
+                    确认失败
+                    <v-tooltip activator="parent" location="top" max-width="340">
+                      你已在 115 上确认它是坏的（只剩改名失败的残留、正式文件不存在）⇒
+                      标记为「已确认」。<br>
+                      之后点「删旧重传」时，插件会先把那次云端探测的结论摊给你看，
+                      再点一次即照常执行 —— 不必绕「重启同步任务」。<br>
+                      纯本地操作，不访问 115、不删除任何文件。
                     </v-tooltip>
                   </v-btn>
                   <v-btn
@@ -1312,6 +1332,24 @@ async function confirmWatchFailed(key) {
   await postStrmConfirmFailed([key], 'strmfail:' + key)
 }
 
+// 疑似清单里的「确认失败」。
+//
+// 存在的理由：观察期之外**没有别的动作**能表达「我已确认它是坏的」，而普通疑似
+// 条目（origin=watch）既不会被放行、也不该被放行 —— 它没有任何用户确认的记录。
+// 于是「插件说云端完好、用户说云端是坏的」这件事在清单里无从表达，两边都是死路。
+// 这个按钮就是补上那个缺失的动作：只打标记，不碰文件。
+async function confirmSuspectFailed(key) {
+  const ok = window.confirm(
+    '你已在 115 上确认这个文件没传上去（比如只剩改名失败的残留、' +
+    '正式文件不存在）？\n\n' + key + '\n\n' +
+    '1. 标记为「已确认」（不删除、不修改任何文件）\n' +
+    '2. 之后点「删旧重传」时，插件会先把云端探测结论给你看，再点一次即执行\n\n' +
+    '本操作纯本地：不访问 115、不改动云端。\n\n确定继续吗？'
+  )
+  if (!ok) return
+  await postStrmConfirmFailed([key], 'strmcf:' + key)
+}
+
 // 与单条共用同一实现（避免两条路径的提示文案与离场处理漂移）。
 async function postStrmConfirmFailed(keys, loadingKey) {
   itemLoading.value = loadingKey
@@ -1319,8 +1357,9 @@ async function postStrmConfirmFailed(keys, loadingKey) {
     const res = await props.api.post('plugin/Rsync115Sync/strm_confirm_failed', { keys })
     if (res && res.success) {
       strmScanMsg.value = res.message || '已转入疑似清单'
-      // 条目已离场，勾选状态一并清掉（与「检查 strm」同一处置，否则后续批量
-      // 操作会对着已不在观察期的条目提交）
+      // ⚠️ 只清**离开观察期**的那些（moved/restored）。`marked` 是「本来就在
+      // 疑似清单里、就地改标记」的条目 —— 它们仍然在清单里、并仍应保持勾选，
+      // 把它们一起清掉会让用户下一次批量操作对着空选择提交。
       const gone = new Set([...(res.data?.moved || []), ...(res.data?.restored || [])])
       if (gone.size) selectedKeys.value = selectedKeys.value.filter((k) => !gone.has(k))
     } else {

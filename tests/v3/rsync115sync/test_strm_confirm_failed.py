@@ -59,6 +59,16 @@ def _plugin(root, *, watch=None, suspects=None, dest_size=100):
     plugin._is_running = False
     plugin._deleted = []
     plugin._started = []
+    # 预检默认放行：这些用例关心的是删除之后的行为，配额/锁由各自的用例单独设置
+    plugin._rate_limit_enabled = False
+    plugin._upload_max_per_window = 100
+    plugin._upload_window_start = time.time()
+    plugin._upload_window_count = 0
+    plugin._upload_window_secs = 1800
+    plugin._upload_blocked_until = 0
+    plugin._is_running = False
+    import threading as _threading
+    plugin._lock = _threading.Lock()
     plugin._start_sync_thread = lambda **kw: plugin._started.append(kw)
     plugin._delete_dest_files_for_retry = (
         lambda keys: (plugin._deleted.extend(keys), (list(keys), []))[1])
@@ -127,6 +137,65 @@ def test_promote_is_idempotent_and_keeps_first_ts(tmp_path):
 # --------------------------------------------------------------------------
 # _api_strm_confirm_failed —— 看板/命令入口
 # --------------------------------------------------------------------------
+
+def test_confirm_failed_accepts_suspect_list_entries(tmp_path):
+    """
+    **已在疑似清单**的条目也要被接受。
+
+    这条修的是一个我自己造出来的死路：提示里写「条目已在疑似清单 → 直接点
+    删旧重传」，但普通疑似条目（origin=watch）在守卫那里**没有**任何「用户
+    确认过」的记录，force 也放不了行；而想补一次确认时，本接口又拒收
+    非观察期条目。用户被夹在中间，两边都是死路。
+    """
+    plugin = _plugin(str(tmp_path), watch={},
+                     suspects={KEY: {"ts": time.time(), "origin": "watch"}})
+    ts_before = plugin._strm_suspects[KEY]["ts"]
+    res = plugin._api_strm_confirm_failed({"keys": [KEY]})
+    assert res["success"] is True
+    assert plugin._strm_suspects[KEY]["origin"] == ORIGIN_CONFIRMED
+    # 时间戳不得刷新：首次疑似时间要保留，否则看不出它挂了多久
+    assert plugin._strm_suspects[KEY]["ts"] == ts_before
+    assert res["data"]["marked"] == [KEY]
+
+
+def test_confirm_failed_then_retry_force_succeeds(tmp_path):
+    """
+    完整闭环：疑似清单 → 确认失败 → 删旧重传（一次提醒）→ force → 真的删。
+
+    这条把用户实际遇到的那条路整段走一遍。此前它在「确认失败」那一步就被
+    拒收，后面两步永远到不了。
+    """
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": "watch"}})
+    plugin._lock = __import__("threading").Lock()
+    assert plugin._api_strm_confirm_failed({"keys": [KEY]})["success"] is True
+
+    first = plugin._api_strm_retry({"keys": [KEY]})
+    assert first["success"] is False and first["needs_force"] is True
+    assert plugin._deleted == []
+
+    second = plugin._api_strm_retry({"keys": [KEY], "force": True})
+    assert second["success"] is True
+    assert plugin._deleted == [KEY]
+
+
+def test_plain_suspect_without_confirmation_stays_blocked(tmp_path):
+    """
+    未确认过的普通疑似条目**仍然**被拦，且不给 force 通道。
+
+    这是另一边：确认要由用户主动补上，不能因为「清单里本来就有一条」就默认放行。
+    """
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": "watch"}})
+    plugin._lock = __import__("threading").Lock()
+    res = plugin._api_strm_retry({"keys": [KEY]})
+    assert res["success"] is False
+    assert "needs_force" not in res
+    assert plugin._deleted == []
+    res2 = plugin._api_strm_retry({"keys": [KEY], "force": True})
+    assert res2["success"] is False
+    assert plugin._deleted == []
+
 
 def test_confirm_failed_promotes_and_reports(tmp_path):
     plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
@@ -301,3 +370,100 @@ def test_confirm_failed_message_is_readable(tmp_path):
     msg = plugin._api_strm_confirm_failed({"keys": [KEY]})["message"]
     assert "**" not in msg
     assert "\n" in msg
+
+
+# --------------------------------------------------------------------------
+# 删旧重传的前置预检 —— 「删了却没传」必须变成「根本没删」
+# --------------------------------------------------------------------------
+
+def test_preflight_blocks_delete_when_quota_exhausted(tmp_path):
+    """
+    配额用尽时**不得删除**云端文件。
+
+    原先的顺序是「先删 → 再 `_start_sync_thread` → `_execute_sync` 里才判配额」，
+    而配额闸门一命中就整轮 `return`：文件已经删掉、却永远不会重传。
+    更糟的是看板这条路径不传 `channel_event`，`_post_reply` 直接 return，
+    连一句提示都发不出来 —— 用户看到的只有「已删除并开始定向重传」。
+    """
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": ORIGIN_CONFIRMED}})
+    plugin._rate_limit_enabled = True
+    plugin._upload_max_per_window = 0
+    plugin._upload_window_start = time.time()
+    plugin._upload_window_count = 0
+    plugin._upload_blocked_until = 0
+    plugin._lock = __import__("threading").Lock()
+
+    res = plugin._api_strm_retry({"keys": [KEY], "force": True})
+    assert res["success"] is False
+    assert plugin._deleted == [], "配额不足时仍删除了文件 —— 这正是「删了却没传」的成因"
+    assert plugin._started == []
+    assert "配额" in res["message"]
+
+
+def test_preflight_blocks_delete_during_backoff(tmp_path):
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": ORIGIN_CONFIRMED}})
+    plugin._rate_limit_enabled = True
+    plugin._upload_max_per_window = 100
+    plugin._upload_window_start = time.time()
+    plugin._upload_window_count = 0
+    plugin._upload_blocked_until = time.time() + 3600  # 风控退避中
+    plugin._lock = __import__("threading").Lock()
+
+    res = plugin._api_strm_retry({"keys": [KEY], "force": True})
+    assert res["success"] is False
+    assert plugin._deleted == [], "退避期内仍删除了文件"
+    assert "退避" in res["message"]
+
+
+def test_preflight_blocks_delete_when_lock_held(tmp_path):
+    """执行锁被占用时同样不得删 —— `_execute_sync` 拿不到锁会整轮 return。"""
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": ORIGIN_CONFIRMED}})
+    plugin._rate_limit_enabled = False
+    plugin._lock = __import__("threading").Lock()
+    plugin._lock.acquire()
+    try:
+        res = plugin._api_strm_retry({"keys": [KEY], "force": True})
+        assert res["success"] is False
+        assert plugin._deleted == []
+    finally:
+        plugin._lock.release()
+
+
+def test_preflight_passes_when_everything_ready(tmp_path):
+    """条件都满足时必须照常删除并重传（预检不能变成新的过度保护）。"""
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": ORIGIN_CONFIRMED}})
+    plugin._rate_limit_enabled = True
+    plugin._upload_max_per_window = 100
+    plugin._upload_window_start = time.time()
+    plugin._upload_window_count = 0
+    plugin._upload_blocked_until = 0
+    plugin._lock = __import__("threading").Lock()
+
+    res = plugin._api_strm_retry({"keys": [KEY], "force": True})
+    assert res["success"] is True, res.get("message")
+    assert plugin._deleted == [KEY]
+
+
+def test_preflight_fails_open_on_incomplete_instance(tmp_path):
+    """
+    预检**绝不能自己变成新的故障点**。
+
+    它引用的状态（限流计数、窗口配置……）都由 `init_plugin` 建立，而它会在
+    任何初始化不完整的路径上被走到。这不是理论问题：把它写成直接取属性后，
+    `test_strm_dest_probe` 的两条既有用例当场抛 AttributeError ——
+    一个「防止删了没传」的保护反而让重传整个不可用。
+
+    这条钉住取向：异常时**放行**（等于回到改动前的行为），而不是阻塞。
+    """
+    plugin = _plugin(str(tmp_path),
+                     suspects={KEY: {"ts": time.time(), "origin": ORIGIN_CONFIRMED}})
+    # 抹掉预检要用到的全部限流状态，构造「初始化不完整」的实例
+    for attr in ("_rate_limit_enabled", "_upload_window_secs", "_upload_max_per_window",
+                 "_upload_window_start", "_upload_window_count", "_upload_blocked_until"):
+        if hasattr(plugin, attr):
+            delattr(plugin, attr)
+    assert plugin._retry_preflight([]) == ""
