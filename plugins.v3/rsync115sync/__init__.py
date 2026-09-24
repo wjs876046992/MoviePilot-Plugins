@@ -163,7 +163,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.2.6"
+    plugin_version = "0.2.7"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -469,6 +469,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 补生成标记，早于此处调用就只能清掉一个空的标记字典，旧标记会留下来，
         # 看板据此把新条目误标成「补生成后仍无」。
         self._prune_invalid_strm_watch()
+        # 孤儿补生成标记：两个清单里都没有的 key 却还留着「请求过生成」的记录。
+        # ⚠️ 必须排在**两个清单的清洗之后** —— 先跑的话，那些本轮才被判为无效、
+        # 正准备摘掉的条目，其标记此刻还「有主」，会被漏掉。
+        self._prune_orphan_gen_markers()
         self._strm_notified = bool(self.get_data("strm_notified") or False)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
@@ -560,6 +564,21 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 self._strm_watch.pop(key, None)
         self.save_data("strm_suspects", self._strm_suspects)
         self.save_data("strm_watch", self._strm_watch)
+
+        # ⚠️ 补生成标记必须一起清：它是**第三个**要跟着忽略走的字典。
+        # 用户实测数据里出现过「strm_suspects 为空、但 strm_gen_requested 里
+        # 还留着一条已被忽略的文件」—— 只因当初先请求了补生成、后加的忽略规则。
+        # 那条残留没有任何东西会去清理它（它既不显示、也不参与判定），
+        # 会一直躺在数据文件里；而一旦该文件再次进入观察，看板就会凭它显示
+        # 「补生成后仍无」，把一个已被用户明确忽略的文件报成一次生成失败。
+        # 三个字典一起清才是完整语义 —— 漏掉任何一个都会留下一份幽灵状态。
+        # Invalidate the regenerate markers too: it is the third dict that must follow
+        # an ignore, and a leftover marker makes a brand-new observation render as
+        # "asked the helper and it still failed".
+        for key in list(self._strm_gen_requested.keys()):
+            if _ignore_is_ignored(key, self._ignored_rules):
+                self._strm_gen_requested.pop(key, None)
+        self.save_data("strm_gen_requested", self._strm_gen_requested)
         # 清单可能因此清空，重置通知闩锁（与 _strm_arm_watch 同一收尾逻辑）
         self._reset_strm_notified_if_clear()
         return True

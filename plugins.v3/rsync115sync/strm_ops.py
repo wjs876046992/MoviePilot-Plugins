@@ -169,17 +169,48 @@ class StrmOpsMixin:
 
             if reason:
                 self._strm_suspects.pop(key, None)
+                # 补生成标记一并失效：条目都已判为无效，那个「请求过生成」的记录
+                # 描述的场景不复存在。用户实测数据里 `strm_suspects` 为空、
+                # 而 `strm_gen_requested` 还留着一条被忽略的文件，正是漏了这一步。
+                self._strm_gen_requested.pop(key, None)
                 removed += 1
                 logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 疑似条目（{reason}）: {key}")
 
         if removed:
             self.save_data("strm_suspects", self._strm_suspects)
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
             logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 疑似条目"
                            f"（非视频 / 已忽略 / 源端已删 / 映射已取消验证），剩余 "
                            f"{len(self._strm_suspects)} 个")
             # 清单可能因此清空，重置通知闩锁（与其它收尾路径一致）
             self._reset_strm_notified_if_clear()
         return removed
+
+    def _prune_orphan_gen_markers(self) -> int:
+        """
+        清洗**孤儿补生成标记**：两个清单里都已不存在、却还留着请求记录的 key。
+
+        Prune regenerate markers whose key is in neither the watch nor the suspect
+        list — state that nothing else will ever clean up.
+
+        **为什么单列一步**：`_strm_gen_requested` 的语义是「这个文件被请过补生成」，
+        它只在两个清单中的条目上才有意义。但它自己没有任何出口 —— 条目从清单里
+        消失（被忽略、被清理、重传成功解除观察）时，若调用方忘了连带失效，
+        这条记录就永久留在数据文件里，既不显示、也不参与判定，只在下次该文件
+        进入观察时冒出来把看板误导成「补生成后仍无」。
+        用户实测数据里见过这种残留（`strm_suspects` 为空、标记还在）。
+        A marker is meaningful only for an entry in one of the two lists; orphans
+        linger invisibly and later mislabel a fresh observation.
+        """
+        orphans = [k for k in list(self._strm_gen_requested.keys())
+                   if k not in self._strm_watch and k not in self._strm_suspects]
+        for key in orphans:
+            self._strm_gen_requested.pop(key, None)
+        if orphans:
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
+            logger.warning(f"[Rsync115Sync] 🧹 已清理 {len(orphans)} 个孤儿补生成标记"
+                           f"（条目已不在任何清单中）: {_brief_paths(orphans)}")
+        return len(orphans)
 
     def _prune_invalid_strm_watch(self) -> int:
         """
@@ -664,10 +695,15 @@ class StrmOpsMixin:
                     f"请先确认它的开关与媒体识别是否正常。")
         msg += "\n💡 注意：缺 strm 也可能是「从未上传过的存量文件」，"
         msg += "这类应使用补传而不是删旧重传。"
+        # ⚠️ `candidates` 必须一并回传：看板要靠它显示「缺哪几个」。
+        # 只回计数的话，用户看到「缺 2 个、新增 0 个」却查不到是哪两个
+        # —— 而这个功能的全部意义就是告诉他哪个文件该处理。
         return {"success": True, "message": msg,
                 "data": {"checked": checked, "found": len(candidates),
                          "added": added, "truncated": truncated,
-                         "skipped_ignored": skipped_ignored}}
+                         "candidates": candidates,
+                         "skipped_ignored": skipped_ignored,
+                         "skipped_watching": skipped_watching}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
         """

@@ -458,6 +458,24 @@ class CommandsMixin:
                 f"缺对应 strm: {data.get('found', 0)} 个\n"
                 f"新增疑似异常: {data.get('added', 0)} 个\n"
             )
+            # ⚠️ 「缺 N 个」与「新增 M 个」对不上时**必须解释差额**，否则用户
+            # 只会看到「检测到两个，却没有出现在列表里」这种自相矛盾的结论 ——
+            # 实测反馈就是这么来的（那两个是被忽略规则跳过的）。
+            # 三个去向各是一句话，缺任何一句都会重新变成「数字对不上」。
+            skipped_ignored = data.get("skipped_ignored", 0)
+            skipped_watching = data.get("skipped_watching", 0)
+            if skipped_ignored:
+                reply += (f"🚫 其中 {skipped_ignored} 个已命中「忽略」规则，按你的要求"
+                          f"不再报警，因此不进疑似清单（/rsync_ignore list 查看规则）。\n")
+            if skipped_watching:
+                reply += (f"⏳ 其中 {skipped_watching} 个正在观察期（刚同步成功或已请求"
+                          f"补生成），交给观察窗口自行判定，不重复计入疑似。\n")
+            unexplained = data.get("found", 0) - data.get("added", 0) \
+                - skipped_ignored - skipped_watching
+            if unexplained > 0:
+                # 已挂在疑似清单里的条目不算「新增」——它们本来就在，扫描只是
+                # 又看见了它们一次。这条兜底能挡住将来新增跳过分支时的静默漏报。
+                reply += (f"ℹ️ 另有 {unexplained} 个已在疑似清单中（本次未重复计入新增）。\n")
             if data.get("truncated"):
                 reply += (f"⚠️ 已达到单次上限 {STRM_SCAN_LIMIT} 个，结果被截断。\n"
                           f"   数量这么大通常说明 strm 插件本身没在工作，"

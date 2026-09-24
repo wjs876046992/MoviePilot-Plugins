@@ -891,10 +891,34 @@ async function scanStrm() {
     if (res && res.success) {
       const d = res.data || {};
       let msg = `已检查 ${d.checked || 0} 个文件，缺 strm ${d.found || 0} 个，新增疑似 ${d.added || 0} 个。`;
+      // ⚠️ 「缺 N 个」与「新增 M 个」对不上时必须解释差额，否则用户看到的
+      // 是一句自相矛盾的结论（实测反馈：「检测到两个，却没有出现在疑似列表里」）。
+      // 差额的三个去向各占一句，漏掉任何一句都会重新变成「数字对不上」。
+      const skippedIgnored = d.skipped_ignored || 0;
+      const skippedWatching = d.skipped_watching || 0;
+      if (skippedIgnored) {
+        msg += `\n🚫 其中 ${skippedIgnored} 个已命中「忽略」规则，按你的要求不再报警，因此不进疑似清单。`;
+      }
+      if (skippedWatching) {
+        msg += `\n⏳ 其中 ${skippedWatching} 个正在观察期（刚同步成功或已请求补生成），交给观察窗口自行判定。`;
+      }
+      const unexplained = (d.found || 0) - (d.added || 0) - skippedIgnored - skippedWatching;
+      if (unexplained > 0) {
+        msg += `\nℹ️ 另有 ${unexplained} 个已在疑似清单中（本次未重复计入新增）。`;
+      }
+      // 「缺哪几个」是用户最需要的一条：只给计数等于让他自己去源端找。
+      const candidates = d.candidates || [];
+      if (candidates.length) {
+        const shown = candidates.slice(0, 10);
+        msg += `\n\n缺 strm 的文件：\n` + shown.map((k) => `· ${k}`).join('\n');
+        if (candidates.length > shown.length) {
+          msg += `\n…（共 ${candidates.length} 个）`;
+        }
+      }
       if (d.truncated) {
         msg += `\n⚠️ 已达到单次上限，结果被截断 —— 数量这么大通常说明 strm 插件本身没在工作，请先确认它的开关与媒体识别是否正常。`;
       }
-      msg += `\n💡 缺 strm 有三种可能，处理方式不同：\n` +
+      msg += `\n\n💡 缺 strm 有三种可能，处理方式不同：\n` +
         `• 从未上传的存量文件 → 用 /rsync_backfill 补传\n` +
         `• strm 助手漏生成 → 点「先尝试生成 strm」，成本最低，多半能直接解决\n` +
         `• 上传了但 CD2 假成功 → 补生成后仍无 strm，才需要「删旧重传」`;
@@ -2867,6 +2891,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-54063135"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d28acb4e"]]);
 
 export { App as default };
