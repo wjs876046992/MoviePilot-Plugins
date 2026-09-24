@@ -180,14 +180,25 @@ def watch_state_of(key: str, watch: Dict[str, Any],
 
 
 # 「目标端探测」的结论。四个取值都要能被调用方区分开，理由见 dest_probe_outcome。
-DEST_OK = "ok"                    # 可见且大小一致 → 云端文件是好的（对 rsync 而言）
+DEST_OK = "ok"                    # 可见、大小一致、**且目录里没有残留** → 文件是好的
 DEST_SIZE_MISMATCH = "mismatch"   # 可见但大小不符 → 传到一半
 DEST_ABSENT = "absent"            # 不可见 → 云端没有正式文件
 DEST_UNKNOWN = "unknown"          # 探测无效（挂载未就绪 / 源端没了 / 读不到大小）
+# 可见、大小一致，**但同目录里存在该文件的残留**（形如 `影片.mkv..xrp4gj`）。
+#
+# 为什么必须与 DEST_OK 分开：`--size-only` 的判据只有大小，而改名失败的残留
+# 大小与正式文件**完全一致**（3.10 实测），所以「大小一致」对改名失败这个
+# **主成因**毫无鉴别力 —— 它一直是假阳性。而 CD2 改名失败时正式名根本不存在，
+# 挂载视图里那个「正式名」其实是视图过期；`os.listdir` 则是直读目录内容，
+# 能同时看到残留与改名失败的痕迹。有残留 ⇒ 「文件已完整落地」这个结论不成立。
+# Same size but a residue exists: since --size-only compares size alone and a
+# rename-failure residue is byte-identical in size, "same size" never discriminated
+# this case. A residue means the final rename did not complete.
+DEST_RESIDUE = "residue"
 
 
 def dest_probe_outcome(dest_size: Optional[int], src_size: Optional[int],
-                       dest_missing: bool) -> str:
+                       dest_missing: bool, residue_found: bool = False) -> str:
     """
     把一个文件的「目标端可见性探测」折算成结论。
 
@@ -220,17 +231,29 @@ def dest_probe_outcome(dest_size: Optional[int], src_size: Optional[int],
     "Unreadable" is expressed as None rather than collapsed into a boolean, because
     a flaky mount and a genuinely absent file must not look the same.
 
-    ⚠️ 三个分支的**先后顺序不影响结果**（已把 `dest_size/src_size ∈ {None, 数字}`
-    × `dest_missing ∈ {True, False}` 全部 8 种组合枚举比对过，重排前后行为完全一致；
-    变异测试里把顺序改掉也不会失败）。别把它当承重逻辑去推理，
-    写成现在这样只是为了从上到下的可读性。
-    The branch order is NOT load-bearing — it was exhaustively verified to be an
-    equivalent mutant. Kept for readability only; do not reason from it.
+    ⚠️ **`same_size` 不等于「文件没事」** —— 这正是本函数存在的理由。
+    `--size-only` 只看大小，而改名失败的残留大小与正式文件完全一致，
+    「大小一致」对改名失败这个主成因毫无鉴别力。因此真正的判据是
+    `residue_found`：**同目录里有该文件的残留 ⇒ 最后一次改名没有完成**，
+    此时无论大小是否一致都不能得出「云端是好的」。
+    Same size proves less than it looks: a rename-failure residue is byte-identical
+    in size, so the discriminating input is whether a residue exists at all.
+
+    ⚠️ 分支顺序**是承重的**（与 3.10 排查时的第一版不同：那时只有大小一个维度，
+    8 种组合枚举过重排等价；加了残留维度后不再等价，别再按那条结论推理）。
+    残留判定必须先于大小判定：残留存在时大小必然「一致」（它就是从正式文件改名
+    失败来的），若先判大小就会返回 DEST_OK 把坏文件判成好的。
+    Branch order is load-bearing now: the residue check must precede the size check.
     """
     if dest_missing:
+        # ⚠️ 残留不算「正式文件存在」：残留的命名不是正式名。
+        # 但**挂载视图可能连残留都看不到**（它只认正式名），所以这里不因残留
+        # 改判 —— 不可见就是不可见，删旧重传本来就是对症处置。
         return DEST_ABSENT
     if dest_size is None or src_size is None:
         return DEST_UNKNOWN
+    if residue_found:
+        return DEST_RESIDUE
     return DEST_OK if dest_size == src_size else DEST_SIZE_MISMATCH
 
 

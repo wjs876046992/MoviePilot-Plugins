@@ -1097,13 +1097,17 @@ const destVerdict = (key) => (statusData.value.strm_suspects?.[key] || {}).dest 
 const destHint = (key) => ({
   absent: '云端不可见（可能从未传成功，或改名失败只剩残留）—— 删旧重传可修',
   mismatch: '云端有文件但大小不符（传到一半）—— 删旧重传可修',
-  ok: '云端可见且大小一致 —— 文件很可能完好，删了纯属白删；请先查 strm 生成侧',
+  residue: '云端只有改名失败的残留（名字带随机后缀，大小与正式文件一样）—— 删旧重传可修',
+  ok: '云端可见且大小一致、且目录里没有残留 —— 文件很可能完好；请先查 strm 生成侧',
   unknown: '云端可见性未知（CD2 挂载未就绪或读不到）',
 }[destVerdict(key)] || '')
 
 const destColor = (key) => ({
   absent: 'warning',
   mismatch: 'warning',
+  // residue 与 ok 必须**不同色**：两者外观（大小）一样，含义却相反 ——
+  // residue 是坏文件的**确凿证据**（改名未完成），ok 才是「先别动手」。
+  residue: 'warning',
   ok: 'success',
   unknown: 'grey',
 }[destVerdict(key)] || 'grey')

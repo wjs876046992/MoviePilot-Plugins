@@ -159,6 +159,59 @@ def is_junk_file_name(name: str) -> bool:
     return text.startswith("._") or text == ".DS_Store"
 
 
+def is_temp_residue_name(name: str, official_name: str) -> bool:
+    """
+    `name` 是否是 `official_name` 的**传输残留**（改名未完成留下的临时文件）。
+
+    Whether `name` is an aborted-transfer residue of `official_name`.
+
+    rsync 把数据写进 `<目录>/.<正式名>.<6位随机>`，**全部传完后才改名**为正式名
+    （本机 rsync 3.4.1 实测：`movie.mkv` → `.movie.mkv.WCTOKM`）。CD2 改名失败时
+    这个残留就永久留在云端。判据因此是：「以正式名 + `.` 开头，其余是一个短的
+    随机后缀」。
+
+    ⚠️ 为什么必须做这个判据：`--size-only` 只比大小，而残留的大小与正式文件
+    **完全一致**（3.10 实测），所以「大小一致」根本区分不出「传完了」与
+    「传完了但改名失败」。目录里有没有残留才是能区分的那条证据。
+    The size comparison cannot separate "transferred" from "transferred but the final
+    rename failed", because the residue is byte-identical in size.
+
+    容忍四种写法（前两种实测，后两种用户报告）：`.影片.mkv.WCTOKM`（rsync 3.4.1
+    本机实测的原生形态）、`.影片.mkv.c2Gfr2`、`影片.mkv..xrp4gj`
+    （**用户实际看到的形态**，`..` 在正式名之后）、`影片.mkv.xrp4gj`。
+    做法是：先剥掉两侧的点再比后缀，而不是逐形态硬编 —— 形态清单永远补不全，
+    而「剥点 + 定长随机后缀」对所有已知形态都成立。
+    Tolerant of the known spellings by stripping dots instead of enumerating forms.
+
+    **后缀要求恰好 6 位纯字母数字**（rsync 的临时名后缀长度就是 6，用户自己给出的
+    正则也是 `[a-z0-9]{6}`），且**不允许是纯小写单词**：
+      · `2024` → 长度不符，排除（这类年份后缀在正规命名里很常见）；
+      · `backup` → 纯小写单词，排除；
+      · `WCTOKM` / `c2Gfr2` / `xrp4gj` → 通过（实测的三种真实形态）。
+    最后那条「纯小写单词」规则是权衡出来的：`.backup` 这类名字与随机后缀在形状上
+    无法彻底区分，而两种错误方向的代价并不对称 —— 误判成残留最多是让用户对一份
+    完好文件多做一次重传（源端还在，重传不会丢数据），漏判则会把坏文件继续挡在
+    门外（正是用户反馈的过度保护）。
+    Known limitation: a 6-letter lowercase suffix such as `.backup` cannot be told
+    apart by shape alone, and the two error directions are not symmetric — a false
+    residue costs one redundant re-upload, a missed one keeps the file blocked.
+    """
+    text = str(name or "")
+    official = str(official_name or "")
+    if not text or not official:
+        return False
+    body = text.lstrip(".")
+    if not body.startswith(official + "."):
+        return False
+    tail = body[len(official) + 1:].lstrip(".")
+    # ⚠️ 长度必须恰好 6（rsync 临时名后缀的固定长度），不能放宽成区间：
+    # 放宽后 `影片.mkv.2024` 这类正常命名会落进判据。
+    if len(tail) != 6 or not tail.isascii() or not tail.isalnum():
+        return False
+    # 纯小写字母（如 backup）看着像词而不像随机串，排除
+    return not tail.islower() or any(c.isdigit() for c in tail)
+
+
 def valid_exts_of(media_extensions: str, all_ext: bool) -> Optional[set]:
     """
     映射的扩展名白名单；`all_ext=True`（同步所有类型）时返回 None 表示不过滤。

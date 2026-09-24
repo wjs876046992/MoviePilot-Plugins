@@ -58,6 +58,7 @@ from .constants import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
+    is_temp_residue_name as _is_temp_residue_name,
     pair_name as _pair_name,
     rel_path_of_key as _rel_path_of_key,
     valid_exts_of as _valid_exts_of,
@@ -889,12 +890,22 @@ class StrmOpsMixin:
                 verdicts = {}
             intact = [k for k in still if verdicts.get(k) == _strm.DEST_OK]
             absent = [k for k in still if verdicts.get(k) == _strm.DEST_ABSENT]
-            if intact:
+            residue = [k for k in still if verdicts.get(k) == _strm.DEST_RESIDUE]
+            if residue:
+                # 探到残留 = 「传完了但没改名」的确凿证据，比大小一致有用得多。
+                # 这条必须排在 intact 之前，且要明确说「可以删」—— 用户此前正是在
+                # 这里被告知「文件很可能完好、别删」，于是被卡住。
                 msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
-                       f"🔎 但云端文件可见且大小与源端一致 —— 说明文件本身是好的，"
-                       f"问题出在 strm 生成侧。窗口过后先别急着删旧重传"
-                       f"（删了 rsync 也会因 --size-only 跳过，传不上去），"
-                       f"请先查助手配置与生成日志。")
+                       f"🔎 探到 {len(residue)} 个文件旁边有改名失败的残留"
+                       f"（名字带随机后缀，大小与正式文件一样）—— 这正是「传完了、"
+                       f"改名那一步没成」的形态，云端并没有可用的正式文件。"
+                       f"窗口过后直接删旧重传即可，插件会连残留一并清掉。")
+            elif intact:
+                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
+                       f"🔎 云端文件可见、大小与源端一致，且目录里没有残留 ——"
+                       f"说明文件本身大概率是好的，问题出在 strm 生成侧。"
+                       f"窗口过后先别急着删旧重传，请先查助手配置与生成日志"
+                       f"（若你已在 115 上确认文件是坏的，点「确认失败」即可照常删）。")
             elif absent:
                 msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
                        f"🔎 云端看不到这些文件 —— 说明很可能是从未传成功、"
@@ -947,6 +958,9 @@ class StrmOpsMixin:
         "same size" verdict may only ever be used to *recommend inaction*).
         """
         roots_ready: Dict[str, bool] = {}
+        # 目录列表缓存（父目录 → listdir 结果 或 None=读不到）。批内文件高度集中在
+        # 少数几个目录，逐个 listdir 会把同一目录在 CD2 挂载上读几十遍。
+        root_cache: Dict[str, Any] = {}
         out: Dict[str, str] = {}
         for key in keys:
             dest_root = _strm.dest_root_of(key, self._sync_pairs)
@@ -981,8 +995,53 @@ class StrmOpsMixin:
                     return None
 
             out[key] = _strm.dest_probe_outcome(
-                _size(dest_file), _size(src_file), dest_missing)
+                _size(dest_file), _size(src_file), dest_missing,
+                residue_found=self._has_dest_residue(dest_file, root_cache))
         return out
+
+    def _has_dest_residue(self, dest_file: str,
+                          root_cache: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        目标端该文件所在目录里，是否存在它的**传输残留**（改名未完成）。
+
+        Is there an aborted-transfer residue next to the destination file?
+
+        **为什么这是整条「云端可见性」判定的关键**：`--size-only` 只看大小，而
+        改名失败的残留大小与正式文件完全一致（DEVELOPMENT 3.10 实测），所以
+        「可见且大小一致」对**主成因**毫无鉴别力 —— 用户实测反馈「疑似列表删除
+        重传失败，文件大小一致但名字不对，带 `..`」，正是被这条假阳性挡住的。
+        残留名字是唯一能区分「传完了」与「传完了但改名失败」的证据。
+        A residue is the only evidence separating "done" from "done but never renamed";
+        sizes are identical by construction.
+
+        残留名判据见 `paths.is_temp_residue_name`。
+
+        ⚠️ 读不到目录（挂载抖动 / 权限）时返回 **True**（保守）：
+        返回 False 会把这个文件判成 `DEST_OK`，而在改名失败这一主成因下
+        `DEST_OK` 恰好是错的那一边 —— 探测的两种错误方向里，宁可偏向
+        「先别删、去查一下」，也不要偏向「文件没事」。
+
+        目录列表按**父目录**缓存（`root_cache`，由调用方在同一次探测里传入）：
+        一批文件常集中在少数几个目录，逐个 listdir 会把同一目录读几十遍，
+        而这是 CD2 挂载上的真实 I/O。
+        Unreadable directory ⇒ True (conservative); listings cached per directory
+        because a batch usually shares few directories and listdir hits the mount.
+        """
+        directory = os.path.dirname(dest_file)
+        official = os.path.basename(dest_file)
+        if root_cache is None:
+            root_cache = {}
+        if directory not in root_cache:
+            try:
+                root_cache[directory] = os.listdir(directory)
+            except OSError as e:
+                logger.warning(f"[Rsync115Sync] 残留探测：目录读取失败，按「有残留」保守处理: "
+                               f"{directory}: {e}")
+                root_cache[directory] = None
+        names = root_cache[directory]
+        if names is None:
+            return True
+        return any(_is_temp_residue_name(n, official) for n in names)
 
     def _annotate_dest(self, keys: List[str]) -> Dict[str, str]:
         """
@@ -1526,19 +1585,29 @@ class StrmOpsMixin:
         # 建议之后才点的按钮 —— 中间完全可能又跑过一次同步，文件已经传好了。
         # 拿旧结论去决定「要不要删」，等于用一个过期的事实做破坏性判断。
         #
-        # 只有「云端可见且大小一致」才拦。**这是本插件唯一一处让探测结果影响
-        # 行为的地方**，且方向是「少做一次破坏性操作」：
-        #   · 假阳性（CD2 视图过期，其实只有残留）→ 用户被引导去查助手，
-        #     损失是几秒钟，重启同步任务即可照常删旧重传；
+        # 只有 DEST_OK 才拦。**这是本插件唯一一处让探测结果影响行为的地方**，
+        # 且方向是「少做一次破坏性操作」：
         #   · 若反过来拿它做「已同步」的依据，就会真的漏掉坏文件 —— 不做。
+        #
+        # ⚠️ DEST_RESIDUE **不在拦阻之列**，这正是 v0.2.5 修的过度保护：
+        # 改名失败时残留与正式文件大小完全一致，旧判据只看大小，于是这条守卫
+        # 在它最该放行的主成因上必然拦人（用户实测「大小一致但名字带 ..，删不了」）。
+        # 现在探测能看见残留 ⇒ 判成 DEST_RESIDUE ⇒ 这是**确凿的坏文件证据**，
+        # 删旧重传正是对症处置，没有任何理由拦。
         # Re-probe right before deleting: the stored verdict may predate a sync that
-        # already fixed the file. The verdict is only ever allowed to *block* a
-        # destructive action, never to justify skipping one.
+        # already fixed the file. DEST_RESIDUE is a positive failure signal (the final
+        # rename never completed) and must NOT be blocked — blocking it was the
+        # over-protection users hit, because a residue is byte-identical in size.
         try:
             fresh = self._dest_visibility(allowed)
         except Exception as e:
             logger.warning(f"[Rsync115Sync] 重传前可见性探测异常（按原逻辑继续）: {e}")
             fresh = {}
+        residue = [k for k in allowed if fresh.get(k) == _strm.DEST_RESIDUE]
+        if residue:
+            logger.warning(f"[Rsync115Sync] ✅ 探测到 {len(residue)} 个文件名带残留后缀"
+                           f"（改名未完成，大小与正式文件一致），放行删旧重传: "
+                           f"{_brief_paths(residue)}")
         intact = [k for k in allowed if fresh.get(k) == _strm.DEST_OK]
 
         # ---- 已被用户确认「确实没传上去」的条目：这道守卫必须让路 ----
@@ -1750,8 +1819,11 @@ class StrmOpsMixin:
                                f"{dest_file}: {e}")
 
             if dest_size is None:
-                # 目标端本就不存在（或读取失败且确认不存在）：无需删除，可直接重传
-                logger.info(f"[Rsync115Sync] [{pair_name}] 目标端无此文件，无需清理，直接重传: {rel_p}")
+                # 目标端本就没有**正式文件**：无需删除，可直接重传。
+                # ⚠️ 但改名失败的场景正是「正式名不存在、只剩残留」—— 残留要单独清，
+                # 否则它永远留在云端，且会让后续每一次可见性探测都判成 DEST_RESIDUE。
+                self._remove_dest_residues(dest_file, pair_name, rel_p)
+                logger.info(f"[Rsync115Sync] [{pair_name}] 目标端无正式文件，无需清理，直接重传: {rel_p}")
                 deleted.append(key)
                 continue
 
@@ -1775,8 +1847,55 @@ class StrmOpsMixin:
                 undeletable.append(key)
                 continue
 
+            # 正式文件已清掉，顺带清掉同目录里它的残留（改名失败的半成品）。
+            # 残留不清会留下两个后果：① 云端永久堆积垃圾；② 之后每次可见性探测
+            # 都会因它判成 DEST_RESIDUE，清单上永远带着一条「有残留」的注记。
+            self._remove_dest_residues(dest_file, pair_name, rel_p)
             logger.info(f"[Rsync115Sync] [{pair_name}] 🧹 已删除目标端待重传文件: {rel_p} "
                         f"（删前大小 {dest_size} 字节）")
             deleted.append(key)
         return deleted, undeletable
+
+    def _remove_dest_residues(self, dest_file: str, pair_name: str, rel_p: str) -> List[str]:
+        """
+        删除目标端**属于该正式文件**的传输残留（改名失败的半成品），返回已删名字。
+
+        Remove aborted-transfer residues belonging to this exact official file.
+
+        为什么由插件来删（原先的结论是「残留只能在 115 云端手动清」）：那条结论
+        成立的前提是**插件认不出哪个文件是残留**。现在有了精确判据
+        （`paths.is_temp_residue_name`：同目录 + 正式名 + 短随机后缀），
+        残留不再是「不敢碰的陌生文件」，而是可以点名删除的垃圾 —— 而且它正是
+        让可见性探测长期误判的那条证据。
+
+        ⚠️ 判据只对**同目录、同一正式名**生效，不会波及别的文件：
+        删除的是 `os.listdir(父目录)` 里通过该判据的名字，逐个 `os.remove`。
+        Only names matching the predicate for this very file are touched.
+
+        删除失败只记日志、不影响重传：残留删不掉顶多是留个垃圾，
+        而它会导致后续探测保守判成「有残留」—— 宁可留着也别让整次重传失败。
+        """
+        directory = os.path.dirname(dest_file)
+        official = os.path.basename(dest_file)
+        try:
+            names = os.listdir(directory)
+        except OSError as e:
+            logger.warning(f"[Rsync115Sync] [{pair_name}] 残留清理：目录读取失败，跳过: "
+                           f"{directory}: {e}")
+            return []
+        removed: List[str] = []
+        for name in names:
+            if not _is_temp_residue_name(name, official):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                os.remove(path)
+                removed.append(name)
+            except OSError as e:
+                logger.warning(f"[Rsync115Sync] [{pair_name}] 残留删除失败（已忽略，不影响重传）: "
+                               f"{path}: {e}")
+        if removed:
+            logger.info(f"[Rsync115Sync] [{pair_name}] 🧹 已清理 {len(removed)} 个传输残留"
+                        f"（改名失败的半成品）: {_brief_paths(removed)}")
+        return removed
 
