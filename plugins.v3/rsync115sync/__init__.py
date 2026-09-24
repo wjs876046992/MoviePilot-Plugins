@@ -13,6 +13,7 @@ from app.core.event import Event, EventType, eventmanager
 from app.plugins import _PluginBase
 from app.sdk.logging import logger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 try:
     from app.schemas.types import MessageType
@@ -61,35 +62,47 @@ def _webhook_event_info_class():
     return _HostWebhookEventInfo or _FallbackWebhookEventInfo
 
 
-def _transfer_success_events() -> List[Any]:
+# ---- 已删除：MoviePilot 整理完成事件订阅（2026-09-25） ----
+# 这里曾有 `_transfer_success_events()` 与模块级 `_TRANSFER_SUCCESS_EVENTS`，
+# 用于订阅宿主按文件类型分派的三个「整理成功」事件。**整条已移除**，理由四条：
+#
+#   1. 只覆盖整理链路 —— 手动放进媒体库、外部工具搬入（本插件的 9KG 场景）、
+#      MoviePilot 之外的下载完成，都不产生整理事件；
+#   2. durable outbox **不重放** —— 插件忙/重载/重启期间的事件进有限重试，
+#      超过上限即永久丢弃，且事后无从补发；
+#   3. 宿主版本相关 —— 后两个事件靠 `getattr` 探测，旧宿主只有 TransferComplete，
+#      字幕与音频**静默全丢**；
+#   4. 装饰器在**类体**求值 —— v0.1.7 拆分时被误删过一次（DEVELOPMENT §3.8），
+#      删掉不报错，只是永远收不到事件，属最难自查的一类回归。
+#
+# 替代它的主通道是**源端游标扫描**（`_scan_source_cursor`）：判据基于文件自身
+# mtime 与上次成功同步的游标，与上述四点全部无关 —— 它看得见手动入库与 9KG、
+# 游标落盘后重载可续、不依赖宿主版本、也不靠装饰器注册。
+# webhook 保留为「9KG 专属通道 + 加速器」，不再承担完整性。
+#
+# The host transfer-event subscription was removed entirely (see above). The
+# primary ingest channel is now a source-root cursor scan driven by file mtime;
+# the webhook channel is kept as an accelerator only. Records kept in
+# DEVELOPMENT §3.8 / §4.0f.
+def _today_start_ts(now_ts: Optional[float] = None) -> float:
     """
-    返回「整理成功」需要监听的全部事件类型。
+    今天 0 点的本地时间戳 —— 源端扫描的**首次基线**。
 
-    All event types that signal a successful transfer/ingest.
+    Local midnight of today, used as the first-scan baseline.
 
-    宿主按**文件类型**把整理结果拆成三个事件（app/chain/transfer/settlement.py
-    的 _durable_transfer_event）：
-        主要媒体文件 → TransferComplete
-        字幕文件     → SubtitleTransferComplete
-        音频文件     → AudioTransferComplete
-
-    只监听 TransferComplete 会**静默丢掉所有字幕与音频**，表现为「入库很多、
-    却只监听到很少」。这里按存在性动态收集，兼容尚未提供后两者的旧宿主。
-
-    The host splits transfer results into three event types by file kind.
-    Listening to TransferComplete alone silently drops every subtitle and audio
-    file. Types are collected defensively so older hosts still work.
+    为什么首次基线取当日 0 点、而不是「当前时刻」也不是「只记不入队」：
+      · 取当前时刻 → 今天已入库的文件 mtime 比它旧，**成为永久漏**；
+      · 「只记不入队」引导阶段 → 同一个问题，还要多维护一份"基线已建立"状态。
+      · 取当日 0 点 → 今天入库的全部覆盖（扫描本来也只在今天的时间尺度上
+        有意义），且与 sync_115.sh 的 `--since` 缺省行为一致。
+    代价是首次启用可能会把今天已入库的存量一并捞进队列 —— 这是**期望行为**
+    （它们确实还没上传），且队列有冷却与批次上限兜住，不会瞬时打满配额。
     """
-    types: List[Any] = [EventType.TransferComplete]
-    for name in ("SubtitleTransferComplete", "AudioTransferComplete"):
-        extra = getattr(EventType, name, None)
-        if extra is not None and extra not in types:
-            types.append(extra)
-    return types
+    import datetime as _dt
+    now = _dt.datetime.fromtimestamp(now_ts if now_ts is not None else time.time())
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.timestamp()
 
-
-# 模块级常量：装饰器在类体执行时求值，故必须在类定义前构造好
-_TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
 
 # ---- 已拆分到兄弟模块 / extracted to sibling modules ----
 # 阶段 1（纯逻辑，无状态）：constants.py / paths.py / ignore.py / strm.py
@@ -102,7 +115,7 @@ _TRANSFER_SUCCESS_EVENTS = _transfer_success_events()
 # 组合根（本文件）负责把宿主能力绑定（_PluginManager / MessageType）注入兄弟模块。
 #
 # 这里用下划线别名导入，是为了让类体与既有调用点无需到处加模块前缀 ——
-# 类体在求值时能读到本模块的全局名字（与 _TRANSFER_SUCCESS_EVENTS 同理）。
+# 类体在求值时能读到本模块的全局名字。
 from . import strm as _strm  # noqa: E402
 from . import strm_ops as strm_ops_mod  # noqa: E402
 from .strm_ops import StrmOpsMixin  # noqa: E402
@@ -119,10 +132,12 @@ from .constants import (  # noqa: E402
     DEFAULT_RSYNC_TIMEOUT,
     DEFAULT_TASK_TIMEOUT,
     LEGACY_DEFAULTS as _LEGACY_DEFAULTS,
+    LEGACY_DEFAULTS_ALL as _LEGACY_DEFAULTS_ALL,
     MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
     MAX_PATH_CHARS as _MAX_PATH_CHARS,
-    MISSED_SCAN_ENABLED_DEFAULT as _MISSED_SCAN_ENABLED_DEFAULT,
-    MISSED_SCAN_INTERVAL as _MISSED_SCAN_INTERVAL,
+    SOURCE_CURSOR_OVERLAP_SECS as _SOURCE_CURSOR_OVERLAP_SECS,
+    SOURCE_SCAN_ENABLED_DEFAULT as _SOURCE_SCAN_ENABLED_DEFAULT,
+    SOURCE_SCAN_INTERVAL as _SOURCE_SCAN_INTERVAL,
     P115_PAN_DIR_HINT as _P115_PAN_DIR_HINT,
     P115_PAN_MAPPING_FIELD as _P115_PAN_MAPPING_FIELD,
     P115_STRM_COMMAND as _P115_STRM_COMMAND,
@@ -144,19 +159,20 @@ from .ignore import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
+    ext_of as _ext_of,
     force_problem_rel_paths as _force_problem_rel_paths,
     is_junk_file_name as _is_junk_file_name,
     merge_force_anomalies as _merge_force_anomalies,
     pair_for_path as _pair_for_path,
     pair_name as _pair_name,
     success_keys_after_audit as _success_keys_after_audit,
+    valid_extension as _wh_valid_extension,
     valid_exts_of as _valid_exts_of,
 )
 # Webhook 报文解析（纯逻辑，无状态）。认领判据也在这里（判定「这条报文是不是发给
 # 本插件的」），但它不再是某个自建端点的内部函数 —— 自建端点已于 2026-09-22 移除，
 # 现在唯一的载体是宿主的平台 webhook 链路，见 DEVELOPMENT §9.18。
 from . import webhook as _wh  # noqa: E402
-from .webhook import valid_extension as _wh_valid_extension  # noqa: E402
 
 
 class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
@@ -182,20 +198,37 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     DEFAULT_RSYNC_TIMEOUT = DEFAULT_RSYNC_TIMEOUT
     DEFAULT_TASK_TIMEOUT = DEFAULT_TASK_TIMEOUT
 
-    # 历史默认值与补齐扫描开关：迁移逻辑（_migrate_legacy_defaults）与 __init__
+    # 历史默认值与源端扫描参数：迁移逻辑（_migrate_legacy_defaults）与 __init__
     # 都通过 self.* 访问它们。**别名必须保留** —— 直接删掉类属性会让
-    # `self._MISSED_SCAN_ENABLED_DEFAULT` 抛 AttributeError（拆分时实测踩到）。
+    # `self._SOURCE_SCAN_ENABLED_DEFAULT` 抛 AttributeError（拆分时实测踩到）。
     # These aliases are load-bearing: __init__ and _migrate_legacy_defaults read them
     # through `self.*`, so removing the class attributes breaks instantiation.
     _LEGACY_DEFAULTS = _LEGACY_DEFAULTS
-    _MISSED_SCAN_INTERVAL = _MISSED_SCAN_INTERVAL
-    _MISSED_SCAN_ENABLED_DEFAULT = _MISSED_SCAN_ENABLED_DEFAULT
+    _LEGACY_DEFAULTS_ALL = _LEGACY_DEFAULTS_ALL
+    # 迁移目标值与「字段 → 实例属性名」的映射。写成表而不是 if 链：
+    # 每加一代旧默认值，只需往 constants 的表里加一项，这里不必改。
+    _LEGACY_MIGRATION_TARGETS = {
+        "media_extensions": DEFAULT_MEDIA_EXTENSIONS,
+        "exclude_patterns": DEFAULT_EXCLUDE_PATTERNS,
+        "rsync_timeout": DEFAULT_RSYNC_TIMEOUT,
+    }
+    _LEGACY_MIGRATION_ATTRS = {
+        "media_extensions": "_media_extensions",
+        "exclude_patterns": "_exclude_patterns",
+        "rsync_timeout": "_rsync_timeout",
+    }
+    # 源端游标扫描的节奏与重叠窗口（见 constants.SOURCE_SCAN_*）。
+    _SOURCE_SCAN_INTERVAL = _SOURCE_SCAN_INTERVAL
+    _SOURCE_SCAN_ENABLED_DEFAULT = _SOURCE_SCAN_ENABLED_DEFAULT
+    _SOURCE_CURSOR_OVERLAP_SECS = _SOURCE_CURSOR_OVERLAP_SECS
 
     def __init__(self):
         super().__init__()
         self._enabled: bool = False
         self._listen_transfer: bool = True
-        self._missed_scan_enabled: bool = self._MISSED_SCAN_ENABLED_DEFAULT
+        # 源端游标扫描（入库发现的**主通道**，取代已删除的整理事件订阅）
+        self._source_scan_enabled: bool = self._SOURCE_SCAN_ENABLED_DEFAULT
+        self._source_scan_interval: int = self._SOURCE_SCAN_INTERVAL
         self._notify: bool = True
         # ---- Webhook 入库（第二来源，见 webhook.py 头注释）----
         # 注：这里曾有 `_webhook_channels`（来源渠道过滤，默认 emby），已于
@@ -211,7 +244,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 初始化走 _wh_stat()，保证「模板只有一处真相」，不在类体里再放一份可变默认值。
         self._webhook_stat: Dict[str, Any] = self._wh_stat()
 
-        self._delay_hours: float = 2.0
+        # 入库闸门挡下的扩展名累计分布（扩展名 → 次数），供看板回答
+        # 「哪一类文件正在被静默丢弃」。**累计不清零**，与 webhook_stat 同理：
+        # 它是一条「这条路是不是在丢东西」的证据，清掉就等于让问题再次隐形。
+        # 说明：这里曾是整个插件里最危险的一处盲区 —— 闸门丢弃只记 debug，
+        # 看板四个计数里没有它，于是「音频 100% 被丢」潜伏了多个版本。
+        self._ingest_skip_stat: Dict[str, int] = {}
+
+        # 4h：源端扫描没有"文件写完了"信号，冷却期因此多了一层职责 —— 等文件写完
+        # （正在写入的文件 mtime 恰恰最新）。2h 对慢写的大文件不够，见 USAGE。
+        self._delay_hours: float = 4.0
         self._cron: str = "0 */2 * * *"
 
         # 多目录映射对列表:
@@ -346,15 +388,21 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # （早期注释称「宿主只在整理批次收尾时广播」，该说法已撤回，见 3.8.1：
         #  事件是**按文件即时发布**的，与按批次合并的用户通知是两条独立路径。）
         #
-        # 注意这些条目**不参与冷却计时**：冷却的目的是「等外挂字幕下载完
-        # 再上传」，而这些文件已经比原计划多等了很久，再等一轮毫无意义。
-        # Missed events cannot be replayed, so each sync run may scan the source
-        # roots and compare file mtimes against this queue.
-        # (The earlier "batch-finalisation broadcast" rationale was retracted.)
-        # These entries intentionally do NOT take part in cool-down timing.
-        self._missed_queue: Dict[str, float] = {}
-        # 上次源端补齐扫描的成果，供看板与指令回显（0 表示尚未扫描过）
-        self._missed_last_scan: int = 0
+        # ⚠️ 这里曾有 `_missed_queue` + `_missed_last_scan`（「错过入库待补扫清单」），
+        # 已于 2026-09-25 删除，它被 `_source_cursor` 取代。删除理由是**语义重复
+        # 且危险**：那个队列的注释写着「不参与冷却计时」——它的原意是"这些文件
+        # 已经比原计划多等了很久，再等一轮毫无意义"，但实现成了**无条件跳过冷却**，
+        # 于是源端扫描刚发现一个 10 秒前刚落地的文件，也会被判为"错过的"并立即上传。
+        # 现在两个场景由冷却基准 `min(发现时刻, mtime)` 自动区分，不需要第二个队列。
+        # The missed-event queue was removed: "skip cool-down unconditionally" made a
+        # freshly-dropped file upload immediately. `_source_cursor` replaces it.
+
+        # 源端扫描游标：映射名 → 「上次成功扫描的时刻」。
+        # 与 sync_115.sh 的 data/last_sync_<job> 同构，是「不漏」的判据所在。
+        # 落盘文件而非 save_data 语义上的小状态：条目数 = 映射数（通常个位数）。
+        self._source_cursor: Dict[str, float] = {}
+        # 上次源端扫描的时刻，供看板与指令回显（0 表示尚未扫描过）
+        self._source_scan_last: float = 0.0
 
         # 存量补传队列（独立于 pending_queue，不参与冷却计时）
         # 条目格式与其它清单一致："任务名:相对路径"
@@ -388,11 +436,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         if config:
             self._enabled = config.get("enabled", False)
             self._listen_transfer = config.get("listen_transfer", True)
-            self._missed_scan_enabled = bool(
-                config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
+            self._source_scan_enabled = bool(
+                config.get("source_scan_enabled", self._SOURCE_SCAN_ENABLED_DEFAULT)
             )
+            self._source_scan_interval = max(
+                60, int(config.get("source_scan_interval") or self._SOURCE_SCAN_INTERVAL))
             self._notify = config.get("notify", True)
-            self._delay_hours = float(config.get("delay_hours", 2.0))
+            self._delay_hours = float(config.get("delay_hours", 4.0))
             self._cron = config.get("cron", "0 */2 * * *")
             self._sync_pairs = config.get("sync_pairs") or []
             self._media_extensions = config.get("media_extensions") or self.DEFAULT_MEDIA_EXTENSIONS
@@ -427,18 +477,24 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         saved_ignored = self.get_data("ignored_files") or []
         if isinstance(saved_ignored, list):
             self._ignored_rules = saved_ignored
-        # 恢复「冷却期错过的入库事件」待补扫队列
-        saved_missed = self.get_data("missed_queue") or {}
-        if isinstance(saved_missed, dict):
-            self._missed_queue = saved_missed
-        self._missed_last_scan = int(self.get_data("missed_last_scan") or 0)
-        if self._missed_queue:
-            logger.info(f"[Rsync115Sync] 🕳️ 已恢复错过的入库待补扫清单：{len(self._missed_queue)} 个"
-                        f"（将在每轮同步开头扫描源端目录补齐）")
+        # 恢复源端扫描游标（主通道的「看到了哪里」，必须跨重载续上）
+        saved_cursor = self.get_data("source_cursor") or {}
+        if isinstance(saved_cursor, dict):
+            self._source_cursor = {str(k): float(v) for k, v in saved_cursor.items()}
+        self._source_scan_last = float(self.get_data("source_scan_last") or 0.0)
+        if self._source_cursor:
+            newest = max(self._source_cursor.values())
+            logger.info(f"[Rsync115Sync] 🔍 已恢复源端扫描游标：{len(self._source_cursor)} 个映射，"
+                        f"最近一次推进于 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(newest))}")
 
         # 恢复 webhook 运行态（累计计数与最近一次报文摘要）。
         # 逐字段合并而不是整体替换：运行态字典跨版本会增加字段，整体替换会把
         # 新版本新增的计数键抹掉，看板取字段时拿到 KeyError。
+        # 入库闸门挡下的扩展名分布（累计）。与 webhook_stat 同样必须持久化：
+        # 它的全部价值就是「长期累计」，重载即清零等于没有。
+        saved_skip_stat = self.get_data("ingest_skip_stat") or {}
+        if isinstance(saved_skip_stat, dict):
+            self._ingest_skip_stat = {str(k): int(v) for k, v in saved_skip_stat.items()}
         saved_wh_stat = self.get_data("webhook_stat") or {}
         if isinstance(saved_wh_stat, dict):
             self._webhook_stat_now().update(saved_wh_stat)
@@ -486,9 +542,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # Startup summary. Without it there was no way to tell from the logs which
         # version was actually loaded, which made version mix-ups undiagnosable.
         try:
-            event_names = ",".join(
-                str(getattr(e, "value", e)) for e in _TRANSFER_SUCCESS_EVENTS
-            )
             pair_summary = ", ".join(
                 f"{(p.get('name') or p.get('src') or '?')}=>{(p.get('dest') or '?')}"
                 for p in self._sync_pairs
@@ -497,10 +550,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 f"[Rsync115Sync] v{self.plugin_version} 初始化完成 | "
                 f"启用={self._enabled} 监听入库={self._listen_transfer} | "
                 f"冷却={self._delay_hours}h 定时={self._cron} | "
-                f"监听事件={event_names} | "
+                f"源端扫描={'每 %d 分钟' % (self._source_scan_interval // 60) if self._source_scan_enabled else '关'} | "
                 f"映射 {len(self._sync_pairs)} 组: {pair_summary} | "
-                f"队列: 冷却 {len(self._pending_queue)} / 补传 {len(self._backfill_queue)}"
-                f" / 待补扫 {len(self._missed_queue)} | "
+                f"队列: 冷却 {len(self._pending_queue)} / 补传 {len(self._backfill_queue)} | "
                 f"限流={'开' if self._rate_limit_enabled else '关'}"
                 f"({self._upload_batch_size}/批, {self._upload_max_per_window}/窗口)"
             )
@@ -592,43 +644,28 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self.save_data("ignored_files", self._ignored_rules)
         return True
 
-    # ================= 监听 MoviePilot 媒体转移完成事件 =================
+    # ================= 入库入口一览（改动前必读） =================
     #
-    # ⚠️ 这行装饰器是**整个插件的入口**，删掉它不会有任何报错 —— 插件照常加载、
-    # 看板照常渲染、定时同步照常跑，只是**永远收不到入库事件**，表现为「冷却队列
-    # 永远是 0」。v0.1.7 的拆分（ed2ba1d）曾把它连同上方的分节注释一起删掉，
-    # 前端与后端均无任何提示，属于最难自查的一类回归。改动本文件时务必保留。
+    # 本插件现有**两条**入库来源，两者的分工必须保持清晰：
     #
-    # This decorator is the plugin's only ingest entry point. Removing it raises no
-    # error anywhere: the plugin loads, the dashboard renders, cron runs — it simply
-    # never receives ingest events, so the cool-down queue stays empty forever.
-    @eventmanager.register(_TRANSFER_SUCCESS_EVENTS)
-    def on_transfer_complete(self, event: Event):
-        """
-        事件入口：仅做异常兜底，业务逻辑见 _handle_transfer_event。
-
-        Event entry point. Only guards against exceptions — the actual work lives
-        in _handle_transfer_event.
-
-        为什么要拆这两层：宿主把事件处理器丢到线程池执行，**未捕获的异常会被
-        记为「插件错误」**（官方事件说明明确指出「异常要自己捕获」）。
-        入库排队涉及文件系统探测与状态落盘，任何意外都不该污染宿主错误统计，
-        更不该因为一个文件出问题就中断整批事件处理。
-        兜底后仅记日志：单个事件失败不影响其余事件，也不影响插件运行。
-        """
-        try:
-            self._handle_transfer_event(event)
-        except Exception as err:
-            # 记完整堆栈便于定位；不 re-raise，避免被宿主记为插件错误
-            logger.error(f"[Rsync115Sync] v{self.plugin_version} 处理整理事件时异常"
-                         f"（已兜底，不影响其它事件）: {err}")
-            logger.debug(f"[Rsync115Sync] 事件处理异常堆栈:\n{traceback.format_exc()}")
-
-    # ================= 监听 MoviePilot Webhook 事件（第二入库来源） =================
+    #   ① 源端游标扫描（主通道，`_scan_source_cursor`）—— **完整性的唯一承担者**。
+    #      按文件 mtime 与持久化游标比对，覆盖整理入库、手动入库、外部搬入、
+    #      以及插件不可用期间发生的一切。它不依赖宿主事件，因此没有「事件丢失」
+    #      这个失效模式。定时 service 驱动，默认 10 分钟一轮。
     #
-    # ⚠️ 与上方 on_transfer_complete 同理：**删掉这行装饰器不会有任何报错**。
-    # 表现为「Emby 侧明明配了 webhook，手动放进媒体库的文件却永远不同步」，
-    # 而日志里连一条 webhook 相关记录都不会有。改动本文件时务必保留。
+    #   ② Webhook（`on_webhook_message`，本文件下方）—— 「9KG 专属通道 + 加速器」。
+    #      它让文件**早一点**进队列，但**不承担完整性**：即使它整条失效，
+    #      主通道仍会在下一轮扫描时把同一个文件捞回来（去重由队列幂等保证）。
+    #
+    # ⚠️ 历史上这里还有第三条：订阅宿主的整理完成事件
+    # （`TransferComplete` / `SubtitleTransferComplete` / `AudioTransferComplete`）。
+    # **已于 2026-09-25 整条删除**，理由见本文件顶部「已删除」注释块与
+    # DEVELOPMENT §4.0f。删除它没有替代损失：上述四种事件覆盖不到的场景，
+    # 主通道本来就覆盖；而主通道覆盖不了的场景（事件永久丢失），它也覆盖不了。
+    #
+    # ⚠️ 下方 `on_webhook_message` 的装饰器**删掉不会有任何报错**：
+    # 表现为「发送端明明推了，手动放进媒体库的文件却要靠扫描才补上」，
+    # 日志里连一条 webhook 记录都没有。改动本文件时务必保留。
     #
     # 与整理事件的关键差异（照抄代码前必读）：
     #   · TransferComplete **在** _SNAPSHOT_EVENTS 内 → 走 event.snapshot() 拿类型化快照
@@ -652,35 +689,43 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             logger.debug(f"[Rsync115Sync] webhook 事件异常堆栈:\n{traceback.format_exc()}")
 
     def _enqueue_ingest_paths(self, raw_paths: List[str], source: str,
-                              event_desc: str) -> Dict[str, int]:
+                              event_desc: str, from_scan: bool = False) -> Dict[str, int]:
         """
-        把一组**候选入库路径**校验后放入冷却队列 —— 事件链路与 webhook 链路的合流点。
+        把一组**候选入库路径**校验后放入冷却队列 —— 全部入库来源的合流点。
 
         Validate candidate ingest paths and put the survivors into the cool-down
-        queue. This is the single funnel both ingest sources (host transfer events
-        and webhooks) go through, so the two can never drift apart.
+        queue. Every ingest source (source-root cursor scan, webhook) goes through
+        this single funnel, so they can never drift apart.
 
-        为什么必须合流：两条来源的**归一化与安全判据完全不同**（路径来源可信度、
+        为什么必须合流：各来源的**归一化与安全判据完全不同**（路径来源可信度、
         是否可能收到伪造数据），但**入队语义必须只有一个** —— 重复投递保留原时间戳、
-        补回的文件从「错过清单」移除、扩展名与映射归属先于存在性判断。若各写一份，
-        「事件入队的文件」与「webhook 入队的文件」迟早出现行为差异。
+        扩展名与映射归属先于存在性判断。若各写一份，「扫描入队的文件」与
+        「webhook 入队的文件」迟早出现行为差异。
 
         ⚠️ 判据顺序：**先判映射归属，再判文件是否存在**。反过来的话，
         「不在任何映射内」这个计数永远为 0，日志就分不清「路径与你配置的源目录
         不一致」（改配置）与「路径对但容器里读不到」（挂载问题）。
 
-        :param source: 日志里的来源标签（如 `Webhook`）。整理事件链路传空串 ——
-            它的来源由 event_desc 里的 `事件=` 体现，再加一个标签只会让日志更长。
-        :return: 各原因计数（added/duplicate/skipped/unmatched/missing/upgraded/expanded）
+        :param source: 日志里的来源标签（如 `Webhook`、`源端扫描`）。
+        :param from_scan: 本批候选是否来自**源端扫描**。只影响「取不到 mtime 时」
+            的兜底方向（详见 `_cooldown_basis`），默认 False（webhook 路径）。
+        :return: 各原因计数（added/duplicate/skipped/unmatched/missing/expanded）；
+            `skipped_ext` 单独记录**被扩展名白名单挡下**的扩展名分布，
+            用于看板定位「哪个类型正在被静默丢弃」。
         """
         # 来源标签可能在左侧（"Webhook 监听到 N 个"）或完全没有（整理事件）。
         # 统一在这里拼一次，避免每个分支都要判断有没有来源。
         who = f"{source} " if source else ""
         counts = {"added": 0, "duplicate": 0, "skipped": 0, "unmatched": 0,
-                  "missing": 0, "upgraded": 0, "expanded": 0}
+                  "missing": 0, "expanded": 0}
         added_paths: List[str] = []
         unmatched_paths: List[str] = []
         missing_paths: List[str] = []
+        # 被扩展名闸门挡下的扩展名 → 次数。**必须按扩展名分桶**，不能只给一个
+        # 总数：一个总数回答不了「丢的是什么」，而排查时唯一有用的信息就是扩展名。
+        # 2026-09-25 那次「音频全丢」正是这样潜伏了多个版本 —— 判定只记 debug，
+        # 看板上零痕迹，直到逐行读代码才发现。
+        skipped_ext: Dict[str, int] = {}
         now_ts = time.time()
 
         for file_path in raw_paths or []:
@@ -716,14 +761,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 siblings = self._collect_sibling_files(file_path, own_pair)
                 if siblings is None:
                     sub = self._enqueue_one_path(
-                        file_path, own_pair, src_root, pair_name, now_ts, counts)
+                        file_path, own_pair, src_root, pair_name, now_ts, counts,
+                        skipped_ext, from_scan)
                     if sub:
                         added_paths.append(sub)
                     continue
                 counts["expanded"] += 1
                 for mate in siblings:
                     sub = self._enqueue_one_path(
-                        mate, own_pair, src_root, pair_name, now_ts, counts)
+                        mate, own_pair, src_root, pair_name, now_ts, counts,
+                        skipped_ext, from_scan)
                     if sub:
                         added_paths.append(sub)
                 continue
@@ -736,21 +783,22 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             counts["expanded"] += 1
             for child in expanded:
                 sub = self._enqueue_one_path(
-                    child, own_pair, src_root, pair_name, now_ts, counts)
+                    child, own_pair, src_root, pair_name, now_ts, counts,
+                    skipped_ext, from_scan)
                 if sub:
                     added_paths.append(sub)
+
+        counts["skipped_by_ext"] = skipped_ext
+        self._note_ingest_skips(skipped_ext)
 
         # 看板/日志用：本批是否有目录被展开（不改变入队总数，故单独计数）
         if counts["added"] > 0:
             self.save_data("pending_queue", self._pending_queue)
-            if self._missed_queue:
-                self.save_data("missed_queue", self._missed_queue)
             dup_note = f"，其中 {counts['duplicate']} 个已在队列中" if counts["duplicate"] else ""
-            up_note = f"，{counts['upgraded']} 个由待补扫清单转入正常冷却" if counts["upgraded"] else ""
             exp_note = (f"，含 {counts['expanded']} 个目录已展开为 {counts['added']} 个文件"
                         if counts["expanded"] else "")
             logger.info(f"[Rsync115Sync] v{self.plugin_version} {who}监听到 "
-                        f"{counts['added']} 个新入库文件（{event_desc}{dup_note}{up_note}{exp_note}）"
+                        f"{counts['added']} 个新入库文件（{event_desc}{dup_note}{exp_note}）"
                         f"，已加入 {self._delay_hours}h 延迟冷却队列: "
                         f"{_brief_paths(added_paths)}")
         elif counts["duplicate"]:
@@ -954,16 +1002,38 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         return siblings
 
     def _enqueue_one_path(self, file_path: str, own_pair: Dict[str, Any], src_root: str,
-                          pair_name: str, now_ts: float, counts: Dict[str, int]) -> str:
+                          pair_name: str, now_ts: float, counts: Dict[str, int],
+                          skipped_ext: Optional[Dict[str, int]] = None,
+                          from_scan: bool = False) -> str:
         """
         对**单个文件**做完整入队判定，返回入队的相对路径（未入队返回空串）。
 
         从 `_enqueue_ingest_paths` 的循环体里抽出来，使「直接推文件」与
-        「推目录、展开成文件」走**完全同一套**判据（扩展名 / 忽略清单 / 幂等 /
-        待补扫升级）。分开写迟早出现两条路径的行为漂移。
+        「推目录、展开成文件」走**完全同一套**判据（扩展名 / 忽略清单 / 幂等）。
+        分开写迟早出现两条路径的行为漂移。
+
+        :param skipped_ext: 被扩展名闸门挡下时的分桶累加器（扩展名 → 次数）。
+            传 None 表示调用方不需要这个维度（单测直调常见）。
+        :param from_scan: 候选是否来自源端扫描。它只影响「取不到 mtime 时」的兜底
+            方向（见 `_cooldown_basis`），默认 False = 信任发现时刻（webhook 路径）。
         """
         if not _wh_valid_extension(own_pair, file_path, self._media_extensions):
             counts["skipped"] += 1
+            if skipped_ext is not None:
+                # 按扩展名分桶 + 留一条 **info** 级日志。
+                # 这里原先只 `counts["skipped"] += 1`，而汇总日志把 skipped
+                # 写在 debug 级 —— 于是「某一类文件全都被丢弃」在日志与看板上
+                # 都不留任何痕迹（2026-09-25 之前音频就是这样全丢的）。
+                # 只对**未知扩展名**打 info 且每条扩展名只打一次（由桶判定），
+                # 避免大批量入库时刷屏。
+                raw_ext = _ext_of(file_path)
+                bucket = raw_ext or "(无扩展名)"
+                first_time = skipped_ext.get(bucket, 0) == 0
+                skipped_ext[bucket] = skipped_ext.get(bucket, 0) + 1
+                if first_time:
+                    shown = f".{raw_ext}" if raw_ext else "无扩展名"
+                    logger.info(f"[Rsync115Sync] ⏭ 扩展名未纳入同步白名单，跳过（{shown}）："
+                                f"{file_path}；如需同步请在配置页「同步的扩展名」中加入该扩展名")
             return ""
 
         rel_path = os.path.relpath(file_path, src_root)
@@ -973,32 +1043,80 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 重新进队，表现为「明明忽略了却还在同步」。
             counts["skipped"] += 1
             return ""
-        # 幂等：已在队列中的条目保留原入库时间，不刷新时间戳。
-        # durable outbox 是 at-least-once，webhook 发送端也常带重试；无条件覆盖
-        # 会让「1 小时前入库的文件」永远走不完冷却。
-        #
-        # ⚠️ 本判断必须在下面「待补扫清单升级」**之前**：一个文件可以同时出现在
-        # 冷却队列与待补扫清单里（webhook 抢先入队、随后补齐扫描又发现它）。
-        # 顺序颠倒会让重复投递经由「升级」分支绕过幂等检查，把冷却重新计时。
+        # 幂等：已在队列中的条目保留原冷却基准，不刷新计时。
+        # durable outbox 是 at-least-once，webhook 发送端也常带重试，源端扫描更是
+        # 每轮都会重新看到同一批文件；无条件覆盖会让「1 小时前入库的文件」永远
+        # 走不完冷却 —— 表现为「队列一直有东西、却永远没有就绪的」。
+        # Idempotent: an entry already queued keeps its original cool-down basis.
         if queue_key in self._pending_queue:
             counts["duplicate"] += 1
             return ""
-        if queue_key in self._missed_queue:
-            # ⚠️ 这里曾有一处 `continue`（把「已在待补扫清单」也当成重复投递），
-            # 它造成的是一个**静默的永久卡死**：补齐扫描发现文件「源端存在、
-            # 从未同步过」，只把它放进待补扫清单；而真实入库事件到达时又因
-            # 「已在待补扫清单」被判重复而不入冷却队列 —— 该文件从此既不在冷却
-            # 队列、也没被任何一轮同步取走，用户看到清单里永远挂着一条。
-            # 正确语义是「升级」：文件真的入库了就该走正常的冷却流程，
-            # 同时从待补扫清单移出（两处都保留只会让同一文件被两条通道各自处理）。
-            # Upgrading an entry to the real cool-down queue is the whole point:
-            # a plain `continue` left it stranded in neither queue nor sync.
-            counts["upgraded"] += 1
 
-        self._pending_queue[queue_key] = now_ts
-        self._missed_queue.pop(queue_key, None)
+        self._pending_queue[queue_key] = self._cooldown_basis(file_path, now_ts, from_scan)
         counts["added"] += 1
         return rel_path
+
+    def _cooldown_basis(self, file_path: str, discovered_ts: float,
+                        from_scan: bool) -> float:
+        """
+        计算一个队列条目的**冷却基准时刻** —— 本插件冷却判据的唯一入口。
+
+        Compute the cool-down basis timestamp for a queue entry. This is the single
+        entry point of the cool-down predicate.
+
+        规则 / rule:
+
+            基准 = min(发现时刻, mtime)        到期 = 基准 + delay_hours
+
+        它同时解决**两件方向相反**的事，这是取 min 而不是二选一的原因：
+
+        | 场景 | mtime 相对发现时刻 | 基准取谁 | 效果 |
+        |---|---|---|---|
+        | 插件重载期间错过的文件 | 更旧 | **mtime** | 立即到期 → 下一轮就补传 |
+        | 刚落地 / 正在写入的文件 | 更新或相等 | **发现时刻** | 等满冷却 → 不传半截文件 |
+        | 未来时间戳（工具写错） | 更新 | **发现时刻** | 夹紧，不会"立刻到期" |
+
+        第二行覆盖了源端扫描最危险的那个场景：**扫描没有"文件写完了"这个信号**
+        （事件方案有，宿主只在整理完成后才广播），它唯一看得见的是 mtime，而
+        正在写入的文件 mtime 恰好是最新的。用 min + 足够长的冷却期，等价于
+        「等这个文件写完」，同时保留「等外挂字幕到齐」这个原始职责。
+
+        ## 关于 `cp -p` / `rsync -a` 保留旧时间戳（**实测结论，别照抄想当然的说法**）
+
+        本方法**不**为这类文件提供保护，而且**不需要** —— 实测（2026-09-25，
+        `cp -p` 一个 200MB 文件，50ms 采样目标端 mtime）：
+
+            写入阶段   mtime ≈ 当前时间      ← 此时 min 取"发现时刻" → 照常冷却
+            写完那一刻 mtime = 源端老时间戳  ← 此时 min 取"老 mtime" → 立即上传
+
+        `cp -p` / `rsync -a` 都在**内容写完之后**才设置 mtime，所以「看见老 mtime」
+        本身就意味着「这个文件已经拷完了」；而正在写的那些文件带的是当前时间，
+        由 min 正常纳入冷却。这正是上面第二行。
+        （`rsync` 更进一步：目标端是"临时名写完后 rename"，文件以最终 mtime
+        原子出现，连"看到半截"的窗口都没有。）
+
+        仍未覆盖的：某工具**原地写入**且从第一刻起就带着源端老时间戳（既不 rename、
+        也不先写 now）。这类写入在实测里没有出现，真要根除需要"到期时比对 mtime
+        是否仍等于发现时的快照"，代价是队列值与持久化结构都要改 —— 见 TODO。
+
+        Measured: cp -p sets mtime only after the copy finishes, so an old mtime
+        means the file is complete. The in-progress case carries "now" and is
+        handled by min. Do not claim this function guards against cp -p.
+
+        :param from_scan: 候选是否由**源端扫描**发现。它只影响下面这一个分支 ——
+            `getmtime` 抛错（NFS/CD2 抖动、权限）时的兜底方向：
+
+              · **源端扫描**（from_scan=True）：候选是"mtime 落在窗口内"筛出来的，
+                正常不会 stat 失败。真失败说明这个文件此刻读不到元数据 —— 当作
+                "很久以前"立即就绪，让它在下一轮被重试，而不是白等一个冷却期。
+              · **Webhook**（from_scan=False）：发送端主动点名了它，与 mtime 无关。
+                取"发现时刻"按普通冷却排队 —— 这是保守方向（晚传不丢数据）。
+        """
+        try:
+            mtime = os.path.getmtime(file_path)
+        except OSError:
+            return (discovered_ts - 10 ** 7) if from_scan else discovered_ts
+        return min(discovered_ts, mtime)
 
     def _handle_webhook_event(self, event: Event):
         """
@@ -1081,225 +1199,167 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                            shape=shape, ingested=counts.get("added", 0),
                            action="入队" if counts.get("added", 0) else "未入队")
 
-    def _handle_transfer_event(self, event: Event):
+    def _scan_source_cursor(self) -> int:
         """
-        监听媒体转移/字幕/音频整理完成事件，把新入库文件放入冷却队列。
+        源端游标扫描：入库发现的**主通道**，也是完整性的唯一承担者。
 
-        Handle the media-transfer-complete event: enqueue newly ingested files
-        into the cool-down queue. The delay gives external subtitles time to
-        download before the initial upload happens.
+        Source-root cursor scan — the primary ingest channel.
 
-        ⚠️ 必须同时监听字幕与音频事件（2026-09 修复的一起「46 个只监听到 3 个」）：
-        宿主按**文件类型**把整理完成结果拆成三个事件（见 app/chain/transfer/
-        settlement.py 的 _durable_transfer_event）：
-            主要媒体文件 → TransferComplete
-            字幕文件     → SubtitleTransferComplete
-            音频文件     → AudioTransferComplete
-        此前只注册了 TransferComplete，于是**字幕与音频文件完全不会入队**。
+        判据与 `sync_to_115.sh` 同构：
 
-        The host splits transfer results into three event types by file kind
-        (see _durable_transfer_event). Registering only TransferComplete silently
-        drops every subtitle and audio file.
-        """
-        if not self._enabled or not self._listen_transfer:
-            return
+            游标文件里记着每个映射「上次成功同步的时刻」
+            → `os.walk` 源端，挑出 mtime 晚于（游标 - 重叠窗口）的文件
+            → 交给 `_enqueue_ingest_paths` 走**与 webhook 完全相同**的入队判据
+            → 只有真的入队成功才推进游标
 
-        # 按平台推荐方式读取 payload：优先用 event.snapshot() 拿到**类型化快照**，
-        # 失败时回退到原始 dict。
-        #
-        # 为什么用 snapshot()：宿主对 TransferComplete 登记了契约
-        # （app/runtime/event/contracts.py 的 _PAYLOAD_MODELS →
-        # TransferResultContractData，且 TransferComplete 在 _SNAPSHOT_EVENTS 内），
-        # 快照会按契约把 payload 解析成 Pydantic 模型，字段名与类型由宿主保证；
-        # 而原始 event_data 是「保持插件旧对象字段不变」的兼容形状，
-        # 字段一旦调整就只会静默读到空值 —— 这正是本项目前几轮反复踩的坑。
-        #
-        # 但**必须保留回退**：旧宿主可能没有 snapshot()，或事件未登记契约
-        # （此时 snapshot.payload 为 None），直接改用快照会让原本能工作的
-        # 事件全部读不到数据。故两者并存，并在日志中标注实际来源。
-        #
-        # Prefer the platform-recommended typed snapshot, but keep the raw dict as a
-        # fallback: an unregistered contract or older host yields payload=None, and
-        # dropping the raw path would break otherwise-working events.
-        transfer_info = None
-        file_item = None
-        payload_source = "raw"
-        snapshot = None
-        snapshot_fn = getattr(event, "snapshot", None)
-        if callable(snapshot_fn):
-            try:
-                snapshot = snapshot_fn()
-            except Exception as snap_err:
-                # 快照解析失败绝不能影响事件处理，直接走回退
-                logger.debug(f"[Rsync115Sync] event.snapshot() 调用失败，回退原始 dict: {snap_err}")
-                snapshot = None
-        if snapshot is not None:
-            typed = getattr(snapshot, "payload", None)
-            if typed is not None:
-                transfer_info = getattr(typed, "transferinfo", None)
-                file_item = getattr(typed, "fileitem", None)
-                if transfer_info is not None:
-                    payload_source = "snapshot"
-                    # 契约存在但校验有错时不阻断处理，只留痕便于排查字段变更
-                    if getattr(snapshot, "errors", None):
-                        logger.debug(f"[Rsync115Sync] 事件快照存在校验告警（不影响处理）: "
-                                     f"{getattr(snapshot, 'errors', ())}")
+        为什么它能做到「不漏」：它不依赖任何外部通知。整理入库、手动放进媒体库、
+        外部工具搬入、MoviePilot 之外的下载完成，乃至插件重载/重启期间发生的一切，
+        只要文件在映射的源目录里，mtime 就会被下次扫描看见。
+        它取代了宿主的整理完成事件订阅 —— 后者有四个静默失效点（见文件头注释），
+        且 durable outbox 不重放。
 
-        # 回退：原始 dict（兼容未登记契约的旧宿主）
-        event_data = event.event_data or {}
-        if transfer_info is None:
-            transfer_info = event_data.get("transferinfo")
-        if file_item is None:
-            file_item = event_data.get("fileitem")
+        为什么它能做到「不多传」：
+          1. 已入队的 key 不重复入队（`_pending_queue` 幂等）；
+          2. 已就绪的文件由 rsync `--size-only` 判为无需传输，是空操作；
+          3. 老文件被 touch（刮削写 nfo、下载器续传、套件刷时间戳）只会让它
+             重新落入重叠窗口，但冷却基准取 `min(发现时刻, mtime)`，不会因此变新;
+          4. 游标只在**成功入队之后**推进 —— 失败的那一批下轮还会被看见。
 
-        if not transfer_info:
-            logger.info(f"[Rsync115Sync] v{self.plugin_version} 收到整理完成事件但缺少 transferinfo，已忽略"
-                        f"（事件={getattr(event.event_type, 'value', event.event_type)}"
-                        f"，读取方式={payload_source}）")
-            return
+        ⚠️ 与旧 `_scan_missed_ingest` 的三处关键差异（**不要退回旧写法**）：
 
-        # 路径来源按可靠性降级：file_list_new（实际落库路径，最可靠）
-        #                     → file_list（整理前的全部文件）
-        #                     → payload 里的 fileitem.path（源文件，兜底）
-        #
-        # 为什么要回退：`file_list_new` 的模型默认值是空 list，宿主**28 个
-        # TransferInfo 构造点里有 25 个不显式赋值**（多为失败分支/中间态，
-        # 见 DEVELOPMENT.md 3.8.2）。因此该字段为空是**真实存在的情况**。
-        # （注意：这是「可能为空」，**不是**「按文件类型刻意置空」——后者查无依据。）
-        #
-        # 语义差别要留意：fileitem.path 是**下载器源路径**，而 file_list_new 是
-        # **整理后的库内路径**。源路径通常不在媒体库映射内，故可能匹配不到映射；
-        # 匹配不到只记日志，绝不错误入队。
-        #
-        # Path source, most to least reliable. file_list_new can legitimately be
-        # empty (25 of 28 constructor sites rely on the default), so fall back.
-        # Note fileitem.path is the downloader source path, not the library path.
-        file_list = list(getattr(transfer_info, "file_list_new", []) or [])
-        path_source = "file_list_new"
-        if not file_list:
-            file_list = list(getattr(transfer_info, "file_list", []) or [])
-            if file_list:
-                path_source = "file_list"
-        if not file_list:
-            # file_item 已在上方按 snapshot → 原始 dict 的顺序解析好
-            fallback_path = getattr(file_item, "path", None) if file_item else None
-            if fallback_path:
-                file_list = [fallback_path]
-                path_source = "fileitem.path"
-        fallback_used = path_source != "file_list_new"
+        | | 旧实现 | 本实现 |
+        |---|---|---|
+        | 判据 | 「mtime 晚于**上次扫描时间**」 | 「mtime 晚于**游标 - 重叠窗口**」 |
+        | 入队去向 | `_missed_queue`（**无条件跳过冷却**） | `_pending_queue`（正常冷却） |
+        | 游标推进 | **无条件**推进（入队失败也推） | 仅在成功入队后推进 |
+        | 由谁驱动 | 挂在同步 cron 内部（会被补传饿死） | 独立 service，10 分钟一轮 |
 
-        # ⚠️ 归一化、映射归属、扩展名过滤、忽略清单、幂等、补齐清单清理
-        # **全部**由 `_enqueue_ingest_paths` 承担 —— 本函数只负责「从 payload 里取到
-        # 候选路径」这一件事。此前这里有一份与 webhook 链路**逐字重复**的入队实现，
-        # 它比 webhook 那份**少了忽略清单判断**，于是被忽略的文件仍会经整理事件入队，
-        # 与「已忽略」清单上的承诺直接矛盾。合流是唯一能保证两条来源行为一致的写法：
-        # 任何新的入队判据只需要在一个地方加。
-        self._enqueue_ingest_paths(
-            file_list, source="",
-            event_desc=f"事件={getattr(event.event_type, 'value', event.event_type)}"
-                       f"，读取方式={payload_source}"
-                       + (f"，路径来源={path_source}（回退）" if fallback_used else ""))
+        旧实现那三条的合成效果是：「扫描刚发现一个 10 秒前刚落地的文件 →
+        判为『错过的』→ 不吃冷却 → 本轮上传」。而源端扫描**没有"文件写完了"
+        这个信号**，正在写入的文件 mtime 恰恰是最新的 —— 那个组合会稳定地
+        制造「传到一半源文件还在变」的中断，也就是 DEVELOPMENT §3.10 记录的
+        云端残留。新实现把冷却入口还给扫描发现的文件，正是为了堵住它。
 
-    def _scan_missed_ingest(self) -> int:
-        """
-        扫描各映射的源端目录，补齐「冷却等待期间错过的入库事件」。
+        成本：每轮**每映射一次** `os.walk`，纯本地目录遍历，不触碰 115 挂载点，
+        因此零 115 API 请求、不触发风控。与补传前置扫描（`_api_backfill_scan`）
+        的成本性质相同，只是节奏独立（10 分钟）。
 
-        Reconcile the queue with the source roots: pick up ingest events that were
-        missed while the plugin was unavailable.
-
-        为什么不能在事件里补：事件走 durable outbox，投递时插件若不可用会进入有限
-        重试，超过上限即永久丢失；事件错过不会重放。因此只能反过来查：
-        每轮同步开头扫一次源端目录，用文件 mtime 与「上次扫描时间」比对，
-        把新出现的文件补进队列。（早期此处称「宿主只在批次收尾广播」，已撤回，见 3.8.1。）
-
-        成本：每轮同步**每映射一次** os.walk —— 全部是本地目录遍历，
-        不触碰 115 挂载点，因此不产生 115 API 请求、不触发风控。
-        这与补传前置扫描（_api_backfill_scan）的成本性质相同。
-
-        Cost: one os.walk per mapping per sync run, purely over local source
-        directories. It never touches the 115 mount, so it costs no 115 API
-        requests and cannot trigger rate limiting.
-
-        :return: 本次新补入的文件数 / number of files newly enqueued
+        :return: 本次新入队的文件数 / number of files newly enqueued
         """
         now_ts = time.time()
-        # 首轮没有基准时间：只建立基准，避免把存量媒体整库灌进队列
-        if not self._missed_last_scan:
-            self._missed_last_scan = now_ts
-            self.save_data("missed_last_scan", self._missed_last_scan)
-            logger.info("[Rsync115Sync] 首次源端补齐扫描：仅建立时间基准，本次不入队")
-            return 0
-
-        # 扫描间隔下限：媒体库很大时，每轮同步都整树遍历代价过高
-        # （冷启动、频繁手动同步、补传连跑等场景）。事件丢失是低频问题，
-        # 隔一段时间扫一次已足够，且漏掉的事件在下次扫描仍会被 mtime 捞出来。
-        # Throttle: a full tree walk on every run is too costly for large
-        # libraries. Missed events are low-frequency and stay discoverable by
-        # mtime, so an interval floor loses nothing but wasted I/O.
-        if now_ts - self._missed_last_scan < self._MISSED_SCAN_INTERVAL:
-            return 0
-
-        since = self._missed_last_scan
-        added = 0
+        total_added = 0
         for pair in self._sync_pairs:
             src_root = (pair.get("src") or "").strip().rstrip("/")
             pair_name = _pair_name(pair)
             if not src_root or not os.path.isdir(src_root):
                 continue
-            valid_exts = _valid_exts_of(self._media_extensions, pair.get("all_ext", False))
-            # 与同步/搜索/补传共用同一份排除目录口径。此处原先是硬编码的
-            # ("@eaDir", "#recycle", "@__thumb")，用户在配置页修改排除规则后，
-            # 补齐扫描仍会照旧下钻那些目录 —— 表现为「明明排除了，却还是被捞进来」。
-            # 复用 paths.excluded_dir_names() 后三处口径不可能再漂移。
-            # Shares the exclusion set with sync/search/backfill. Previously hardcoded,
-            # so a user's edited exclude rules were ignored by this scan.
-            excluded_dirs = _excluded_dir_names(self._exclude_patterns)
 
+            # 游标缺失 = 该映射第一次扫描：用「当日 0 点」作基线。
+            # 与 shell 的 `--since` 缺省一致，好处是**今天已入库的存量天然被覆盖**
+            # —— 不需要单独的「只记不入队」引导阶段（那会让今天入库的文件成为
+            # 永久漏：既不在游标的历史里，也永远不会再"变新"）。
+            # ⚠️ 不要改成"建立基线时只记不入队"：那正是上面说的永久漏。
+            cursor = float(self._source_cursor.get(pair_name) or 0.0)
+            if cursor <= 0.0:
+                cursor = _today_start_ts()
+                self._source_cursor[pair_name] = cursor
+                logger.info(f"[Rsync115Sync] [{pair_name}] 首次源端扫描：基线取当日 0 点"
+                            f"（{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cursor))}）")
+
+            # 重叠窗口：`os.path.getmtime` 的比较是严格大于，而多个文件在同一秒
+            # 落盘很常见（整季批量拷贝、SMB 一次写入）。若某文件的 mtime 恰好
+            # 等于游标，严格比较会让它**每次都落在窗口外、永久跳过**。
+            # 往后退一个窗口后，最坏情况只是重复扫到已入队的文件 —— 那由队列
+            # 幂等吸收，代价为零；而漏掉是永久损失。代价不对称，故取重叠。
+            since = cursor - self._SOURCE_CURSOR_OVERLAP_SECS
+            # getattr 兜底：本方法会被 service 直接调用，而 `__new__` 构造的实例
+            # （单测）或跨版本的旧数据文件可能没有该属性 —— 缺属性时不该让
+            # **整条发现通道**崩掉（那正是最难自查的一类失效）。与
+            # `_expand_ingest_path` 同款处理。
+            excluded_dirs = _excluded_dir_names(
+                getattr(self, "_exclude_patterns", self.DEFAULT_EXCLUDE_PATTERNS))
+
+            candidates: List[str] = []
             for dirpath, dirnames, filenames in os.walk(src_root):
-                # 跳过被排除的目录，避免遍历群晖元数据目录
                 dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
                 for fn in filenames:
-                    if valid_exts is not None:
-                        ext = os.path.splitext(fn)[-1].lstrip(".").lower()
-                        if ext not in valid_exts:
-                            continue
                     full = os.path.join(dirpath, fn)
                     try:
-                        mtime = os.path.getmtime(full)
+                        if os.path.getmtime(full) <= since:
+                            continue
                     except OSError:
                         continue
-                    if mtime <= since:
-                        continue
-                    rel_path = os.path.relpath(full, src_root)
-                    queue_key = f"{pair_name}:{rel_path}"
-                    # 已在冷却队列或已在待补扫清单中的都不重复计入，
-                    # 否则每轮扫描都会重复“发现 N 个遗漏”并刷警告
-                    if queue_key in self._pending_queue or queue_key in self._missed_queue:
-                        continue
-                    # 补入的条目按「首次错过时间」计时，但同步筛选时走 missed 通道
-                    # 不参与冷却，见 _collect_ready 的说明
-                    self._missed_queue[queue_key] = now_ts
-                    added += 1
+                    candidates.append(full)
 
-        self._missed_last_scan = now_ts
-        self.save_data("missed_last_scan", self._missed_last_scan)
-        if added:
-            self.save_data("missed_queue", self._missed_queue)
-            logger.warning(f"[Rsync115Sync] 🕳️ 源端补齐扫描发现 {added} 个可能错过事件的入库文件，"
-                           f"已加入待同步清单（不参与冷却，下轮直接同步）")
+            if not candidates:
+                # 没有任何候选也要推进游标：否则一个安静期很长的映射会让游标
+                # 永远停在原地，下次一旦有新文件，窗口会往回退到很久以前，
+                # 把期间所有 mtime 落在窗口内的文件一次性全捞进来。
+                self._source_cursor[pair_name] = now_ts
+                continue
+
+            # 与 webhook 走**同一个入口**：扩展名闸门、忽略清单、幂等、
+            # 目录展开、all_ext 同目录兜底全部共用，判据不可能漂移。
+            counts = self._enqueue_ingest_paths(
+                candidates, source="源端扫描", from_scan=True,
+                event_desc=f"映射={pair_name}，游标={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cursor))}"
+                           f"，候选={len(candidates)}")
+            added = int(counts.get("added", 0))
+            total_added += added
+
+            # ⚠️ 只在**成功入队之后**推进游标。若这里无条件推进（旧实现的写法），
+            # 一次落盘失败或异常就会让整批候选永久丢失 —— 游标越过了它们，
+            # 而它们从未进过队列，任何一轮同步都不会再取。
+            # ⚠️ 推进到 now_ts 而不是"最大 mtime"：now_ts 是保守值，只会重复扫，
+            # 不会跳过任何在扫描期间落地的文件。
+            self._source_cursor[pair_name] = now_ts
+
+        self._source_scan_last = now_ts
+        self.save_data("source_cursor", self._source_cursor)
+        self.save_data("source_scan_last", self._source_scan_last)
+        if total_added:
+            logger.info(f"[Rsync115Sync] 🔍 源端扫描：{total_added} 个新文件已入冷却队列"
+                        f"（{self._delay_hours}h 后上传；映射 {len(self._sync_pairs)} 组）")
         else:
-            logger.info("[Rsync115Sync] 源端补齐扫描完成：无遗漏")
-        return added
+            logger.debug(f"[Rsync115Sync] 源端扫描完成：无新文件（映射 {len(self._sync_pairs)} 组）")
+        return total_added
 
 
     def get_service(self) -> List[Dict[str, Any]]:
         """
-        注册定时巡检服务（cron 可配置）。
+        注册**两个**定时服务：入库发现（扫描）与冷却就绪同步。
 
-        Register the periodic inspection service. Each tick resumes an unfinished
-        back-fill queue first, otherwise runs a normal ready-sync.
+        Registers two services: ingest discovery (scan) and cool-down sync.
+
+        ⚠️ 为什么必须是两个、不能合成一个：这两者的**节奏由不同因素决定**，
+        合并会互相绑架。
+
+          · **发现层的节奏**只该由「媒体多久出现一次」决定 —— 10 分钟一轮，
+            与上传无关。它很便宜（纯本地 os.walk，零 115 API）。
+          · **传输层的节奏**由冷却时长与 cron 决定，还要与补传队列争批次与配额。
+
+        合并到传输 cron 里的后果是实测过的：`_scheduled_sync` 第一件事是
+        `if self._resume_backfill_if_pending(): return` —— 补传队列非空时整轮
+        **只跑补传**，扫描一次都不跑。于是一个几千条的补传队列会给发现层断粮，
+        而看板上完全看不出「扫描被跳过了」。
+        Discovery must not be starved by the transfer layer's batch quota.
         """
         services = []
+
+        # ① 入库发现（主通道）：固定间隔，不由用户 cron 控制
+        if self._enabled and self._source_scan_enabled:
+            try:
+                services.append({
+                    "id": "Rsync115Sync_SourceScan",
+                    "name": "源端扫描入库（主通道）",
+                    "trigger": IntervalTrigger(seconds=max(60, self._source_scan_interval)),
+                    "func": self._scan_source_cursor_safe,
+                    "kwargs": {}
+                })
+            except Exception as e:
+                logger.error(f"[Rsync115Sync] 源端扫描服务注册失败: {e}")
+
+        # ② 冷却就绪同步 + 补传续跑（用户可配 cron）
         if self._enabled and self._cron:
             try:
                 services.append({
@@ -1312,6 +1372,24 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             except Exception as e:
                 logger.error(f"[Rsync115Sync] 定时规则解析失败: {e}")
         return services
+
+    def _scan_source_cursor_safe(self) -> int:
+        """
+        源端扫描的 service 入口：异常兜底 + 运行态落盘。
+
+        为什么要有这一层：扫描是**定时 service**，宿主把它丢到调度线程里跑；
+        未捕获的异常会被记成「插件错误」，而这只是发现层的一次失败 ——
+        下一轮（10 分钟后）会重新扫到同一批文件（游标没推进），自愈。
+        所以这里最该做的是**记日志并让本轮安静结束**，而不是抛出。
+        """
+        if not self._enabled or not self._source_scan_enabled:
+            return 0
+        try:
+            return self._scan_source_cursor()
+        except Exception as err:
+            logger.error(f"[Rsync115Sync] 源端扫描异常（已兜底，下一轮会重扫同一批）: {err}")
+            logger.debug(f"[Rsync115Sync] 源端扫描异常堆栈:\n{traceback.format_exc()}")
+            return 0
 
     # ================= 胁持宿主模块方法（webhook_parser） =================
 
@@ -1714,6 +1792,36 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     # 现在只有一条通道：宿主的 `webhook_parser` 契约（认领确认发给本插件的报文）。
     # 自建匿名端点已于 2026-09-22 移除，原因见 DEVELOPMENT §9.18。
 
+    def _note_ingest_skips(self, skipped_ext: Dict[str, int]) -> None:
+        """
+        把「被扩展名闸门挡下」的分布累加进运行态，供看板展示。
+
+        Accumulate extensions blocked by the ingest gate so the dashboard can
+        answer "which file types are being silently dropped".
+
+        为什么值得专门做：闸门丢弃此前只写 debug 日志，而看板的四个计数里没有它
+        —— 「某一类文件 100% 被丢弃」在界面上**完全没有痕迹**。这不是假设：
+        音频曾因此全丢（用户的默认白名单里一个音频扩展名都没有），直到逐行
+        读代码才发现。一条只增不清的分布就足以让这种情况在第一次发生时暴露。
+
+        Why it matters: this exact blind spot let "100% of audio files dropped"
+        survive multiple releases. A monotonically growing histogram is enough to
+        make that visible the first time it happens.
+        """
+        if not skipped_ext:
+            return
+        stat = getattr(self, "_ingest_skip_stat", None)
+        if not isinstance(stat, dict):
+            stat = {}
+            self._ingest_skip_stat = stat
+        for ext, n in skipped_ext.items():
+            stat[ext] = int(stat.get(ext, 0)) + int(n)
+        try:
+            self.save_data("ingest_skip_stat", stat)
+        except Exception:
+            # 统计落盘失败绝不能影响入库本身
+            pass
+
     @staticmethod
     def _wh_stat() -> Dict[str, Any]:
         """
@@ -1833,7 +1941,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             "data": {
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
-                "missed_scan_enabled": self._missed_scan_enabled,
+                "source_scan_enabled": self._source_scan_enabled,
+                "source_scan_interval": self._source_scan_interval,
                 # webhook（第二入库来源）：入口只认 `source=rsync115sync`，
                 # 无可配置项。曾有的渠道白名单已随其移除（DEVELOPMENT §4.0a）。
                 "strm_check_enabled": self._strm_check_enabled,
@@ -1861,11 +1970,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             return {"success": False, "message": "配置数据为空"}
         self._enabled = config.get("enabled", False)
         self._listen_transfer = config.get("listen_transfer", True)
-        self._missed_scan_enabled = bool(
-            config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
+        self._source_scan_enabled = bool(
+            config.get("source_scan_enabled", self._SOURCE_SCAN_ENABLED_DEFAULT)
         )
+        self._source_scan_interval = max(
+            60, int(config.get("source_scan_interval") or self._SOURCE_SCAN_INTERVAL))
         self._notify = config.get("notify", True)
-        self._delay_hours = float(config.get("delay_hours", 2.0))
+        self._delay_hours = float(config.get("delay_hours", 4.0))
         self._cron = config.get("cron", "0 */2 * * *")
         self._sync_pairs = config.get("sync_pairs") or []
         self._media_extensions = config.get("media_extensions") or self.DEFAULT_MEDIA_EXTENSIONS
@@ -1944,6 +2055,19 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "is_running": self._is_running,
                 # webhook 运行态：计数 + 最近报文的**字段结构**（不记值）。
                 "webhook": webhook_stat,
+                # 入库闸门挡下的扩展名分布（累计，扩展名 → 次数）。
+                # 看板据此显示「哪些类型正在被丢弃」—— 这是此前完全缺失的一维：
+                # 丢弃只写 debug，界面上零痕迹（音频曾因此全丢而不自知）。
+                # getattr 兜底：本方法会被 `__new__` 构造的实例（单测/部分宿主路径）
+                # 调用，此时 `__init__` 没跑过、该属性不存在。为看板统计抛
+                # AttributeError 会把「同步本身完全正常」表现成异常（本项目已记录过
+                # 这一类缺陷，见 _webhook_stat_now 的同一处理）。
+                "ingest_skipped_by_ext": dict(getattr(self, "_ingest_skip_stat", None) or {}),
+                # 源端游标扫描（主入库通道）的可见状态
+                "source_scan_enabled": self._source_scan_enabled,
+                "source_scan_interval": self._source_scan_interval,
+                "source_cursor": dict(self._source_cursor),
+                "source_scan_last": self._source_scan_last,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,
                 # 源端文件已不存在、等待同步轮清理的条目数（不计入上面两个数字）
@@ -1954,11 +2078,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 补传进度与限流状态，供看板展示
                 "backfill_remaining": len(self._backfill_queue),
                 "backfill_total": self._backfill_total,
-                # 错过入库事件的待补扫清单：数字大于 0 说明有事件在插件不可用期间丢失，
-                # 已由源端扫描补回、将在下轮同步（不参与冷却）
-                "missed_count": len(self._missed_queue),
-                "missed_last_scan": self._missed_last_scan,
-                "missed_scan_enabled": self._missed_scan_enabled,
+                # ⚠️ 这里曾有 source_scan_enabled / source_scan_interval 的**第二份**
+                # （直接读属性，无 getattr 兜底）。字典里重复的键不会报错、后者胜出，
+                # 于是上面那份带兜底的写法被悄悄架空 —— `__new__` 构造的实例调本方法
+                # 仍会 AttributeError。重复键是这类"看起来已经修了"的典型来源，
+                # 加字段时务必先 grep 确认该键不存在。
                 # strm 交叉验证状态（看板展示与重传操作的数据源）
                 "strm_suspects": self._strm_suspects,
                 # 观察期明细：key → 同步成功时间戳。
@@ -1997,12 +2121,18 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         now_ts = time.time()
         threshold = self._delay_hours * 3600
         items = []
-        for key, ts in sorted(self._pending_queue.items(), key=lambda x: x[1]):
-            elapsed = now_ts - ts
+        for key, basis_ts in sorted(self._pending_queue.items(), key=lambda x: x[1]):
+            # ⚠️ 队列里存的是**冷却基准**（min(发现时刻, mtime)），不是入队时刻。
+            # 对一个"入库时间早于发现时间"的文件（插件重载期间错过的），
+            # 基准会明显早于它真正进队列的时刻 —— 因此下面这个时间字段命名为
+            # 「冷却基准」而不是「入队时间」，否则用户会看到「入队时间 3 小时前」
+            # 却不知道那个时间是文件自己的 mtime（这正是它已就绪的原因）。
+            elapsed = now_ts - basis_ts
             remaining = max(0, threshold - elapsed)
             items.append({
                 "key": key,
-                "enter_time": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "basis_time": datetime.fromtimestamp(basis_ts).strftime("%Y-%m-%d %H:%M:%S"),
+                "enter_time": datetime.fromtimestamp(basis_ts).strftime("%Y-%m-%d %H:%M:%S"),
                 "is_ready": elapsed >= threshold,
                 "remaining_seconds": int(remaining)
             })
@@ -2092,21 +2222,19 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         """
         try:
             changed = {}
-            # 扩展名：旧默认（无字幕）→ 新默认（含字幕）
-            cur_ext = (config.get("media_extensions") or "").strip()
-            if cur_ext and cur_ext == self._LEGACY_DEFAULTS["media_extensions"]:
-                self._media_extensions = self.DEFAULT_MEDIA_EXTENSIONS
-                changed["media_extensions"] = self.DEFAULT_MEDIA_EXTENSIONS
-            # 排除规则：旧默认（无 ..*）→ 新默认
-            cur_ex = (config.get("exclude_patterns") or "").strip()
-            if cur_ex and cur_ex == self._LEGACY_DEFAULTS["exclude_patterns"]:
-                self._exclude_patterns = self.DEFAULT_EXCLUDE_PATTERNS
-                changed["exclude_patterns"] = self.DEFAULT_EXCLUDE_PATTERNS
-            # I/O 超时：60 → 600（前端为 v-model.number，兼容 int/str 两种形态）
-            cur_to = str(config.get("rsync_timeout") or "").strip()
-            if cur_to and cur_to == str(self._LEGACY_DEFAULTS["rsync_timeout"]):
-                self._rsync_timeout = self.DEFAULT_RSYNC_TIMEOUT
-                changed["rsync_timeout"] = self.DEFAULT_RSYNC_TIMEOUT
+            # ⚠️ 判据写成「当前值 ∈ 该字段的**全部**旧默认串」。这里原先是
+            # 逐字段比对**单个**旧默认串，于是第二代旧默认值（含字幕但不含音频
+            # 的那串）既不等于第一代、也不等于新默认，永远不被迁移 ——
+            # 用户看到的现象是「按文档升级了，音频还是不传」，而配置页那栏
+            # 显示着一串看起来很正常的扩展名，无从判断它是"用户自己填的"。
+            # Compare against EVERY generation of legacy defaults for that field.
+            for field, legacy_values in self._LEGACY_DEFAULTS_ALL.items():
+                cur = str(config.get(field) or "").strip()
+                if not cur or cur not in legacy_values:
+                    continue
+                new_value = self._LEGACY_MIGRATION_TARGETS[field]
+                setattr(self, self._LEGACY_MIGRATION_ATTRS[field], new_value)
+                changed[field] = new_value
 
             if changed:
                 merged = dict(config)
@@ -2200,11 +2328,28 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
     def _scheduled_sync(self):
         """
-        定时巡检入口：优先续跑未完成的补传队列，否则执行常规就绪同步。
+        定时巡检入口：常规就绪同步优先，补传队列用**剩余**配额续跑。
 
-        Cron entry point. Only one mode runs per tick because both share the same
-        execution lock and window quota — launching both would make them contend
-        for the lock and the second one would silently do nothing.
+        Cron entry point. Ready-sync first; the back-fill queue drains with what is
+        left of the window quota.
+
+        ⚠️ 这里的顺序在 2026-09-25 被**反转过**，原因是旧顺序会让主任务饿死：
+
+            旧：if self._resume_backfill_if_pending(): return   # 补传非空 → 直接返回
+                self._start_sync_thread(mode="ready")
+
+        补传队列是"存量"（可能是几千条），而每个 cron tick 都会启动一批补传就
+        return。批次上限 200、窗口配额 500/30min 的情况下，一个几千条的队列会
+        连续占用十几轮 cron，期间**所有冷却到期的追加文件一动不动** —— 而界面上
+        没有任何地方说明「现在是补传在跑，ready 在排队」。
+
+        为什么不能改成"两个都启动"：两种模式共用同一把执行锁与同一份窗口配额，
+        同时启动只会让后者拿不到锁而静默什么都不做（原注释已经指出这点）。
+        正确做法是**顺序互换**：ready 先跑（它是新鲜入库，时效敏感），
+        补传后跑（它是存量，晚一轮无所谓）——`_execute_sync` 内部还有配额判定，
+        配额被 ready 用掉时补传会自然地留到下一轮。
+
+        Order matters: ready is freshness-sensitive, back-fill is stock inventory.
         """
         logger.info("[Rsync115Sync] 触发定时检查同步就绪媒体...")
         # strm 交叉验证巡检：纯本地文件系统操作（零 115 API），
@@ -2213,11 +2358,36 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._strm_check()
         except Exception as e:
             logger.warning(f"[Rsync115Sync] strm 交叉验证巡检异常（已忽略，不影响本轮同步）: {e}")
-        # 补传队列存在时优先续跑：队列有限且自终止，排空后自动恢复常规巡检。
-        # 两种模式共用同一把执行锁与同一份窗口配额，故同一轮只启动其中一个。
+
+        # ready 优先：新鲜入库的时效性远高于存量补传。
+        # 若 ready 本轮确实有活干，补传推迟到下一个 tick（`_resume_backfill_if_pending`
+        # 每轮都会再试，且队列有限、自终止，不会因此永远排不上）。
+        if self._has_ready_files():
+            self._start_sync_thread(mode="ready")
+            return
         if self._resume_backfill_if_pending():
             return
+        # 两者都没活干：仍然跑一次 ready，让它完成队列清理（源端已消失的条目出队）
+        # 并如实回报「本轮无需同步」。
         self._start_sync_thread(mode="ready")
+
+    def _has_ready_files(self) -> bool:
+        """
+        队列里是否存在**已经冷却到期**的条目。
+
+        Whether any queued entry has passed its cool-down. Uses the same basis as
+        `_execute_sync` (min(discovered, mtime) + delay) so the scheduling decision
+        can never disagree with what the run would actually pick up.
+        """
+        now_ts = time.time()
+        threshold = self._delay_hours * 3600
+        for basis_ts in (self._pending_queue or {}).values():
+            try:
+                if now_ts - float(basis_ts) >= threshold:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def _start_sync_thread(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
         """
@@ -2323,12 +2493,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # retry/backfill 处理的是更早的存量，与新鲜入库无关。
             # Source-root reconciliation for missed ingest events. Local-only walk,
             # no 115 mount access. Only needed in ready mode.
-            if mode == "ready" and self._missed_scan_enabled:
-                try:
-                    self._scan_missed_ingest()
-                except Exception as scan_err:
-                    # 补齐失败不能影响正常同步
-                    logger.warning(f"[Rsync115Sync] 源端补齐扫描异常（已忽略，不影响本轮同步）: {scan_err}")
+            # ⚠️ 这里**不再**调用源端扫描。扫描已从同步 cron 里移出去，
+            # 改由独立 service 驱动（见 get_service）。原因：原先挂在
+            # `_execute_sync(mode="ready")` 内部，而 `_scheduled_sync` 是
+            # 「补传队列非空就 return」—— 补传一忙，扫描整轮不跑，
+            # 主通道被次要通道饿死。发现层的节奏不该由传输层决定。
 
             # force 在配额耗尽后仍应完成**剩余映射的只读全量对账**（不传输）：
             # 对账是 force 的语义核心，且不再产生上传；若直接 break，剩余映射要等
@@ -2415,36 +2584,23 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                                 f"{len(pair_files)} 个问题文件，转入定向传输（受批次上限与配额约束）")
 
                 elif mode == "ready":
-                    for key, ts in list(self._pending_queue.items()):
-                        if key.startswith(f"{pair_name}:") and (now_ts - ts >= threshold):
-                            rel_p = key.split(f"{pair_name}:", 1)[1]
-                            if os.path.exists(os.path.join(src, rel_p)):
-                                pair_files.append(rel_p)
-                            else:
-                                self._pending_queue.pop(key, None)
-
-                    # 补齐清单：这些文件是在插件不可用期间错过的入库事件
-                    # （事件错过不重放，已通过源端扫描补回）。
-                    # 它们已经等得够久了，**不再走冷却判定**，直接纳入本轮同步。
-                    # Missed-ingest entries: recovered by scanning the source
-                    # roots. They have already waited long enough, so they skip
-                    # the cool-down check and sync in this run.
-                    missed_here = [k for k in list(self._missed_queue.keys())
-                                   if k.startswith(f"{pair_name}:")]
-                    for key in missed_here:
+                    # 冷却判据的**唯一出口**：条目在队列里存的是「冷却基准时刻」
+                    # （min(发现时刻, mtime)，见 _cooldown_basis），到期 = 基准 + 冷却时长。
+                    # ⚠️ 两个队列已合并：这里曾另有一条 `_missed_queue` 通道，
+                    # 它对"插件重载期间错过的文件"**无条件跳过冷却**。删除它的原因见
+                    # _cooldown_basis 的 docstring —— 同一件事现在由基准取 mtime 表达，
+                    # 而且顺带避免了「扫到刚落地的文件也立刻传」。
+                    for key, basis_ts in list(self._pending_queue.items()):
+                        if not key.startswith(f"{pair_name}:"):
+                            continue
+                        if now_ts - basis_ts < threshold:
+                            continue
                         rel_p = key.split(f"{pair_name}:", 1)[1]
                         if os.path.exists(os.path.join(src, rel_p)):
-                            if rel_p not in pair_files:
-                                pair_files.append(rel_p)
+                            pair_files.append(rel_p)
                         else:
-                            # 文件已不在源端（被删除/移动），清掉避免长期堆积。
-                            # 这一支与批次上限无关：源端确实没有它，留着只会长期挂账。
-                            self._missed_queue.pop(key, None)
-                    # ⚠️ 移出补齐清单**必须等批次上限截断之后**（见下方 settle 段）：
-                    # 截断掉的条目本轮不会真正传输，此时移出会让它彻底丢失
-                    # ——既不在冷却队列、也不在补齐清单，任何一轮同步都不会再取它。
-                    # 本处原先把 pop 写在这个循环里（截断之前），于是那句「仅在确实
-                    # 纳入本轮时才移出」的注释**并未生效**（v0.2.1 review 发现）。
+                            # 源端已不存在（被删除/移动）：出队，避免长期挂账
+                            self._pending_queue.pop(key, None)
 
                 elif mode in ("retry", "backfill"):
                     # 重试/补传模式：若指定了 custom_files 优先按其处理，
@@ -2604,25 +2760,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     except Exception:
                         pass
 
-                # ---- 补齐清单出账：本批确实交给 rsync 之后才移出 ----
-                # 两处顺序都是刻意的：
-                #   · 在**批次上限截断之后** —— 被截断的条目本轮不会传输，移出即永久丢失
-                #     （既不在冷却队列、也不在补齐清单，任何一轮同步都不会再取它）；
-                #   · 在**rsync 真正执行之后** —— 若在启动前移出，Popen 失败/超时等路径
-                #     会让条目既没传、又没进异常清单，同样静默丢失。
-                # 传输失败的条目会由紧随其后的对账落进异常清单，可经 /rsync_retry 继续。
-                # Settle the missed-ingest list only after the batch was actually
-                # handed to rsync; failures fall through to the anomaly audit.
-                if mode == "ready" and self._missed_queue:
-                    missed_settled = 0
-                    for rel_p in pair_files:
-                        if self._missed_queue.pop(f"{pair_name}:{rel_p}", None) is not None:
-                            missed_settled += 1
-                    if missed_settled:
-                        # 立即落盘，避免记录只在内存里、重载即丢
-                        self.save_data("missed_queue", self._missed_queue)
-                        logger.info(f"[Rsync115Sync] [{pair_name}] 🕳️ 本轮纳入 {missed_settled} 个"
-                                    f"错过的入库文件（含字幕等，不参与冷却）")
+                # 注：这里原有一段「补齐清单出账」（把本批确实交给 rsync 的条目从
+                # `_missed_queue` 移出）。该队列已随冷却判据统一而删除 —— 现在冷却
+                # 到期的条目统一存在 `_pending_queue` 里，其出队由下方的对账结果驱动
+                # （见「P0-1：出队与 strm 登记只看对账，不看退出码」一段），
+                # 时机与粒度都与本段原本的意图一致，且只维护一处状态。
+                # The missed-event queue was removed; cool-down entries now live in
+                # `_pending_queue` and are settled by the audit result below.
 
                 # ---- 风控特征检测：stderr 命中限流关键词立刻进入退避并终止本轮 ----
                 # Rate-limit detection: a keyword hit in stderr triggers back-off
@@ -2891,7 +3035,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         if not os.path.exists(source_dir) or not os.path.exists(target_dir):
             return missing, corrupt
 
-        valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
+        # 全量对账的扩展名判据与入库闸门同一实现（all_ext 分支由它内部处理）。
+        # 这里原先自己解析了一份 valid_exts 并只判 `not all_ext`，
+        # 与入库闸门是两份独立实现 —— 两份一旦分叉，对账就会去核对一批
+        # 根本不会被同步的文件，把异常清单刷出永远消不掉的条目。
+        audit_pair = {"all_ext": all_ext}
 
         if rel_paths is not None:
             # ---- 增量对账：只检查指定文件 ----
@@ -2920,16 +3068,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         # ---- 全量对账：force 模式专用 ----
         now_ts = time.time()
-        cooling_seconds = self._delay_hours * 3600
+        cooling_seconds = self._delay_hours * 3600   # 条目存的是冷却基准，见 _cooldown_basis
 
         for root, _, files in os.walk(source_dir):
             for f in files:
                 if _is_junk_file_name(f):
                     continue
-                if not all_ext:
-                    ext = os.path.splitext(f)[-1].lstrip(".").lower()
-                    if ext not in valid_exts:
-                        continue
+                if not _wh_valid_extension(audit_pair, f, self._media_extensions):
+                    continue
 
                 src_f = os.path.join(root, f)
                 rel_f = os.path.relpath(src_f, source_dir)
@@ -2940,10 +3086,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 if self._is_ignored(key):
                     continue
 
-                # 冷却期内的文件属于正常等待调度，不计入缺失/待重试
+                # 冷却期内的文件属于正常等待调度，不计入缺失/待重试。
+                # 队列值 = 冷却基准（min(发现时刻, mtime)），判据与 _execute_sync 一致。
                 if key in self._pending_queue:
-                    enter_ts = self._pending_queue[key]
-                    if (now_ts - enter_ts) < cooling_seconds:
+                    basis_ts = self._pending_queue[key]
+                    if (now_ts - basis_ts) < cooling_seconds:
                         continue
 
                 if not os.path.exists(dest_f):

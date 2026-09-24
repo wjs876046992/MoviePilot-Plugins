@@ -225,6 +225,35 @@ def valid_exts_of(media_extensions: str, all_ext: bool) -> Optional[set]:
     return {x.strip().lower() for x in (media_extensions or "").split(",") if x.strip()}
 
 
+def ext_of(file_path: str) -> str:
+    """
+    取小写扩展名（不含点）；无扩展名返回空串。
+
+    Single exit point for extension extraction. It used to be open-coded at four
+    sites; one omission of `.lower()` means the same file is accepted on one path
+    and dropped on another.
+    """
+    return os.path.splitext(str(file_path))[-1].lstrip(".").lower()
+
+
+def valid_extension(pair: Dict[str, Any], file_path: str, media_extensions: str) -> bool:
+    """
+    入库闸门的**唯一实现**：该文件是否应被纳入同步。
+
+    The single implementation of the ingest extension gate.
+
+    ⚠️ 不要再在别处写第二份。本插件历史上同时存在三份扩展名判断
+    （入库闸门 / 补传候选 / 搜索重传），三份的 all_ext 分支与大小写处理各不相同，
+    结果同一个 `.sup` 在补传路上会被带上、在入库闸门上会被丢弃 —— 同一个文件
+    两条路两个结果，而丢弃只记 debug，界面上零痕迹。
+    Callers must not re-implement this check.
+    """
+    valid = valid_exts_of(media_extensions, bool((pair or {}).get("all_ext", False)))
+    if valid is None:
+        return True
+    return ext_of(file_path) in valid
+
+
 def success_keys_after_audit(
         pair_name: str,
         rel_paths: List[str],

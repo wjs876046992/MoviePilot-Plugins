@@ -3,33 +3,40 @@ Webhook 入库事件：报文解析（纯逻辑，无 I/O、无状态）。
 
 Webhook ingest: payload parsing only. Pure logic — no I/O, no mutable state.
 
-## 为什么要这个模块
+## 这个模块在整体架构里的位置
 
-现有入库监听只挂在宿主的**整理完成事件**上，因而看不到三类入库：
+本插件有两条入库来源，**分工必须保持清晰**（见 `__init__.py` 的「入库入口一览」）：
 
-  1. 用户**手动**把文件放进媒体库（不经下载器/整理流程）
-  2. 外部工具（其它脚本、其它容器）搬入文件
-  3. 整理事件**漏发** —— 宿主走 durable outbox，超过重试上限即永久丢弃
+  ① 源端游标扫描 —— **主通道，完整性的唯一承担者**。按文件 mtime 与持久化游标
+     比对，覆盖整理入库、手动入库、外部搬入，以及插件不可用期间发生的一切。
+  ② **Webhook（本模块）—— 「9KG 专属通道 + 加速器」**。它让文件早一点进队列，
+     但**不承担完整性**：即使它整条失效，主通道下一轮扫描也会把同一个文件捞回来
+     （去重由队列幂等保证）。
 
-Webhook 作为**第二来源**覆盖这些场景。承载它的是**宿主自己的 webhook 端点**
-（`/api/v1/webhook/`）：宿主把报到交给我们实现的 `webhook_parser` 契约方法，
-认领成功后再经 `EventType.WebhookMessage` 广播回来。
+之所以这样分工：9KG 这类目录**本就不走整理流程也不入库**，扫描能看见它（在源端
+映射内），但只有发送端主动通知才能让它**立刻**进队列；反过来，webhook 依赖发送端
+配置正确，把完整性押在它身上等于押在「用户的发送端配置永远不出错」上。
+
+承载 webhook 的是**宿主自己的端点**（`/api/v1/webhook/`）：宿主把报到交给我们
+实现的 `webhook_parser` 契约方法，认领成功后再经 `EventType.WebhookMessage` 广播回来。
 
 本插件曾在 2026-09-22 之前自带一个匿名端点作为第二通道，**已移除**：它要顶着
 「向网络暴露一个可写入接口」的风险（四条自建防护：开关、密钥、路径白名单、
-来源 IP 白名单），而宿主端点已能满足同一需求 —— 发送端把 `source` 指到实例名
-（或带上 `X-Webhook-Target: rsync115sync`）即可，鉴权交给宿主。少一个可写入的
-暴露面，少四条容易配错的安全配置。理由与取舍见 DEVELOPMENT §9.18。
+来源 IP 白名单），而宿主端点已能满足同一需求 —— 发送端把 `source` 指到本插件的
+认领标识（或带上 `X-Webhook-Target: rsync115sync`）即可，鉴权交给宿主。少一个
+可写入的暴露面，少四条容易配错的安全配置。理由与取舍见 DEVELOPMENT §9.18。
 
-## 与「整理事件」的读取方式差异（照抄前一定要看）
+## 事件读取方式（照抄前一定要看）
 
-`_handle_transfer_event` 必须**优先** `event.snapshot()`：TransferComplete 登记了
-契约且在 `_SNAPSHOT_EVENTS` 内（见 app/runtime/event/contracts.py）。
+`WebhookMessage` **登记了 payload 模型**（`WebhookEventInfo`）但**不在
+`_SNAPSHOT_EVENTS` 内**（见 app/runtime/event/contracts.py），走快照路径拿不到
+payload。因此这里统一用 `getattr(event_data, ...)` 直接读对象属性，并保留 dict
+兜底（旧宿主/手工构造的事件可能给 dict）。仓库内 watchsync 用的正是这个写法。
 
-WebhookMessage 恰好相反：它**登记了 payload 模型**（`WebhookEventInfo`）但
-**不在 `_SNAPSHOT_EVENTS` 内**，走快照路径拿不到 payload。因此这里统一用
-`getattr(event_data, ...)` 直接读对象属性，并保留 dict 兜底
-（旧宿主/手工构造的事件可能给 dict）。仓库内 watchsync 用的正是这个写法。
+> 对照：本插件历史上订阅的整理完成事件（`TransferComplete` 等）**在**
+> `_SNAPSHOT_EVENTS` 内，那条路必须优先 `event.snapshot()`。该订阅已于
+> 2026-09-25 整条删除（DEVELOPMENT §4.0f），此处保留对照是为了说明
+> **同一仓库里两种事件必须用两种读法**，别把其中一种照抄到另一种上。
 """
 
 import os
@@ -276,17 +283,8 @@ def describe_payload(event_data: Any, limit: int = 40) -> str:
         return "<无法摘要>"
 
 
-def valid_extension(pair: Dict[str, Any], file_path: str, media_extensions: str) -> bool:
-    """扩展名过滤：与事件链路同一口径（映射勾了 all_ext 则不过滤）。"""
-    if (pair or {}).get("all_ext", False):
-        return True
-    ext = posixpath.splitext(str(file_path))[-1].lstrip(".").lower()
-    valid = {x.strip().lower() for x in (media_extensions or "").split(",") if x.strip()}
-    return ext in valid
-
-
 def rel_under(src_root: str, file_path: str) -> str:
-    """取源端相对路径（用于与事件链路共用同一个队列 key 口径）。"""
+    """取源端相对路径（队列 key 的统一下半段：所有来源共用同一口径）。"""
     base = norm_path(src_root)
     target = norm_path(file_path)
     if not base or not target or not target.startswith(base + "/"):

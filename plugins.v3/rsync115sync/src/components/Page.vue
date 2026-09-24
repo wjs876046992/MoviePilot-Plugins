@@ -67,10 +67,10 @@
           </v-col>
         </v-row>
 
-        <!-- 补传 / 限流 / 遗漏补齐提示：用通俗文字说明“为什么慢、还要多久” -->
+        <!-- 补传 / 限流 / 源端扫描提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled || statusData.missed_count || statusData.stale_count || statusData.strm_watching"
-          :type="isThrottled ? 'warning' : 'info'"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || statusData.strm_watching || sourceScanProblem"
+          :type="isThrottled || sourceScanProblem ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
           class="rounded-lg mb-3 text-body-2"
@@ -88,9 +88,13 @@
             🗑️ <strong>{{ statusData.stale_count }}</strong> 个队列条目的源文件已从本地删除，
             将在下轮同步时自动移出（不计入上方「冷却中 / 就绪」数字）。
           </div>
-          <div v-if="statusData.missed_count">
-            🕳️ 检测到 <strong>{{ statusData.missed_count }}</strong> 个文件可能因插件重载错过了入库事件，
-            已由源端扫描补回，将在下次同步时一并上传（这些文件不再等待冷却）。
+          <!-- 源端扫描是入库发现的**主通道**，它停摆 = 新文件不会被发现。
+               因此这里显示的不是"进度"而是"健康状况"：游标落后多久。
+               一行数字就能区分「扫描没跑」与「扫描跑了但没新文件」。 -->
+          <div v-if="sourceScanProblem" class="font-weight-medium">
+            🔍 源端扫描已 <strong>{{ sourceScanAgoText }}</strong> 未推进 ——
+            新入库的文件不会被发现。请检查「源端扫描入库」开关是否开启、映射源目录是否可读，
+            或查看日志中最近一条「源端扫描」记录。
           </div>
           <div v-if="statusData.strm_watching">
             📺 strm 交叉验证进行中：<strong>{{ statusData.strm_watching }}</strong> 个文件处于观察期，
@@ -145,6 +149,33 @@
             <template v-if="webhookStat.last_payload_shape">
               最近报文的字段结构：<code>{{ webhookStat.last_payload_shape }}</code>
             </template>
+          </div>
+        </v-alert>
+
+        <!-- 入库闸门丢弃分布：**只在真的丢过东西时出现**。
+             这一块是补上一个此前的盲区 —— 被扩展名白名单挡下的文件原先只写
+             debug 日志，看板上完全没有痕迹，于是「某一类文件 100% 被丢弃」
+             可以潜伏多个版本（音频就是这样全丢的）。
+             显示的是累计值，不随重载清零，否则问题会再次隐形。 -->
+        <v-alert
+          v-if="skippedExtRows.length"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="rounded-lg mb-3 text-body-2"
+        >
+          <div class="font-weight-medium">
+            ⏭ 有文件因<b>扩展名不在同步白名单</b>被跳过（累计）
+          </div>
+          <div class="mt-1">
+            <span v-for="(row, i) in skippedExtRows" :key="row.ext">
+              <template v-if="i > 0"> · </template>
+              <code>{{ row.label }}</code> {{ row.count }} 个
+            </span>
+          </div>
+          <div class="mt-1">
+            如需同步这些类型，请到配置页把它们加入「同步的扩展名」；
+            若确实不需要（如 .nfo、.jpg），忽略本提示即可。
           </div>
         </v-alert>
 
@@ -908,14 +939,19 @@ const statusData = ref({
   is_running: false,
   ready_count: 0,
   cooling_count: 0,
-  delay_hours: 2.0,
+  delay_hours: 4.0,
   last_status: {},
   sync_pairs_count: 0,
   backfill_remaining: 0,
-  missed_count: 0,
-  missed_last_scan: 0,
-  missed_scan_enabled: false,
   stale_count: 0,
+  // 源端扫描（主入库通道）：游标 = 映射名 → 上次成功推进的时刻；
+  // source_scan_last 是全局最近一次推进。看板据此判断发现层是否还在工作。
+  source_cursor: {},
+  source_scan_last: 0,
+  source_scan_enabled: true,
+  source_scan_interval: 600,
+  // 入库闸门挡下的扩展名分布（累计）：扩展名 → 次数。
+  ingest_skipped_by_ext: {},
   strm_suspects: {},
   strm_watch_detail: {},
   // key → 'sync' | 'gen'：该观察条目的计时基准。补生成移回观察期的条目用的是
@@ -973,6 +1009,44 @@ const backfillScanning = ref(false)
 // strm 主动扫描：进度与结果提示
 const strmScanning = ref(false)
 const strmScanMsg = ref('')
+
+// 源端扫描健康度：它停摆 = 新文件不会被发现，是**主通道**失效。
+// 只在「开关开着、却明显落后于自己的节奏」时报警；开关主动关掉不报警
+// （那是用户的选择，不是故障）。
+// 阈值取 3 倍间隔且至少 30 分钟：避开宿主重启后的首个周期、也避开偶发的
+// 单次调度延迟，只在真的连续几轮没跑时提示。
+const sourceScanStaleSecs = computed(() => {
+  const interval = Number(statusData.value.source_scan_interval) || 600
+  return Math.max(interval * 3, 1800)
+})
+const sourceScanProblem = computed(() => {
+  if (statusData.value.source_scan_enabled === false) return false
+  const last = Number(statusData.value.source_scan_last) || 0
+  // 从未跑过（0）不算问题：插件刚装/刚重载，等第一轮即可。
+  if (!last) return false
+  return Date.now() / 1000 - last > sourceScanStaleSecs.value
+})
+const sourceScanAgoText = computed(() => {
+  const last = Number(statusData.value.source_scan_last) || 0
+  if (!last) return '从未'
+  const mins = Math.floor((Date.now() / 1000 - last) / 60)
+  if (mins < 60) return `${mins} 分钟`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} 小时`
+  return `${Math.floor(hours / 24)} 天`
+})
+// 闸门丢弃分布 → 表格行。按次数降序（最该关注的排最前）。
+const skippedExtRows = computed(() => {
+  const raw = statusData.value.ingest_skipped_by_ext || {}
+  return Object.keys(raw)
+    .map((ext) => ({
+      ext,
+      label: ext === '(无扩展名)' ? '无扩展名' : `.${ext}`,
+      count: Number(raw[ext]) || 0,
+    }))
+    .filter((row) => row.count > 0)
+    .sort((a, b) => b.count - a.count)
+})
 
 const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +

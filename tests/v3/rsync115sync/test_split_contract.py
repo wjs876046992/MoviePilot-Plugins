@@ -70,7 +70,7 @@ def test_combined_class_exposes_full_surface():
         "init_plugin", "get_state", "get_api", "get_form", "get_page",
         "stop_service", "get_command", "get_service", "get_render_mode",
         # 事件入口
-        "on_transfer_complete", "handle_command",
+        "on_webhook_message", "handle_command",
         # strm（strm_ops）
         "_strm_check", "_strm_scan", "check_one", "_check_watch_now",
         "_api_strm_clear", "_api_strm_prune", "_api_strm_ignore",
@@ -90,8 +90,12 @@ def test_instantiation_smoke():
     module = importlib.import_module("app.plugins.rsync115sync")
     plugin = module.Rsync115Sync()
     # 类体别名是承重的（8.5 节）
-    for attr in ("_MISSED_SCAN_ENABLED_DEFAULT", "_LEGACY_DEFAULTS",
-                 "_MISSED_SCAN_INTERVAL", "_TOLERATED_EXIT_CODES", "_SIDECAR_EXTS"):
+    # 注：`_MISSED_SCAN_*` 已随源端补齐扫描一起被 `_SOURCE_SCAN_*` 取代
+    # （2026-09-25），别名同步更名 —— 这条断言的价值正在于它会跟着旧名字一起
+    # 失败，提醒改名时要更新这处清单，而不是悄悄地少断言一项。
+    for attr in ("_SOURCE_SCAN_ENABLED_DEFAULT", "_SOURCE_SCAN_INTERVAL",
+                 "_SOURCE_CURSOR_OVERLAP_SECS", "_LEGACY_DEFAULTS",
+                 "_LEGACY_DEFAULTS_ALL", "_TOLERATED_EXIT_CODES", "_SIDECAR_EXTS"):
         assert hasattr(plugin, attr), f"实例缺少类体别名 {attr}"
     # 关键路径跑一次
     plugin._strm_suspects["电视剧:a.mkv"] = {"dest": "ok"}

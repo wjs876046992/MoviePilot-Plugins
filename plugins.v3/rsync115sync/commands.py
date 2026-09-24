@@ -22,7 +22,7 @@ from .constants import (
 from .paths import (
     excluded_dir_names as _excluded_dir_names,
     pair_name as _pair_name,
-    valid_exts_of as _valid_exts_of,
+    valid_extension as _valid_extension,
 )
 
 # 宿主 MessageType：绑定由组合根（__init__.py）注入 —— 该 try/except 导入是
@@ -190,12 +190,10 @@ class CommandsMixin:
                 pair_name = _pair_name(pair)
                 if not os.path.exists(src_dir):
                     continue
-                # 与同步/补传保持一致的过滤口径：扩展名 + 排除规则。
-                # 早先实现两者都不应用，列表会混入 .nfo/.jpg 等永远不会被同步的
-                # 文件，重传它们浪费限流配额且没有意义。
-                all_ext = pair.get("all_ext", False)
-                # 口径与同步/补传共用同一实现，避免「搜索能搜到但同步不认」的漂移
-                valid_exts = _valid_exts_of(self._media_extensions, all_ext)
+                # 过滤口径：扩展名 + 排除规则，两者都走与入库闸门**同一份实现**。
+                # 早先这两者都不应用，列表会混入 .nfo/.jpg 等永远不会被同步的文件，
+                # 重传它们浪费限流配额且没有意义；后来又各自维护一份实现，
+                # 漂移成「搜索能搜到但同步不认」。
                 excluded_dirs = _excluded_dir_names(self._exclude_patterns)
 
                 for root, dirs, files in os.walk(src_dir):
@@ -204,7 +202,7 @@ class CommandsMixin:
                     for f in files:
                         if keyword not in f.lower():
                             continue
-                        if valid_exts is not None and os.path.splitext(f)[-1].lstrip(".").lower() not in valid_exts:
+                        if not _valid_extension(pair, f, self._media_extensions):
                             continue
                         rel_f = os.path.relpath(os.path.join(root, f), src_dir)
                         matched.append(f"{pair_name}:{rel_f}")
@@ -518,9 +516,25 @@ class CommandsMixin:
             if stale_count:
                 reply += (f"🗑️ 源端已删除待清理: {stale_count} 个"
                           f"（文件已不在本地，将在下轮同步时移出队列，不计入上方计数）\n")
-            if self._missed_queue:
-                reply += (f"🕳️ 错过入库待补扫: {len(self._missed_queue)} 个"
-                          f"（插件重载期间丢失事件，已由源端扫描补回，下轮同步自动带上）\n")
+            # 源端扫描（主通道）健康度：游标落后 = 新文件不会被发现。
+            # 这与「队列里有多少」是两件事，必须分别报告 —— 队列空可能是
+            # 「没有新文件」，也可能是「扫描根本没在跑」，用户没法从计数区分。
+            if self._source_scan_enabled:
+                if self._source_scan_last:
+                    ago_mins = int((now_ts - self._source_scan_last) / 60)
+                    reply += (f"🔍 源端扫描: {len(self._source_cursor)} 个映射，"
+                              f"最近推进 {ago_mins} 分钟前（每 {self._source_scan_interval // 60} 分钟一轮）\n")
+                else:
+                    reply += "🔍 源端扫描: 已启用，尚未完成首轮\n"
+            else:
+                reply += "🔍 源端扫描: ⚠️ 已关闭 —— 入库只能靠 Webhook 通知发现\n"
+            # 被扩展名白名单挡下的文件（累计）：这是此前完全不可见的一维
+            if self._ingest_skip_stat:
+                top = sorted(self._ingest_skip_stat.items(), key=lambda x: -x[1])[:5]
+                shown = "、".join(
+                    f".{e}" if e and e != "(无扩展名)" else "无扩展名" for e, _ in top)
+                reply += (f"⏭ 因扩展名被跳过（累计）: {shown}"
+                          f"（如需同步请加入「同步的扩展名」）\n")
             if len(st.get('missing_files', [])) + len(st.get('corrupt_files', [])) > 0:
                 reply += "💡 发送 /rsync_retry 即可立即定向补传异常文件！\n"
             reply += "💡 支持发送 /rsync_search <剧名/电影名> 查找并确认重传指定媒体。"

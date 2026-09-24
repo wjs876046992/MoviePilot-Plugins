@@ -91,7 +91,7 @@ def _plugin(src_root, *, pairs=None, media_extensions=ALL_EXT_EXTENSIONS,
     plugin._media_extensions = media_extensions
     plugin._delay_hours = 2.0
     plugin._pending_queue = {}
-    plugin._missed_queue = {}
+    plugin._source_cursor = {}
     plugin._ignored_rules = list(ignore_rules or [])
     plugin._last_status = {}
     plugin._webhook_stat = plugin._wh_stat()

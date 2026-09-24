@@ -174,48 +174,62 @@ def _execute_sync_source() -> str:
     return ast.get_source_segment(src, fn) or ""
 
 
-def test_missed_queue_is_settled_after_batch_cap():
+def test_ready_mode_selects_by_cooldown_basis():
     """
-    补齐清单的出账必须晚于批次上限截断（v0.2.1 review 修复的静默丢失）。
+    ready 模式必须按 `now - 基准 >= 冷却时长` 选文件，且基准语义与 `_count_queue` 相同。
 
-    原实现把 `self._missed_queue.pop(...)` 写在**构建 pair_files 的循环里**，
-    而那之后才按 `_upload_batch_size` 截断 —— 于是注释里承诺的「仅在确实纳入
-    本轮时才移出」并未生效：被截断的条目既不在冷却队列、也不在补齐清单，
-    任何一轮同步都不会再取它，永久丢失。
+    ⚠️ 这两条用例替换了原先的「补齐清单出账时机」用例组。那个清单（`_missed_queue`）
+    已随冷却判据统一而删除 —— 它的出账时机之所以曾经需要两条源码顺序断言，
+    正是因为"另一个队列 + 另一套出账逻辑"本身容易错位。现在只有 `_pending_queue`
+    一个队列、一处出账（由对账结果驱动，见下面的第二条断言），这类错位不复存在。
 
-    这条断言的是**源码顺序**而不是行为：_execute_sync 500+ 行、依赖 rsync 与
-    CD2 挂载，无法在单测里跑通；而顺序错位恰恰是这类 bug 的唯一形态。
+    保留的是**判据本身**：它必须与看板的 `_count_queue` 逐字一致，否则会出现
+    「看板说有 N 个就绪、点同步却什么也不传」这种无从解释的状态。
     """
     src = _execute_sync_source()
     if not src:
         import pytest
         pytest.skip("无法取得 _execute_sync 源码")
 
-    cap_idx = src.index("_upload_batch_size > 0")
-    settle_idx = src.index("missed_settled")
-    # 出账段必须出现在截断之后
-    assert settle_idx > cap_idx, (
-        "补齐清单出账早于批次上限截断：被截断的条目会被静默移出，永久丢失")
-
-    # 且必须在 rsync 启动/执行之后（Popen 之前移出会在启动失败时同样丢失）
+    assert "now_ts - basis_ts < threshold" in src, (
+        "ready 模式的冷却判据变了 —— 必须与 _count_queue 保持逐字一致"
+    )
+    # 出账仍必须晚于 rsync 真正执行：Popen 失败/超时的条目若提前出队，
+    # 会既没传、又没进异常清单，静默丢失（这是 v0.2.1 修过的那一类）。
     popen_idx = src.index("subprocess.Popen")
+    settle_idx = src.index("succeeded_keys = set(")
     assert settle_idx > popen_idx, (
-        "补齐清单出账早于 rsync 执行：Popen 失败/超时的条目会既没传、又没进异常清单")
+        "冷却队列出账早于 rsync 执行：Popen 失败/超时的条目会既没传、又没进异常清单"
+    )
 
 
-def test_missed_queue_settle_is_scoped_to_ready_mode():
+def test_no_second_queue_for_missed_events():
     """
-    出账只对 ready 模式生效。
+    反向哨兵：不得再出现「第二个队列 + 跳过冷却」的实现。
 
-    retry/backfill 的 pair_files 来自历史异常清单或显式传入的候选，
-    与补齐清单无关；对它们做 pop 会把用户尚未处理的补齐条目误清。
+    那个模式（`_missed_queue`）的全部问题在于**判据与冷却队列不同**：
+    它用"无条件跳过冷却"来表达"这些文件等得够久了"，副作用是源端扫描刚发现
+    一个 10 秒前刚落地的文件也立刻上传。正确表达是冷却基准取
+    `min(发现时刻, mtime)`（见 `_cooldown_basis`）—— 同一件事，一个判据。
     """
     src = _execute_sync_source()
     if not src:
         import pytest
         pytest.skip("无法取得 _execute_sync 源码")
-    settle_idx = src.index("missed_settled")
-    # 前置条件写在赋值**之前**（`if mode == "ready" and self._missed_queue:`），
-    # 因此向前取窗口，而不是向后。
-    window = src[max(0, settle_idx - 200):settle_idx]
-    assert 'mode == "ready"' in window, "出账段必须以 mode == \"ready\" 为前置条件"
+    # ⚠️ 必须**先剥掉注释与字符串**再检查：本文件与插件源码里都有大量说明
+    # 文本在解释"为什么删掉那个队列"，直接 grep 原始源码会命中那些解释，
+    # 把一条正确的注释判成"代码复活了"（我自己踩过一次，断言当场变假红）。
+    # 剥注释而不是删掉解释，是因为那条解释本身是此刻最该留下的信息。
+    import io
+    import tokenize
+
+    code_only = []
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        code_only.append(tok.string)
+    emitted = " ".join(code_only)
+    assert "_missed_queue" not in emitted, (
+        "_execute_sync 中又出现了 _missed_queue（代码，非注释）—— 该队列已废弃，"
+        "错过的事件由冷却基准取 mtime 表达"
+    )

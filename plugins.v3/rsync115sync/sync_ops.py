@@ -14,8 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.sdk.logging import logger
 
+from .paths import excluded_dir_names as _excluded_dir_names
 from .paths import is_junk_file_name as _is_junk_file_name
 from .paths import pair_name as _pair_name
+from .paths import valid_extension as _valid_extension
 
 
 class SyncOpsMixin:
@@ -26,6 +28,13 @@ class SyncOpsMixin:
         统计冷却队列：返回 (就绪数, 冷却中数, 已失效数)。
 
         Count the cool-down queue as (ready, cooling, stale).
+
+        ⚠️ `threshold` 是**冷却时长**，条目里存的是**冷却基准时刻**
+        （`min(发现时刻, mtime)`，见 `_cooldown_basis`）。判据 `now - 基准 >= 冷却时长`
+        与 `_execute_sync` 取文件时的判据逐字相同 —— 两处一旦分叉，看板就会出现
+        「显示有 N 个就绪，点同步却什么也不传」这类无从解释的状态。
+        The stored value is a BASIS timestamp, not the discovery time. Keep this
+        predicate identical to the one in `_execute_sync`.
 
         为什么需要第三个数字：入库文件在冷却途中被删除后，队列条目要等冷却到期、
         下一轮同步才会被清理。若只按时间戳统计，这些「文件已不存在」的条目会被
@@ -219,22 +228,29 @@ class SyncOpsMixin:
         seen = set()
         # 目录列举缓存：整个扫描过程共用，避免同一季目录被反复 listdir
         dir_cache: Dict[str, Optional[List[str]]] = {}
-        valid_exts = [x.strip().lower() for x in self._media_extensions.split(",") if x.strip()]
-        # 只按扩展名过滤候选，范围由每个映射对的 all_ext 决定
+        # 排除目录口径与同步/搜索/strm 扫描**共用同一份实现**。
+        # 这里原来写的是 `f"{d}/" not in self._exclude_patterns`，它有两个毛病：
+        #   1. 语义漂移 —— 全项目其余 4 处走的是 `paths.excluded_dir_names()`，
+        #      这里只比对整行，用户在配置页写 `@eaDir`（不带斜杠）时这里不排、
+        #      别处排；写 `@eaDir/` 时两者才一致；
+        #   2. O(目录数 × 规则行数) 的字符串包含判断，每层目录重算一遍。
+        # 补传候选是最不该漏排的一路：它列出的每个文件都会被真的上传。
+        excluded_dirs = _excluded_dir_names(self._exclude_patterns)
         for pair in self._sync_pairs:
             src_dir = (pair.get("src") or "").strip().rstrip("/")
             pair_name = _pair_name(pair)
             if not src_dir or not os.path.isdir(src_dir):
                 continue
-            all_ext = pair.get("all_ext", False)
             for root, dirs, files in os.walk(src_dir):
                 # 就地裁剪排除目录，避免无谓 descend
-                dirs[:] = [d for d in dirs if f"{d}/" not in self._exclude_patterns]
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
                 for f in files:
                     if _is_junk_file_name(f):
                         continue
-                    ext = os.path.splitext(f)[-1].lstrip(".").lower()
-                    if not all_ext and ext not in valid_exts:
+                    # 扩展名判据走入库闸门同一个函数（含 all_ext 分支），
+                    # 不再在这里自己维护一份 valid_exts —— 两份判据一旦分叉，
+                    # 就会出现「补传传了这个文件、入库却把它挡在门外」。
+                    if not _valid_extension(pair, f, self._media_extensions):
                         continue
                     root_rel = os.path.relpath(os.path.join(root, f), src_dir)
                     key = f"{pair_name}:{root_rel}"

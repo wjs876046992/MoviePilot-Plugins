@@ -387,7 +387,7 @@ def test_prune_runs_automatically_on_plugin_load():
     plugin._force_cooldown_days = 7
     plugin._pending_queue = {}
     plugin._backfill_queue = []
-    plugin._missed_queue = {}
+    plugin._source_cursor = {}
     plugin._last_status = {}
     plugin.get_data = lambda k: stored.get(k)
     plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]
@@ -638,7 +638,7 @@ def test_prune_invalid_watch_runs_automatically_on_plugin_load():
     plugin._force_cooldown_days = 7
     plugin._pending_queue = {}
     plugin._backfill_queue = []
-    plugin._missed_queue = {}
+    plugin._source_cursor = {}
     plugin._last_status = {}
     plugin.get_data = lambda k: stored.get(k)
     plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]

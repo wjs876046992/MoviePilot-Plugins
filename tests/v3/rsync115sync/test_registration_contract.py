@@ -4,7 +4,7 @@
 Plugin registration contract: the event subscription must be present.
 
 **为什么单独为「一行装饰器」写测试**：v0.1.7 的代码拆分曾把
-`@eventmanager.register(_TRANSFER_SUCCESS_EVENTS)` 连同上方的分节注释一起删掉。
+`@eventmanager.register(EventType.WebhookMessage)` 连同上方的分节注释一起删掉。
 删除后插件**一切正常**——能加载、看板能渲染、定时任务照跑、单元测试全绿——
 唯一的表现是「冷却队列永远是 0」，因为插件再也收不到入库事件。
 
@@ -85,48 +85,107 @@ def _decorator_source(func: ast.FunctionDef) -> list:
 
 
 # --------------------------------------------------------------------------
-# 入库事件订阅 —— 整个插件的入口
+# 入库来源订阅 —— 整个插件的入口
 # --------------------------------------------------------------------------
+#
+# ⚠️ 本节原先钉的是**宿主整理完成事件**（`on_transfer_complete` +
+# `_TRANSFER_SUCCESS_EVENTS`）。那条订阅已于 2026-09-25 整条删除，理由四条：
+#   1. 只覆盖整理链路 —— 手动入库、外部工具搬入、9KG 全都不产生整理事件；
+#   2. durable outbox **不重放** —— 插件忙/重载期间的事件永久丢弃；
+#   3. 宿主版本相关 —— 后两个事件靠 getattr 探测，旧宿主下字幕音频静默全丢；
+#   4. 装饰器在**类体**求值 —— 被误删过一次且不报错（v0.1.7，见 §3.8）。
+#
+# 替代它的主通道是**源端游标扫描**（独立 service，见下）。本节因此改为钉住：
+#   · 那条订阅**确实已被删除**（防止被误加回来 —— 它与新通道职责重叠）；
+#   · webhook 订阅仍在；
+#   · 主通道的 service 已注册。
 
-def test_on_transfer_complete_is_registered_for_transfer_events():
+
+def test_transfer_event_subscription_is_gone():
     """
-    最关键的契约：少了这个装饰器，插件收不到任何入库事件。
+    反向哨兵：宿主整理完成事件的订阅必须**不存在**。
 
-    它不会有报错、不会有日志、测试也依旧全绿，所以必须显式钉住。
-    """
-    func = _method(_class_node(_plugin_tree()), "on_transfer_complete")
-    decorators = _decorator_source(func)
-
-    assert decorators, (
-        "on_transfer_complete 缺少 @eventmanager.register 装饰器 —— "
-        "插件将永远收不到入库事件（冷却队列恒为 0），且不会有任何报错。"
-    )
-    assert any("eventmanager.register" in d for d in decorators), decorators
-    assert any("_TRANSFER_SUCCESS_EVENTS" in d for d in decorators), (
-        "必须注册 _TRANSFER_SUCCESS_EVENTS（含字幕/音频三类事件），"
-        "只注册 TransferComplete 会静默丢掉所有字幕与音频。"
-    )
-
-
-def test_registered_event_list_covers_subtitle_and_audio():
-    """
-    宿主按文件类型把整理结果拆成三个事件，只监听 TransferComplete 会漏字幕与音频
-    （这正是 v0.1.0 修的「46 个文件只监听到 3 个」）。
+    为什么值得专门钉一条：删掉它不会有任何报错，而**加回来**同样不会有 ——
+    一旦有人"顺手恢复"这段代码，就会出现两条职责重叠的入库通道：
+    事件那条会带来它的四个静默失效点，而扫描那条已经覆盖了它的全部场景。
+    留着重复的通道只会让「到底哪条在丢文件」重新变成需要猜测的问题。
     """
     source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    ns = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "_transfer_success_events":
-                    exec(compile(ast.Module(body=[node], type_ignores=[]),
-                                 "<x>", "exec"), ns)  # noqa: S102 - 仅取常量定义
+    # 1) 不能有 on_transfer_complete 方法，也没有指向它的订阅装饰器
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            assert node.name != "on_transfer_complete", (
+                "on_transfer_complete 被加回来了 —— 该订阅已废弃，主通道是源端游标扫描"
+            )
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id == "eventmanager" and node.attr == "register":
+                assert "TransferComplete" not in ast.dump(node), (
+                    "出现了对 TransferComplete 的事件订阅 —— 已废弃"
+                )
 
-    # 函数体里引用的三个事件名必须齐全
-    for name in ("TransferComplete", "SubtitleTransferComplete", "AudioTransferComplete"):
-        assert name in source, f"{name} 未出现在源码中，事件覆盖不完整"
+    # 2) 模块级常量不得复活。
+    # ⚠️ 用 AST 找 **Name/赋值目标**，不要 grep 原始源码 —— 文件顶部有一段
+    # 专门解释"这里曾经有过什么、为什么删掉"的注释，grep 会命中它并误报。
+    # （这条断言第一版就是这么写错的：注释成了它自己的假红来源。）
+    live_names = {
+        n.id for n in ast.walk(tree) if isinstance(n, ast.Name)
+    } | {
+        t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+        for t in n.targets if isinstance(t, ast.Name)
+    }
+    assert "_TRANSFER_SUCCESS_EVENTS" not in live_names, (
+        "_TRANSFER_SUCCESS_EVENTS 被以代码引用了（注释里提到是允许的）"
+    )
+    func_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert "_transfer_success_events" not in func_names, "_transfer_success_events 不得复活"
+
+
+def test_webhook_subscription_survives():
+    """
+    webhook 订阅必须**保留**（它是 9KG 的专属通道 + 加速器）。
+
+    与上一条同样重要且方向相反：删掉这个装饰器不会有任何报错，
+    表现为「发送端明明推了、日志里一条 webhook 记录都没有」。
+    """
+    func = _method(_class_node(_plugin_tree()), "on_webhook_message")
+    decorators = _decorator_source(func)
+
+    assert decorators, (
+        "on_webhook_message 缺少 @eventmanager.register 装饰器 —— "
+        "宿主的 webhook 广播将无人接收，且不会有任何报错。"
+    )
+    assert any("eventmanager.register" in d for d in decorators), decorators
+    assert any("WebhookMessage" in d for d in decorators), (
+        f"必须注册 EventType.WebhookMessage，实际装饰器：{decorators}"
+    )
+
+
+def test_source_scan_service_is_registered():
+    """
+    入库发现的**主通道**必须注册成 service。
+
+    为什么在契约测试里钉：扫描一旦不注册，插件不会报错、看板照常渲染、
+    webhook 也照常工作 —— 只是**新入库的文件再也不会被自动发现**，
+    而且只有当用户注意到「队列很久没动静」时才会暴露。
+    """
+    source = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+
+    assert "Rsync115Sync_SourceScan" in source, "源端扫描 service 未注册"
+    assert "_scan_source_cursor_safe" in source, "源端扫描的 service 入口不存在"
+    # 扫描必须由**独立** service 驱动，不能还挂在同步 cron 里
+    # （挂在里面会被「补传优先 return」饿死，见 _scheduled_sync 的说明）
+    tree = ast.parse(source)
+    sched = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute_sync":
+            sched = ast.dump(node)
+    assert sched is not None, "未找到 _execute_sync"
+    assert "_scan_source_cursor()" not in sched, (
+        "_execute_sync 里又出现了源端扫描调用 —— 它必须由独立 service 驱动，"
+        "否则会被补传队列饿死"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -372,14 +431,11 @@ def test_decorator_actually_subscribes_when_host_available():
     cls = getattr(module, "Rsync115Sync", None)
     assert cls is not None, "生产命名空间下未找到 Rsync115Sync"
 
-    # 装饰器是个不透明对象时，退化为「方法存在且携带装饰器」的静态判定
-    func = getattr(cls, "on_transfer_complete", None)
-    assert callable(func), "on_transfer_complete 不可调用"
-    assert getattr(func, "__wrapped__", None) is not None or True  # 装饰器实现无关
-
-    events = getattr(module, "_TRANSFER_SUCCESS_EVENTS", None)
-    assert events, "模块级 _TRANSFER_SUCCESS_EVENTS 为空，事件订阅范围不完整"
-    assert len(events) >= 1
+    # webhook 处理器必须可调用（它是唯一保留的事件订阅）
+    assert callable(getattr(cls, "on_webhook_message", None)), "on_webhook_message 不可调用"
+    # 已废弃的事件侧符号不得复活
+    assert not hasattr(cls, "on_transfer_complete"), "on_transfer_complete 不得复活"
+    assert not hasattr(module, "_TRANSFER_SUCCESS_EVENTS"), "_TRANSFER_SUCCESS_EVENTS 不得复活"
 
 
 # --------------------------------------------------------------------------
@@ -400,8 +456,10 @@ def test_combined_class_exposes_mixin_methods():
         pytest.skip(f"无法导入生产命名空间（{exc.__class__.__name__}）")
     cls = module.Rsync115Sync
     for name in ("get_command", "handle_command", "get_api", "get_service",
-                 "on_transfer_complete", "_api_strm_clear", "_api_strm_ignore",
-                 "_api_backfill_scan", "_execute_sync", "init_plugin"):
+                 "on_webhook_message", "_api_strm_clear", "_api_strm_ignore",
+                 "_api_backfill_scan", "_execute_sync", "init_plugin",
+                 "_scan_source_cursor", "_scan_source_cursor_safe",
+                 "_cooldown_basis", "_has_ready_files"):
         assert callable(getattr(cls, name, None)), f"组合后的类缺少 {name}"
     # Mixin 们必须真的在 MRO 里（而不是主类碰巧又定义了一份拷贝）
     mro_names = {c.__name__ for c in cls.__mro__}

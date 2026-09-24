@@ -48,28 +48,53 @@
 
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
             <div>
-              <div class="font-weight-bold text-body-2">监听媒体转移入库事件</div>
-              <div class="text-caption text-medium-emphasis">下载与刮削转移完成后自动纳入延迟冷却队列</div>
+              <div class="font-weight-bold text-body-2">启用入库监听</div>
+              <div class="text-caption text-medium-emphasis">
+                Webhook 通知与源端扫描共用的总闸；关闭后两种入库来源都不再入队
+                （定时同步与命令仍可用）
+              </div>
             </div>
             <v-switch v-model="config.listen_transfer" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <!-- 源端补齐扫描：默认关闭，仅在确实频繁丢事件时才建议开启 -->
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+          <!-- 源端扫描 = 入库发现的**主通道**（2026-09-25 起取代宿主的整理完成事件订阅）。
+               默认开启，且不再需要"谨慎"标签：它的判据已经与"mtime 变新"解耦
+               （见后端 _scan_source_cursor 与 _cooldown_basis 的说明）。 -->
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-t">
             <div>
               <div class="font-weight-bold text-body-2">
-                源端补齐扫描（默认关闭）
-                <v-chip size="x-small" color="warning" variant="tonal" class="ml-1 font-weight-bold">谨慎</v-chip>
+                源端扫描入库
+                <v-chip size="x-small" color="primary" variant="tonal" class="ml-1 font-weight-bold">主通道</v-chip>
               </div>
               <div class="text-caption text-medium-emphasis">
-                每轮同步前遍历本地源目录，把「插件忙时错过的入库事件」补回来。
-                它靠文件修改时间判断新增，<strong>无法区分「真的新入库」和「老文件被重新写入」</strong>
-                （刮削写 nfo、下载器续传、套件刷新时间戳都会命中），
-                开启后可能把很久以前就入库的文件反复当成新文件补进队列，且这类补入不等待冷却。
-                只有在确认经常丢事件时才开启。
+                按固定间隔遍历本地源目录，把 mtime 晚于游标的文件纳入冷却队列。
+                这是<b>入库发现的主通道</b>：整理入库、手动放进媒体库、外部工具搬入、
+                以及插件重载期间发生的入库，它都能看见 —— 不依赖任何外部通知。
+                关闭后只剩 Webhook 一条路，只会发现发送端主动通知的文件。
               </div>
             </div>
-            <v-switch v-model="config.missed_scan_enabled" color="warning" inset hide-details density="compact"></v-switch>
+            <v-switch v-model="config.source_scan_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+            <div>
+              <div class="font-weight-bold text-body-2">源端扫描间隔（分钟）</div>
+              <div class="text-caption text-medium-emphasis">
+                每轮只做本地目录遍历，不访问 115 挂载点，因此不消耗上传配额、不触发风控。
+                10 分钟对媒体入库已足够（上传本身还要经过冷却）。
+              </div>
+            </div>
+            <v-text-field
+              v-model.number="config.source_scan_interval_minutes"
+              type="number"
+              min="1"
+              max="1440"
+              variant="outlined"
+              density="compact"
+              hide-details
+              style="max-width: 110px"
+              suffix="分钟"
+            ></v-text-field>
           </div>
         </div>
 
@@ -171,7 +196,7 @@
                 variant="outlined"
                 density="compact"
                 suffix="小时"
-                hint="媒体入库后等待 N 小时再上传，留足外挂字幕下载与刮削时间，避免抢先上传导致字幕丢失。设为 0 可关闭等待"
+                hint="媒体入库后等待 N 小时再上传。它同时兜两件事：① 留足外挂字幕与刮削时间；② 等文件写完 —— 源端扫描没有「写完了」这个信号，而正在写入的文件修改时间恰好是最新的，冷却期是唯一挡住「传到一半源文件还在变」的机制。建议 4~6 小时。设为 0 可关闭等待"
                 persistent-hint
               ></v-text-field>
             </v-col>
@@ -182,7 +207,7 @@
                 variant="outlined"
                 density="compact"
                 placeholder="0 */2 * * *"
-                hint="多久巡检一次。到期文件会按上面的限流规则分批上传。补传队列未完成时优先续跑"
+                hint="多久巡检一次。到期文件会按上面的限流规则分批上传；本轮无到期文件时才续跑补传队列（新鲜入库优先于存量补传）"
                 persistent-hint
               ></v-text-field>
             </v-col>
@@ -493,12 +518,22 @@ const config = ref({
   enabled: false,
   listen_transfer: true,
   // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
-  missed_scan_enabled: false,
+  // 源端扫描（入库发现的主通道，2026-09-25 起取代宿主整理事件订阅）
+  source_scan_enabled: true,
+  // 界面用「分钟」而接口用「秒」：两者之间在 loadConfig / saveConfig 里换算，
+  // 后端契约仍是 source_scan_interval（秒）。
+  source_scan_interval_minutes: 10,
   notify: true,
-  delay_hours: 2.0,
+  // 4h：源端扫描引入后，冷却期多了一层职责 —— 等文件写完（见上面的 hint）
+  delay_hours: 4.0,
   cron: '0 */2 * * *',
   sync_pairs: [],
-  media_extensions: 'mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass',
+  // ⚠️ 必须与后端 constants.DEFAULT_MEDIA_EXTENSIONS **逐字一致**。
+  // 这是同一份默认串的第 3 份拷贝（另两份在后端默认值与旧默认值迁移表），
+  // 漏改这里会让「新装用户在表单里看到的值」与「后端实际生效的值」不同 ——
+  // 用户点一次保存就会把窄白名单写回去，表现为「升级后音频又不传了」。
+  // Keep byte-identical with the backend default (see DEVELOPMENT §4.0f).
+  media_extensions: 'mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass,sup,sub,idx,vtt,mp3,flac,m4a,aac,opus,wav,mka,ape,wma',
   exclude_patterns: '@eaDir/\n#recycle/\n@__thumb/\n.DS_Store\n..*',
   rsync_timeout: 600,
   task_timeout: 3600,
@@ -604,11 +639,19 @@ function notifySwitch() {
   emit('switch')
 }
 
+// 单位换算是这一层的唯一职责，因此必须**两个方向都做**，且只在边界处做：
+//   · 读：后端给 source_scan_interval（秒）→ 界面用分钟
+//   · 写：界面分钟 → 后端秒
+// ⚠️ 后端契约是**秒**，别为了"少一次转换"把它改成分钟 —— 那个字段的默认值与
+// 校验（最小 60）都按秒写。漏掉任一方向的换算会表现为「保存 10 分钟、回来变成 0」
+// 或「保存 600 分钟」，而两个数值看起来都"像那么回事"。
 async function loadConfig() {
   try {
     const res = await props.api.get('plugin/Rsync115Sync/config')
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data)
+      const secs = Number(config.value.source_scan_interval) || 600
+      config.value.source_scan_interval_minutes = Math.max(1, Math.round(secs / 60))
     }
   } catch (e) {
     console.error('读取配置失败:', e)
@@ -620,6 +663,9 @@ async function saveConfig() {
   error.value = null
   successMessage.value = null
   try {
+    // 分钟 → 秒（见 loadConfig 的说明）
+    const minutes = Number(config.value.source_scan_interval_minutes) || 10
+    config.value.source_scan_interval = Math.max(60, Math.round(minutes) * 60)
     const res = await props.api.post('plugin/Rsync115Sync/config', config.value)
     if (res && res.success) {
       successMessage.value = '配置已成功保存！'

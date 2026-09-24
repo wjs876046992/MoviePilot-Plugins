@@ -21,6 +21,7 @@ Webhook ingest: the host-endpoint chain only.
 
 import importlib
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -53,7 +54,12 @@ def _plugin(src_root, *, enabled=True, listen=True,
     plugin._media_extensions = media_extensions
     plugin._delay_hours = 2.0
     plugin._pending_queue = {}
-    plugin._missed_queue = {}
+    plugin._source_cursor = {}
+    # 源端扫描状态：`_api_get_status` 的返回键必须与这里的字段清单对齐
+    plugin._source_scan_enabled = True
+    plugin._source_scan_interval = 600
+    plugin._source_scan_last = 0.0
+    plugin._ingest_skip_stat = {}
     plugin._ignored_rules = []
     plugin._last_status = {}
     plugin._webhook_stat = plugin._wh_stat()
@@ -348,40 +354,36 @@ def test_ignored_key_is_not_enqueued_from_webhook(tmp_path):
     assert plugin._pending_queue == {}
 
 
-def test_missed_queue_entry_is_upgraded_to_cooling_queue(tmp_path):
+def test_webhook_enqueue_sets_cooldown_basis_from_discovery(tmp_path):
     """
-    已在「待补扫」清单里的文件收到真实入库事件时，必须**升级**进冷却队列。
+    由 webhook 通知的文件，冷却基准必须是**发现时刻**（而不是走什么"升级"分支）。
 
-    ⚠️ 这条用例是**反向**的：它替换了一条曾经断言「不重复入队」的用例。
-    原断言把「已在待补扫清单」当成重复投递，看起来合理，实际造成静默的永久卡死 ——
-    补齐扫描发现文件「源端存在、从未同步过」，只把它放进待补扫清单；随后真实入库
-    事件到达时又因「已在待补扫清单」被判重复而不入冷却队列，该文件从此既不在冷却
-    队列、也没被任何一轮同步取走，用户只能看到清单里永远挂着一条、且无从解释。
+    ⚠️ 这条用例替换了原先两条围绕 `_missed_queue` 的用例（「升级」与「清理」）。
+    那个队列已在 2026-09-25 随冷却判据统一而删除：它对"错过的事件"**无条件跳过
+    冷却**，于是源端扫描刚发现一个 10 秒前刚落地的文件也会被判为"错过的"并立即
+    上传 —— 而源端扫描没有"文件写完了"这个信号，正在写入的文件 mtime 恰恰最新。
 
-    正确语义：文件真的入库了就走正常冷却流程，同时从待补扫清单移出
-    （两处都保留会让同一文件被两条通道各自处理）。
+    现在两个场景由冷却基准自动区分，用例只需断言：
+      · webhook 通知的文件进冷却队列；
+      · 队列里存的是 `min(发现时刻, mtime)`，对刚写入的文件就是发现时刻
+        （即"要等满冷却时长"，不会秒传）。
     """
     src = tmp_path / "TV"
     path = _media(str(src))
     plugin = _plugin(str(src))
-    plugin._missed_queue = {"TV:S01E01.mkv": 1.0}
+    before = time.time()
 
     plugin._handle_webhook_event(_webhook_event(item_path=path))
 
-    assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
-    assert plugin._missed_queue == {}
-
-
-def test_webhook_enqueue_clears_missed_entry(tmp_path):
-    """webhook 补上了错过的事件时，同样要把源端补齐清单里的条目移除。"""
-    src = tmp_path / "TV"
-    path = _media(str(src))
-    plugin = _plugin(str(src))
-    plugin._missed_queue = {"TV:other.mkv": 1.0}
-
-    plugin._handle_webhook_event(_webhook_event(item_path=path))
-
-    assert "TV:S01E01.mkv" in plugin._pending_queue
+    key = "TV:S01E01.mkv"
+    assert list(plugin._pending_queue) == [key]
+    basis = plugin._pending_queue[key]
+    # 刚写入的文件 mtime ≈ now，min 取到 now（允许 2 秒执行抖动）
+    assert before - 2 <= basis <= time.time() + 1, (
+        f"冷却基准应≈发现时刻，实际 {basis}（now={before}）——"
+        "偏小意味着这个文件会绕过冷却立刻上传"
+    )
+    assert time.time() - basis < plugin._delay_hours * 3600, "刚入库的文件不该已到期"
 
 
 def test_extension_filter_applies_to_webhook(tmp_path):
@@ -503,9 +505,9 @@ def test_status_does_not_expose_channel_list():
     plugin._pending_queue = {}
     plugin._backfill_queue = {}
     plugin._backfill_total = 0
-    plugin._missed_queue = {}
+    plugin._source_cursor = {}
     plugin._missed_last_scan = 0.0
-    plugin._missed_scan_enabled = False
+    plugin._source_scan_enabled = False
     plugin._sync_pairs = []
     plugin._delay_hours = 2.0
     plugin._strm_watch = {}

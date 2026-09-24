@@ -20,8 +20,29 @@ module. Pure constants are the safest possible extraction target.
 # 否则「留足外挂字幕下载时间」的冷却设计就失去意义。
 # Aligned with sync_115.sh. Subtitles must be included, otherwise the very
 # purpose of the cool-down period ("leave time for external subtitles") is lost.
+#
+# ⚠️ **字幕是整集，不是只有 srt/ass/ssa**：Sup 图形字幕（`.sup`）与
+# VobSub（`.sub`/`.idx`）在蓝光原盘转制里很常见，只认前三个等于「外挂字幕
+# 只同步了一部分，另一部分静默丢弃」。四者必须同时默认在列。
+# ⚠️ **音频**：宿主的整理完成事件按文件类型分派，音频走
+# `AudioTransferComplete`。旧的 18 项默认**一个音频扩展名都没有**，于是
+# 「音频入库」在闸门第一行就被 `skipped` 吃掉，且只记 debug —— 这正是
+# 2026-09-25 之前「入库监听漏得多」的一半原因（另一半是事件本身会丢）。
+# 音频只影响「要不要传到 115」；真正的音乐库同步是另一个插件的事。
+#
+# ⚠️ 本串在**三处**各有一份，改动必须同步（见 DEVELOPMENT §4.0f 的清单）：
+#   1. 这里（后端默认值）
+#   2. `LEGACY_DEFAULTS` 的历次旧默认串（迁移用）
+#   3. `src/components/Config.vue` 的 `defaultConfig`
+# 漏掉第 3 处会让「新装用户看到的表单值」与「后端实际默认值」不一致。
+# Keep this string in sync with LEGACY_DEFAULTS and Config.vue's defaultConfig.
 DEFAULT_MEDIA_EXTENSIONS = (
-    "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass"
+    # 视频容器 / video containers
+    "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v"
+    # 外挂字幕 / external subtitles
+    ",srt,ssa,ass,sup,sub,idx,vtt"
+    # 音频 / audio
+    ",mp3,flac,m4a,aac,opus,wav,mka,ape,wma"
 )
 
 # 默认排除规则。注意 `..*` 在 rsync 语义下**只匹配以 `..` 开头的名字**，
@@ -43,10 +64,36 @@ DEFAULT_TASK_TIMEOUT = 3600
 # Legacy defaults used to migrate users who never touched their config. A value is
 # replaced only when it exactly equals the old default string, so a user's
 # customised setting is never overwritten.
+#
+# ⚠️ **一个字段可能有多代旧默认值**（本项目已改过两轮扩展名与两轮排除规则）。
+# 迁移逻辑必须逐代比对，只比对最近一代会让更老的用户永远停在最初的窄白名单上
+# —— 表现为「按文档升级了，音频/字幕却还是不入队」，而配置页上那一栏
+# 看起来是"用户自己填的"，无从判断该不该动。
+# A field can have SEVERAL generations of legacy defaults. Compare against every
+# generation, not just the latest one.
 LEGACY_DEFAULTS = {
+    # 第 1 代（v0.0.x）：无字幕
     "media_extensions": "mp4,mkv,avi,mov,ts,m2ts,iso,wmv,flv,rmvb",
     "exclude_patterns": "@eaDir/\n#recycle/\n@__thumb/\n.DS_Store",
     "rsync_timeout": 60,
+}
+
+# 第 2 代扩展名默认值（v0.0.10 起）：加了字幕与更多容器，但仍**无音频**、
+# 且字幕只有 srt/ssa/ass。凡当前值等于它，一律迁到最新默认值。
+# Generation-2 media extensions (subtitles added, audio still missing).
+LEGACY_MEDIA_EXTENSIONS_V2 = (
+    "mp4,mkv,ts,iso,rmvb,avi,mov,mpeg,mpg,wmv,3gp,asf,m4v,flv,m2ts,tp,f4v,srt,ssa,ass"
+)
+
+# 映射到一个字段的全部「旧默认串」——迁移逻辑只应迭代它，不要手写 if 链，
+# 否则下次再加一代默认值时必然漏掉某条分支。
+LEGACY_DEFAULTS_ALL = {
+    "media_extensions": (
+        LEGACY_DEFAULTS["media_extensions"],
+        LEGACY_MEDIA_EXTENSIONS_V2,
+    ),
+    "exclude_patterns": (LEGACY_DEFAULTS["exclude_patterns"],),
+    "rsync_timeout": (str(LEGACY_DEFAULTS["rsync_timeout"]),),
 }
 
 # rsync 退出码语义（与 sync_115.sh 的 _handle_rsync_exit 对齐）
@@ -88,21 +135,29 @@ RETRY_KEYWORD_LIMIT = 15
 # Minimum interval between strm cross-validation sweeps.
 STRM_CHECK_INTERVAL = 1800
 
-# 源端补齐扫描的最小间隔。事件丢失（插件重载期间）是低频问题，
-# 没必要每轮同步都整树遍历一次本地媒体库。
-# Minimum interval between source-root reconciliation scans.
-MISSED_SCAN_INTERVAL = 1800
+# ---- 源端游标扫描 / source-root cursor scan ----
+# 入库发现的**主通道**。取代了 2026-09-25 删除的宿主整理事件订阅，
+# 判据与 sync_115.sh 的 `find -newer <last_sync>` 同构：
+#   游标（上次成功扫描时刻）→ 挑出 mtime 晚于 (游标 − 重叠窗口) 的文件 → 入队
+#
+# 为什么它能同时做到「不漏」与「不多传」：
+#   · 不依赖任何外部通知 —— 手动入库、外部搬入、9KG、插件重载期间发生的一切，
+#     只要文件在源目录里就会被下次扫描看见；
+#   · 老文件被 touch 不会造成重复上传 —— 冷却基准取 min(发现时刻, mtime)，
+#     且游标随扫描推进，同一批文件不会反复"变新"（这是旧实现被默认关闭的原因）。
+SOURCE_SCAN_ENABLED_DEFAULT = True
 
-# 源端补齐扫描总开关。默认**关闭**，因为它的判据（文件 mtime 变新）无法区分
-# 「真的新入库」与「老文件被重新 touch」：刮削写 nfo、下载器续传、套件定期刷
-# 时间戳等都会让同一个老文件每轮被重复判为「新入库」，表现为「每隔几分钟冒出
-# 一个其实 1 小时前就入库的文件、且立刻同步（不受冷却约束）」。
-# 只有确实频繁遇到「插件重载期间丢事件」的用户才建议开启。
-# Master switch for the source-root reconciliation scan. OFF by default: its signal
-# (file mtime became newer) cannot distinguish a genuine new ingest from an old file
-# merely being touched, which would re-enqueue the same old file every round and
-# bypass the cool-down.
-MISSED_SCAN_ENABLED_DEFAULT = False
+# 扫描间隔。**独立于同步 cron**（原先挂在 `_execute_sync(ready)` 内部，
+# 而 `_scheduled_sync` 是"补传优先 and return" —— 补传一忙扫描整轮不跑）。
+# 10 分钟：每轮每映射一次 os.walk，纯本地 IO、零 115 API；媒体的时效以分钟计
+# 已经足够（上传本身还要过 4h 冷却）。
+SOURCE_SCAN_INTERVAL = 600
+
+# 游标重叠窗口（秒）。`os.path.getmtime` 的比较是严格大于，而同一秒批量落盘
+# 很常见（整季拷贝、SMB 一次写入）。mtime 恰好等于游标的文件会被严格比较
+# **永久跳过**，故把下界往后退一个窗口。代价不对称：窗口内的重复扫到由队列
+# 幂等吸收（代价为零），而漏掉是永久损失。
+SOURCE_CURSOR_OVERLAP_SECS = 120
 
 # ---- 主动 strm 扫描 / proactive strm sweep ----
 # 单次主动扫描最多收集多少个「源端存在但缺 strm」的文件。

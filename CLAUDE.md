@@ -93,6 +93,16 @@ Tests need the MoviePilot backend. Default location is a sibling directory `../M
 layout) or set `MOVIEPILOT_BACKEND_PATH`. Always use the backend's venv interpreter
 (`../MoviePilot/.venv/bin/python`) — never a separate environment.
 
+> ⚠️ If neither the backend nor `pytest` is available (fresh clone, no sibling), the full suite
+> **cannot** run. Do **not** report "all tests pass" in that state. Two honest options: build a
+> throwaway stub host (a minimal `app/` with `_PluginBase`, `eventmanager`, `logger`, plus an
+> `apscheduler` stand-in) and run the pure-logic cases through it, or state plainly that the suite
+> was not run. When using a stub, always capture a **baseline** by stashing your changes and running
+> the same selection against the original code — only the *delta* is meaningful, because a stub
+> harness will always have some failures of its own (missing `fastapi`, `caplog` behaviour, private
+> APIs). A prior session reported a fixed count of failing cases without a baseline; those failures
+> turned out to be harness limitations, not regressions.
+
 ```bash
 # Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point)
 ../MoviePilot/.venv/bin/python tests/run.py

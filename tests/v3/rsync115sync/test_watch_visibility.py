@@ -47,9 +47,14 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._pending_queue = {}
     plugin._backfill_queue = []
     plugin._backfill_total = 0
-    plugin._missed_queue = {}
-    plugin._missed_last_scan = 0
-    plugin._missed_scan_enabled = False
+    plugin._source_cursor = {}
+    plugin._source_scan_enabled = False
+    # 源端扫描的间隔与状态字段：`_api_get_status` 会读它们。
+    # （此处的字段清单必须跟着 /status 的返回键走 —— 漏一个就是 AttributeError，
+    #  而这正是本文件标题所强调的"只有实例化才能发现"的那类缺陷。）
+    plugin._source_scan_interval = 600
+    plugin._source_scan_last = 0.0
+    plugin._ingest_skip_stat = {}
     plugin._last_status = {"missing_files": [], "corrupt_files": []}
     plugin._is_running = False
     plugin._rate_limit_enabled = True
