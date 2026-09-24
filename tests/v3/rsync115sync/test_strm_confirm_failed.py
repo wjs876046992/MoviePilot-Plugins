@@ -350,6 +350,54 @@ def test_user_facing_strings_are_plain_text():
     assert not offenders, f"面向用户的文案里出现了 Markdown 标记：{offenders}"
 
 
+def test_vue_user_facing_text_has_no_markdown():
+    """
+    **Vue 模板里的面向用户文案**同样不得出现 Markdown 标记。
+
+    上面那条只扫 Python 模块，覆盖不到 `.vue` —— 而这次正是在 Config.vue 里
+    写了 `**有意的设计**`，会原样显示成星号。这类漏网有两次先例（Page.vue 的
+    `**未真正上传**`、Config.vue 的 `**没有真的传到 115**`），所以补上这一条。
+
+    判据：`<template>` 区里出现的 `**...**` 即为违规。只扫 template，
+    不扫 script/style —— 那里的 `**` 是注释或数学符号，与渲染无关。
+
+    ⚠️ 取 template 区必须用**最后一个** `</template>`：模板里到处是
+    `<template v-if=...>` 这类内层标签，非贪婪匹配会在第一个内层
+    `</template>` 就收尾。**第一版就是这么写的，于是只扫了前 11 行**
+    —— 而那次注入的违规在第 453 行，测试照样通过（假绿）。
+    这条注释就是那次自测的产物：写完哨兵用例必须**注入一次违规验证它会失败**。
+
+    ⚠️ 还要**先剔掉 HTML 注释** `<!-- ... -->`：模板里有大量中文注释，其中
+    写 `**加粗**` 属于文档习惯、不会被渲染。不剔掉的话本用例会报一堆假违规，
+    而假违规的代价是有人来「放宽」这条检查 —— 那它就再也挡不住真的违规。
+    """
+    import pathlib
+    import re
+    plugin_dir = pathlib.Path(__file__).resolve().parents[3] / "plugins.v3" / "rsync115sync"
+    offenders = []
+    for name in ("Page.vue", "Config.vue"):
+        for candidate in (plugin_dir / name, plugin_dir / "src" / "components" / name):
+            if not candidate.is_file():
+                continue
+            src = candidate.read_text(encoding="utf-8")
+            start = src.find("<template>")
+            end = src.rfind("</template>")
+            if start < 0 or end < start:
+                continue
+            body = src[start:end]
+            # 去掉 HTML 注释后再判；用等长空白替换以保留行号
+            body = re.sub(r"<!--.*?-->",
+                          lambda m: re.sub(r"[^\n]", " ", m.group(0)),
+                          body, flags=re.DOTALL)
+            for m in re.finditer(r"\*\*([^*\n]{1,60})\*\*", body):
+                line = body[:m.start()].count("\n") + 1
+                offenders.append((name, line, m.group(0)[:50]))
+            break
+    assert not offenders, (
+        f"Vue 模板里的用户文案出现了 Markdown 标记（会原样显示成星号）：{offenders}"
+    )
+
+
 def test_blocked_message_uses_real_newlines(tmp_path):
     """
     多段说明必须用显式 `\\n` 分隔，不能靠 Python 的隐式字符串拼接。

@@ -1169,7 +1169,9 @@ return (_ctx, _cache) => {
                   _createElementVNode("code", null, "emby"),
                   _createTextVNode("） 本插件都不会处理，那些报文归平台自己的解析器管。 "),
                   _createElementVNode("br"),
-                  _createTextVNode(" 本插件**没有任何需要在这里配置的项**：只认上面这个标识，其余来源一概不监听。 "),
+                  _createTextVNode(" 本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听 （这是"),
+                  _createElementVNode("b", null, "有意的设计"),
+                  _createTextVNode("，不是待办 —— 媒体服务器自己的入库归平台处理）。 "),
                   _createElementVNode("br"),
                   _createTextVNode(" 推送内容支持单个文件路径或目录（目录会自动展开），事件请用"),
                   _createElementVNode("b", null, "入库类"),
@@ -1238,6 +1240,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a62454a2"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-5879396d"]]);
 
 export { Config as default };
