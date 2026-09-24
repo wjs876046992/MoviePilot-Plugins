@@ -219,3 +219,85 @@ def test_missing_dest_file_needs_no_force(tmp_path):
     res = plugin._api_strm_retry({"keys": [KEY]})
     assert res["success"] is True
     assert plugin._deleted == [KEY]
+
+
+# --------------------------------------------------------------------------
+# 文案契约：面向用户的回复必须是**纯文本**
+# --------------------------------------------------------------------------
+
+def _reply_strings(path):
+    """取某模块里「会出现在用户面前」的字符串常量（排除 logger 与文档字符串）。
+
+    为什么需要这个区分：本插件的同一句文案有两个消费方 —— 远程命令发到聊天渠道
+    （Markdown 渲染），看板塞进纯文本区块（**不渲染**）。因此写 `**加粗**` 的结果
+    是看板上出现一堆星号（用户实测反馈）。日志里写 Markdown 无所谓，所以只排除
+    `logger.*` 与 docstring，其余一律当作面向用户的文案。
+    """
+    import ast
+    src = path.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                docstrings.add(doc)
+
+    logged = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = getattr(fn, "attr", getattr(fn, "id", ""))
+            if name in ("debug", "info", "warning", "error", "critical", "exception"):
+                for arg in ast.walk(node):
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        logged.add(arg.value)
+
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in docstrings or node.value in logged:
+                continue
+            out.append(node.value)
+    return out
+
+
+def test_user_facing_strings_are_plain_text():
+    """
+    面向用户的文案不得出现 Markdown 标记。
+
+    看板的提示区块是纯文本（`{{ }}` 插值，不做渲染），写 `**x**` 只会显示成
+    `**x**`。远程命令那边走聊天渠道，Markdown 是渲染的 —— 两者共用同一批字符串，
+    所以唯一的做法是**全部按纯文本写**。
+    """
+    import pathlib
+    plugin_dir = pathlib.Path(__file__).resolve().parents[3] / "plugins.v3" / "rsync115sync"
+    offenders = []
+    for name in ("strm_ops.py", "commands.py", "sync_ops.py", "__init__.py"):
+        for text in _reply_strings(plugin_dir / name):
+            if "**" in text:
+                offenders.append((name, text.strip().splitlines()[0][:70]))
+    assert not offenders, f"面向用户的文案里出现了 Markdown 标记：{offenders}"
+
+
+def test_blocked_message_uses_real_newlines(tmp_path):
+    """
+    多段说明必须用显式 `\\n` 分隔，不能靠 Python 的隐式字符串拼接。
+
+    隐式拼接会把几段黏成一行，而浏览器对纯文本里的单个 `\\n` 只当空格 ——
+    结果是整段说明挤成一坨（用户实测看到的形态）。这条钉住「至少有两处
+    \\n\\n 分段」，因为这条文案本身就是「结论 + 三条排查项 + 两条处置路径」的结构。
+    """
+    plugin = _plugin(str(tmp_path), suspects={KEY: {"ts": time.time(), "origin": "watch"}})
+    msg = plugin._api_strm_retry({"keys": [KEY]})["message"]
+    assert msg.count("\n\n") >= 2, "删除拦截文案的分段丢失，会在看板上挤成一整行"
+    # 第一段与文件清单之间必须换行，否则文件名会接在冒号后面
+    assert "：\n• " in msg or "：\n" in msg
+
+
+def test_confirm_failed_message_is_readable(tmp_path):
+    plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
+    msg = plugin._api_strm_confirm_failed({"keys": [KEY]})["message"]
+    assert "**" not in msg
+    assert "\n" in msg

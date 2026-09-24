@@ -50,7 +50,8 @@ const _hoisted_28 = { class: "action-group d-flex align-center flex-wrap ga-2" }
 const _hoisted_29 = { class: "action-group d-flex align-center flex-wrap ga-2" };
 const _hoisted_30 = {
   key: 0,
-  class: "text-caption font-weight-bold text-primary mr-1 action-msg"
+  class: "text-caption font-weight-bold text-primary mr-1 action-msg",
+  style: {"white-space":"pre-wrap"}
 };
 const _hoisted_31 = {
   key: 0,
@@ -114,7 +115,7 @@ const _hoisted_59 = { class: "text-caption text-medium-emphasis" };
 const _hoisted_60 = { class: "font-weight-medium mb-1" };
 const _hoisted_61 = {
   class: "font-weight-medium",
-  style: {"white-space":"pre-line"}
+  style: {"white-space":"pre-wrap"}
 };
 const _hoisted_62 = {
   key: 2,
@@ -557,7 +558,8 @@ async function clearBackfill() {
 // 窗口是下界，不该变成上限。
 async function confirmWatchFailed(key) {
   const ok = window.confirm(
-    `你确认这个文件**没有真的传到 115**（只是挂载视图看着像成功）？\n\n${key}\n\n` +
+    // 原生对话框不渲染 Markdown，写成纯文本（否则用户看到一堆星号）
+    `你确认这个文件没有真的传到 115（只是挂载视图看着像成功）？\n\n${key}\n\n` +
     `1. 立即结束观察期，转入「疑似异常」清单（不等窗口）\n` +
     `2. 之后可在清单里点「删旧重传」\n\n` +
     `⚠️ 若只是 strm 插件漏生成（文件其实是好的），重传也不会重复上传，` +
@@ -598,15 +600,33 @@ async function postStrmConfirmFailed(keys, loadingKey) {
 // 入口点的。
 // The force retry is centralised for the same reason as the backend guard: a path
 // implemented in one caller but not the others fails exactly where it matters.
+// 把后端文案规整成**纯文本**再显示（并交给 window.confirm 弹二次确认）。
+//
+// ⚠️ 这一层是必要的，因为同一个字符串有两个消费方：远程命令把它发到聊天渠道
+// （那里 Markdown 是渲染的），看板把它塞进纯文本区块（**不渲染**）。
+// 后端因此只能产出纯文本 —— 但历史上有几处文案留着 `**加粗**`，用户在看板上
+// 看到的就是一堆星号。收敛在这里消掉，比让每一处回复各自记得「不要加星号」更可靠。
+// The same string is consumed by chat (Markdown-aware) and by the dashboard (plain
+// text), so the dashboard normalises it here rather than trusting every call site.
+function plainText(text) {
+  return String(text ?? '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')   // 去掉加粗标记，保留内容
+    .replace(/`([^`]+)`/g, '$1')       // 去掉行内代码标记
+    .replace(/[ \t]+\n/g, '\n')        // 行尾空格（含拼接留下的）
+}
+
 async function postStrmRetry(keys) {
   const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys });
   if (!res || res.success || !res.needs_force) return res
   // 后端拒绝了本次请求并附上那一刻的探测结论（通常是「可见且大小一致」）：
   // 把原文交给用户再问一次，才算真正推翻了那道守卫。
+  //
+  // ⚠️ 必须走 plainText：原生对话框既不渲染 Markdown，也不吃 Vue 的样式，
+  // 原文里的 `**` 与残留的空行会原样显示成一堆星号与空白。
   const again = window.confirm(
-    `${res.message}\n\n` +
-    `你已在 115 上亲眼确认过这些文件是坏的（而不是 strm 漏生成）吗？\n` +
-    `确认 ⇒ 立即删除并重传；取消 ⇒ 什么也不做。`
+    plainText(res.message) + '\n\n' +
+    '你已在 115 上亲眼确认过这些文件是坏的（而不是 strm 漏生成）吗？\n' +
+    '确认 ⇒ 立即删除并重传；取消 ⇒ 什么也不做。'
   );
   if (!again) return res
   return props.api.post('plugin/Rsync115Sync/strm_retry', { keys, force: true })
@@ -1485,7 +1505,7 @@ return (_ctx, _cache) => {
                 ]),
                 _createElementVNode("div", _hoisted_29, [
                   (actionMsg.value)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_30, _toDisplayString(actionMsg.value), 1))
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_30, _toDisplayString(plainText(actionMsg.value)), 1))
                     : _createCommentVNode("", true),
                   (currentTab.value !== 'ignored')
                     ? (_openBlock(), _createBlock(_component_v_btn, {
@@ -2229,7 +2249,7 @@ return (_ctx, _cache) => {
                               class: "rounded-lg mb-2 text-body-2"
                             }, {
                               default: _withCtx(() => [
-                                _createElementVNode("div", _hoisted_61, _toDisplayString(strmScanMsg.value), 1)
+                                _createElementVNode("div", _hoisted_61, _toDisplayString(plainText(strmScanMsg.value)), 1)
                               ]),
                               _: 1
                             }))
@@ -2369,7 +2389,7 @@ return (_ctx, _cache) => {
                                           "max-width": "340"
                                         }, {
                                           default: _withCtx(() => [...(_cache[107] || (_cache[107] = [
-                                            _createTextVNode(" 你已在 115 上确认这个文件**没传上去**（例如只剩 ", -1),
+                                            _createTextVNode(" 你已在 115 上确认这个文件没传上去（例如只剩 ", -1),
                                             _createElementVNode("code", null, "xxx.mkv..随机6位", -1),
                                             _createTextVNode(" 残留、正式文件不存在）⇒ 不必再等窗口，立刻转入疑似清单，随后可「删旧重传」。", -1),
                                             _createElementVNode("br", null, null, -1),
@@ -2413,7 +2433,7 @@ return (_ctx, _cache) => {
                                   _createElementVNode("div", _hoisted_75, [
                                     (confirmedKeys.value[key])
                                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                          _createTextVNode(" 你已确认该文件**未真正上传**（越过观察窗口转入）—— 删旧重传时会再做一次二次确认，之后再执行 ")
+                                          _createTextVNode(" 你已确认该文件未真正上传（越过观察窗口转入）—— 删旧重传时会再做一次二次确认，之后再执行 ")
                                         ], 64))
                                       : (genRequested.value[key])
                                         ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
@@ -2784,6 +2804,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1499d022"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-5ba3da13"]]);
 
 export { App as default };

@@ -1022,6 +1022,7 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
 
 | 版本 | 类型 | 内容 |
 |---|---|---|
+| v0.2.4 | fix | 提示文案显示：后端回复去掉 Markdown 标记、段落改用显式换行（同一字符串也发到聊天渠道，而看板是纯文本不渲染）；看板统一经 `plainText` 规整 + `pre-wrap` 保留换行；原生确认框不再输出星号。新增两条契约测试（AST 级禁止面向用户文案出现 Markdown） |
 | v0.2.3 | fix | 观察窗口可被「确认失败」越过（新增第三 origin `confirmed` + `_promote_watch_to_suspects` + 看板按钮/`/rsync_strm failed`/`POST /strm_confirm_failed`）；已确认条目可经 `force` 二确认放行删旧重传，解开「CD2 视图显示完好 ⇒ 守卫必然拦下 ⇒ 重启后仍拦」的死循环 |
 | v0.2.2 | fix | 非视频文件（字幕/图片/元数据）不再纳入 strm 交叉验证：登记闸门新增文件类型判据（`_strm_watchable`，四处共用一份）、载入时清洗观察清单里的历史非视频条目（`_prune_invalid_strm_watch`）；顺带修复 `test_batch_settlement` 两条因关键字传参笔误而一直抛 TypeError 的用例 |
 | v0.2.1 | fix+feat | **P0-1** 出队/strm 登记与退出码解耦（对账通过即结算）；**P0-2** force 改为「只读全量对账 + files-from 定向传输 + 配额预扣」，配额耗尽仍继续剩余映射对账；**review 修复** 补齐清单出账时机（批次截断后 + rsync 执行后）、队列 key 反向解析统一走 `rel_path_of_key` |

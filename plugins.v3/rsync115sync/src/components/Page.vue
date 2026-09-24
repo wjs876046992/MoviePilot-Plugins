@@ -216,7 +216,16 @@
               </v-btn>
             </div>
             <div class="action-group d-flex align-center flex-wrap ga-2">
-              <div v-if="actionMsg" class="text-caption font-weight-bold text-primary mr-1 action-msg">{{ actionMsg }}</div>
+              <!-- ⚠️ 走 plainText + pre-wrap：后端文案是**纯文本**（同一字符串也发到
+                   聊天渠道，因此不能用 Markdown），但换行必须显式保留 ——
+                   否则窗口内探测、删除拦截这类多段说明会被浏览器折叠成一整行，
+                   用户看到的就是「…传不上去）：• 9KG:… 也就是说云端很可能是好的…」
+                   这种挤成一坨的文本。Vue 的 {{ }} 是文本插值，自动转义，无注入风险。 -->
+              <div
+                v-if="actionMsg"
+                class="text-caption font-weight-bold text-primary mr-1 action-msg"
+                style="white-space: pre-wrap"
+              >{{ plainText(actionMsg) }}</div>
               <!-- 批量选择模式开关 -->
               <v-btn
                 v-if="currentTab !== 'ignored'"
@@ -602,7 +611,7 @@
               density="compact"
               class="rounded-lg mb-2 text-body-2"
             >
-              <div class="font-weight-medium" style="white-space: pre-line">{{ strmScanMsg }}</div>
+              <div class="font-weight-medium" style="white-space: pre-wrap">{{ plainText(strmScanMsg) }}</div>
             </v-alert>
 
             <!-- 观察期明细：这些文件刚同步成功、还在等 strm 生成（宽限期内），
@@ -699,7 +708,7 @@
                     <v-icon start size="14">mdi-alert-circle-check-outline</v-icon>
                     确认失败
                     <v-tooltip activator="parent" location="top" max-width="340">
-                      你已在 115 上确认这个文件**没传上去**（例如只剩
+                      你已在 115 上确认这个文件没传上去（例如只剩
                       <code>xxx.mkv..随机6位</code> 残留、正式文件不存在）⇒
                       不必再等窗口，立刻转入疑似清单，随后可「删旧重传」。<br>
                       窗口衡量的是「还可能有救」，不是「你必须等多久」——
@@ -738,7 +747,7 @@
                            「补生成后仍无」，而是当事人已经去 115 看过了。把它混进
                            另外两种说法里，用户会以为这是插件自己判出来的。 -->
                       <template v-if="confirmedKeys[key]">
-                        你已确认该文件**未真正上传**（越过观察窗口转入）——
+                        你已确认该文件未真正上传（越过观察窗口转入）——
                         删旧重传时会再做一次二次确认，之后再执行
                       </template>
                       <template v-else-if="genRequested[key]">
@@ -1287,7 +1296,8 @@ async function clearBackfill() {
 // 窗口是下界，不该变成上限。
 async function confirmWatchFailed(key) {
   const ok = window.confirm(
-    `你确认这个文件**没有真的传到 115**（只是挂载视图看着像成功）？\n\n${key}\n\n` +
+    // 原生对话框不渲染 Markdown，写成纯文本（否则用户看到一堆星号）
+    `你确认这个文件没有真的传到 115（只是挂载视图看着像成功）？\n\n${key}\n\n` +
     `1. 立即结束观察期，转入「疑似异常」清单（不等窗口）\n` +
     `2. 之后可在清单里点「删旧重传」\n\n` +
     `⚠️ 若只是 strm 插件漏生成（文件其实是好的），重传也不会重复上传，` +
@@ -1328,15 +1338,33 @@ async function postStrmConfirmFailed(keys, loadingKey) {
 // 入口点的。
 // The force retry is centralised for the same reason as the backend guard: a path
 // implemented in one caller but not the others fails exactly where it matters.
+// 把后端文案规整成**纯文本**再显示（并交给 window.confirm 弹二次确认）。
+//
+// ⚠️ 这一层是必要的，因为同一个字符串有两个消费方：远程命令把它发到聊天渠道
+// （那里 Markdown 是渲染的），看板把它塞进纯文本区块（**不渲染**）。
+// 后端因此只能产出纯文本 —— 但历史上有几处文案留着 `**加粗**`，用户在看板上
+// 看到的就是一堆星号。收敛在这里消掉，比让每一处回复各自记得「不要加星号」更可靠。
+// The same string is consumed by chat (Markdown-aware) and by the dashboard (plain
+// text), so the dashboard normalises it here rather than trusting every call site.
+function plainText(text) {
+  return String(text ?? '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')   // 去掉加粗标记，保留内容
+    .replace(/`([^`]+)`/g, '$1')       // 去掉行内代码标记
+    .replace(/[ \t]+\n/g, '\n')        // 行尾空格（含拼接留下的）
+}
+
 async function postStrmRetry(keys) {
   const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys })
   if (!res || res.success || !res.needs_force) return res
   // 后端拒绝了本次请求并附上那一刻的探测结论（通常是「可见且大小一致」）：
   // 把原文交给用户再问一次，才算真正推翻了那道守卫。
+  //
+  // ⚠️ 必须走 plainText：原生对话框既不渲染 Markdown，也不吃 Vue 的样式，
+  // 原文里的 `**` 与残留的空行会原样显示成一堆星号与空白。
   const again = window.confirm(
-    `${res.message}\n\n` +
-    `你已在 115 上亲眼确认过这些文件是坏的（而不是 strm 漏生成）吗？\n` +
-    `确认 ⇒ 立即删除并重传；取消 ⇒ 什么也不做。`
+    plainText(res.message) + '\n\n' +
+    '你已在 115 上亲眼确认过这些文件是坏的（而不是 strm 漏生成）吗？\n' +
+    '确认 ⇒ 立即删除并重传；取消 ⇒ 什么也不做。'
   )
   if (!again) return res
   return props.api.post('plugin/Rsync115Sync/strm_retry', { keys, force: true })
