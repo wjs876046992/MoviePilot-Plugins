@@ -56,8 +56,6 @@ const _hoisted_34 = { class: "setting-row d-flex align-center justify-space-betw
 const _hoisted_35 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
 const _hoisted_36 = { class: "section-header d-flex align-center mb-2 mt-5" };
 const _hoisted_37 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
-const _hoisted_38 = { class: "settings-group-card rounded-xl overflow-hidden mb-4" };
-const _hoisted_39 = { class: "setting-row d-flex align-items-center px-4 py-3 border-b" };
 
 const {ref,computed,onMounted} = await importShared('vue');
 
@@ -101,9 +99,8 @@ const config = ref({
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
   force_cooldown_days: 7,
   // ---- webhook（第二入库来源）----
-  // 只剩渠道过滤一项：与后端实例默认值保持一致，渠道默认只开 emby
-  // （宿主原生支持、零额外配置）。自建端点及其四条防护配置已于 2026-09-22 移除。
-  webhook_channels: ['emby'],
+  // **没有任何配置项**：入口只认 `source=rsync115sync`，其它来源归平台解析器。
+  // （渠道白名单与自建端点的四条防护均已移除，见 __init__.py 的 webhook 配置节。）
   // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
@@ -169,21 +166,6 @@ const rateConfigWarnings = computed(() => {
     }
   }
   return warns
-});
-
-// 渠道列表在界面上按逗号分隔的纯文本编辑（用户只需要填一两个渠道名，
-// 为此做一个 chips 编辑器不划算），但后端存的是数组 —— 因此双向转换，
-// 且写入时过滤空项：把 `"emby,,jellyfin"` 里的空串存进配置，后端要额外兜。
-const webhookChannelsText = computed({
-  get: () => (Array.isArray(config.value.webhook_channels)
-    ? config.value.webhook_channels.join(', ')
-    : String(config.value.webhook_channels || '')),
-  set: (value) => {
-    config.value.webhook_channels = String(value || '')
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter((item) => item.length > 0);
-  },
 });
 
 // 目录映射新增与限流换算无关，以下是原有逻辑
@@ -277,7 +259,7 @@ return (_ctx, _cache) => {
                 color: "primary",
                 size: "22"
               }, {
-                default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+                default: _withCtx(() => [...(_cache[18] || (_cache[18] = [
                   _createTextVNode("mdi-cloud-sync", -1)
                 ]))]),
                 _: 1
@@ -294,7 +276,7 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { size: "18" }, {
-                  default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                  default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
                     _createTextVNode("mdi-close", -1)
                   ]))]),
                   _: 1
@@ -303,7 +285,7 @@ return (_ctx, _cache) => {
                   activator: "parent",
                   location: "bottom"
                 }, {
-                  default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                  default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
                     _createTextVNode("关闭配置", -1)
                   ]))]),
                   _: 1
@@ -316,14 +298,14 @@ return (_ctx, _cache) => {
             _createElementVNode("div", null, [
               _createVNode(_component_v_card_title, { class: "text-subtitle-1 font-weight-bold pa-0 d-flex align-center" }, {
                 default: _withCtx(() => [
-                  _cache[21] || (_cache[21] = _createTextVNode(" 115 网盘同步配置 ", -1)),
+                  _cache[20] || (_cache[20] = _createTextVNode(" 115 网盘同步配置 ", -1)),
                   _createVNode(_component_v_chip, {
                     size: "x-small",
                     color: "primary",
                     variant: "tonal",
                     class: "ml-2 font-weight-bold"
                   }, {
-                    default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
+                    default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
                       _createTextVNode("v0.2.7", -1)
                     ]))]),
                     _: 1
@@ -331,7 +313,7 @@ return (_ctx, _cache) => {
                 ]),
                 _: 1
               }),
-              _cache[22] || (_cache[22] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
+              _cache[21] || (_cache[21] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
             ])
           ]),
           _: 1
@@ -374,7 +356,7 @@ return (_ctx, _cache) => {
           default: _withCtx(() => [
             _createElementVNode("div", _hoisted_4, [
               _createElementVNode("div", _hoisted_5, [
-                _cache[25] || (_cache[25] = _createElementVNode("div", null, [
+                _cache[24] || (_cache[24] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用同步助手"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "总控主开关，开启后生效定时轮询与事件监听")
                 ], -1)),
@@ -388,7 +370,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_6, [
-                _cache[26] || (_cache[26] = _createElementVNode("div", null, [
+                _cache[25] || (_cache[25] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "监听媒体转移入库事件"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "下载与刮削转移完成后自动纳入延迟冷却队列")
                 ], -1)),
@@ -404,20 +386,20 @@ return (_ctx, _cache) => {
               _createElementVNode("div", _hoisted_7, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", _hoisted_8, [
-                    _cache[28] || (_cache[28] = _createTextVNode(" 源端补齐扫描（默认关闭） ", -1)),
+                    _cache[27] || (_cache[27] = _createTextVNode(" 源端补齐扫描（默认关闭） ", -1)),
                     _createVNode(_component_v_chip, {
                       size: "x-small",
                       color: "warning",
                       variant: "tonal",
                       class: "ml-1 font-weight-bold"
                     }, {
-                      default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                      default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
                         _createTextVNode("谨慎", -1)
                       ]))]),
                       _: 1
                     })
                   ]),
-                  _cache[29] || (_cache[29] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
+                  _cache[28] || (_cache[28] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
                     _createTextVNode(" 每轮同步前遍历本地源目录，把「插件忙时错过的入库事件」补回来。 它靠文件修改时间判断新增，"),
                     _createElementVNode("strong", null, "无法区分「真的新入库」和「老文件被重新写入」"),
                     _createTextVNode(" （刮削写 nfo、下载器续传、套件刷新时间戳都会命中）， 开启后可能把很久以前就入库的文件反复当成新文件补进队列，且这类补入不等待冷却。 只有在确认经常丢事件时才开启。 ")
@@ -440,7 +422,7 @@ return (_ctx, _cache) => {
                   color: "primary",
                   class: "mr-1"
                 }, {
-                  default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                  default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                     _createTextVNode("mdi-folder-swap-outline", -1)
                   ]))]),
                   _: 1
@@ -459,12 +441,12 @@ return (_ctx, _cache) => {
                     start: "",
                     size: "16"
                   }, {
-                    default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                    default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
                       _createTextVNode("mdi-plus", -1)
                     ]))]),
                     _: 1
                   }),
-                  _cache[32] || (_cache[32] = _createTextVNode(" 添加目录映射 ", -1))
+                  _cache[31] || (_cache[31] = _createTextVNode(" 添加目录映射 ", -1))
                 ]),
                 _: 1
               })
@@ -475,7 +457,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-3 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+              default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
                 _createTextVNode(" 为每个媒体库配置一对路径：", -1),
                 _createElementVNode("b", null, "本地源目录", -1),
                 _createTextVNode(" → ", -1),
@@ -504,7 +486,7 @@ return (_ctx, _cache) => {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, { size: "18" }, {
-                              default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
+                              default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
                                 _createTextVNode("mdi-trash-can-outline", -1)
                               ]))]),
                               _: 1
@@ -590,12 +572,12 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue", "onUpdate:modelValue"]),
                               _createElementVNode("div", _hoisted_14, [
                                 _createVNode(_component_v_icon, { size: "13" }, {
-                                  default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
+                                  default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
                                     _createTextVNode("mdi-check-circle-outline", -1)
                                   ]))]),
                                   _: 1
                                 }),
-                                _cache[36] || (_cache[36] = _createTextVNode(" 不依赖 P115StrmHelper：任何会生成 .strm 的插件都可以， 甚至完全不用插件、只填一个目录也能工作 ", -1))
+                                _cache[35] || (_cache[35] = _createTextVNode(" 不依赖 P115StrmHelper：任何会生成 .strm 的插件都可以， 甚至完全不用插件、只填一个目录也能工作 ", -1))
                               ])
                             ]),
                             _: 2
@@ -614,14 +596,14 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue", "onUpdate:modelValue"]),
                               _createElementVNode("div", _hoisted_15, [
                                 _createVNode(_component_v_icon, { size: "13" }, {
-                                  default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                                  default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
                                     _createTextVNode("mdi-link-variant", -1)
                                   ]))]),
                                   _: 1
                                 }),
-                                _cache[38] || (_cache[38] = _createElementVNode("b", null, "依赖 P115StrmHelper", -1)),
-                                _cache[39] || (_cache[39] = _createTextVNode("：仅「先尝试生成 strm」用得到它。 留空只是该映射不能用补生成，", -1)),
-                                _cache[40] || (_cache[40] = _createElementVNode("b", null, "不影响同步、对账、观察与删旧重传", -1))
+                                _cache[37] || (_cache[37] = _createElementVNode("b", null, "依赖 P115StrmHelper", -1)),
+                                _cache[38] || (_cache[38] = _createTextVNode("：仅「先尝试生成 strm」用得到它。 留空只是该映射不能用补生成，", -1)),
+                                _cache[39] || (_cache[39] = _createElementVNode("b", null, "不影响同步、对账、观察与删旧重传", -1))
                               ])
                             ]),
                             _: 2
@@ -639,12 +621,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
+                default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
                   _createTextVNode("mdi-timer-sand", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[42] || (_cache[42] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
+              _cache[41] || (_cache[41] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
             _createElementVNode("div", _hoisted_18, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
@@ -699,12 +681,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
+                default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
                   _createTextVNode("mdi-shield-check-outline", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[44] || (_cache[44] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
+              _cache[43] || (_cache[43] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
             ]),
             _createElementVNode("div", _hoisted_20, [
               _createVNode(_component_v_row, { density: "compact" }, {
@@ -772,12 +754,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[45] || (_cache[45] = [
+                default: _withCtx(() => [...(_cache[44] || (_cache[44] = [
                   _createTextVNode("mdi-speedometer-slow", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[46] || (_cache[46] = _createTextVNode(" 上传限流与风控退避 ", -1))
+              _cache[45] || (_cache[45] = _createTextVNode(" 上传限流与风控退避 ", -1))
             ]),
             _createVNode(_component_v_alert, {
               type: "info",
@@ -785,7 +767,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-2 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[47] || (_cache[47] = [
+              default: _withCtx(() => [...(_cache[46] || (_cache[46] = [
                 _createElementVNode("div", { class: "font-weight-bold mb-1" }, "为什么需要限流？", -1),
                 _createTextVNode(" 115 网盘会统计", -1),
                 _createElementVNode("b", null, "单位时间内上传的文件个数", -1),
@@ -801,7 +783,7 @@ return (_ctx, _cache) => {
             }),
             _createElementVNode("div", _hoisted_22, [
               _createElementVNode("div", _hoisted_23, [
-                _cache[48] || (_cache[48] = _createElementVNode("div", null, [
+                _cache[47] || (_cache[47] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
                 ], -1)),
@@ -828,7 +810,7 @@ return (_ctx, _cache) => {
                             start: "",
                             size: "14"
                           }, {
-                            default: _withCtx(() => [...(_cache[49] || (_cache[49] = [
+                            default: _withCtx(() => [...(_cache[48] || (_cache[48] = [
                               _createTextVNode("mdi-speedometer", -1)
                             ]))]),
                             _: 1
@@ -977,19 +959,19 @@ return (_ctx, _cache) => {
                 color: "warning",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
+                default: _withCtx(() => [...(_cache[49] || (_cache[49] = [
                   _createTextVNode("mdi-television-classic", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[52] || (_cache[52] = _createTextVNode(" strm 交叉验证 ", -1)),
+              _cache[51] || (_cache[51] = _createTextVNode(" strm 交叉验证 ", -1)),
               _createVNode(_component_v_chip, {
                 size: "x-small",
                 variant: "tonal",
                 color: "success",
                 class: "ml-2 font-weight-bold"
               }, {
-                default: _withCtx(() => [...(_cache[51] || (_cache[51] = [
+                default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
                   _createTextVNode(" 不依赖任何插件 ", -1)
                 ]))]),
                 _: 1
@@ -1001,7 +983,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-3 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
+              default: _withCtx(() => [...(_cache[52] || (_cache[52] = [
                 _createElementVNode("b", null, "它是用来发现「假成功」的", -1),
                 _createTextVNode("：CD2 改名失败时，挂载视图会显示目标文件 「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账 与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角", -1),
                 _createElementVNode("b", null, "结构上看不见", -1),
@@ -1036,12 +1018,12 @@ return (_ctx, _cache) => {
                   variant: "tonal",
                   class: "font-weight-bold flex-shrink-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[54] || (_cache[54] = [
+                  default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
                     _createTextVNode(" 本插件独立完成 ", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[55] || (_cache[55] = _createElementVNode("span", null, [
+                _cache[54] || (_cache[54] = _createElementVNode("span", null, [
                   _createTextVNode(" 观察期、主动扫描（全量 / 关键字）、疑似清单、忽略规则、清理无效项、 "),
                   _createElementVNode("b", null, "删旧重传"),
                   _createTextVNode("、状态通知 ")
@@ -1054,12 +1036,12 @@ return (_ctx, _cache) => {
                   variant: "tonal",
                   class: "font-weight-bold flex-shrink-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
+                  default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
                     _createTextVNode(" 需要 P115StrmHelper ", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[57] || (_cache[57] = _createElementVNode("span", null, [
+                _cache[56] || (_cache[56] = _createElementVNode("span", null, [
                   _createTextVNode(" 仅「"),
                   _createElementVNode("b", null, "先尝试生成 strm"),
                   _createTextVNode("」一项。它请助手按文件所在的网盘目录重新生成 一次指针文件：生成成功 ⇒ 是情况 ①，"),
@@ -1074,7 +1056,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-3 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[58] || (_cache[58] = [
+              default: _withCtx(() => [...(_cache[57] || (_cache[57] = [
                 _createElementVNode("b", null, "「先尝试生成 strm」的启用前提（两处都要配）", -1),
                 _createTextVNode("： ", -1),
                 _createElementVNode("br", null, null, -1),
@@ -1100,7 +1082,7 @@ return (_ctx, _cache) => {
             }),
             _createElementVNode("div", _hoisted_33, [
               _createElementVNode("div", _hoisted_34, [
-                _cache[59] || (_cache[59] = _createElementVNode("div", null, [
+                _cache[58] || (_cache[58] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "观察宽限期 (小时)"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " strm 生成并不实时（可能还在上传或刮削中），因此同步成功后先等待一段时间再判定， 避免把「还没生成」误判为上传异常。最小 0.5 小时。 ")
                 ], -1)),
@@ -1118,7 +1100,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_35, [
-                _cache[60] || (_cache[60] = _createElementVNode("div", null, [
+                _cache[59] || (_cache[59] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "当前状态"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 处于观察期的文件数会在看板顶部提示，疑似异常清单在独立的「strm 疑似异常」标签页内。 ")
                 ], -1)),
@@ -1141,12 +1123,12 @@ return (_ctx, _cache) => {
                   color: "primary",
                   class: "mr-1"
                 }, {
-                  default: _withCtx(() => [...(_cache[61] || (_cache[61] = [
+                  default: _withCtx(() => [...(_cache[60] || (_cache[60] = [
                     _createTextVNode("mdi-webhook", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[62] || (_cache[62] = _createTextVNode(" Webhook 入库（第二来源） ", -1))
+                _cache[61] || (_cache[61] = _createTextVNode(" Webhook 入库（第二来源） ", -1))
               ])
             ]),
             _createVNode(_component_v_alert, {
@@ -1155,7 +1137,7 @@ return (_ctx, _cache) => {
               density: "compact",
               class: "rounded-lg mb-3 text-body-2"
             }, {
-              default: _withCtx(() => [...(_cache[63] || (_cache[63] = [
+              default: _withCtx(() => [...(_cache[62] || (_cache[62] = [
                 _createTextVNode(" 现有的入库监听挂宿主的「整理完成」事件，因此看不到三类入库： ", -1),
                 _createElementVNode("b", null, "手动放进媒体库", -1),
                 _createTextVNode("、", -1),
@@ -1168,71 +1150,35 @@ return (_ctx, _cache) => {
               ]))]),
               _: 1
             }),
-            _createElementVNode("div", _hoisted_38, [
-              _createElementVNode("div", _hoisted_39, [
-                _cache[64] || (_cache[64] = _createElementVNode("div", null, [
-                  _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "来源渠道（channel 过滤）"),
-                  _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
-                    _createElementVNode("b", null, "走 Emby 原生链路时才需要它"),
-                    _createTextVNode("，用来指明哪些媒体服务器推来的事件可以入队， 一个就够了，一般保持 "),
-                    _createElementVNode("code", null, "emby"),
-                    _createTextVNode(" 即可（多个用逗号分隔）。"),
-                    _createElementVNode("br"),
-                    _createElementVNode("b", null, [
-                      _createTextVNode("自定义发送端（"),
-                      _createElementVNode("code", null, "source=rsync115sync"),
-                      _createTextVNode("）不受这一项影响")
-                    ]),
-                    _createTextVNode(" —— 那条路按收件人标识认领，与渠道无关，即使这里没写 "),
-                    _createElementVNode("code", null, "emby"),
-                    _createTextVNode(" 也照常入库。 ")
-                  ])
-                ], -1)),
-                _createVNode(_component_v_text_field, {
-                  modelValue: webhookChannelsText.value,
-                  "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((webhookChannelsText).value = $event)),
-                  variant: "outlined",
-                  density: "compact",
-                  placeholder: "emby",
-                  style: {"max-width":"200px"},
-                  "hide-details": ""
-                }, null, 8, ["modelValue"])
-              ]),
-              _cache[65] || (_cache[65] = _createElementVNode("div", { class: "setting-row px-4 py-3 border-b" }, [
-                _createElementVNode("div", { class: "font-weight-bold text-body-2 mb-1" }, "平台 webhook 地址（宿主原生链路）"),
+            _cache[63] || (_cache[63] = _createElementVNode("div", { class: "settings-group-card rounded-xl overflow-hidden mb-4" }, [
+              _createElementVNode("div", { class: "setting-row px-4 py-3" }, [
+                _createElementVNode("div", { class: "font-weight-bold text-body-2 mb-1" }, "怎么把入库推给本插件"),
                 _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
-                  _createTextVNode(" 无需在本插件做任何额外配置，只需在 "),
-                  _createElementVNode("b", null, "Emby 后台 → 通知 → Webhooks"),
-                  _createTextVNode(" 里添加地址： "),
+                  _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： "),
                   _createElementVNode("br"),
-                  _createElementVNode("code", null, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=<emby实例名>"),
+                  _createElementVNode("code", null, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync"),
                   _createElementVNode("br"),
-                  _createTextVNode(" 其中 "),
-                  _createElementVNode("code", null, "source"),
-                  _createTextVNode(" 要填你在 MoviePilot 里配置的 Emby 实例名（可省略，但多实例时建议填上）。 事件勾选 "),
-                  _createElementVNode("b", null, "新媒体入库"),
-                  _createTextVNode(" 一类即可；播放类事件插件会自动忽略，"),
-                  _createElementVNode("b", null, "填了也不会误触发上传"),
-                  _createTextVNode("。 "),
-                  _createElementVNode("br"),
-                  _createElementVNode("b", null, "自定义发送端"),
-                  _createTextVNode("（自建脚本等）也可以走这个地址，把 "),
-                  _createElementVNode("code", null, "source"),
-                  _createTextVNode(" 换成 "),
-                  _createElementVNode("code", null, "rsync115sync"),
-                  _createTextVNode("（或加请求头 "),
+                  _createTextVNode(" 也可以改用请求头 "),
                   _createElementVNode("code", null, "X-Webhook-Target: rsync115sync"),
-                  _createTextVNode("）， 插件会认领它。 "),
+                  _createTextVNode("。 "),
                   _createElementVNode("b", null, [
-                    _createTextVNode("注意这个值必须是 "),
+                    _createTextVNode("这个值必须是 "),
                     _createElementVNode("code", null, "rsync115sync")
                   ]),
                   _createTextVNode(" —— 填成别的（包括 "),
                   _createElementVNode("code", null, "emby"),
-                  _createTextVNode("） 插件都不会处理。 ")
+                  _createTextVNode("） 本插件都不会处理，那些报文归平台自己的解析器管。 "),
+                  _createElementVNode("br"),
+                  _createTextVNode(" 本插件**没有任何需要在这里配置的项**：只认上面这个标识，其余来源一概不监听。 "),
+                  _createElementVNode("br"),
+                  _createTextVNode(" 推送内容支持单个文件路径或目录（目录会自动展开），事件请用"),
+                  _createElementVNode("b", null, "入库类"),
+                  _createTextVNode(" （如 "),
+                  _createElementVNode("code", null, "library.new"),
+                  _createTextVNode("）—— 播放类事件会被自动忽略，填了也不会误触发上传。 ")
                 ])
-              ], -1))
-            ])
+              ])
+            ], -1))
           ]),
           _: 1
         }),
@@ -1249,12 +1195,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[66] || (_cache[66] = [
+                  default: _withCtx(() => [...(_cache[64] || (_cache[64] = [
                     _createTextVNode("mdi-view-dashboard-outline", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[67] || (_cache[67] = _createTextVNode(" 查看监控看板 ", -1))
+                _cache[65] || (_cache[65] = _createTextVNode(" 查看监控看板 ", -1))
               ]),
               _: 1
             }),
@@ -1272,12 +1218,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[68] || (_cache[68] = [
+                  default: _withCtx(() => [...(_cache[66] || (_cache[66] = [
                     _createTextVNode("mdi-content-save", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[69] || (_cache[69] = _createTextVNode(" 保存配置 ", -1))
+                _cache[67] || (_cache[67] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"])
@@ -1292,6 +1238,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-393dea40"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a62454a2"]]);
 
 export { Config as default };

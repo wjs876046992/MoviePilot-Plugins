@@ -27,7 +27,18 @@ from types import SimpleNamespace
 import pytest
 
 
-def _plugin(src_root, *, enabled=True, listen=True, channels=("emby",),
+# 本插件的 webhook 事件 channel **恒为 WEBHOOK_TARGET**（认领时就是这么构造的）。
+# 这不是可配置项，而是「这条事件由本插件认领而来」的标记。
+#
+# ⚠️ 历史：这里曾默认 `channel="emby"` 并配一份渠道白名单。2026-09-24 起
+# 处理侧改为只认自己的认领结果（`source=rsync115sync`），宿主自己解析的
+# Emby/Jellyfin 事件一概不处理 —— 它们归平台解析器与其它插件管。
+# 因此用 `channel="emby"` 构造事件已**不再**代表「应被本插件处理」，
+# 各用例必须用这个常量，否则断言的是别的插件该干的活。
+CLAIM_CHANNEL = "rsync115sync"
+
+
+def _plugin(src_root, *, enabled=True, listen=True,
             pairs=None, media_extensions="mkv,srt"):
     """构造最小实例：只带 webhook 链路真正用到的状态。"""
     module = importlib.import_module("app.plugins.rsync115sync")
@@ -35,7 +46,6 @@ def _plugin(src_root, *, enabled=True, listen=True, channels=("emby",),
     plugin.plugin_version = "test"
     plugin._enabled = enabled
     plugin._listen_transfer = listen
-    plugin._webhook_channels = list(channels)
     plugin._sync_pairs = pairs if pairs is not None else [{
         "name": "TV", "src": src_root, "dest": "/dest/TV",
         "all_ext": False, "strm_dir": "",
@@ -61,8 +71,15 @@ def _media(src_root, rel="S01E01.mkv"):
     return path
 
 
-def _webhook_event(channel="emby", event="library.new", **fields):
-    """构造宿主 Emby 解析器形状的 WebhookMessage payload（WebhookEventInfo）。"""
+def _webhook_event(channel=CLAIM_CHANNEL, event="library.new", **fields):
+    """
+    构造一条**本插件认领后**由宿主广播回来的 WebhookMessage。
+
+    默认 channel 用 CLAIM_CHANNEL（= WEBHOOK_TARGET），与生产路径一致：
+    `webhook_parser` 认领时构造的 `WebhookEventInfo.channel` 就是这个值。
+    要模拟**别家**（宿主 Emby 解析器 / 其它插件）的事件，显式传
+    `channel="emby"` 之类的值 —— 那些事件本插件应当忽略。
+    """
     data = {"channel": channel, "event": event}
     data.update(fields)
     return SimpleNamespace(event_type=SimpleNamespace(value="webhook.message"),
@@ -102,23 +119,32 @@ def test_playback_event_never_enqueues(tmp_path):
     assert plugin._pending_queue == {}
 
 
-def test_other_channel_is_ignored(tmp_path):
-    """多个插件同时订阅 WebhookMessage，各自只能处理自己的来源。"""
+def test_events_not_claimed_by_us_are_ignored(tmp_path):
+    """
+    不是本插件认领的事件**一律不处理**。
+
+    宿主自己的 Emby/Jellyfin 解析器广播出来的事件（channel 是 `emby` / `jellyfin`）
+    归平台与其它插件管，本插件不该碰 —— 这条是「只认 source=rsync115sync」的
+    处理侧对偶判据（入口侧由 `webhook_parser` 把关）。
+    """
     src = tmp_path / "TV"
     path = _media(str(src))
-    plugin = _plugin(str(src), channels=("emby",))
 
-    plugin._handle_webhook_event(_webhook_event(channel="zspace", item_path=path))
+    for foreign in ("emby", "jellyfin", "plex", "zspace", ""):
+        plugin = _plugin(str(src))
+        plugin._handle_webhook_event(_webhook_event(channel=foreign, item_path=path))
+        assert plugin._pending_queue == {}, (
+            f"channel={foreign!r} 的事件不是本插件认领的，不该入队"
+        )
 
-    assert plugin._pending_queue == {}
 
-
-def test_multiple_channels_can_be_enabled(tmp_path):
+def test_events_claimed_by_us_are_handled(tmp_path):
+    """本插件认领的事件（channel = WEBHOOK_TARGET）正常入队 —— 与上一条配对。"""
     src = tmp_path / "TV"
     path = _media(str(src))
-    plugin = _plugin(str(src), channels=("emby", "jellyfin"))
+    plugin = _plugin(str(src))
 
-    plugin._handle_webhook_event(_webhook_event(channel="jellyfin", item_path=path))
+    plugin._handle_webhook_event(_webhook_event(item_path=path))
 
     assert list(plugin._pending_queue) == ["TV:S01E01.mkv"]
 
@@ -445,14 +471,60 @@ def test_webhook_message_event_is_subscribed():
     assert found, "插件包内没有任何函数订阅 EventType.WebhookMessage"
 
 
-def test_channel_normalization_never_yields_empty():
-    """空渠道列表会让「开着开关却什么都不接收」，比报错更难自查。"""
+def test_webhook_has_no_configurable_fields():
+    """
+    webhook 侧**不应再有任何配置项**（渠道白名单已随 C2 改造移除）。
+
+    这条是**反向**断言：将来若有人重新加回一个「来源渠道」之类的配置，
+    就等于把「本插件只认 source=rsync115sync」这条边界交回给用户去配 ——
+    而那正是 2026-09-24 移除它的原因（默认值只有 emby，Jellyfin 用户静默失效）。
+    """
     module = importlib.import_module("app.plugins.rsync115sync")
-    normalize = module.Rsync115Sync._normalize_channels
-    assert normalize("") == ["emby"]
-    assert normalize(None) == ["emby"]
-    assert normalize([]) == ["emby"]
-    assert normalize(" Emby , Jellyfin ,emby") == ["emby", "jellyfin"]
+    cls = module.Rsync115Sync
+    for gone in ("_normalize_channels", "_read_webhook_config", "_webhook_channels"):
+        assert not hasattr(cls, gone), (
+            f"{gone} 属于已移除的渠道白名单，不该再存在"
+        )
+    # get_config 也不该再暴露 webhook_channels（前端已无对应绑定）
+    fields = cls()._api_get_config()["data"]
+    assert "webhook_channels" not in fields, (
+        "get_config 仍在返回 webhook_channels，而前端已无该绑定"
+    )
+
+
+def test_status_does_not_expose_channel_list():
+    """/status 不该再返回 channels —— 看板与排查都不再依赖它。"""
+    module = importlib.import_module("app.plugins.rsync115sync")
+    plugin = _plugin("/tmp/nonexistent-tv")
+    # /status 会读取大量运行态字段；这里只补「本断言真正会用到的」，
+    # 其余缺失由调用方（裸实例）的实际情况决定，与本断言无关。
+    plugin._is_running = False
+    plugin._last_status = {}
+    plugin._pending_queue = {}
+    plugin._backfill_queue = {}
+    plugin._backfill_total = 0
+    plugin._missed_queue = {}
+    plugin._missed_last_scan = 0.0
+    plugin._missed_scan_enabled = False
+    plugin._sync_pairs = []
+    plugin._delay_hours = 2.0
+    plugin._strm_watch = {}
+    plugin._strm_suspects = {}
+    plugin._strm_gen_requested = {}
+    plugin._strm_grace_hours = 6.0
+    plugin._strm_check_enabled = False
+    plugin._rate_limit_enabled = False
+    plugin._upload_window_count = 0
+    plugin._upload_max_per_window = 500
+    plugin._upload_window_secs = 1800
+    plugin._upload_blocked_until = 0.0
+    plugin._last_force_ts = 0.0
+    plugin._force_cooldown_days = 7
+    plugin._cron = "0 */2 * * *"
+    plugin._media_extensions = "mkv,srt"
+    plugin._notify = False
+    data = plugin._api_get_status()["data"]["webhook"]
+    assert "channels" not in data, "/status 仍返回 webhook.channels"
 
 
 # --------------------------------------------------------------------------
@@ -961,12 +1033,11 @@ def test_stub_host_status_defaults_align_with_frontend():
         assert gone not in src, (
             f"{gone} 是自建端点的字段，已随端点移除 —— 看板不该再引用它"
         )
-    # `channels` 曾用于看板展示，展示已随「来源渠道」一行移除；若将来重新展示，
-    # 必须带 `|| []` 兜底（首帧 undefined 会让整个看板白屏）。
-    if "webhookStat.channels" in src:
-        assert "(webhookStat.channels || [])" in src, (
-            "webhookStat.channels 未做空值兜底，首帧会抛 TypeError 并让整个看板白屏"
-        )
+    # `channels` 曾用于看板展示，展示与后端字段均已随渠道白名单移除；
+    # 这里改成**反向**断言：它一旦回到看板，就说明白名单（或其残留）也回来了。
+    assert "webhookStat.channels" not in src, (
+        "webhookStat.channels 属于已移除的渠道白名单，看板不该再引用它"
+    )
 
 # ===================== webhook_parser 认领契约 =====================
 #
@@ -1057,21 +1128,25 @@ def test_webhook_parser_returns_none_for_unnamed_payload(tmp_path):
         form=None, args={"token": "abc"}) is None
 
 
-def test_webhook_parser_does_not_claim_emby_channel_by_default(tmp_path):
+def test_webhook_parser_does_not_claim_host_emby_payloads(tmp_path):
     """
-    渠道默认值是 `emby`，**绝不能**按它认领。
+    宿主 Emby 解析器形态的报文（`source=<实例名>`）**绝不能**被本插件认领。
 
-    宿主的 Emby 解析器产出的 channel 就是 `emby`（emby.py:1082）。按 channel 认领
+    宿主的 Emby 解析器产出的 channel 就是 `emby`（emby.py:1082）。按 source 认领
     会把宿主本来能正常处理的 Emby 报文抢过来并短路掉宿主解析器 —— 本插件只想要一个
-    路径，代价完全不成比例。这里用「宿主那侧的真实报文形态」做反向验证。
+    路径，代价完全不成比例。这里用「宿主那侧的真实报文形态」做反向验证：
+    `source` 填的是 Emby 实例名，不是本插件的标识。
     """
     src = tmp_path / "TV"
     path = _media(str(src))
     plugin = _parser_plugin(str(src))
-    assert plugin._webhook_channels == ["emby"], "前置条件：默认渠道仍是 emby"
 
     body = json.dumps({"Event": "library.new", "Item": {"Path": path}}).encode()
-    assert plugin.webhook_parser(body=body, form=None, args={"source": "PN41"}) is None
+    for foreign_source in ("PN41", "emby", "jellyfin", ""):
+        assert plugin.webhook_parser(
+            body=body, form=None, args={"source": foreign_source}) is None, (
+            f"source={foreign_source!r} 不是本插件的标识，不该认领"
+        )
 
 
 def test_webhook_parser_claims_when_addressed_by_query(tmp_path):

@@ -438,44 +438,23 @@
         </v-alert>
 
         <div class="settings-group-card rounded-xl overflow-hidden mb-4">
-          <div class="setting-row d-flex align-items-center px-4 py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2">来源渠道（channel 过滤）</div>
-              <div class="text-caption text-medium-emphasis">
-                <b>走 Emby 原生链路时才需要它</b>，用来指明哪些媒体服务器推来的事件可以入队，
-                一个就够了，一般保持 <code>emby</code> 即可（多个用逗号分隔）。<br>
-                <b>自定义发送端（<code>source=rsync115sync</code>）不受这一项影响</b> ——
-                那条路按收件人标识认领，与渠道无关，即使这里没写 <code>emby</code> 也照常入库。
-              </div>
-            </div>
-            <v-text-field
-              v-model="webhookChannelsText"
-              variant="outlined"
-              density="compact"
-              placeholder="emby"
-              style="max-width: 200px"
-              hide-details
-            ></v-text-field>
-          </div>
-
-          <div class="setting-row px-4 py-3 border-b">
-            <div class="font-weight-bold text-body-2 mb-1">平台 webhook 地址（宿主原生链路）</div>
+          <div class="setting-row px-4 py-3">
+            <div class="font-weight-bold text-body-2 mb-1">怎么把入库推给本插件</div>
             <div class="text-caption text-medium-emphasis">
-              无需在本插件做任何额外配置，只需在 <b>Emby 后台 → 通知 → Webhooks</b> 里添加地址：
+              在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
               <br>
-              <code>http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=&lt;emby实例名&gt;</code>
+              <code>http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
               <br>
-              其中 <code>source</code> 要填你在 MoviePilot 里配置的 Emby 实例名（可省略，但多实例时建议填上）。
-              事件勾选 <b>新媒体入库</b> 一类即可；播放类事件插件会自动忽略，<b>填了也不会误触发上传</b>。
+              也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
+              <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
+              本插件都不会处理，那些报文归平台自己的解析器管。
               <br>
-              <b>自定义发送端</b>（自建脚本等）也可以走这个地址，把 <code>source</code> 换成
-              <code>rsync115sync</code>（或加请求头 <code>X-Webhook-Target: rsync115sync</code>），
-              插件会认领它。
-              <b>注意这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
-              插件都不会处理。
+              本插件**没有任何需要在这里配置的项**：只认上面这个标识，其余来源一概不监听。
+              <br>
+              推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
+              （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
             </div>
           </div>
-
         </div>
       </v-card-text>
 
@@ -530,9 +509,8 @@ const config = ref({
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
   force_cooldown_days: 7,
   // ---- webhook（第二入库来源）----
-  // 只剩渠道过滤一项：与后端实例默认值保持一致，渠道默认只开 emby
-  // （宿主原生支持、零额外配置）。自建端点及其四条防护配置已于 2026-09-22 移除。
-  webhook_channels: ['emby'],
+  // **没有任何配置项**：入口只认 `source=rsync115sync`，其它来源归平台解析器。
+  // （渠道白名单与自建端点的四条防护均已移除，见 __init__.py 的 webhook 配置节。）
   // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
@@ -598,21 +576,6 @@ const rateConfigWarnings = computed(() => {
     }
   }
   return warns
-})
-
-// 渠道列表在界面上按逗号分隔的纯文本编辑（用户只需要填一两个渠道名，
-// 为此做一个 chips 编辑器不划算），但后端存的是数组 —— 因此双向转换，
-// 且写入时过滤空项：把 `"emby,,jellyfin"` 里的空串存进配置，后端要额外兜。
-const webhookChannelsText = computed({
-  get: () => (Array.isArray(config.value.webhook_channels)
-    ? config.value.webhook_channels.join(', ')
-    : String(config.value.webhook_channels || '')),
-  set: (value) => {
-    config.value.webhook_channels = String(value || '')
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter((item) => item.length > 0)
-  },
 })
 
 // 目录映射新增与限流换算无关，以下是原有逻辑

@@ -198,9 +198,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._missed_scan_enabled: bool = self._MISSED_SCAN_ENABLED_DEFAULT
         self._notify: bool = True
         # ---- Webhook 入库（第二来源，见 webhook.py 头注释）----
-        # 已启用的来源渠道（channel 过滤）。默认只开 emby —— 宿主原生支持它，
-        # 用户只需在 Emby 后台填一次回调地址即可，零额外配置。
-        self._webhook_channels: List[str] = ["emby"]
+        # 注：这里曾有 `_webhook_channels`（来源渠道过滤，默认 emby），已于
+        # 2026-09-24 移除。本插件的 webhook 入口**只认显式发给自己的报文**
+        # （`source=rsync115sync` / `X-Webhook-Target` 头），处理侧同样只接受
+        # 自己认领的结果 —— 别的媒体服务器推来的事件由**平台自己的解析器**
+        # 处理，我们既不监听也不处理，因此不再需要一份渠道白名单。
+        # 详见 DEVELOPMENT §4.0a ③-b。
         # webhook 运行态：累计收入计数 + 最近一次报文的字段结构摘要。
         # 必须持久化（save_data）而不是只放内存：用户排查时习惯「推一条 → 重载插件
         # → 去看板确认」，只在内存里的话重载即清零，永远看不到刚推的那一条。
@@ -389,7 +392,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
             )
             self._notify = config.get("notify", True)
-            self._read_webhook_config(config)
             self._delay_hours = float(config.get("delay_hours", 2.0))
             self._cron = config.get("cron", "0 */2 * * *")
             self._sync_pairs = config.get("sync_pairs") or []
@@ -1025,16 +1027,27 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             return
 
         channel = _wh.channel_of(event_data)
-        # 显式发给本插件的报文（`webhook_parser` 认领的那条路）channel 就是
-        # WEBHOOK_TARGET，它**不在**用户的渠道配置里，必须单独放行 —— 否则我们会
-        # 认领一条报文、再自己把它过滤掉，表现为「日志里连一条都没有」。
-        # 放行它是安全的：能走到这里的报文已由发送端显式声明收件人，不存在歧义。
-        allowed_channels = list(getattr(self, "_webhook_channels", None) or ["emby"])
-        if self.WEBHOOK_TARGET != channel and channel not in allowed_channels:
-            # 明确留痕（debug 级）：用户配了 webhook 却没有任何反应时，
-            # 第一件要确认的就是「事件到了没有、channel 是什么」。
-            logger.debug(f"[Rsync115Sync] webhook 已送达但渠道未启用，忽略"
-                         f"（channel={channel or '空'}，已启用={allowed_channels}）")
+        # 只处理**我们自己认领的**报文：认领时构造的 `WebhookEventInfo.channel`
+        # 恒为 `WEBHOOK_TARGET`，所以这条判据等价于「本事件由本插件的
+        # webhook_parser 认领而来」。
+        #
+        # 为什么不再按「来源渠道白名单」过滤（原先默认放行 `emby`）：
+        # 本插件的入口只认显式发给自己的报文（`source=rsync115sync`），
+        # 别的媒体服务器推来的入库事件由**平台自己的解析器**处理 ——
+        # 用户的价值也不需要我们来兜（平台原生支持 `source=<实例名>`）。
+        # 两边都不该管对方的事，一份渠道白名单只会带来两个副作用：
+        #   · 默认只有 `emby`，用 Jellyfin 的用户的 B 路悄悄失效；
+        #   · 别人推来的播放类事件要走到这里才被事件名白名单挡住，
+        #     白白多一层误判面。
+        # 改成「只认自己的认领结果」后，语义与入口判据完全一致，配置项也随之删除。
+        # Only our own claims are handled: `channel` is set to WEBHOOK_TARGET when we
+        # claim. Other senders belong to the platform's own parsers, so the old
+        # channel allow-list was both redundant and a footgun (default `emby` only).
+        if channel != self.WEBHOOK_TARGET:
+            # 明确留痕（debug 级）：排查「事件到了没有」时，
+            # 第一件要确认的就是 channel 到底是什么。
+            logger.debug(f"[Rsync115Sync] webhook 事件不是本插件认领的，忽略"
+                         f"（channel={channel or '空'}，只处理={self.WEBHOOK_TARGET}）")
             return
 
         event_name = str(_wh.read_field(event_data, "event", "") or "")
@@ -1821,9 +1834,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
                 "missed_scan_enabled": self._missed_scan_enabled,
-                # webhook（第二入库来源）。只剩渠道过滤一项：自建端点及其四条
-                # 防护配置已随端点一并移除（DEVELOPMENT §9.18）。
-                "webhook_channels": (getattr(self, "_webhook_channels", None) or ["emby"]),
+                # webhook（第二入库来源）：入口只认 `source=rsync115sync`，
+                # 无可配置项。曾有的渠道白名单已随其移除（DEVELOPMENT §4.0a）。
                 "strm_check_enabled": self._strm_check_enabled,
                 "strm_grace_hours": self._strm_grace_hours,
                 "notify": self._notify,
@@ -1853,7 +1865,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             config.get("missed_scan_enabled", self._MISSED_SCAN_ENABLED_DEFAULT)
         )
         self._notify = config.get("notify", True)
-        self._read_webhook_config(config)
         self._delay_hours = float(config.get("delay_hours", 2.0))
         self._cron = config.get("cron", "0 */2 * * *")
         self._sync_pairs = config.get("sync_pairs") or []
@@ -1923,18 +1934,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         ready_count, cooling_count, stale_count = self._count_queue(now_ts, threshold)
         webhook_stat = dict(self._webhook_stat_now())
         # 看板要能直接回答「webhook 这条路到底通不通」。只给累计计数还不够：
-        # 用户配好 Emby 回调后最常见的问题是「到底有没有请求打进来」，
+        # 用户配好发送端后最常见的问题是「到底有没有请求打进来」，
         # 而 0 次既可能是没配、也可能是配错地址 —— 报文的最后结构摘要
         # 正是用来区分这两者的（没请求 = 没配好；有请求但未识别 = 字段名要加）。
-        webhook_stat["channels"] = list(getattr(self, "_webhook_channels", None) or ["emby"])
+        # 注：这里曾补一个 `channels` 字段（当前生效的渠道白名单），白名单已移除。
         return {
             "success": True,
             "data": {
                 "is_running": self._is_running,
                 # webhook 运行态：计数 + 最近报文的**字段结构**（不记值）。
-                # `channels` 仍一并返回但看板已不显示它（那一行按要求去掉了）；
-                # 留着是因为/status 是运行态的完整快照，排查时「当前生效的渠道
-                # 列表是什么」要能一眼查到，而不必去翻配置文件。
                 "webhook": webhook_stat,
                 "ready_count": ready_count,
                 "cooling_count": cooling_count,
@@ -2054,43 +2062,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
 
     # ================= Webhook 入库配置 =================
-    # 读取/清洗逻辑集中在这里，是因为它被三处调用（init_plugin、_api_save_config、
-    # 兜底默认），任何一处漏掉都会造成「配置页显示的值与运行时用的值不一致」。
-
-    @staticmethod
-    def _normalize_channels(raw: Any) -> List[str]:
-        """
-        把渠道配置归一成小写、去空、去重的列表；**永不返回空列表**。
-
-        为什么永不返回空：空列表意味着「任何渠道都不接受」，用户会看到
-        「webhook 明明推送成功、插件就是没反应」，而配置页上开关却是开着的 ——
-        这种自相矛盾的状态最难自查。用户若想停用，应关闭总开关或清空渠道后
-        显式接受这个后果（此时前端至少会看到提示）。
-        """
-        if isinstance(raw, str):
-            items = [x.strip() for x in raw.replace("\n", ",").split(",")]
-        elif isinstance(raw, (list, tuple)):
-            items = [str(x).strip() for x in raw]
-        else:
-            items = []
-        seen: List[str] = []
-        for item in items:
-            low = item.lower()
-            if low and low not in seen:
-                seen.append(low)
-        return seen or ["emby"]
-
-    def _read_webhook_config(self, config: Dict[str, Any]) -> None:
-        """
-        从配置字典读取 webhook 相关字段（缺失时保持当前值，便于热改）。
-
-        ⚠️ 这里**只**剩渠道过滤一项。自建端点（开关/密钥/路径白名单/IP 白名单）
-        的四个配置字段随端点在 2026-09-22 一并移除 —— 见 DEVELOPMENT §9.18：
-        那四条防护是为一个**没有宿主鉴权**的匿名端点准备的，端点不存在时它们
-        的保护对象也就消失了，留着只会让用户以为自己暴露了什么。
-        """
-        if "webhook_channels" in config:
-            self._webhook_channels = self._normalize_channels(config.get("webhook_channels"))
+    # 现已**没有任何 webhook 配置项**，这一节只剩说明：
+    #   · 自建匿名端点及其四条防护（开关/密钥/路径白名单/IP 白名单）
+    #     随端点在 2026-09-22 一并移除 —— 见 DEVELOPMENT §9.18。
+    #   · 来源渠道白名单（默认 `emby`）在 2026-09-24 移除 —— 见 §4.0a ③-b：
+    #     本插件只认 `source=rsync115sync`，其它来源归平台自己的解析器，
+    #     因此不存在「需要用户声明接收哪些渠道」这件事。
+    # 保留本注释是为了让「配置页/接口里为什么没有 webhook 项」有据可查。
 
     def _migrate_legacy_defaults(self, config: Dict[str, Any]):
         """

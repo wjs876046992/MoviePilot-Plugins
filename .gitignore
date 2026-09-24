@@ -172,3 +172,4 @@ yarn.lock
 
 # 开发本机脚本：含 NAS 地址与端口，不入库
 scripts/update_rsync115sync.sh
+testhost/
