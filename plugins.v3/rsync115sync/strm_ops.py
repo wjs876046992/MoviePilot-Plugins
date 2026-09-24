@@ -214,6 +214,61 @@ class StrmOpsMixin:
                            f"（非视频文件不会生成 strm），剩余 {len(self._strm_watch)} 个")
         return removed
 
+    def _promote_watch_to_suspects(self, keys: List[str], origin: str,
+                                   reason: str) -> Dict[str, Any]:
+        """
+        把观察期条目**提前**判为疑似（越过窗口），返回 {moved, restored, skipped}。
+
+        Promote watching entries to suspects *ahead of* the grace window.
+
+        为什么需要这条越权通道：窗口是给「还可能有救」留的时间，而用户有时**已经
+        知道**答案 —— 在 115 里看到只有改名失败的残留、或上传根本没完成。此时
+        观察期唯一能做的就是让用户干等到期，最长 6 小时（补生成后 1 小时），
+        期间看板甚至不提供任何处理按钮。窗口是**下界**，不该变成上限。
+        The window is a lower bound on "how long it might still appear", never an
+        upper bound on how long the user must wait before acting.
+
+        ⚠️ 只接受**已在观察清单里**的 key：用户只能对插件已经盯着的文件下这个
+        结论，不能凭一个字符串构造出任意路径送进疑似清单（那里的条目会通向
+        「删除云端文件」）。观察清单本身就是这里唯一的权限边界。
+        The watching list is the sole permission boundary: it is what makes the key
+        a file we already decided to track, rather than an arbitrary path.
+
+        已按同一结论入清单的条目只摘掉观察副本（restored），**不刷新时间戳** ——
+        否则每点一次「确认失败」都会把「首次疑似时间」推后，用户看不出它挂了多久。
+        Re-confirming does not reset the timestamp, for the same reason the sweep
+        never refreshes it.
+        """
+        now_ts = time.time()
+        moved: List[str] = []
+        restored: List[str] = []
+        for key in keys:
+            if key not in self._strm_watch:
+                continue
+            prior = self._strm_suspects.get(key)
+            self._strm_watch.pop(key, None)
+            # 补生成标记一并失效：它描述的是一次针对该文件的生成请求，而这里
+            # 已经改成「确认没传上去」—— 留着它，看板会把它标成「补生成后仍无」，
+            # 把一个用户确认的事实说成一次生成失败的推断。
+            self._strm_gen_requested.pop(key, None)
+            if isinstance(prior, dict) and prior.get("origin") == origin:
+                restored.append(key)
+                continue
+            self._strm_suspects[key] = {"ts": now_ts, "origin": origin}
+            moved.append(key)
+
+        if moved or restored:
+            self.save_data("strm_watch", self._strm_watch)
+            self.save_data("strm_suspects", self._strm_suspects)
+            self.save_data("strm_gen_requested", self._strm_gen_requested)
+        if moved:
+            # 附云端可见性结论：用户看到清单时就知道「插件眼里云端是什么样」，
+            # 与自己的判断不符时不必再猜是哪一步出了分歧。
+            self._annotate_dest(moved)
+            logger.warning(f"[Rsync115Sync] 📺 {len(moved)} 个观察期条目由用户{reason}，"
+                           f"已提前转入疑似清单: {_brief_paths(moved)}")
+        return {"moved": moved, "restored": restored}
+
     def _strm_expected_path(self, key: str) -> Optional[str]:
         """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
         return _strm.expected_path(key, self._sync_pairs)
@@ -1218,6 +1273,61 @@ class StrmOpsMixin:
         """看板入口：立即检查观察期条目的 strm 是否已生成。"""
         return self._check_watch_now((body or {}).get("keys") or [])
 
+    def _api_strm_confirm_failed(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        看板入口：用户确认「这些文件确实没传上云端」，越过窗口直接转疑似。
+
+        Dashboard entry point: the user has confirmed the cloud copy really is
+        missing, so promote these watching entries to suspects without waiting out
+        the window.
+
+        **为什么需要它**：判定窗口衡量的是「还可能有救」的时间，而用户常常已经
+        知道答案（115 里只剩 `影片.mkv..xrp4gj` 残留，正式文件压根没有）。此时
+        唯一的路是干等到期 —— 最长 6 小时，宽限期内看板还**不提供任何处理
+        按钮**（只读，这是刻意的：窗口内的文件大多是好的）。工具不该让知道答案
+        的人排队等探测器。
+        The window measures how long a file might still appear, not how long the user
+        must wait. An owner who has already looked in 115 should not have to sit out a
+        6-hour timer that exists to protect them from a premature judgement.
+
+        ⚠️ 这不是「绕过护栏」，因为护栏分两类，这里只动了一类：
+          · **数据护栏**（能不能删到别的东西）—— 一条都没动：只接受观察清单里
+            的 key，删除仍走相对路径精确对齐的三道闸（见 _delete_dest_files_for_retry）；
+          · **判定护栏**（怕误判所以多等一会儿）—— 用户显式推翻的正是这一条。
+        把两类混作一团，才会得出「窗口不可越过」这种把用户锁死的结论。
+        Only the *judgement* guard is overridden, never a data guard: which files may be
+        touched is still decided by the watching list and the exact-path delete checks.
+
+        纯本地操作（不访问 115、不占配额），因此**不加执行锁**，与「检查 strm」同口径。
+        """
+        keys = [str(k).strip() for k in ((body or {}).get("keys") or []) if str(k).strip()]
+        if not keys:
+            return {"success": False, "message": "未指定文件"}
+        in_watch = [k for k in keys if k in self._strm_watch]
+        outside = [k for k in keys if k not in self._strm_watch]
+        if outside:
+            # 记日志而不是静默忽略：这条日志是「用户以为点了、其实什么也没发生」
+            # 的唯一线索（例如被另一个标签页的操作先一步解除了观察）。
+            logger.warning(f"[Rsync115Sync] 确认失败的请求含非观察期条目，已忽略: {outside[:3]}")
+        if not in_watch:
+            return {"success": False,
+                    "message": "所选文件已不在观察期（可能刚被检查解除或已入疑似清单）"}
+
+        res = self._promote_watch_to_suspects(in_watch, _strm.ORIGIN_CONFIRMED,
+                                              "确认「上传未完成」")
+        moved, restored = res["moved"], res["restored"]
+        # 不调用 _reset_strm_notified_if_clear：本操作只会让清单变长，
+        # 「清空后重置通知闩锁」在这里恒为空操作 —— 写上去只会让人以为
+        # 它在这一步有作用，下次改动时按这个错误前提去推理。
+        msg = (f"已按你的确认把 {len(moved) + len(restored)} 个文件转入疑似清单"
+               f"（未等观察窗口）。\n"
+               f"⚠️ 插件的云端可见性探测显示「可见且大小一致」时，"
+               f"删旧重传默认会被拦下 —— 你已在 115 上亲眼确认过，"
+               f"点「删旧重传」再确认一次即可照常执行。")
+        return {"success": True, "message": msg,
+                "data": {"moved": moved, "restored": restored,
+                         "ignored": outside}}
+
     def _api_strm_scan(self) -> Dict[str, Any]:
         """
         看板入口：主动扫描缺 strm 的文件（纯本地，零 115 API）。
@@ -1390,6 +1500,12 @@ class StrmOpsMixin:
         Confirmed re-transfer for strm suspects, reusing the delete-then-sync path.
         不做无确认的自动重传：strm 插件自身漏生成也会表现为"该有而没有"，
         误报源无法排除，删除是破坏性操作，必须用户确认。
+
+        ⚠️ 本方法只在**用户确认过的条目**上完全生效，理由见下方 `force` 的说明：
+        在 CD2 假成功这一主成因下，「云端可见且大小一致」必然成立，若把它当成
+        硬失败，用户就会永远删不掉那个坏文件 —— 那道守卫反而成了死角。
+        In the fake-success case "same size" is *always* what the mount reports, so
+        treating it as a hard failure would lock the user out of the only fix.
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
@@ -1424,16 +1540,58 @@ class StrmOpsMixin:
             logger.warning(f"[Rsync115Sync] 重传前可见性探测异常（按原逻辑继续）: {e}")
             fresh = {}
         intact = [k for k in allowed if fresh.get(k) == _strm.DEST_OK]
-        if intact:
-            listed = "\n".join(f"• {k}" for k in intact[:_MAX_LOGGED_PATHS])
-            more = (f"\n（另有 {len(intact) - _MAX_LOGGED_PATHS} 个未列出）"
-                    if len(intact) > _MAX_LOGGED_PATHS else "")
-            logger.warning(f"[Rsync115Sync] ⛔ 已拦下 {len(intact)} 个「云端文件完好」的删旧重传请求："
-                           f"{_brief_paths(intact)}")
+
+        # ---- 已被用户确认「确实没传上去」的条目：这道守卫必须让路 ----
+        #
+        # 先看数字：本轮请求里这些条目**全部**探测为「可见且大小一致」。全中不是
+        # 巧合，而正是 CD2 假成功的**预期形态** —— 挂载视图压根反映不出改名失败
+        # （见 DEVELOPMENT.md 3.10/3.11）。也就是说，如果把它们拦下来，用户就会
+        # 永久删不掉这个坏文件：唯一的出口是「重启同步任务再点」，而重启后 CD2
+        # 视图重新拉取，很可能还是「可见且大小一致」，无限循环。
+        #
+        # 所以默认拦、**确认后放行**，并把「是谁推翻的」写进日志。这不是放宽护栏：
+        #   · 数据护栏（只能删精确对应的那一个路径）一条都没动；
+        #   · 被推翻的只是「机器替你保的险」，而当事人已经亲自看过 115 了。
+        # 反过来若不给这个出口，那道守卫就从「防误删」变成「防修复」。
+        # All-confirmed short-circuit: in the fake-success case "same size" is exactly
+        # what the stale view reports, so a hard block would make the bad file
+        # impossible to fix. Data guards are untouched; only the judgement guard yields.
+        #
+        # 分两段处理而不是「整批是不是都确认过」：勾选是跨标签页保留的，一批里
+        # 混着「用户确认过的」与「只是机器报的」很常见，按整批判断会让前者被后者
+        # 拖累（怎么点都删不掉），而按条目分开判断时，两边的语义都保持原样 ——
+        # 确认过的可以放行，没确认过的照旧被保护。
+        force = bool((body or {}).get("force"))
+
+        def _confirmed(k: str) -> bool:
+            entry = self._strm_suspects.get(k)
+            return isinstance(entry, dict) and entry.get("origin") == _strm.ORIGIN_CONFIRMED
+
+        intact_plain = [k for k in intact if not _confirmed(k)]
+        intact_confirmed = [k for k in intact if _confirmed(k)]
+
+        # ⚠️ 必须先判「未确认的」再判「已确认的」，**顺序是承重的**：
+        # 批里混着两类是常态（勾选跨标签页保留），而「未确认」这一支是整批拒绝。
+        # 若先返回 needs_force，前端就会把这次拒绝当成「用户确认不足」去弹二确认，
+        # 用户点两次之后仍被拒 —— 而真正该告诉他的是「这批里有你没确认过的条目，
+        # 先取消勾选它们」。先讲更普遍、更需要用户动手的那条规则。
+        if intact_plain:
+            listed = "\n".join(f"• {k}" for k in intact_plain[:_MAX_LOGGED_PATHS])
+            more = (f"\n（另有 {len(intact_plain) - _MAX_LOGGED_PATHS} 个未列出）"
+                    if len(intact_plain) > _MAX_LOGGED_PATHS else "")
+            # ⚠️ 同批里有「已确认」的条目时**整批拒绝**，而不是删一半留一半：
+            # 半执行的破坏性操作会让用户完全无法判断「刚才那次点击到底做了什么」，
+            # 而重试成本只是取消勾选、再点一次。宁可让用户多点一次，也不做
+            # 「部分成功」这种事后无法对账的结果。
+            same_batch = (f"\n（同批中你已确认过的 {len(intact_confirmed)} 个也一并保持原样："
+                          f"取消勾选本批其它条目后，只对它们重试即可）"
+                          if intact_confirmed else "")
+            logger.warning(f"[Rsync115Sync] ⛔ 已拦下 {len(intact_plain)} 个"
+                           f"「云端文件完好」的删旧重传请求：{_brief_paths(intact_plain)}")
             return {"success": False,
                     "message": f"这些文件的云端副本**可见且大小与源端一致**，"
                                f"删掉纯属白删（rsync 也会因 --size-only 跳过，传不上去）：\n"
-                               f"{listed}{more}\n\n"
+                               f"{listed}{more}{same_batch}\n\n"
                                f"也就是说云端很可能是好的，问题出在 strm **生成**环节。"
                                # ⚠️ 文案里**不写**助手插件的类名（写成「STRM 助手插件」）：
                                # `test_helper_dependency_boundary` 是按字符串标记做的
@@ -1447,7 +1605,32 @@ class StrmOpsMixin:
                                f"确认云端确实有问题时，可先重启同步任务再重试本操作"
                                f"（届时会重新探测）。\n"
                                f"⚠️ 本判定基于 CD2 挂载视图，存在「视图过期」的已知假阳性；"
-                               f"若你已在 115 上确认文件是坏的，请优先相信你自己的判断。"}
+                               f"若你已在 115 上确认文件是坏的，请优先相信你自己的判断 ——"
+                               f"在观察期里点过「确认失败」的条目，本插件会按上面那套"
+                               f"二次确认放行，不必再绕「重启同步任务」。"}
+
+        if intact_confirmed and not force:
+            # 走到这里说明批里**没有未确认的**条目（上面那支已整批返回），
+            # 因此这条提醒不会与「先取消勾选」混在一起，用户不会被引向错误的操作。
+            #
+            # 首次点击只提醒、不动手：确认要落在**删除这一步**上，而不是靠一句
+            # 「已确认」给后面所有破坏性操作授予通行权。二次确认还有个更实际的
+            # 作用 —— 它给出了那一刻探测的真实结论，可能和用户以为的不一样。
+            listed = "\n".join(f"• {k}" for k in intact_confirmed[:_MAX_LOGGED_PATHS])
+            more = (f"\n（另有 {len(intact_confirmed) - _MAX_LOGGED_PATHS} 个未列出）"
+                    if len(intact_confirmed) > _MAX_LOGGED_PATHS else "")
+            return {"success": False, "needs_force": True,
+                    "message": f"你已确认这些文件没传上去，但插件的探测仍显示它们"
+                               f"**可见且大小与源端一致**：\n{listed}{more}\n\n"
+                               f"这正是 CD2 视图过期（改名失败只剩残留）的典型形态 ——"
+                               f"探测只能证明「挂载视图这么显示」，证明不了云端真的完整。\n"
+                               f"你已在 115 上亲眼确认过的话，再点一次「删旧重传」即可执行"
+                               f"（本次未改动任何文件）。"}
+        if intact_confirmed:
+            logger.warning(f"[Rsync115Sync] ⚠️ 用户已确认「上传未完成」，"
+                           f"放行 {len(intact_confirmed)} 个探测为「可见且大小一致」的"
+                           f"删旧重传请求（CD2 视图假成功的预期形态）: "
+                           f"{_brief_paths(intact_confirmed)}")
 
         deleted, undeletable = self._delete_dest_files_for_retry(allowed)
         if undeletable:

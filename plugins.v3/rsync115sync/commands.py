@@ -410,6 +410,24 @@ class CommandsMixin:
                 self._post_reply(event, ("📺 " if result.get("success") else "⚠️ ")
                                  + result.get("message", "检查失败"))
                 return
+            if arg_lower in ("failed", "fail", "确认失败", "没传上"):
+                # 把全部观察期条目按「用户确认没传上去」提前转入疑似清单。
+                #
+                # ⚠️ 远程命令**没有看板勾选那么精确**，一次就是全部在观察的条目
+                # （含刚刚同步成功、本来很可能正常的那些）。因此这里必须把数量念
+                # 出来，用户才知道自己刚刚越过了多少个文件的窗口 —— 静默执行会
+                # 让「我没说过全部啊」变成一次无法追查的误操作。
+                # 需要精确到单个文件时看板上有逐条按钮；远程命令只服务于
+                # 「我已经挨个看过 115，这一批全没上去」这种整体判断。
+                watch_keys = list(self._strm_watch.keys())
+                if not watch_keys:
+                    self._post_reply(event, "ℹ️ 当前没有处于观察期的文件。")
+                    return
+                result = self._api_strm_confirm_failed({"keys": watch_keys})
+                self._post_reply(event, ("📺 " if result.get("success") else "⚠️ ")
+                                 + f"（本次涉及全部 {len(watch_keys)} 个观察中条目）\n"
+                                 + result.get("message", "操作失败"))
+                return
             if arg_lower in ("gen", "generate", "生成", "补生成"):
                 # 与看板按钮同一入口：先请 strm 助手补生成，成功了就不必删旧重传。
                 # 远程命令不传 keys 时处理**全部**疑似条目（看板上则可以只勾一部分），

@@ -163,7 +163,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.2.2"
+    plugin_version = "0.2.3"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -1661,6 +1661,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
             {"path": "/strm_check", "endpoint": self._api_strm_check, "methods": ["POST"], "auth": "bear"},
+            # 用户确认「确实没传上去」→ 越过观察窗口直接转疑似（纯本地，零 115 API）。
+            {"path": "/strm_confirm_failed", "endpoint": self._api_strm_confirm_failed,
+             "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_probe", "endpoint": self._api_strm_probe, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},

@@ -294,6 +294,20 @@ def grace_secs_of(grace_hours: Any) -> float:
 # and different confidence, so the origin must be recorded with the entry.
 ORIGIN_WATCH = "watch"      # 同步成功后观察到期仍未生成（可信度高：该文件确实传过）
 ORIGIN_SCAN = "scan"        # 主动扫描发现源端有、strm 端没有（**可能是从未上传过**）
+# 第三种 origin：**用户在看板上确认了该文件没传上去**（例如在 115 里亲眼看到
+# 只有改名失败的残留），因此越过重新计时的窗口直接入清单。
+#
+# 为什么必须单独记一个 origin，而不是复用 watch/scan：它是唯一一条「结论来自
+# 人而不是探测器」的入口，而下游的删旧重传守卫要凭这个区别决定放不放行 ——
+# CD2 挂载视图「可见且大小一致」的已知假阳性，只有当事人的确认能推翻。
+# 混用 origin 会让守卫再也分不出「机器觉得没问题」与「人已经确认有问题」，
+# 那道人命关天的拦截就只能二选一：要么永不放行（用户被卡死），要么一律放行
+# （坏文件被静默放过）。
+#
+# 之所以敢让它越权，是因为它**不绕过任何数据护栏**：key 仍必须在观察清单里
+# （用户只能对插件已经盯着的文件下这个结论，不能凭空构造路径），删除仍走
+# 相对路径精确对齐（_delete_dest_files_for_retry 的三道闸），重传正常入队。
+ORIGIN_CONFIRMED = "confirmed"
 # 注：「已补生成过」这一状态**没有**做成第三种 origin。
 # 它是与来源正交的一个维度（watch 与 scan 都可能被补生成过），硬塞进 origin
 # 会让两个维度互相覆盖。改用实例上的 _strm_gen_requested 字典单独记录，
