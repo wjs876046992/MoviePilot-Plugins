@@ -741,7 +741,7 @@
               </v-btn>
             </div>
             <div v-if="strmWatchingEntries.length" class="d-flex flex-column ga-2 mb-3">
-              <div v-for="entry in strmWatchingEntries" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
+              <div v-for="entry in watchingPaged.slice" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
                 <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-truncate">{{ entry.key }}</div>
@@ -885,6 +885,30 @@
                   </v-btn>
                 </div>
               </div>
+            </div>
+            <!-- 观察中列表自己的分页条。
+                 ⚠️ 必须与下面那个（疑似清单的）分开：两个列表同屏但独立，
+                 共用一个 paged 会让「翻疑似清单」把观察中列表一起翻走。
+                 只在真的超过一页时才出现（v-if pages > 1），不占常驻空间。 -->
+            <div v-if="watchingPaged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mb-3">
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="watchingPaged.page <= 1"
+                @click="watchingPaged.pageRef.value = watchingPaged.page - 1"
+              >
+                <v-icon start size="16">mdi-chevron-left</v-icon>上一页
+              </v-btn>
+              <span class="text-caption text-medium-emphasis">
+                观察中 第 <strong>{{ watchingPaged.page }}</strong> / {{ watchingPaged.pages }} 页 ·
+                共 {{ watchingPaged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+              </span>
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="watchingPaged.page >= watchingPaged.pages"
+                @click="watchingPaged.pageRef.value = watchingPaged.page + 1"
+              >
+                下一页<v-icon end size="16">mdi-chevron-right</v-icon>
+              </v-btn>
             </div>
             <!-- 通用分页条：strm 独立成标签后与其它三个标签共用 paged 的绑定 -->
             <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
@@ -1042,6 +1066,11 @@ const pageFailed = ref(1)
 const pageIgnored = ref(1)
 // strm 疑似清单与「对账异常」标签同屏，但数据源与长度都不同，页码必须独立
 const pageStrm = ref(1)
+// strm 标签里的**「观察中」列表**同样要分页：它是最容易变长的一段
+// （实机一次同步就登记了 90+ 个待观察文件），而宽限期到期前它只会增长。
+// 它嵌在 strm 标签内部、与疑似清单是两个独立列表，因此必须有自己的页码 ——
+// 两个列表共用一个页码时，翻疑似清单会把观察中列表一起翻走。
+const pageWatching = ref(1)
 
 // 批量选择 / 单条手动触发
 const selectMode = ref(false)
@@ -1283,6 +1312,8 @@ const ignoredPaged = computed(() => paginate(ignoredList.value, pageIgnored))
 // strm 疑似清单不分页时列表可无限增长（strm 插件大面积漏生成时会成批出现），
 // 与另外三个列表统一按 PAGE_SIZE 切片
 const strmPaged = computed(() => paginate(strmSuspectKeys.value, pageStrm))
+// 观察中列表的分页（嵌在 strm 标签内，与 strmPaged 是两个独立列表）
+const watchingPaged = computed(() => paginate(strmWatchingEntries.value, pageWatching))
 
 // 当前标签页的分页结果，供模板统一渲染底部页码条
 const paged = computed(() => {
