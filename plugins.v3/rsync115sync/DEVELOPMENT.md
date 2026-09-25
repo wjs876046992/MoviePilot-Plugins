@@ -2082,7 +2082,44 @@ v0.0.8 已从 README 移除 `/rsync_clean`，但**代码中从未实现该命令
     `TypeError: 'NoneType' object does not support item assignment`，
     而栈指向宿主基类，极难定位（实测踩到过，见 §4.0h ③）。
 
-19. **alpha 版本：部署前必须先向用户确认，且 alpha 标记不得写进版本号字段**
+19. **台账替身绝不能交给 `save_data`**（这是唯一一次「部署后才发现、且打断了同步」的事故）
+    —— 真实宿主的 `save_data` 把数据存进 SQLAlchemy 的 **JSON 列**，
+    任何不可序列化的对象都会抛：
+
+        TypeError: Object of type LedgerMapping is not JSON serializable
+
+    第 2 批把四类状态切成替身之后，**约 19 处 `save_data(..., self._strm_watch)`
+    一类调用没有清掉**，而它抛在 `_execute_sync → _strm_arm_watch` 这个极其要命
+    的位置 —— 实机日志是「同步过程发生异常」，**整轮同步就此终止**。
+    后果：102 个文件一个都没传成，它们又都留在冷却队列里，
+    看板上「入库延迟」与「异常清单」于是显示成同一个数字（用户报的就是这个）。
+
+    护栏写在插件的 `save_data` 覆盖点里（不是删掉那 19 处调用）：
+    **值是台账替身就静默跳过，普通 dict 照常放行**。判据必须是
+    `isinstance(值, 替身类)` 而不是"台账可不可用" —— 台账不可用时属性就是普通
+    dict，那时 `save_data` 是**唯一**的持久化手段，删掉调用会让降级路径丢数据
+    （本仓第 4 批曾为"列视图自己落库"删过 8 处 `strm_gen_requested` 持久化，
+    本次一并恢复）。
+    Skip when the value is a ledger mapping; let plain dicts through, because in the
+    degraded path save_data *is* the storage.
+
+    ⚠️ **为什么单测当时全绿**：本机自建的桩宿主里 `save_data` 只是
+    `self._store[k] = v`，**什么对象都收得下**。真实宿主才当 JSON 序列化。
+    已把桩改成 JSON 严格（`json.dumps(v)`），并加用例
+    `test_ledger_never_saved_as_json.py` 锁住；已用变异测试验证：
+    去掉覆盖点 → 该组变红。
+
+    > **教训**：桩宿主的宽容度**就是测试的盲区**。凡是被宿主"接着"再做一步
+    > 处理的东西（序列化、编码、路径规范化），桩都必须忠实复现那一步 ——
+    > 只复现接口签名是不够的。
+
+20. **清空清单要用 `.clear()`，不许 `self._strm_watch = {}`** —— 后者会把台账替身
+    **整个换回普通 dict**：此后所有写入只进内存、重建实例即丢失，而台账里那些行
+    永远留着。表现是"点了清空、刷新又回来了"，极难定位。
+    清空语义是"这个队列空了"，不是"换一个空容器"。
+    同类风险：任何对这四个属性的**整体赋值**都要先问一句"它还是替身吗"。
+
+21. **alpha 版本：部署前必须先向用户确认，且 alpha 标记不得写进版本号字段**
    （预发布形式记为 `x.y.z-alpha.n`，各段同样受单数字约束）。
    若确认为 alpha：**只提交代码，不 build、不 deploy、不触发 Plugin Release**。
    alpha 标记只出现在提交信息与文档里，三个版本字段始终保持纯 `x.y.z`。

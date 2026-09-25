@@ -2085,6 +2085,56 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
     # ================= 文件台账（SQLite） =================
 
+    # ---- 台账替身不得交给宿主持久化 / must never reach the host's JSON column ----
+    _LEDGER_BACKED_ATTRS = (
+        "_pending_queue", "_strm_watch", "_strm_suspects", "_strm_gen_requested",
+    )
+
+    def save_data(self, key, value, *args, **kwargs):
+        """
+        拦截「把台账替身交给宿主持久化」这一类调用。
+
+        Trap attempts to hand a ledger-backed mapping to the host's persistence.
+
+        ## 为什么必须拦（这是一个真出过的事故）
+
+        第 2 批把四类状态切成台账替身后，**代码里约 19 处
+        `self.save_data("strm_watch", self._strm_watch)` 一类调用没有清掉**。
+        在真实宿主上这些调用会把替身对象交给 SQLAlchemy 的 JSON 列，
+        于是抛：
+
+            TypeError: Object of type LedgerMapping is not JSON serializable
+
+        而它抛在 `_execute_sync → _strm_arm_watch` 这个**极其要命的位置** ——
+        实机日志里是「同步过程发生异常」，整轮同步就此终止。
+        本轮 102 个文件一个都没传成，而它们又都留在冷却队列里，
+        于是看板上「入库延迟」与「异常清单」显示成同一个 102。
+
+        ⚠️ **本地的桩宿主抓不到它**：桩的 `save_data` 只是 `self._store[k] = v`，
+        任何对象都收得下。只有真实宿主才会把它当 JSON 序列化 ——
+        所以这条护栏必须写在插件里，不能指望单测。
+
+        ## 为什么是"跳过"而不是"报错"
+
+        台账可用时，替身自己已经把内容写进 SQLite 了，这次 `save_data`
+        是**冗余且有害**的（既抛异常，又试图把一份过期的快照写回宿主）。
+        台账不可用时，属性是**普通 dict**，那时 `save_data` 就是唯一的持久化
+        手段 —— 必须照常放行。两种情形用 `isinstance` 精确区分，
+        正是"台账替身"与"普通字典"的本质差别。
+        Skip when (and only when) the value is a ledger-backed mapping: the mapping
+        already persisted itself, and the host would fail to JSON-encode it. Plain
+        dicts (the degraded path) still go through, where save_data *is* the storage.
+        """
+        ledger_cls = getattr(_store_mod, "LedgerMapping", None)
+        field_cls = getattr(_store_mod, "LedgerFieldMap", None)
+        for cls in (ledger_cls, field_cls):
+            if cls is not None and isinstance(value, cls):
+                logger.debug(
+                    f"[Rsync115Sync] 已跳过 save_data({key!r})：值是台账替身 "
+                    f"{type(value).__name__}，它已自行落库；交给宿主会因 JSON 序列化而抛异常")
+                return True
+        return super().save_data(key, value, *args, **kwargs)
+
     def _open_store(self) -> None:
         """
         打开台账并（首次）执行一次性迁移。任何异常都不阻断插件加载。
