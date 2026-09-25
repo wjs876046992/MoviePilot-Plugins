@@ -173,6 +173,8 @@ from .paths import (  # noqa: E402
 # 本插件的」），但它不再是某个自建端点的内部函数 —— 自建端点已于 2026-09-22 移除，
 # 现在唯一的载体是宿主的平台 webhook 链路，见 DEVELOPMENT §9.18。
 from . import webhook as _wh  # noqa: E402
+from . import store as _store_mod  # noqa: E402
+from .store import Store as _Store  # noqa: E402
 
 
 class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
@@ -254,6 +256,23 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         # 4h：源端扫描没有"文件写完了"信号，冷却期因此多了一层职责 —— 等文件写完
         # （正在写入的文件 mtime 恰恰最新）。2h 对慢写的大文件不够，见 USAGE。
+        # 文件台账（SQLite）。
+        #
+        # ⚠️ 属性名**不要**用 `self._store`：那是宿主插件基类内部极可能占用的
+        # 名字（本仓的测试桩就用它存 `save_data` 的数据），撞名会让 `save_data`
+        # 直接 `TypeError: 'NoneType' object does not support item assignment` ——
+        # 而报错点在**宿主基类**里，从堆栈看不出和台账有关。
+        # 实测踩到过：改完台账后 `test_instantiation_smoke` 挂在
+        # `_add_ignore_rule → save_data` 上，查了几步才发现是取名撞了。
+        # 用 `_ledger` 这种本插件专属的名字，从根上避免。
+        #
+        # **惰性打开**：`__new__` 构造的实例（单测/部分宿主
+        # 路径）没有 `get_data_path`，此时不能抛异常 —— 台账缺失时相关功能降级
+        # 为空操作，而不是让整个插件加载失败。
+        # Lazy: instances built via `__new__` have no data path; a missing ledger
+        # must degrade to no-ops, never break plugin loading.
+        self._ledger: Optional[_Store] = None
+
         self._delay_hours: float = 4.0
         self._cron: str = "0 */2 * * *"
 
@@ -468,6 +487,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 恢复限流窗口与退避状态（必须早于任何上传判定）
         self._load_rate_limit_state()
         self._last_force_ts = float(self.get_data("last_force_ts") or 0.0)
+
+        # 打开文件台账（SQLite）并做一次性迁移。
+        # ⚠️ 必须排在下面的字典恢复**之前**：迁移要用那些字典的内容。
+        self._open_store()
 
         # 恢复持久化数据
         saved_queue = self.get_data("pending_queue") or {}
@@ -2043,6 +2066,102 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             return False
 
 
+
+    # ================= 文件台账（SQLite） =================
+
+    def _open_store(self) -> None:
+        """
+        打开台账并（首次）执行一次性迁移。任何异常都不阻断插件加载。
+
+        Open the ledger and run the one-shot migration. Never blocks plugin load:
+        a broken ledger is a degraded feature, not a failed startup.
+        """
+        try:
+            data_path = self.get_data_path()
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 无法获取插件数据目录，文件台账不可用（相关功能降级）: {e}")
+            return
+        try:
+            self._ledger = _Store(data_path / "ledger.sqlite3")
+        except Exception as e:
+            logger.error(f"[Rsync115Sync] 文件台账打开失败（相关功能降级）: {e}")
+            self._ledger = None
+            return
+        try:
+            self._migrate_legacy_state_once()
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 旧数据迁移失败（不影响运行，下次启动会重试）: {e}")
+
+    def _migrate_legacy_state_once(self) -> None:
+        """
+        把旧版 `save_data` 字典里**无法重建**的那部分导入台账，只做一次。
+
+        Migrate the parts of the legacy `save_data` state that CANNOT be rebuilt.
+
+        ## 为什么只迁这两个（而不是全部 18 个字典）
+
+        逐类核对过「丢了能不能靠扫描重建」：
+
+        | 旧字典 | 丢了会怎样 | 处理 |
+        |---|---|---|
+        | `ignored_files` | **用户手工建的规则，不可重建** —— 丢了那些特意忽略的文件会重新变成告警，得一条条再加 | **必须迁** |
+        | `strm_suspects` | 可重建，但会丢失「该文件曾同步成功过」（origin=watch）这一信息 | **建议迁** |
+        | `pending_queue` | 扫描按 mtime 重新发现（代价：冷却重新计时）| 丢弃 |
+        | `strm_watch` | 扫描重新登记（代价：宽限期重新计时）| 丢弃 |
+        | `strm_gen_requested` | 丢失「已补生成过」标记（代价：可能重复点补生成）| 丢弃 |
+        | `backfill_queue` | 重扫即可 | 丢弃 |
+
+        迁移标记写进 `meta` 表，因此**重载/重启都不会重复导入**。
+
+        ## 为什么旧的 save_data 键**不删**
+
+        迁移后仍保留旧键，作为「迁移结果对不对」的对照。等新台账稳定运行一段时间
+        后再清理 —— 现在就删的话，万一迁移有偏差，用户的数据就真没了。
+        """
+        if self._ledger is None:
+            return
+        if self._ledger.get_meta("legacy_migrated") == "1":
+            return
+
+        migrated = {"ignored": 0, "suspects": 0}
+
+        # ① 忽略规则：**不可重建**，必须迁
+        #
+        # ⚠️ 只迁「形如 映射名:相对路径」的规则。忽略规则也支持纯关键字
+        # （contains 模式，例如 `/rsync_ignore 某剧名`），那种规则没有对应的
+        # 单个文件 —— 它不是"某个文件的状态"，仍由 `_ignored_rules` 承担。
+        # 把关键字硬塞进台账会在 files 表里造出一批虚构路径。
+        rules = self.get_data("ignored_files") or []
+        if isinstance(rules, list):
+            for rule in rules:
+                text = rule if isinstance(rule, str) else (
+                    (rule or {}).get("rule") or (rule or {}).get("pattern") or "")
+                text = str(text).strip()
+                if not text or ":" not in text:
+                    continue
+                if self._ledger.upsert(text, _store_mod.STATUS_IGNORED,
+                                      ingest_source=_store_mod.SOURCE_LEGACY):
+                    migrated["ignored"] += 1
+
+        # ② strm 疑似清单：可重建，但迁移能保住原始时间戳
+        suspects = self.get_data("strm_suspects") or {}
+        if isinstance(suspects, dict):
+            for key, entry in suspects.items():
+                ts = None
+                if isinstance(entry, dict):
+                    try:
+                        ts = float(entry.get("ts") or 0) or None
+                    except (TypeError, ValueError):
+                        ts = None
+                if self._ledger.upsert(str(key), _store_mod.STATUS_SUSPECT,
+                                      ingest_source=_store_mod.SOURCE_LEGACY,
+                                      enqueued_at=ts, verified_at=ts):
+                    migrated["suspects"] += 1
+
+        self._ledger.set_meta("legacy_migrated", "1")
+        logger.info(f"[Rsync115Sync] 📒 文件台账已建立，旧数据迁移完成："
+                    f"忽略条目 {migrated['ignored']} / 疑似 {migrated['suspects']}"
+                    f"（旧 save_data 键保留未删，便于对照）")
 
     def _api_get_status(self):
         now_ts = time.time()

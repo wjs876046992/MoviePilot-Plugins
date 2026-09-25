@@ -172,4 +172,7 @@ yarn.lock
 
 # 开发本机脚本：含 NAS 地址与端口，不入库
 scripts/update_rsync115sync.sh
+# 本机测试桩宿主（临时搭的 app/ 骨架，用于无后端环境下跑纯逻辑用例）。
+# ⚠️ 必须带点：`testhost/` 匹配不到 `.testhost/`，我差点把桩文件提交进去。
+.testhost/
 testhost/
