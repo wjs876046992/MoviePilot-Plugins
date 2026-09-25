@@ -395,6 +395,35 @@ return (_ctx, _cache) => {
                   density: "compact"
                 }, null, 8, ["modelValue"])
               ]),
+              _cache[32] || (_cache[32] = _createElementVNode("div", { class: "sub-note px-4 py-3" }, [
+                _createElementVNode("div", { class: "font-weight-bold text-body-2 mb-1" }, "怎么把入库推给本插件（Webhook）"),
+                _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
+                  _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： "),
+                  _createElementVNode("br"),
+                  _createElementVNode("code", null, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync"),
+                  _createElementVNode("br"),
+                  _createTextVNode(" 也可以改用请求头 "),
+                  _createElementVNode("code", null, "X-Webhook-Target: rsync115sync"),
+                  _createTextVNode("。 "),
+                  _createElementVNode("b", null, [
+                    _createTextVNode("这个值必须是 "),
+                    _createElementVNode("code", null, "rsync115sync")
+                  ]),
+                  _createTextVNode(" —— 填成别的（包括 "),
+                  _createElementVNode("code", null, "emby"),
+                  _createTextVNode("） 本插件都不会处理，那些报文归平台自己的解析器管。 "),
+                  _createElementVNode("br"),
+                  _createTextVNode(" 本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听 （这是"),
+                  _createElementVNode("b", null, "有意的设计"),
+                  _createTextVNode("，不是待办 —— 媒体服务器自己的入库归平台处理）。 "),
+                  _createElementVNode("br"),
+                  _createTextVNode(" 推送内容支持单个文件路径或目录（目录会自动展开），事件请用"),
+                  _createElementVNode("b", null, "入库类"),
+                  _createTextVNode(" （如 "),
+                  _createElementVNode("code", null, "library.new"),
+                  _createTextVNode("）—— 播放类事件会被自动忽略，填了也不会误触发上传。 ")
+                ])
+              ], -1)),
               _createElementVNode("div", _hoisted_7, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", _hoisted_8, [
@@ -459,42 +488,13 @@ return (_ctx, _cache) => {
                     ], -1),
                     _createElementVNode("div", { class: "mt-1" }, [
                       _createElementVNode("b", null, "② Webhook —— 加速器，不承担完整性。"),
-                      _createTextVNode(" 发送端主动通知（见下方「怎么把入库推给本插件」）。它让文件早一点进队列， 但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。 ")
+                      _createTextVNode(" 发送端主动通知（接入方式见上方「怎么把入库推给本插件」）。它让文件早一点进队列， 但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。 ")
                     ], -1),
                     _createElementVNode("div", { class: "mt-1" }, " 关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到 「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 —— 那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。 ", -1)
                   ]))]),
                   _: 1
                 })
-              ]),
-              _cache[32] || (_cache[32] = _createElementVNode("div", { class: "setting-row px-4 py-3 border-t" }, [
-                _createElementVNode("div", { class: "font-weight-bold text-body-2 mb-1" }, "怎么把入库推给本插件（Webhook）"),
-                _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
-                  _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： "),
-                  _createElementVNode("br"),
-                  _createElementVNode("code", null, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync"),
-                  _createElementVNode("br"),
-                  _createTextVNode(" 也可以改用请求头 "),
-                  _createElementVNode("code", null, "X-Webhook-Target: rsync115sync"),
-                  _createTextVNode("。 "),
-                  _createElementVNode("b", null, [
-                    _createTextVNode("这个值必须是 "),
-                    _createElementVNode("code", null, "rsync115sync")
-                  ]),
-                  _createTextVNode(" —— 填成别的（包括 "),
-                  _createElementVNode("code", null, "emby"),
-                  _createTextVNode("） 本插件都不会处理，那些报文归平台自己的解析器管。 "),
-                  _createElementVNode("br"),
-                  _createTextVNode(" 本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听 （这是"),
-                  _createElementVNode("b", null, "有意的设计"),
-                  _createTextVNode("，不是待办 —— 媒体服务器自己的入库归平台处理）。 "),
-                  _createElementVNode("br"),
-                  _createTextVNode(" 推送内容支持单个文件路径或目录（目录会自动展开），事件请用"),
-                  _createElementVNode("b", null, "入库类"),
-                  _createTextVNode(" （如 "),
-                  _createElementVNode("code", null, "library.new"),
-                  _createTextVNode("）—— 播放类事件会被自动忽略，填了也不会误触发上传。 ")
-                ])
-              ], -1))
+              ])
             ]),
             _createElementVNode("div", _hoisted_11, [
               _createElementVNode("div", _hoisted_12, [
@@ -1269,6 +1269,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c3b4df85"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-865bcdd8"]]);
 
 export { Config as default };
