@@ -510,3 +510,82 @@ def test_border_radius_is_half_of_vuetify_defaults():
     assert m_lg and m_sm, "未定义 radius-lg / radius-sm"
     assert "border-radius: 12px" in m_lg.group(1), "radius-lg 应为 12px（原 xl=24px 的一半）"
     assert "border-radius: 4px" in m_sm.group(1), "radius-sm 应为 4px（原 lg=8px 的一半）"
+
+
+def test_mobile_labels_sit_above_their_inputs():
+    """
+    移动端：每个输入框的 label 必须渲染在**框外、输入框上方**（方案 A）。
+
+    **为什么这么做而不是简单地把 label 藏掉**：
+    Vuetify 的 outlined 变体把 label 渲染在**边框的缺口（notch）** 里 ——
+    `VField.mjs` 里 `v-field__outline__notch` 内还有一个 `VFieldLabel` 副本，
+    边框在那里断开以容纳标签文字。只把 label `display:none` 掉，**缺口仍在**，
+    上边框会出现一道空白豁口。
+
+    所以正确的做法是三件套（缺一不可）：
+      1. 字段**外面**额外渲染一个标题（`.stacked-label`，仅窄屏显示）；
+      2. 窄屏下给字段加 `.no-notch`，把缺口宽度压成 0；
+      3. 藏掉框内那份 label（outlined 会渲染两份：`__field` 里一份、notch 里一份）。
+
+    桌面端完全不显示框外标题、也不加任何隐藏 —— 外观与改动前一致。
+    """
+    src = _read_component("Config.vue")
+    css = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+    body = src[src.find("<template>"):src.rfind("</template>")]
+
+    # ① 每个带 label 的输入框都必须有对应的框外 label
+    fields = re.findall(r'<(?:v-text-field|v-textarea)\b[^>]*?label="([^"]*)"', body, re.DOTALL)
+    labels = re.findall(r'class="stacked-label[^"]*">([^<]*)</div>', body)
+    assert fields, "未找到带 label 的输入框"
+    assert len(labels) == len(fields), (
+        f"框外 label 数（{len(labels)}）与带 label 的输入框数（{len(fields)}）不一致 —— "
+        f"漏掉的字段在手机上会看不到标题"
+    )
+    for f_title, l_title in zip(fields, labels):
+        assert f_title.strip() == l_title.strip(), (
+            f"框外 label 与字段的 label 文本不一致：字段「{f_title}」vs 框外「{l_title}」——"
+            f"两者不一致时，桌面端与手机端会显示不同的标题"
+        )
+
+    # ② 每个带 label 的输入框都必须带 .no-notch（否则边框会有空白缺口）
+    no_notch = re.findall(r'<(?:v-text-field|v-textarea)\b[^>]*?class="[^"]*no-notch[^"]*"[^>]*?label="', body, re.DOTALL)
+    assert len(no_notch) == len(fields), (
+        f"有 {len(fields) - len(no_notch)} 个字段没加 .no-notch —— "
+        f"手机会出现「上边框一道空白豁口」（Vuetify 的 notch 里藏着 label 副本）"
+    )
+
+    # ③ 框外 label 默认隐藏、仅窄屏显示
+    base = css[:css.find("@media")]
+    assert re.search(r"\.stacked-label\s*\{[^}]*display:\s*none", base), (
+        ".stacked-label 必须在基础样式里 display:none —— 桌面端应保持原有的框内 label 外观"
+    )
+    mq = css[css.find("@media"):]
+    assert re.search(r"\.stacked-label\s*\{[^}]*display:\s*block", mq), (
+        "移动端未把 .stacked-label 显示出来"
+    )
+
+    # ④ notch 压平与框内 label 隐藏都必须在媒体查询里（否则桌面端也被改）
+    for need in ("v-field__outline__notch", "v-field__field > .v-label"):
+        assert need in mq, f"移动端缺少对 `{need}` 的处理"
+
+
+def test_form_fields_are_not_visually_clipped():
+    """
+    输入框不得因为 padding/溢出问题在小屏上被裁。
+
+    这条是**回归护栏**：本轮为"方案 A"给 16 个字段动过标记，任何一个字段的
+    包裹结构被改坏（例如把 label 插到了错误层级、或漏了 no-notch），
+    都会表现为"某几个框看起来怪"而不会报错。
+    """
+    src = _read_component("Config.vue")
+    body = src[src.find("<template>"):src.rfind("</template>")]
+    # 框外 label 必须紧邻其字段之前（中间只允许空白/注释）
+    # ⚠️ 正则应匹配**完整开标签**：`<div class="…">内容</div>`。
+    # 第一版写成 `<div class="stacked-label[^"]*">` —— `[^"]*` 会从**属性值内部**
+    # 开始吞，导致匹配边界偏移、把后面的场片段判成"没有紧跟"。已改为锚定完整形态。
+    for m in re.finditer(r'<div class="stacked-label[^"]*"[^>]*>([^<]*)</div>', body):
+        after = body[m.end():m.end() + 400]
+        assert after.lstrip().startswith("<v-text"), (
+            f"框外 label「{m.group(1)}」后面没有紧跟输入框 —— "
+            f"它可能被插到了错误的层级（会把标题显示在无关位置）"
+        )
