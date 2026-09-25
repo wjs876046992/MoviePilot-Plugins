@@ -209,7 +209,33 @@ def test_trim_events_keeps_the_newest_not_the_oldest(tmp_path):
 
 
 def test_trim_events_on_empty_table_is_a_noop(tmp_path):
-    """空表上裁剪不得报错（它每次插件加载都会跑一遍）。"""
+    """空表上裁剪不得报错、也不得返回非零（它每次插件加载都会跑一遍）。"""
     s = _store(tmp_path)
-    assert s.trim_events() in (True, False)
+    assert s.trim_events() == 0
     assert s.events_of("任何", 999) == []
+
+
+def test_trim_events_returns_a_row_count_not_a_bool(tmp_path):
+    """
+    ⚠️ `trim_events` 必须返回**删掉的行数**，不是"成没成"。
+
+    这条锁的是一个真出过的 bug：它最初只是转发 `_write` 的返回值（布尔），
+    而调用方把那个值直接写进了日志 —— 实机日志打出的是
+
+        📒 事件流水已裁剪 True 条（每个文件保留最近 20 条）
+
+    那句日志既读不出信息，又**掩盖了唯一有用的信号**（到底裁没裁）。
+    注意 `True == 1` 在 Python 里成立，所以"断言它是真值"永远抓不到这个 bug ——
+    必须断言**类型**与**具体数值**。
+    """
+    s = _store(tmp_path)
+    for i in range(30):
+        s.log_event("剧:a.mkv", "enqueue", str(i))
+
+    trimmed = s.trim_events(keep_per_key=20)
+
+    assert not isinstance(trimmed, bool), "返回的是布尔 —— 日志会打出「裁剪 True 条」"
+    assert trimmed == 10
+
+    # 幂等：再裁一次没有东西可删，必须返回 0
+    assert s.trim_events(keep_per_key=20) == 0

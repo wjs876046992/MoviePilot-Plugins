@@ -107,6 +107,15 @@ class Store:
         """
         单条写操作。**失败返回 False 而不抛异常** —— 台账是辅助设施，
         它出问题绝不能让正在进行的同步流程中断（那才是真正丢数据的事）。
+
+        ⚠️ 返回值是**布尔**，不是行数 —— 绝大多数调用方（`upsert` / `delete` /
+        `set_field`）只关心"成没成"。需要行数的（如 `trim_events`）自己走
+        `conn.total_changes`，见 `_write_count`。这个区别曾经害过一次：
+        `trim_events` 直接转发了本函数的返回值，于是日志打出
+        「事件流水已裁剪 **True** 条」—— 那句日志既无法读出信息，
+        又掩盖了"到底裁没裁"这个唯一有用的信号。
+        Boolean, not a row count: a caller that needs the count (see
+        `_write_count`) must not forward this return value into a message.
         """
         try:
             with self._connect() as conn:
@@ -114,6 +123,20 @@ class Store:
             return True
         except Exception:
             return False
+
+    def _write_count(self, sql: str, params: Iterable[Any] = ()) -> int:
+        """
+        像 `_write` 一样写，但返回**受影响行数**（失败返回 0）。
+
+        Same as `_write` but returns how many rows changed (0 on failure).
+        """
+        try:
+            with self._connect() as conn:
+                before = conn.total_changes
+                conn.execute(sql, tuple(params))
+                return conn.total_changes - before
+        except Exception:
+            return 0
 
     def _query(self, sql: str, params: Iterable[Any] = ()) -> List[sqlite3.Row]:
         try:
@@ -345,9 +368,9 @@ class Store:
         Per-key rather than global: a bulk day would otherwise evict other files'
         history, and the file you want to inspect is usually the rare old one.
 
-        失败只记日志不抛：清理是维护动作，不该中断插件加载。
+        失败返回 0、只记日志不抛：清理是维护动作，不该中断插件加载。
         """
-        return self._write(
+        return self._write_count(
             "DELETE FROM events WHERE id NOT IN ("
             "  SELECT id FROM ("
             "    SELECT id, ROW_NUMBER() OVER ("
