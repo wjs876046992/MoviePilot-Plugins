@@ -1759,6 +1759,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             {"path": "/config", "endpoint": self._api_get_config, "methods": ["GET"], "auth": "bear"},
             {"path": "/config", "endpoint": self._api_save_config, "methods": ["POST"], "auth": "bear"},
             {"path": "/sync", "endpoint": self._api_trigger_sync, "methods": ["POST"], "auth": "bear"},
+            # 「立即运行一次」：先扫一次源端（不等扫描 cron），再跑一次就绪同步
+            # （不等同步 cron）。**不绕过冷却** —— 见 _api_run_now 的说明。
+            {"path": "/run_now", "endpoint": self._api_run_now, "methods": ["POST"], "auth": "bear"},
             {"path": "/retry", "endpoint": self._api_trigger_retry, "methods": ["POST"], "auth": "bear"},
             {"path": "/sync_item", "endpoint": self._api_sync_item, "methods": ["POST"], "auth": "bear"},
             {"path": "/ignored", "endpoint": self._api_get_ignored, "methods": ["GET"], "auth": "bear"},
@@ -2158,6 +2161,84 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             return {"success": False, "message": "已有任务正在运行"}
         self._start_sync_thread(mode="ready")
         return {"success": True, "message": "已触发同步任务"}
+
+    def _api_run_now(self):
+        """
+        「立即运行一次」：**不等两个 cron**，立刻扫一次源端并跑一次就绪同步。
+
+        Run once right now, skipping both schedules: the source scan is executed
+        immediately and a ready-sync is started without waiting for the cron tick.
+
+        ## 它绕过什么、不绕过什么（这是本端点最需要说清的一件事）
+
+        | | 是否绕过 |
+        |---|---|
+        | 源端扫描的 cron 节奏 | ✅ 绕过 —— 立刻扫一次 |
+        | 同步的 cron 节奏 | ✅ 绕过 —— 立刻跑一轮 ready |
+        | **文件冷却时长**（`delay_hours`） | ❌ **不绕过** |
+        | 限流窗口 / 退避 / 批次上限 | ❌ 不绕过 |
+        | 忽略清单 / 扩展名闸门 | ❌ 不绕过 |
+
+        **为什么冷却不在此列**：冷却期的现职是"等文件写完"（源端扫描没有"写完了"
+        这个信号，而正在写入的文件 mtime 恰恰最新），绕过它等于把半截文件传给
+        115 —— 那正是 §3.10 记录的云端残留的成因。想立刻传某个**已经冷却到位**
+        的文件，用列表里的单条「立即同步」（`/sync_item`），那个是定向上传。
+
+        所以本按钮的真实语义是「**别等下一班，现在就查一次**」：
+        它把"发现"提前，再把"已经到期的"传上去。若队列里的文件都还在冷却中，
+        返回消息会**明说**有多少个在冷却、还要等多久 —— 否则用户会以为按钮没生效。
+
+        :return: 含本次扫描结果与排队情况的响应
+        """
+        if self._is_running:
+            return {"success": False, "message": "已有任务正在运行，请稍后再试"}
+
+        # ① 立刻扫一次源端（本地 IO、零 115 API，与 _api_backfill_scan 同性质）
+        scanned = 0
+        scan_err = ""
+        if self._source_scan_enabled:
+            try:
+                scanned = self._scan_source_cursor()
+            except Exception as err:
+                # 扫描失败不该拦住同步：同步处理的是**已经**在队列里的文件
+                scan_err = str(err)
+                logger.warning(f"[Rsync115Sync] 「立即运行一次」的源端扫描失败（已忽略，继续同步）: {err}")
+        else:
+            scan_err = "源端扫描已关闭，本次只同步已入队的文件"
+
+        # ② 统计排队情况，让返回消息能直接回答"为什么一个也没传"
+        now_ts = time.time()
+        threshold = self._delay_hours * 3600
+        ready_count, cooling_count, stale_count = self._count_queue(now_ts, threshold)
+        # ⚠️ 只在**仍在冷却**的条目里取最小值。
+        # 第一版写成对 `_pending_queue.values()` 全体取 `min`，于是已经就绪的条目
+        # 会贡献一个负的剩余量，把结果压成 0 —— 消息里就出现了
+        # 「1 个仍在冷却中（最快还需约 0 分钟）」这种自相矛盾的话
+        # （实测：那个文件实际还有 4 小时）。已就绪的条目本来也不该参与这个数。
+        remaining = [threshold - (now_ts - basis) for basis in self._pending_queue.values()]
+        pending_remainders = [r for r in remaining if r > 0]
+        cooling_min = max(0, int(min(pending_remainders, default=0) / 60))
+
+        # ③ 立刻跑一轮 ready（不等同步 cron）
+        self._start_sync_thread(mode="ready")
+
+        parts = [f"已立即执行：源端扫描新增 {scanned} 个文件入队"]
+        if scan_err:
+            parts.append(f"（{scan_err}）")
+        if cooling_count:
+            parts.append(f"当前 {cooling_count} 个仍在冷却中"
+                         f"（最快还需约 {cooling_min} 分钟），它们不在本轮传输范围")
+        if ready_count:
+            parts.append(f"{ready_count} 个已就绪，正在传输")
+        elif not cooling_count:
+            parts.append("队列中没有待传输文件")
+        if stale_count:
+            parts.append(f"{stale_count} 个条目的源文件已不存在，将在本轮清理")
+        parts.append("限流与批次上限照常生效，可在看板「冷却队列」标签查看进度")
+        return {"success": True,
+                "message": "；".join(parts),
+                "data": {"scanned": scanned, "ready": ready_count,
+                         "cooling": cooling_count, "stale": stale_count}}
 
     def _api_trigger_retry(self):
         if self._is_running:

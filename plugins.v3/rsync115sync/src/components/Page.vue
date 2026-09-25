@@ -225,7 +225,19 @@
         <div class="action-strip rounded-xl pa-3 mb-4">
           <div class="action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2">
             <div class="action-group d-flex align-center flex-wrap ga-2">
-              <v-btn color="primary" variant="flat" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
+              <!-- 「立即运行一次」= 不等两个 cron：立刻扫一次源端 + 跑一轮就绪同步。
+                   刻意**不**绕过冷却/限流/批次上限 —— 冷却期的现职是"等文件写完"，
+                   绕过它会把半截文件传给 115（§3.10 的云端残留）。
+                   要立刻传某个已冷却的文件，用列表里的单条「立即同步」。 -->
+              <v-btn color="success" variant="flat" size="small" rounded="lg" @click="runNow" :loading="runningNow" :disabled="statusData.is_running">
+                <v-icon start size="16">mdi-flash</v-icon>
+                立即运行一次
+                <v-tooltip activator="parent" location="top">
+                  不等扫描与同步的 cron，立刻扫一次源端并跑一轮就绪同步。<br>
+                  冷却时长、限流与批次上限照常生效 —— 冷却中的文件不会被提前上传。
+                </v-tooltip>
+              </v-btn>
+              <v-btn color="primary" variant="tonal" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-play</v-icon>
                 同步已就绪媒体
               </v-btn>
@@ -973,6 +985,7 @@ const emit = defineEmits(['close', 'switch'])
 
 const loading = ref(false)
 const syncing = ref(false)
+const runningNow = ref(false)
 const retrying = ref(false)
 const currentTab = ref('queue')
 const actionMsg = ref('')
@@ -1888,6 +1901,28 @@ async function removeIgnore(index) {
     fetchStatus()
   } catch (e) {
     actionMsg.value = '恢复失败: ' + e.message
+  }
+}
+
+// 「立即运行一次」：后端会先扫源端、再跑一轮 ready，并如实回报排队情况
+// （有多少在冷却、最快还需多久）—— 否则用户会以为按钮没生效。
+async function runNow() {
+  runningNow.value = true
+  actionMsg.value = ''
+  try {
+    const res = await props.api.post('plugin/Rsync115Sync/run_now')
+    if (res && res.success) {
+      actionMsg.value = res.message || '已立即执行一次'
+      // 扫描与入队是同步完成的（在后端线程池里），因此这里刷新能立刻看到新条目；
+      // 传输是后台线程，下一轮 30 秒轮询会自然带上进度。
+      fetchStatus()
+    } else {
+      actionMsg.value = res?.message || '执行失败'
+    }
+  } catch (e) {
+    actionMsg.value = '执行失败：' + (e?.message || e)
+  } finally {
+    runningNow.value = false
   }
 }
 

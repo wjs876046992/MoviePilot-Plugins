@@ -741,9 +741,27 @@ onMounted(() => {
    flex-shrink:0 保持自身尺寸，两者合起来才是「文字让位、控件不动」。
    Long description blocks cannot shrink by default (min-width:auto), so they
    squeeze the trailing control out of the card; allow the text to wrap instead. */
+/* 设置行：文字列可收缩，控件不被压缩。
+   ⚠️ `min-width: 0` 只解决"**允许**收缩"。line-breaking 仍可能不够 ——
+   长英文、代码片段、cron 表达式这类"不可断词"会把文字列的 min-content 撑得很宽，
+   于是控件被挤到只剩一条缝或整个溢出可视区（用户实测两次：「源端补齐扫描」
+   挤压开关、「源端扫描 Cron」输入框看不见）。
+
+   `flex-wrap: wrap` 是这里的关键：一行放不下时**整块换到下一行**，
+   控件永远拿满整行宽度 —— 而不是跟文字列在同一行里互相挤压。
+   这样"会不会被挤掉"就不再取决于文字多长、用户窗口多宽。 */
+.setting-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* ⚠️ 文字列的 `flex-basis` 决定**何时换行**，这里的取值是承重的。
+   若写成 `flex: 1 1 auto; min-width: 0`（本文件的早期写法），文字列可以一路
+   收缩到 0 —— 于是容器再窄也**永远不会触发换行**，控件就一直被挤在剩余的那点
+   宽度里。`min-width: 0` 解决的是"文字能在列内折行"，不是"列本身该多窄"。
+   给定一个基准宽度后：装得下就并排（文字占据剩余空间），装不下就整体换行。 */
 .setting-row > div:first-child {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 20rem;
+  min-width: 15rem;
 }
 .setting-row > .v-switch,
 .setting-row > .v-text-field,
@@ -751,6 +769,11 @@ onMounted(() => {
 .setting-row > .v-btn {
   flex: 0 0 auto;
 }
+/* ⚠️ 这里刻意**不**给控件加 `flex: 1 1 100%`。那会让每个输入框永远独占一行
+   （即使宽屏有空间），把原本紧凑的"左说明 + 右输入框"布局改掉。
+   已有的 `flex: 0 0 auto`（见上）配合父级 `flex-wrap: wrap` 已经足够：
+   控件**不允许**收缩 → 一行放不下时只能换行 → 换行后它保持自己的宽度、完整可见。
+   即"宽屏保持原样、窄屏自动换行"，不需要任何断点判断。 */
 
 /* ===== 移动端适配 =====
    设置页每行都是「左说明 + 右控件（开关/按钮）」的 justify-space-between 横排，
