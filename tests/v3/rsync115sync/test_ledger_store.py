@@ -123,7 +123,6 @@ def test_count_by_status_always_returns_all_keys(tmp_path):
     for st in ALL_STATUSES:
         assert st in counts, f"缺少状态键 {st}"
     assert counts["candidate"] == 1
-    assert counts["synced"] == 0
 
 
 def test_delete_removes_row(tmp_path):

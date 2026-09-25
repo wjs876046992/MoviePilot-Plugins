@@ -50,14 +50,25 @@ from typing import Any, Dict, Iterable, List, Optional
 
 # ---- 状态取值 ------------------------------------------------------------
 # 线性流转，不回退。每个取值都对应"这个文件此刻该被怎样处理"。
+#
+# ⚠️ 只有**在跟踪中**的文件有行。一个文件走完流程（strm 出现）就不再需要跟踪，
+# 它的行被删掉 —— 「同步成功过」这件事改由 `synced_at` 这一列回答。
+#
+# 这里曾有一个 `synced` 取值（"strm 已出现，确认真的上传成功"），但它**从来
+# 没有写入者**：那一步的实现是删行，不是改状态。一个定义了却永不出现的取值
+# 比没有更糟 —— 它让计数表上多一个永远为 0 的格子，读者会以为"没有文件成功过"。
+# 真要区分"已成功的"，判据是 `synced_at IS NOT NULL`（`/status` 的
+# `ledger.synced_files`），它与上面的状态正交：一个文件可以既同步成功过、
+# 又处于待处理（那正是"传过、但这一轮没传成"）。
+# No `synced` status: files that finish leave no row, and "did it ever sync"
+# is answered by `synced_at IS NOT NULL`, which is orthogonal to status.
 STATUS_CANDIDATE = "candidate"            # 已发现、正在等冷却结束
 STATUS_PENDING_VERIFY = "pending_verify"  # 已同步，等待宽限期后查 strm
-STATUS_SYNCED = "synced"                  # strm 已出现，确认真的上传成功
 STATUS_SUSPECT = "suspect"                # 宽限期到仍无 strm —— 待人工处理
 STATUS_IGNORED = "ignored"                # 用户明确忽略，不再报警也不再处理
 
 ALL_STATUSES = (
-    STATUS_CANDIDATE, STATUS_PENDING_VERIFY, STATUS_SYNCED,
+    STATUS_CANDIDATE, STATUS_PENDING_VERIFY,
     STATUS_SUSPECT, STATUS_IGNORED,
 )
 

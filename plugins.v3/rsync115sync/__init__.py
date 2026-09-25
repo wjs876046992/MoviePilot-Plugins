@@ -2394,8 +2394,43 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "upload_blocked_until": self._upload_blocked_until,
                 "last_force_ts": self._last_force_ts,
                 "force_cooldown_days": self._force_cooldown_days,
+                # 台账概览：一行一个文件，状态就是它的处境。
+                # ⚠️ 这里给**计数**而不是明细：明细按状态各走各的端点（队列、
+                # 观察清单、待处理、忽略都有），而这个字段回答的是"台账到底
+                # 记了多少、都在什么状态" —— 用户要知道 SQLite 里是不是真的
+                # 有东西，不必为此翻数据库。
+                "ledger": self._ledger_overview(),
             }
         }
+
+    def _ledger_overview(self) -> Dict[str, Any]:
+        """
+        台账概览（各状态计数 + 同步成功数 + 事件流水行数）。
+
+        Ledger overview. Never raises: a broken ledger degrades to an empty dict
+        rather than breaking the whole dashboard.
+
+        `synced_files` 与其它计数**不是互斥的**（同一个文件状态可能是待处理、
+        而它历史上成功同步过）—— 它回答的是另一个问题：
+        「这个台账到底见过多少真的传上去过的文件」，也就是用户要的
+        「便于区分已成功的」。
+        """
+        ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            return {}
+        try:
+            counts = ledger.count_by_status()
+            rows = ledger._query("SELECT COUNT(*) n FROM files WHERE synced_at IS NOT NULL")
+            events = ledger._query("SELECT COUNT(*) n FROM events")
+            return {
+                "status_counts": counts,
+                "total": sum(counts.values()),
+                "synced_files": rows[0]["n"] if rows else 0,
+                "events": events[0]["n"] if events else 0,
+            }
+        except Exception as e:
+            logger.debug(f"[Rsync115Sync] 台账概览读取失败（已忽略）: {e}")
+            return {}
 
     def _api_get_queue(self):
         now_ts = time.time()

@@ -39,6 +39,7 @@ def _plugin_manager_cls():
         return _PluginManager
     return None
 
+from . import store as _store_mod   # noqa: E402
 from . import strm as _strm  # noqa: E402
 
 from .constants import (  # noqa: E402
@@ -305,6 +306,35 @@ class StrmOpsMixin:
             return False, SKIP_NO_STRM_DIR, "所属映射未配置 strm 目录"
         return True, "", ""
 
+    def _mark_synced(self, key: str, now_ts: float) -> None:
+        """
+        记下「这个文件被 rsync 报告同步成功」的时刻（台账 `synced_at` 列）。
+
+        Record the moment rsync reported this file as synced.
+
+        为什么单独一层、而不是直接调 `self._ledger.upsert(...)`：
+        它要在**台账不可用时静默降级**，而 `self._ledger` 可能是 None。
+        收在一处，就不必在每个调用点重复这个判空（漏一处就是 AttributeError
+        打断正在进行的传输）。
+        One place for the null check: the ledger may be unavailable, and a missing
+        guard at any call site would raise inside the sync path.
+
+        ⚠️ 用 `getattr` 而不是直接取属性：本插件有大量 `__new__` 构造的最小实例
+        （单测与若干内部路径），它们**没有** `init_plugin` 建立的那些属性 ——
+        直接取会抛 AttributeError。这是本仓反复踩到的一类问题（见
+        `_api_get_status` 里同类说明）。
+        `getattr` rather than direct attribute access: many minimal instances are
+        built via `__new__` and never run `init_plugin`.
+        """
+        ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            return
+        try:
+            ledger.upsert(key, _store_mod.STATUS_PENDING_VERIFY, synced_at=now_ts)
+        except Exception as e:
+            # 台账是辅助设施，写失败绝不能让同步流程中断
+            logger.debug(f"[Rsync115Sync] 记录同步成功时刻失败（已忽略）: {key}: {e}")
+
     def _strm_arm_watch(self, keys: List[str]) -> int:
         """
         同步成功后把文件登记进「待观察」清单（宽限期从现在起算）。
@@ -345,6 +375,17 @@ class StrmOpsMixin:
             # display layer would still write them into the suspect list and notify.
             if self._is_ignored(k):
                 continue
+            # ⚠️ 记一次「同步成功」的时刻。**这是 `synced_at` 的唯一写入点**，
+            # 也是台账能回答"哪些文件真的传上去过"的依据（用户需求 C1：
+            # 「所有映射目录里的视频 + 一份台账，便于区分已成功的」）。
+            #
+            # 此刻的措辞是"rsync 报成功"，不是"已验证可用" —— 后者要等 .strm
+            # 出现（下面登记观察的那一步）。所以这一列可能与后来转成待处理并存：
+            # 那正是"传过、但这一轮没传成"的形态，是有用的事实而非矛盾。
+            # Reason: this is "rsync reported success", not "verified usable" — the
+            # latter waits for the .strm. Both can be true at once, and that is
+            # exactly the "synced before, failed this round" case.
+            self._mark_synced(k, now_ts)
             self._strm_watch[k] = now_ts
             # 重传成功即解除疑点
             if k in self._strm_suspects:

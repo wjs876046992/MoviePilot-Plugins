@@ -132,3 +132,54 @@ def test_retry_endpoint_has_no_force_channel():
 
     assert "needs_force" not in used, "不得再返回 needs_force"
     assert "force" not in used, "不得再读 body['force']"
+
+
+# --------------------------------------------------------------------------
+# 死状态 / 死字段：定义了但没有任何写入者的东西，与死探测一样有害
+# --------------------------------------------------------------------------
+
+def test_no_status_value_without_a_writer():
+    """
+    `ALL_STATUSES` 里每个取值都必须**真的会被写入**。
+
+    这里曾有一个 `synced`（"strm 已出现，确认真的上传成功"），三批改造期间
+    一直躺在常量表里，而它**从来没有写入者** —— 那一步的实现是删行，不是改状态。
+    一个定义了却永不出现的取值比没有更糟：它让看板的计数表多一个永远为 0 的
+    格子，而读者会据此以为"从来没有文件成功过"。
+
+    判据：每个状态名都要在**别处**被当成值用（写进 `upsert` / 传入
+    `LedgerMapping`），只在 `store.py` 自己的常量表里出现不算。
+    """
+    from app.plugins.rsync115sync.store import ALL_STATUSES
+
+    pkg = os.path.dirname(_PKG)
+    users = ""
+    for root, _dirs, files in os.walk(pkg):
+        if os.sep + "dist" in root or "node_modules" in root:
+            continue
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            if path == os.path.join(_PKG, "store.py"):
+                continue              # 定义处不算使用者
+            users += open(path, encoding="utf-8").read()
+
+    for status in ALL_STATUSES:
+        assert f'"{status}"' in users or f"STATUS_{status.upper()}" in users, (
+            f"状态 `{status}` 在常量表里定义了，但全仓没有任何写入者 —— "
+            f"它会让计数表上多一个永远为 0 的格子。删掉它，或者补上真正会写它的路径。"
+        )
+
+
+def test_ledger_overview_counts_what_the_user_asked_to_distinguish():
+    """
+    `/status` 的台账概览必须能回答「哪些是已成功的」。
+
+    用户需求原话：「所有映射目录里的视频，同时也可以一份台账…便于区分已成功的」。
+    判据是 `synced_at IS NOT NULL` —— 它与状态**正交**（一个文件可以既同步成功过、
+    又处于待处理，那正是"传过、但这一轮没传成"），因此不能拿某个状态去代替。
+    """
+    src = open(os.path.join(_PKG, "__init__.py"), encoding="utf-8").read()
+    assert "synced_at IS NOT NULL" in src, "台账概览丢了「已成功」的判据"
+    assert '"ledger": self._ledger_overview()' in src, "台账概览未接入 /status"
