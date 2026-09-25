@@ -695,10 +695,8 @@ return (_ctx, _cache) => {
                             default: _withCtx(() => [
                               _cache[38] || (_cache[38] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "任务备注名称", -1)),
                               _createVNode(_component_v_text_field, {
-                                class: "no-notch",
                                 modelValue: pair.name,
                                 "onUpdate:modelValue": $event => ((pair.name) = $event),
-                                label: "任务备注名称",
                                 variant: "outlined",
                                 density: "compact",
                                 placeholder: "例如：电影/电视剧"
@@ -713,10 +711,8 @@ return (_ctx, _cache) => {
                             default: _withCtx(() => [
                               _cache[39] || (_cache[39] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "本地源目录", -1)),
                               _createVNode(_component_v_text_field, {
-                                class: "no-notch",
                                 modelValue: pair.src,
                                 "onUpdate:modelValue": $event => ((pair.src) = $event),
-                                label: "本地源目录",
                                 variant: "outlined",
                                 density: "compact",
                                 placeholder: "/volume3/HomeTheater/emby/TV"
@@ -731,10 +727,8 @@ return (_ctx, _cache) => {
                             default: _withCtx(() => [
                               _cache[40] || (_cache[40] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "CD2 挂载 115 目录", -1)),
                               _createVNode(_component_v_text_field, {
-                                class: "no-notch",
                                 modelValue: pair.dest,
                                 "onUpdate:modelValue": $event => ((pair.dest) = $event),
-                                label: "CD2 挂载 115 目录",
                                 variant: "outlined",
                                 density: "compact",
                                 placeholder: "/volume2/CloudNAS/115/TV"
@@ -759,10 +753,8 @@ return (_ctx, _cache) => {
                             default: _withCtx(() => [
                               _cache[41] || (_cache[41] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "strm 目录（可选，启用上传结果交叉验证）", -1)),
                               _createVNode(_component_v_text_field, {
-                                class: "no-notch",
                                 modelValue: pair.strm_dir,
                                 "onUpdate:modelValue": $event => ((pair.strm_dir) = $event),
-                                label: "strm 目录（可选，启用上传结果交叉验证）",
                                 variant: "outlined",
                                 density: "compact",
                                 placeholder: "例如 /vol1/strm/TV —— 留空则不启用该映射的验证"
@@ -774,10 +766,8 @@ return (_ctx, _cache) => {
                             default: _withCtx(() => [
                               _cache[42] || (_cache[42] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "网盘目录（可选，仅「先尝试生成 strm」需要）", -1)),
                               _createVNode(_component_v_text_field, {
-                                class: "no-notch",
                                 modelValue: pair.pan_dir,
                                 "onUpdate:modelValue": $event => ((pair.pan_dir) = $event),
-                                label: "网盘目录（可选，仅「先尝试生成 strm」需要）",
                                 variant: "outlined",
                                 density: "compact",
                                 placeholder: "例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"
@@ -815,11 +805,9 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _cache[45] || (_cache[45] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "入库冷却延迟时长 (小时)", -1)),
                       _createVNode(_component_v_text_field, {
-                        class: "no-notch",
                         modelValue: config.value.delay_hours,
                         "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((config.value.delay_hours) = $event)),
                         modelModifiers: { number: true },
-                        label: "入库冷却延迟时长 (小时)",
                         type: "number",
                         step: "0.5",
                         min: "0",
@@ -839,10 +827,8 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _cache[46] || (_cache[46] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "定时检查 Cron 规则", -1)),
                       _createVNode(_component_v_text_field, {
-                        class: "no-notch",
                         modelValue: config.value.cron,
                         "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((config.value.cron) = $event)),
-                        label: "定时检查 Cron 规则",
                         variant: "outlined",
                         density: "compact",
                         placeholder: "0 */2 * * *",
@@ -879,11 +865,9 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _cache[49] || (_cache[49] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "rsync I/O 超时 (秒)", -1)),
                       _createVNode(_component_v_text_field, {
-                        class: "no-notch",
                         modelValue: config.value.rsync_timeout,
                         "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((config.value.rsync_timeout) = $event)),
                         modelModifiers: { number: true },
-                        label: "rsync I/O 超时 (秒)",
                         type: "number",
                         variant: "outlined",
                         density: "compact",
@@ -900,11 +884,9 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _cache[50] || (_cache[50] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单次任务最大超时 (秒)", -1)),
                       _createVNode(_component_v_text_field, {
-                        class: "no-notch",
                         modelValue: config.value.task_timeout,
                         "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((config.value.task_timeout) = $event)),
                         modelModifiers: { number: true },
-                        label: "单次任务最大超时 (秒)",
                         type: "number",
                         variant: "outlined",
                         density: "compact",
@@ -918,10 +900,8 @@ return (_ctx, _cache) => {
                     default: _withCtx(() => [
                       _cache[51] || (_cache[51] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "排除文件与目录规则 (每行一条，严格继承 sync_115.sh)", -1)),
                       _createVNode(_component_v_textarea, {
-                        class: "no-notch",
                         modelValue: config.value.exclude_patterns,
                         "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.value.exclude_patterns) = $event)),
-                        label: "排除文件与目录规则 (每行一条，严格继承 sync_115.sh)",
                         variant: "outlined",
                         density: "compact",
                         rows: "3",
@@ -1024,11 +1004,9 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[57] || (_cache[57] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单批文件数上限", -1)),
                         _createVNode(_component_v_text_field, {
-                          class: "no-notch",
                           modelValue: config.value.upload_batch_size,
                           "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.value.upload_batch_size) = $event)),
                           modelModifiers: { number: true },
-                          label: "单批文件数上限",
                           type: "number",
                           variant: "outlined",
                           density: "compact",
@@ -1046,11 +1024,9 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[58] || (_cache[58] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单窗口上传文件数上限", -1)),
                         _createVNode(_component_v_text_field, {
-                          class: "no-notch",
                           modelValue: config.value.upload_max_per_window,
                           "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.value.upload_max_per_window) = $event)),
                           modelModifiers: { number: true },
-                          label: "单窗口上传文件数上限",
                           type: "number",
                           variant: "outlined",
                           density: "compact",
@@ -1068,11 +1044,9 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[59] || (_cache[59] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "限流窗口时长 (秒)", -1)),
                         _createVNode(_component_v_text_field, {
-                          class: "no-notch",
                           modelValue: config.value.upload_window_secs,
                           "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((config.value.upload_window_secs) = $event)),
                           modelModifiers: { number: true },
-                          label: "限流窗口时长 (秒)",
                           type: "number",
                           variant: "outlined",
                           density: "compact",
@@ -1090,11 +1064,9 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[60] || (_cache[60] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "命中风控后退避时长 (秒)", -1)),
                         _createVNode(_component_v_text_field, {
-                          class: "no-notch",
                           modelValue: config.value.backoff_secs,
                           "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((config.value.backoff_secs) = $event)),
                           modelModifiers: { number: true },
-                          label: "命中风控后退避时长 (秒)",
                           type: "number",
                           variant: "outlined",
                           density: "compact",
@@ -1109,10 +1081,8 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[61] || (_cache[61] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "风控特征关键词 (每行一条，命中即退避)", -1)),
                         _createVNode(_component_v_textarea, {
-                          class: "no-notch",
                           modelValue: config.value.rate_limit_keywords,
                           "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((config.value.rate_limit_keywords) = $event)),
-                          label: "风控特征关键词 (每行一条，命中即退避)",
                           variant: "outlined",
                           density: "compact",
                           rows: "3",
@@ -1130,11 +1100,9 @@ return (_ctx, _cache) => {
                       default: _withCtx(() => [
                         _cache[62] || (_cache[62] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "全量校验冷却 (天)", -1)),
                         _createVNode(_component_v_text_field, {
-                          class: "no-notch",
                           modelValue: config.value.force_cooldown_days,
                           "onUpdate:modelValue": _cache[17] || (_cache[17] = $event => ((config.value.force_cooldown_days) = $event)),
                           modelModifiers: { number: true },
-                          label: "全量校验冷却 (天)",
                           type: "number",
                           variant: "outlined",
                           density: "compact",
@@ -1367,6 +1335,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-223424b6"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ae3f57d1"]]);
 
 export { Config as default };

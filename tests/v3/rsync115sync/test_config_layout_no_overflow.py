@@ -512,79 +512,100 @@ def test_border_radius_is_half_of_vuetify_defaults():
     assert "border-radius: 4px" in m_sm.group(1), "radius-sm 应为 4px（原 lg=8px 的一半）"
 
 
-def test_mobile_labels_sit_above_their_inputs():
+def test_labels_are_outside_fields_not_hidden_by_css():
     """
-    移动端：每个输入框的 label 必须渲染在**框外、输入框上方**（方案 A）。
+    输入框的标题必须**不在框内渲染**，而不是"渲染出来再用 CSS 藏掉"。
 
-    **为什么这么做而不是简单地把 label 藏掉**：
-    Vuetify 的 outlined 变体把 label 渲染在**边框的缺口（notch）** 里 ——
-    `VField.mjs` 里 `v-field__outline__notch` 内还有一个 `VFieldLabel` 副本，
-    边框在那里断开以容纳标签文字。只把 label `display:none` 掉，**缺口仍在**，
-    上边框会出现一道空白豁口。
+    ## 为什么（四轮失败的收尾，值得完整读）
 
-    所以正确的做法是三件套（缺一不可）：
-      1. 字段**外面**额外渲染一个标题（`.stacked-label`，仅窄屏显示）；
-      2. 窄屏下给字段加 `.no-notch`，把缺口宽度压成 0；
-      3. 藏掉框内那份 label（outlined 会渲染两份：`__field` 里一份、notch 里一份）。
+    用户要求：label 与 input 上下排列（方案 A）。我前后试了四种做法：
 
-    桌面端完全不显示框外标题、也不加任何隐藏 —— 外观与改动前一致。
+      1. 给 `v-text-field` 传 `label=`，用 `display:none` 藏掉框内那份
+         → 边框缺口仍在，出现空白豁口；
+      2. 再把缺口（`.v-field__outline__notch`）压成 0 → 用户实测仍不对；
+      3. 改成**无条件**生效（去掉媒体查询的宽度条件）→ 用户实测**仍然不对**；
+      4. 读 Vuetify 源码，发现 notch 与框内 label 都由
+         `hasLabel = !!(props.label || slots.label)` 控制 ——
+
+         **不传 `label`，它们根本不会渲染。**
+
+    于是第 4 步直接把 `label="…"` 从 16 个字段上删掉（标题改为框外 `.stacked-label`），
+    不再需要任何 hide / 压缺口 / 条件判断。
+
+    ## 这条教训的普适形式
+
+        当一个效果需要"先把东西渲染出来、再把它藏掉"时，
+        先找找能不能**让它压根不渲染**。
+
+    前者依赖"别人内部结构 + 我的样式覆盖能赢"—— 脆，且失败时表现为
+    "我验证过 CSS 是对的，但用户看不到"。后者依赖"我不产生那个结构"—— 稳。
+
+    （本项目在"猜一个无法验证的条件"上已栽四次，这次是唯一一次改成
+    消除依赖而不是继续补参数。）
     """
     src = _read_component("Config.vue")
-    css = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
     body = src[src.find("<template>"):src.rfind("</template>")]
 
-    # ① 每个带 label 的输入框都必须有对应的框外 label
-    fields = re.findall(r'<(?:v-text-field|v-textarea)\b[^>]*?label="([^"]*)"', body, re.DOTALL)
-    labels = re.findall(r'class="stacked-label[^"]*">([^<]*)</div>', body)
-    assert fields, "未找到带 label 的输入框"
-    assert len(labels) == len(fields), (
-        f"框外 label 数（{len(labels)}）与带 label 的输入框数（{len(fields)}）不一致 —— "
-        f"漏掉的字段在手机上会看不到标题"
-    )
-    for f_title, l_title in zip(fields, labels):
-        assert f_title.strip() == l_title.strip(), (
-            f"框外 label 与字段的 label 文本不一致：字段「{f_title}」vs 框外「{l_title}」——"
-            f"两者不一致时，桌面端与手机端会显示不同的标题"
-        )
-
-    # ② 每个带 label 的输入框都必须带 .no-notch（否则边框会有空白缺口）
-    no_notch = re.findall(r'<(?:v-text-field|v-textarea)\b[^>]*?class="[^"]*no-notch[^"]*"[^>]*?label="', body, re.DOTALL)
-    assert len(no_notch) == len(fields), (
-        f"有 {len(fields) - len(no_notch)} 个字段没加 .no-notch —— "
-        f"手机会出现「上边框一道空白豁口」（Vuetify 的 notch 里藏着 label 副本）"
+    # ① 文本类字段**不得**再传 label（否则 Vuetify 会渲染框内 label + 缺口）
+    offenders = re.findall(r'<(?:v-text-field|v-textarea)\b[^>]*?\blabel="[^"]*"', body, re.DOTALL)
+    assert not offenders, (
+        f"仍有 {len(offenders)} 个文本字段传了 label —— Vuetify 会因此渲染框内 label "
+        f"与边框缺口，需要额外 CSS 去藏，而那条路已经失败过三次。"
+        f"请删掉 label=，用 .stacked-label 在框外显示标题。"
     )
 
-    # ③ 框外 label 必须**无条件显示**，不得依赖于媒体查询
+    # ② 每个字段都必须在框外有标题（否则删掉 label 会让它变成无标题输入框）
     #
-    # ⚠️ 这里记录一次真实的失败：我最初写的是「基础样式 display:none +
-    # `@media (max-width:600px)` 里 display:block」。CSS 与产物都逐字验证过是对的，
-    # 但用户实测**仍然看不到上下排列** —— 那个媒体查询的成立条件
-    # （viewport 宽度 ≤ 600px）在真实宿主里没能按预期成立。
-    #
-    # 教训：把一个视觉决策挂在"我猜会成立的宽度条件"上，就多了一个**无法验证的假设**。
-    # 改为无条件排布后，不存在任何可失配的条件。
-    # 所以这条断言现在要求：.stacked-label 的 display 是 block，且**不出现在任何
-    # 媒体查询里**。
+    # ⚠️ 不能数"`.stacked-label` 的个数"：有两种合法的标题来源 ——
+    #   (a) 通用字段用 `.stacked-label`（紧贴字段上方）；
+    #   (b) 「纵排设置行」（`.setting-row-stacked`）自带标题 div
+    #       （它与字段同处一个容器、由容器负责排布）。
+    # 第一版只数 (a)，于是 (b) 的两个字段被误判成"漏了标题"。
+    # 正确判据：从**该字段往回**找最近的一个「标题锚点」——
+    # 要么是 .stacked-label，要么是 .setting-row-stacked 容器内的加粗标题。
+    # ⚠️ 不能用固定字符窗口（第一版用 300 字符）：「观察宽限期」那条说明有 4 行，
+    # 字段与容器标题之间隔了 300+ 字符，于是被误判成"漏了标题"。
+    fields = [m.start() for m in re.finditer(r'<(?:v-text-field|v-textarea)\b', body)]
+    untitled = []
+    for pos in fields:
+        # 从字段往回找：最近出现的 stacked-label 或 setting-row-stacked 容器
+        before = body[:pos]
+        last_label = before.rfind("stacked-label")
+        last_stacked = before.rfind("setting-row-stacked")
+        ok = False
+        if last_label >= 0 and last_label > last_stacked:
+            ok = True                      # (a) 通用：紧贴字段上方的框外标题
+        elif last_stacked >= 0:
+            # (b) 纵排设置行：该容器内必须有加粗标题（容器从字段前最近的
+            #     那个 setting-row 开始，标题在容器开头）
+            container_start = before.rfind('class="setting-row setting-row-stacked')
+            if container_start >= 0 and "font-weight-bold" in before[container_start:]:
+                ok = True
+        if not ok:
+            untitled.append(body[:pos].count("\n") + 1)
+    assert not untitled, (
+        f"这些字段在框外没有标题（行号 {untitled}）—— 删掉 label= 之后它们会变成"
+        f"没有说明的输入框。请加 `.stacked-label`，或把它们放进 `.setting-row-stacked` 行"
+    )
+
+    # ③ 框外标题必须无条件显示，不得依赖媒体查询
+    #    （宽度条件在真实宿主里未按预期成立，已实测踩过）
     no_comments = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
-    m_lbl = re.search(r"\.stacked-label\s*\{([^}]*)\}", no_comments)
-    assert m_lbl, "未找到 .stacked-label 基础规则"
-    assert "display: block" in m_lbl.group(1), (
-        ".stacked-label 必须无条件 display:block —— 不要用媒体查询去打开它，"
-        "那个宽度条件在真实宿主里可能不成立（已实测踩过）"
+    m = re.search(r"\.stacked-label\s*\{([^}]*)\}", no_comments)
+    assert m, "未找到 .stacked-label 规则"
+    assert "display: block" in m.group(1), (
+        ".stacked-label 必须无条件 display:block（不要用媒体查询去打开）"
     )
-    mq_idx = no_comments.find("@media")
-    assert mq_idx > 0, "未找到媒体查询块"
-    assert "stacked-label" not in no_comments[mq_idx:], (
+    mq = no_comments.find("@media")
+    assert mq > 0 and "stacked-label" not in no_comments[mq:], (
         ".stacked-label 不得出现在媒体查询里 —— 排布不应依赖宽度条件"
     )
 
-    # ④ notch 压平与框内 label 隐藏必须与 .stacked-label 一样无条件生效
-    for need in ("v-field__outline__notch", "v-field__field > .v-label"):
-        assert need in no_comments[:mq_idx], (
-            f"`{need}` 的隐藏/压平必须放在**基础样式**里（与 .stacked-label 配对）—— "
-            f"若只写在媒体查询内，宿主宽度条件不成立时框内 label 不会消失、"
-            f"边框还会留一道空白豁口"
-        )
+    # ④ 不得再有"隐藏框内 label / 压平缺口"这类补丁（结构上已不需要）
+    assert "no-notch" not in no_comments, (
+        "出现了 no-notch 之类的补偿类 —— 正确做法是不传 label 让 Vuetify 不渲染，"
+        "而不是渲染后再藏掉"
+    )
 
 
 def test_form_fields_are_not_visually_clipped():

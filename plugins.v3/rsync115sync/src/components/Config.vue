@@ -196,33 +196,31 @@
             <v-row density="compact">
               <v-col cols="12" sm="4">
                 <div class="stacked-label text-caption text-medium-emphasis">任务备注名称</div>
-                <v-text-field class="no-notch" v-model="pair.name" label="任务备注名称" variant="outlined" density="compact" placeholder="例如：电影/电视剧"></v-text-field>
+                <v-text-field v-model="pair.name" variant="outlined" density="compact" placeholder="例如：电影/电视剧"></v-text-field>
               </v-col>
               <v-col cols="12" sm="4">
                 <div class="stacked-label text-caption text-medium-emphasis">本地源目录</div>
-                <v-text-field class="no-notch" v-model="pair.src" label="本地源目录" variant="outlined" density="compact" placeholder="/volume3/HomeTheater/emby/TV"></v-text-field>
+                <v-text-field v-model="pair.src" variant="outlined" density="compact" placeholder="/volume3/HomeTheater/emby/TV"></v-text-field>
               </v-col>
               <v-col cols="12" sm="4">
                 <div class="stacked-label text-caption text-medium-emphasis">CD2 挂载 115 目录</div>
-                <v-text-field class="no-notch" v-model="pair.dest" label="CD2 挂载 115 目录" variant="outlined" density="compact" placeholder="/volume2/CloudNAS/115/TV"></v-text-field>
+                <v-text-field v-model="pair.dest" variant="outlined" density="compact" placeholder="/volume2/CloudNAS/115/TV"></v-text-field>
               </v-col>
               <v-col cols="12">
                 <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
               </v-col>
               <v-col cols="12">
                 <div class="stacked-label text-caption text-medium-emphasis">strm 目录（可选，启用上传结果交叉验证）</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model="pair.strm_dir"
-                  label="strm 目录（可选，启用上传结果交叉验证）"
                   variant="outlined"
                   density="compact"
                   placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"></v-text-field>
               </v-col>
               <v-col cols="12">
                 <div class="stacked-label text-caption text-medium-emphasis">网盘目录（可选，仅「先尝试生成 strm」需要）</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model="pair.pan_dir"
-                  label="网盘目录（可选，仅「先尝试生成 strm」需要）"
                   variant="outlined"
                   density="compact"
                   placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"></v-text-field>
@@ -243,9 +241,8 @@
           <v-row density="comfortable">
             <v-col cols="12" sm="6">
               <div class="stacked-label text-caption text-medium-emphasis">入库冷却延迟时长 (小时)</div>
-              <v-text-field class="no-notch"
+              <v-text-field
                 v-model.number="config.delay_hours"
-                label="入库冷却延迟时长 (小时)"
                 type="number"
                 step="0.5"
                 min="0"
@@ -257,9 +254,8 @@
             </v-col>
             <v-col cols="12" sm="6">
               <div class="stacked-label text-caption text-medium-emphasis">定时检查 Cron 规则</div>
-              <v-text-field class="no-notch"
+              <v-text-field
                 v-model="config.cron"
-                label="定时检查 Cron 规则"
                 variant="outlined"
                 density="compact"
                 placeholder="0 */2 * * *"
@@ -278,15 +274,15 @@
           <v-row density="compact">
             <v-col cols="12" sm="6">
               <div class="stacked-label text-caption text-medium-emphasis">rsync I/O 超时 (秒)</div>
-              <v-text-field class="no-notch" v-model.number="config.rsync_timeout" label="rsync I/O 超时 (秒)" type="number" variant="outlined" density="compact" hint="网络异常中断时快速失败，防止 FUSE 挂起死锁" persistent-hint></v-text-field>
+              <v-text-field v-model.number="config.rsync_timeout" type="number" variant="outlined" density="compact" hint="网络异常中断时快速失败，防止 FUSE 挂起死锁" persistent-hint></v-text-field>
             </v-col>
             <v-col cols="12" sm="6">
               <div class="stacked-label text-caption text-medium-emphasis">单次任务最大超时 (秒)</div>
-              <v-text-field class="no-notch" v-model.number="config.task_timeout" label="单次任务最大超时 (秒)" type="number" variant="outlined" density="compact" hint="进程超过此时长强制杀死，彻底避免进程僵死" persistent-hint></v-text-field>
+              <v-text-field v-model.number="config.task_timeout" type="number" variant="outlined" density="compact" hint="进程超过此时长强制杀死，彻底避免进程僵死" persistent-hint></v-text-field>
             </v-col>
             <v-col cols="12">
               <div class="stacked-label text-caption text-medium-emphasis">排除文件与目录规则 (每行一条，严格继承 sync_115.sh)</div>
-              <v-textarea class="no-notch" v-model="config.exclude_patterns" label="排除文件与目录规则 (每行一条，严格继承 sync_115.sh)" variant="outlined" density="compact" rows="3" hint="每行一条，命中即跳过。默认排除群晖元数据与系统临时文件；注意排除只作用于源端，无法清理 115 上已有的残留" persistent-hint></v-textarea>
+              <v-textarea v-model="config.exclude_patterns" variant="outlined" density="compact" rows="3" hint="每行一条，命中即跳过。默认排除群晖元数据与系统临时文件；注意排除只作用于源端，无法清理 115 上已有的残留" persistent-hint></v-textarea>
             </v-col>
           </v-row>
         </div>
@@ -336,9 +332,8 @@
             <v-row density="compact">
               <v-col cols="12" sm="6">
                 <div class="stacked-label text-caption text-medium-emphasis">单批文件数上限</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model.number="config.upload_batch_size"
-                  label="单批文件数上限"
                   type="number"
                   variant="outlined"
                   density="compact"
@@ -348,9 +343,8 @@
               </v-col>
               <v-col cols="12" sm="6">
                 <div class="stacked-label text-caption text-medium-emphasis">单窗口上传文件数上限</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model.number="config.upload_max_per_window"
-                  label="单窗口上传文件数上限"
                   type="number"
                   variant="outlined"
                   density="compact"
@@ -360,9 +354,8 @@
               </v-col>
               <v-col cols="12" sm="6">
                 <div class="stacked-label text-caption text-medium-emphasis">限流窗口时长 (秒)</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model.number="config.upload_window_secs"
-                  label="限流窗口时长 (秒)"
                   type="number"
                   variant="outlined"
                   density="compact"
@@ -372,9 +365,8 @@
               </v-col>
               <v-col cols="12" sm="6">
                 <div class="stacked-label text-caption text-medium-emphasis">命中风控后退避时长 (秒)</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model.number="config.backoff_secs"
-                  label="命中风控后退避时长 (秒)"
                   type="number"
                   variant="outlined"
                   density="compact"
@@ -384,9 +376,8 @@
               </v-col>
               <v-col cols="12">
                 <div class="stacked-label text-caption text-medium-emphasis">风控特征关键词 (每行一条，命中即退避)</div>
-                <v-textarea class="no-notch"
+                <v-textarea
                   v-model="config.rate_limit_keywords"
-                  label="风控特征关键词 (每行一条，命中即退避)"
                   variant="outlined"
                   density="compact"
                   rows="3"
@@ -396,9 +387,8 @@
               </v-col>
               <v-col cols="12" sm="6">
                 <div class="stacked-label text-caption text-medium-emphasis">全量校验冷却 (天)</div>
-                <v-text-field class="no-notch"
+                <v-text-field
                   v-model.number="config.force_cooldown_days"
-                  label="全量校验冷却 (天)"
                   type="number"
                   variant="outlined"
                   density="compact"
@@ -711,47 +701,27 @@ onMounted(() => {
 .radius-lg {
   border-radius: 12px !important;
 }
-/* ---- 方案 A：移动端的「框外 label」 ----
-   用户要求：手机端输入框的 label 与输入框**上下排列**，给输入留出足够空间。
+/* 框外标题：**无条件显示**。
+   ⚠️ 这一段前后改过四轮，记录清楚它现在为什么是这个样子：
 
-   做法说明（为什么不是把 label 挪出框那么简单）：
-   Vuetify 的 outlined 变体把 label 渲染在**边框的缺口（notch）里** ——
-   `.v-field__outline__notch` 内还有一个 `VFieldLabel` 副本，边框在那里断开以
-   容纳标签文字。把 label 用 `display:none` 藏掉，缺口仍在，会出现一道空白豁口。
+   **原方案（已废弃）**：给 v-text-field 传 `label=`，再用 CSS 把它藏掉 ——
+   先 hide 框内那份、再把边框缺口（notch）压成 0。理由是"保留 label 供桌面端用"。
+   结果：CSS 与产物逐字验证都对，但用户实测**始终看不到上下排列**。
+   根因是 Vuetify 在 outlined 变体里把 label 渲染成**两份**
+   （`v-field__field` 里一份、`v-field__outline__notch` 里一份），缺口宽度由
+   notch 里那份决定；只要宿主的样式加载顺序与我的假设有半点不同，就会出现
+   豁口或残留。而"藏掉别人的 DOM"这条路，本来就要依赖对别人内部结构的准确假设。
 
-   所以这里**不改 Vuetify 的 label**，而是：
-     · 在字段**外面**额外渲染一个标题（本类），只在窄屏显示；
-     · 窄屏下给字段加 `no-notch`，把缺口宽度压成 0（见媒体查询里的规则）。
-   桌面端完全不显示框外标题，外观与改动前一致。 */
-/* ⚠️ 这里**刻意不做 `display:none` + 媒体查询打开的开关**。
-   我最初就是这么写的：基础样式隐藏、`@media (max-width:600px)` 里显示。
-   CSS 与产物都验证过是对的，但用户实测**仍然看不到上下排列**。
+   **现方案**：**不传 `label`**。Vuetify 的源码里 notch 与框内 label 都由
+   `hasLabel = !!(props.label || slots.label)` 控制 —— 不给 label，它们
+   **根本不会被渲染**。于是不需要 hide、不需要压缺口、不存在加载顺序问题。
 
-   原因是那个媒体查询的成立条件 —— "viewport 宽度 ≤ 600px" —— 在真实宿主里
-   没能按预期成立（宿主页面若带非 `width=device-width` 的 viewport 声明，
-   手机上的 CSS 像素宽度就不是 600 以下，`max-width` 永远不会匹配）。
-
-   **教训**：把一个视觉决策挂在"我猜会成立的宽度条件"上，就多了一个我无法
-   验证的假设。而这个插件在"猜条件"上已经栽过多次（见文件里其它注释）。
-   改为**无条件上下排列**：不判断宽度，因此没有任何条件可失配。
-   代价是桌面端每个输入框上方也多一行标题 —— 但那正是用户要的排版。 */
+   这条经验的普适形式：**当一个效果需要"渲染出来再藏掉"时，先找找能不能
+   让它压根不渲染。** 依赖"别人内部结构 + 我的样式覆盖"是脆的；
+   依赖"我不产生那个结构"是稳的。 */
 .stacked-label {
   display: block;
   margin-bottom: 4px;
-}
-/* 框内 label 的隐藏与缺口压平：**无条件生效**，与 .stacked-label 配对。
-   Vuetify 在 outlined 变体里把 label 渲染了**两份** —— 一份在 `v-field__field`
-   里（框内浮动的那个）、一份在 outline 的 `__notch` 里（边框缺口处）。
-   既然标题已经移到框外，这两份都必须藏掉，且缺口要压成 0 ——
-   否则上边框会留一道空白豁口（缺口宽度原本等于 notch 里那个 label 的宽度）。 */
-:deep(.no-notch .v-field__field > .v-label),
-:deep(.no-notch .v-field__outline__notch .v-label) {
-  display: none;
-}
-:deep(.no-notch .v-field__outline__notch) {
-  flex: 0 0 0;
-  margin: 0;
-  max-width: 0;
 }
 .radius-sm {
   border-radius: 4px !important;
