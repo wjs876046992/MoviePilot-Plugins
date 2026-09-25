@@ -262,3 +262,83 @@ def test_field_map_reloads_from_ledger(tmp_path):
     ledger.upsert("TV:a.mkv", STATUS_SUSPECT, gen_requested_at=7.0)
 
     assert LedgerFieldMap(ledger, "gen_requested_at")["TV:a.mkv"] == 7.0
+
+
+# --------------------------------------------------------------------------
+# 事件流水：替身是它唯一的写入口
+# --------------------------------------------------------------------------
+
+def test_mutation_logs_one_event(tmp_path):
+    """
+    状态变更必须在 `events` 表里留一条 —— 这是「这个文件经历过什么」可查的前提。
+
+    ⚠️ 之所以测在**替身**这一层：`events` 表最初建好了却**没有任何生产者**
+    （实机确认：一整轮入队 102 个文件 + 登记 91 个观察后，表里仍是 0 行）。
+    一张建好却永远空的表比没有这张表更糟 —— 它占着"可以查"的承诺。
+    写在这一层则不可能漏：所有状态变更都必须经过 `__setitem__`。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    q = LedgerMapping(ledger, STATUS_CANDIDATE, events={"enqueued_at": "enqueue"})
+    q["TV:a.mkv"] = 123.0
+
+    events = ledger.events_of("TV:a.mkv")
+    assert len(events) == 1
+    assert events[0]["action"] == "enqueue"
+
+
+def test_value_shape_selects_which_event(tmp_path):
+    """
+    写字典还是写标量，决定记哪条事件 —— 同一张表要能装下不同性质的状态变更。
+
+    `_strm_suspects[k] = {..., "origin": "watch"}` 换算成 `suspect`，
+    而 `_pending_queue[k] = ts` 换算成 `enqueue`。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    q = LedgerMapping(ledger, STATUS_SUSPECT, ts_field="verified_at",
+                      extra_from_value={"origin": "origin"},
+                      events={"origin": "suspect", "verified_at": "enqueue"})
+    q["TV:a.mkv"] = {"ts": 1.0, "origin": "watch"}
+
+    assert [e["action"] for e in ledger.events_of("TV:a.mkv")] == ["suspect"]
+
+
+def test_no_events_configured_logs_nothing(tmp_path):
+    """没配 `events` 的替身不记流水（未绑台账的降级路径同理）。"""
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    q = LedgerMapping(ledger, STATUS_CANDIDATE)
+    q["TV:a.mkv"] = 123.0
+
+    assert ledger.events_of("TV:a.mkv") == []
+    assert q._ledger is ledger, "（确认它确实连着台账，只是没配事件映射）"
+
+
+def test_departure_logs_a_dequeue_event(tmp_path):
+    """
+    离场也要留一条 —— 否则流水里只有"进"没有"出"，看起来像丢过数据。
+
+    ⚠️ 它**答不出"为什么走"**（同步成功 / 被忽略 / 源端已删走的是同一个出口），
+    那是调用方的语义，替身无从知道。但"什么时候走的"配上前后两条日志里的原因，
+    就能把这个文件的一生串起来 —— 留个空洞反而更糟。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    q = LedgerMapping(ledger, STATUS_CANDIDATE, events={"enqueued_at": "enqueue"})
+    q["TV:a.mkv"] = 1.0
+    q.pop("TV:a.mkv", None)
+
+    events = ledger.events_of("TV:a.mkv")          # 新的在前
+    assert [e["action"] for e in events] == ["dequeue", "enqueue"]
+    assert events[0]["detail"] == STATUS_CANDIDATE, "detail 记的是从哪个队列走的"
+
+
+def test_departure_of_unknown_key_logs_nothing(tmp_path):
+    """
+    `pop(缺失键, None)` 不得记流水 —— 它什么都没离开。
+
+    ⚠️ 这条不是吹毛求疵：本插件到处在用 `q.pop(k, None)` 做"有就清掉"，
+    若把"缺失"也记一条，流水会被噪声淹没（而那正是它要解决的问题）。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    q = LedgerMapping(ledger, STATUS_CANDIDATE, events={"enqueued_at": "enqueue"})
+    q.pop("从未存在过", None)
+
+    assert ledger.events_of("从未存在过") == []

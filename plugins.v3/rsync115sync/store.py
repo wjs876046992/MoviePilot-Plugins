@@ -498,20 +498,57 @@ class LedgerMapping(MutableMapping):
 
     def __init__(self, ledger: "Store", status: str, *,
                  ts_field: str = "enqueued_at",
-                 extra_from_value: Optional[Dict[str, str]] = None):
+                 extra_from_value: Optional[Dict[str, str]] = None,
+                 events: Optional[Dict[str, str]] = None):
         """
         :param ledger: 台账
         :param status: 本替身对应的 status 取值（candidate / pending_verify / ...）
         :param ts_field: `self[k] = <标量>` 时，那个标量写进哪个时间字段
         :param extra_from_value: `self[k] = {..}` 时，字典的哪些键映射到台账字段
             （未列出的键会被忽略 —— 台账是强 schema，不能让调用方塞任意字段）
+        :param events: `{值里的键名: 事件 action}` —— 写入时附带记一条事件流水。
+            见下方「为什么事件记在这一层」。
         """
         self._ledger = ledger
         self._status = status
         self._ts_field = ts_field
         self._extra = dict(extra_from_value or {})
+        self._events = dict(events or {})
         self._cache: Dict[str, Any] = {}
         self._load()
+
+    def _note(self, key: str, value: Any) -> None:
+        """
+        按 `events` 映射记一条事件流水。
+
+        ⚠️ **为什么事件记在这一层，而不是在几十个业务调用点各加一行**：
+        `events` 表建了却没有人写，就是一张**空表** —— 它占着"这个文件经历过什么
+        可以查"的承诺，而查出来永远是空。而逐个业务点去加 `log_event`，等于把
+        "什么算一个状态变更"的判断复制到几十处，迟早漂移成一半写一半不写
+        （比完全没写更糟：那时你会相信它）。
+        记在这里的好处是**它不可能漂移** —— 所有状态变更都必须经过本类的
+        `__setitem__`，而本类是那些状态的唯一入口。
+
+        Why here and not at each business call site: the events table was created but
+        never written, and scattering log_event across dozens of call sites would let
+        "what counts as a transition" drift into half-covered, which is worse than none.
+        Every mutation must pass through this class, so this cannot drift.
+        """
+        if not self._events or self._ledger is None:
+            return
+        action = self._events.get(self._event_key_of(value))
+        if action:
+            self._ledger.log_event(key, action)
+
+    def _event_key_of(self, value: Any) -> str:
+        """把写入的值换算成 `events` 映射的键（标量一律算作"入队"）。"""
+        if isinstance(value, dict):
+            for name in self._events:
+                if name in value:
+                    return name
+            return ""
+        # 裸标量：`_ts_field` 就是它的语义（`_pending_queue[k] = ts` → 入队）
+        return self._ts_field if self._ts_field in self._events else ""
 
     # ---- 载入 --------------------------------------------------------
     def _load(self) -> None:
@@ -572,6 +609,7 @@ class LedgerMapping(MutableMapping):
 
     def __setitem__(self, key: str, value: Any) -> None:
         self._cache[key] = value
+        self._note(key, value)
         if self._ledger is None:
             return
         fields = self._to_row(value)
@@ -584,7 +622,18 @@ class LedgerMapping(MutableMapping):
             pass
 
     def __delitem__(self, key: str) -> None:
+        existed = key in self._cache
         self._cache.pop(key, None)
+        if existed and self._events and self._ledger is not None:
+            # 离场也记一条，并把**从哪个队列走的**写进 detail。
+            #
+            # ⚠️ 只记这个的话仍然答不出"为什么走"（同步成功 / 被忽略 / 源端已删
+            # 走的是同一个出口）—— 那是调用方的语义，不是替身能知道的。
+            # 但"什么时候走的"本身有用：配上前后两条日志里的原因，就能把这个
+            # 文件的一生串起来。留一个空洞反而会让流水看起来像丢过数据。
+            # The reason lives in the caller; the timestamp is recorded here so the
+            # timeline has no hole, and the surrounding log lines supply the why.
+            self._ledger.log_event(key, "dequeue", self._status)
         if self._ledger is not None:
             self._ledger.delete(key)
 
@@ -613,6 +662,8 @@ class LedgerMapping(MutableMapping):
         """
         if key in self._cache:
             value = self._cache.pop(key)
+            if self._events and self._ledger is not None:
+                self._ledger.log_event(key, "dequeue", self._status)
             if self._ledger is not None:
                 self._ledger.delete(key)
             return value

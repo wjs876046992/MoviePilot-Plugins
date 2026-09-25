@@ -2142,19 +2142,26 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 台账不可用：保持原有字典（功能不受影响，只是没有持久化台账）。
             # 这是刻意的降级 —— 台账故障不该让插件失去跟踪能力。
             return
+        # ⚠️ `events={"...": "..."}` 是**事件流水的唯一写入口** —— 见
+        # `LedgerMapping._note` 的说明：`events` 表建了却没人写就是一张空表，
+        # 而逐个业务点去加 `log_event` 会让"什么算一次状态变更"漂移成写一半。
+        # 记在替身里则不可能漂移：所有状态变更都必须经过它的 `__setitem__`。
         self._pending_queue = self._adopt_into_ledger(
             getattr(self, "_pending_queue", None),
             _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_CANDIDATE,
-                                     ts_field="enqueued_at"))
+                                     ts_field="enqueued_at",
+                                     events={"enqueued_at": "enqueue"}))
         self._strm_watch = self._adopt_into_ledger(
             getattr(self, "_strm_watch", None),
             _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_PENDING_VERIFY,
-                                     ts_field="enqueued_at"))
+                                     ts_field="enqueued_at",
+                                     events={"enqueued_at": "arm_watch"}))
         self._strm_suspects = self._adopt_into_ledger(
             getattr(self, "_strm_suspects", None),
             _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_SUSPECT,
                                      ts_field="verified_at",
-                                     extra_from_value={"origin": "origin"}))
+                                     extra_from_value={"origin": "origin"},
+                                     events={"origin": "suspect"}))
         # 「已请助手补生成过」这一列**与 status 正交**（一个文件可以既在冷却队列
         # 又被补生成过），因此它走**列视图**而不是某个 status 替身 —— 见
         # store.LedgerFieldMap 的说明。调用点仍是普通的 dict 用法，一行不用改。
