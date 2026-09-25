@@ -88,6 +88,7 @@ class Store:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._init_schema()
+            self._upgrade_schema()
             self.usable = True
         except Exception:
             pass
@@ -142,6 +143,13 @@ class Store:
                     gen_requested_at REAL,
                     retry_count      INTEGER NOT NULL DEFAULT 0,
                     last_error       TEXT,
+                    -- 疑似来源（watch / scan / confirmed）。改造前放在
+                    -- `_strm_suspects[key]["origin"]`：这条疑点是同步后观察判出来的、
+                    -- 还是主动扫描扫出来的 —— 可信度不同，看板要显示。
+                    origin           TEXT,
+                    -- 云端可见性结论。**纯展示**：它有已知假阳性（CD2 改名失败时
+                    -- 坏文件也显示大小一致），因此绝不参与任何清理判据。
+                    dest             TEXT,
                     updated_at       REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
@@ -164,6 +172,27 @@ class Store:
                 );
                 """
             )
+
+    def _upgrade_schema(self) -> None:
+        """
+        给**已存在**的台账补新增列。
+
+        第 1 批已经部署过，用户机器上可能已有 `ledger.sqlite3`；
+        `CREATE TABLE IF NOT EXISTS` 不会给已有表加列，因此必须显式补。
+        `ALTER TABLE ADD COLUMN` 重复执行会报错，所以先查 `PRAGMA table_info`。
+
+        Idempotent ADD COLUMN for ledgers created by an earlier build.
+        """
+        want = {"files": [("origin", "TEXT"), ("dest", "TEXT")]}
+        try:
+            with self._connect() as conn:
+                for table, cols in want.items():
+                    have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                    for name, decl in cols:
+                        if name not in have:
+                            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        except Exception:
+            pass
 
     # ---- meta --------------------------------------------------------
     def get_meta(self, key: str) -> Optional[str]:
@@ -194,6 +223,8 @@ class Store:
                enqueued_at: Optional[float] = None, synced_at: Optional[float] = None,
                verified_at: Optional[float] = None,
                gen_requested_at: Optional[float] = None,
+               origin: Optional[str] = None,
+               dest: Optional[str] = None,
                last_error: Optional[str] = None,
                bump_retry: bool = False) -> bool:
         """
@@ -211,8 +242,9 @@ class Store:
                     """
                     INSERT INTO files (key, pair, rel_path, status, ingest_source,
                                        src_mtime, enqueued_at, synced_at, verified_at,
-                                       gen_requested_at, retry_count, last_error, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       gen_requested_at, retry_count, last_error,
+                                       origin, dest, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         status           = excluded.status,
                         ingest_source    = excluded.ingest_source,
@@ -223,11 +255,14 @@ class Store:
                         verified_at      = COALESCE(excluded.verified_at, files.verified_at),
                         gen_requested_at = COALESCE(excluded.gen_requested_at, files.gen_requested_at),
                         last_error       = COALESCE(excluded.last_error, files.last_error),
+                        origin           = COALESCE(excluded.origin, files.origin),
+                        dest             = COALESCE(excluded.dest, files.dest),
                         retry_count      = files.retry_count + ?,
                         updated_at       = excluded.updated_at
                     """,
                     (key, pair, rel_path, status, ingest_source, src_mtime, enqueued_at,
-                     synced_at, verified_at, gen_requested_at, 0, last_error, now,
+                     synced_at, verified_at, gen_requested_at, 0, last_error,
+                     origin, dest, now,
                      1 if bump_retry else 0),
                 )
             return True
@@ -267,3 +302,200 @@ class Store:
         rows = self._query(
             "SELECT * FROM events WHERE key = ? ORDER BY at DESC LIMIT ?", (key, limit))
         return [dict(r) for r in rows]
+
+
+# ==========================================================================
+# 台账支持的「字典替身」：以 SQLite 为真相源、对外仍是 dict 接口
+# ==========================================================================
+
+from collections.abc import MutableMapping  # noqa: E402
+
+
+class LedgerMapping(MutableMapping):
+    """
+    把台账里的某一类状态暴露成 dict 接口 —— 现有读写点**一行都不用改**。
+
+    Expose one status class of the ledger as a plain dict-like object, so the
+    ~175 existing read/write sites (`q[key] = ts` / `key in q` / `q.pop(k)` /
+    `q.items()`) keep working untouched.
+
+    ## 为什么用这个办法而不是"逐个改读写点"
+
+    改造前 `pending_queue` / `strm_watch` / `strm_suspects` / `ignored` 四类状态
+    合计约 175 处读写。逐个改写有两个问题：
+
+      1. **量大且分散** —— 任何一处漏改都是静默的行为差异（例如某个分支仍在读
+         旧字典，表现为"看板上有时对有时不对"）；
+      2. **不可回滚** —— 一旦改了一半，代码处于两套状态并存且不一致的中间态。
+
+    用替身类之后，切换点只有**构造处一行**：`self._pending_queue = LedgerMapping(...)`。
+    行为差异被限制在一个类里，可单独测试、可单独回退。
+
+    ## 内存缓存 + 写穿（write-through）
+
+    读全部走内存缓存（性能：`.items()` 在循环里被频繁调用，每次都查 SQLite
+    会明显变慢）；写同时改缓存与 SQLite。
+
+    **真相源是 SQLite**：缓存只在进程内有效，重启后从台账重建。因此若 SQLite
+    写失败，内存里会短暂领先于台账 —— 这是刻意的取舍（宁可丢一条记录的持久化，
+    也不能因为台账故障中断同步），失败会记 warning。
+
+    ## 只暴露与文件有关的字段
+
+    值统一是 `Dict[str, Any]`（台账整行）。但旧代码里有两种用法：
+      · `_pending_queue[key] = ts`      —— 写**裸时间戳**
+      · `_strm_suspects[key] = {...}`   —— 写**字典**
+    因此 `__setitem__` 需要兼容两种：给标量时按"时间戳"存进该状态对应的
+    时间字段，给字典时按字段名存。见 `_to_row`。
+    """
+
+    def __init__(self, ledger: "Store", status: str, *,
+                 ts_field: str = "enqueued_at",
+                 extra_from_value: Optional[Dict[str, str]] = None):
+        """
+        :param ledger: 台账
+        :param status: 本替身对应的 status 取值（candidate / pending_verify / ...）
+        :param ts_field: `self[k] = <标量>` 时，那个标量写进哪个时间字段
+        :param extra_from_value: `self[k] = {..}` 时，字典的哪些键映射到台账字段
+            （未列出的键会被忽略 —— 台账是强 schema，不能让调用方塞任意字段）
+        """
+        self._ledger = ledger
+        self._status = status
+        self._ts_field = ts_field
+        self._extra = dict(extra_from_value or {})
+        self._cache: Dict[str, Any] = {}
+        self._load()
+
+    # ---- 载入 --------------------------------------------------------
+    def _load(self) -> None:
+        """从台账重建内存缓存。台账不可用时留空缓存（降级为空集合）。"""
+        self._cache = {}
+        if self._ledger is None or not getattr(self._ledger, "usable", False):
+            return
+        for row in self._ledger.by_status(self._status):
+            self._cache[str(row["key"])] = self._row_to_value(row)
+
+    def reload(self) -> None:
+        """外部改过台账后重新载入（跨实例共享同一台账时用）。"""
+        self._load()
+
+    def _row_to_value(self, row: Any) -> Any:
+        """
+        台账行 → 旧代码期望的值形态。
+
+        ⚠️ 还原成**与改造前一致**的形状是这一步的关键：旧代码会写
+        `self._strm_suspects[k]["dest"]`、`entry.get("ts")` 等，形状不对就是
+        KeyError/TypeError。宁可在这里多写几行转换，也不要让调用方感知到存储变了。
+        """
+        row = dict(row)
+        ts = row.get(self._ts_field)
+        # 只有"时间戳型"的队列还原成裸标量（`_pending_queue[key] = ts` 的语义）；
+        # 其余还原成字典（`_strm_suspects[key] = {...}` 的语义）。
+        if self._ts_field == "enqueued_at" and not self._extra:
+            return ts if ts is not None else 0.0
+        out: Dict[str, Any] = {}
+        if ts is not None:
+            out["ts"] = ts
+        for field, key_name in self._extra_inverse().items():
+            if row.get(field) is not None:
+                out[key_name] = row[field]
+        return out
+
+    def _extra_inverse(self) -> Dict[str, str]:
+        """`{台账字段: 值里的键名}`（构造参数是反过来的，这里翻一次）。"""
+        return {v: k for k, v in self._extra.items()}
+
+    def _to_row(self, value: Any) -> Dict[str, Any]:
+        """旧代码给的值 → 台账字段。兼容裸标量与字典两种。"""
+        if isinstance(value, (int, float)):
+            return {self._ts_field: float(value)}
+        if isinstance(value, dict):
+            row: Dict[str, Any] = {}
+            if "ts" in value:
+                row[self._ts_field] = value["ts"]
+            for key_name, field in self._extra.items():
+                if key_name in value:
+                    row[field] = value[key_name]
+            return row
+        return {}
+
+    # ---- MutableMapping 接口 ----------------------------------------
+    def __getitem__(self, key: str) -> Any:
+        return self._cache[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._cache[key] = value
+        if self._ledger is None:
+            return
+        fields = self._to_row(value)
+        # `self[k] = ts` 的语义是"新入队"：缺 enqueued_at 时补当前时刻，
+        # 否则该行没有计时基准，后续"到期没到期"就算不出来。
+        if self._ts_field == "enqueued_at" and self._ts_field not in fields:
+            fields[self._ts_field] = time.time()
+        if not self._ledger.upsert(key, self._status, **fields):
+            # 不抛：台账故障不该中断同步（见 Store._write 的说明）
+            pass
+
+    def __delitem__(self, key: str) -> None:
+        self._cache.pop(key, None)
+        if self._ledger is not None:
+            self._ledger.delete(key)
+
+    def __iter__(self):
+        return iter(self._cache)
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._cache
+
+    def clear(self) -> None:
+        """清空该状态的全部条目（只删本状态的行，不动其它状态）。"""
+        for key in list(self._cache):
+            if self._ledger is not None:
+                self._ledger.delete(key)
+        self._cache.clear()
+
+    def pop(self, key, *args):
+        """
+        ⚠️ 必须自己实现 `pop` 而不是依赖 MutableMapping 的默认实现：
+        默认实现是 `try: v=self[key] except KeyError: ...`，那会走 `__getitem__`，
+        对**不存在的 key 抛 KeyError**，而本插件到处在用 `q.pop(k, None)`
+        ——语义上应当与 dict 完全一致。直接代理到缓存即可。
+        """
+        if key in self._cache:
+            value = self._cache.pop(key)
+            if self._ledger is not None:
+                self._ledger.delete(key)
+            return value
+        if args:
+            return args[0]
+        raise KeyError(key)
+
+    def update(self, other=(), **kwargs) -> None:      # type: ignore[override]
+        """批量写入（`_pending_queue.update({...})` 之类）。"""
+        items = dict(other, **kwargs) if other else dict(**kwargs)
+        for k, v in items.items():
+            self[k] = v
+
+    def setdefault(self, key, default=None):
+        if key in self._cache:
+            return self._cache[key]
+        self[key] = default
+        return default
+
+    def keys(self):
+        return self._cache.keys()
+
+    def values(self):
+        return self._cache.values()
+
+    def items(self):
+        return self._cache.items()
+
+    def get(self, key, default=None):
+        return self._cache.get(key, default)
+
+    def __repr__(self) -> str:
+        return f"<LedgerMapping {self._status} n={len(self._cache)}>"

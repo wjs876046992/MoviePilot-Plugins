@@ -493,9 +493,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._open_store()
 
         # 恢复持久化数据
+        #
+        # ⚠️ 三个字典（pending_queue / strm_watch / strm_suspects）在台账可用时
+        # **不再从 save_data 恢复** —— 否则这一步会把 `_bind_ledger_maps()` 装好的
+        # 替身又覆盖回普通 dict，真相源悄悄变回旧字典（而台账看起来"能用"）。
+        # 实测踩到过：绑完替身紧接着被这里覆盖，两个存储并存且不一致。
+        # ⚠️ 台账可用时**不是"跳过恢复"**，而是把旧数据喂进台账 —— 见
+        # `_seed_ledger_from_saved` 的说明。跳过会让"升级后第一次启动"丢数据。
         saved_queue = self.get_data("pending_queue") or {}
         if isinstance(saved_queue, dict):
-            self._pending_queue = saved_queue
+            self._seed_ledger_from_saved(self._pending_queue, saved_queue, "enqueued_at")
         self._last_status["missing_files"] = self.get_data("missing_files") or []
         self._last_status["corrupt_files"] = self.get_data("corrupt_files") or []
         saved_ignored = self.get_data("ignored_files") or []
@@ -535,10 +542,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 恢复 strm 交叉验证状态（待观察清单必须跨重载延续，否则宽限期重新计时）
         saved_watch = self.get_data("strm_watch") or {}
         if isinstance(saved_watch, dict):
-            self._strm_watch = saved_watch
+            self._seed_ledger_from_saved(self._strm_watch, saved_watch, "enqueued_at")
         saved_suspects = self.get_data("strm_suspects") or {}
         if isinstance(saved_suspects, dict):
-            self._strm_suspects = self._migrate_strm_suspects(saved_suspects)
+            self._seed_ledger_from_saved(
+                self._strm_suspects, self._migrate_strm_suspects(saved_suspects),
+                "verified_at")
             # 载入即清洗历史脏数据（非视频 / 已忽略 / 源端已删 / 映射取消验证）。
             # 放在这里而不是只在写入时过滤：写入过滤拦不住升级前已落盘的坏条目，
             # 用户会看到一堆永远处理不掉的东西，只能手工改数据文件。
@@ -2091,6 +2100,112 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._migrate_legacy_state_once()
         except Exception as e:
             logger.warning(f"[Rsync115Sync] 旧数据迁移失败（不影响运行，下次启动会重试）: {e}")
+        self._bind_ledger_maps()
+
+    def _bind_ledger_maps(self) -> None:
+        """
+        把四类「与文件有关的状态」换成台账替身（dict 接口不变，真相源变为 SQLite）。
+
+        Replace the four file-related state dicts with ledger-backed mappings. The
+        dict interface is preserved, so the ~175 existing read/write sites are
+        untouched — the only switch point is here.
+
+        ## 为什么这样切换（而不是逐个改读写点）
+
+        四类状态合计约 175 处读写，散在 6 个文件里。逐个改写有两个问题：
+          1. 任何一处漏改都是**静默的行为差异**（例如某个分支仍在读旧字典，
+             表现为"看板上有时对有时不对"）；
+          2. 改到一半时两套状态并存且不一致，不可回滚。
+        替身类把差异限制在一个类里，可单独测试、可单独回退。
+
+        ## 四类状态与各自的时间戳字段
+
+        | 状态 | 旧字典 | 时间戳字段 | 值的形态 |
+        |---|---|---|---|
+        | candidate | `_pending_queue` | `enqueued_at` | 裸 float（入队时刻）|
+        | pending_verify | `_strm_watch` | `enqueued_at` | 裸 float（同步成功时刻）|
+        | suspect | `_strm_suspects` | `verified_at`（= 首次疑似时刻）| dict `{ts, origin, dest}` |
+        | ignored | `_ignored_rules` | —— | **不替换**，见下 |
+
+        ⚠️ 忽略清单**不换成替身**：它存的是**规则**（支持 `contains` 关键字匹配），
+        不是"某个文件的状态" —— 台账的 key 是具体文件路径，装不下"某剧名"这种
+        模式规则。它继续走 `save_data`，台账里那份只是迁移时留的快照。
+        """
+        if self._ledger is None:
+            # 台账不可用：保持原有字典（功能不受影响，只是没有持久化台账）。
+            # 这是刻意的降级 —— 台账故障不该让插件失去跟踪能力。
+            return
+        self._pending_queue = self._adopt_into_ledger(
+            getattr(self, "_pending_queue", None),
+            _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_CANDIDATE,
+                                     ts_field="enqueued_at"))
+        self._strm_watch = self._adopt_into_ledger(
+            getattr(self, "_strm_watch", None),
+            _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_PENDING_VERIFY,
+                                     ts_field="enqueued_at"))
+        self._strm_suspects = self._adopt_into_ledger(
+            getattr(self, "_strm_suspects", None),
+            _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_SUSPECT,
+                                     ts_field="verified_at",
+                                     extra_from_value={"origin": "origin",
+                                                       "dest": "dest",
+                                                       "gen_requested_at": "gen"}))
+
+    def _seed_ledger_from_saved(self, mapping, saved: Dict[str, Any],
+                                ts_field: str) -> None:
+        """
+        把 `save_data` 里的旧数据**喂进**台账替身（只在台账尚无该键时）。
+
+        Seed the ledger-backed mapping from legacy `save_data` content.
+
+        ## 为什么不是"台账可用就跳过恢复"
+
+        我第一版写的是 `if isinstance(saved, dict) and self._ledger is None:` ——
+        意图是"台账已就位，别再让旧字典覆盖替身"。但那把两种不同情况混成了一件事：
+
+          · 台账里**已经有**这个 key → 以台账为准，忽略旧值 ✅（原意图正确）
+          · 台账里**还没有**这个 key → 旧值是唯一来源，跳过它就**丢数据** ❌
+
+        第二种正是"升级后第一次启动"的场景（台账刚建、还是空的），
+        以及 `__new__` 构造后直接走 `init_plugin` 的单测路径。
+        实测：`test_strm_ignore_filter` 的两条载入路径用例因此整条清单变空。
+
+        正确做法是**逐键判断**：台账有的以台账为准，台账没有的用旧值补上。
+        """
+        if not isinstance(saved, dict) or not saved:
+            return
+        existing_keys = set(mapping.keys())
+        seeded = 0
+        for key, value in saved.items():
+            if key in existing_keys:
+                continue          # 台账已有 → 以台账为准（它更新）
+            mapping[key] = value
+            seeded += 1
+        if seeded:
+            logger.debug(f"[Rsync115Sync] 已从旧 save_data 补入台账 {seeded} 条"
+                         f"（这些键在台账中尚不存在）")
+
+    @staticmethod
+    def _adopt_into_ledger(existing, mapping):
+        """
+        把**内存里已有的**字典内容并入台账替身，再返回替身。
+
+        Fold any pre-existing in-memory dict into the ledger-backed mapping.
+
+        ## 为什么需要这一步（实测踩到的数据丢失）
+
+        `init_plugin` 之前若已有值（`__new__` 构造的测试实例、或将来某处在
+        构造阶段就填了队列），绑定替身时那些值会被**整体丢弃** —— 替身从台账
+        载入，而台账里还没有它们。表现是"条目莫名消失"，且完全不报错。
+        实测：`test_strm_ignore_filter` 的两条载入路径用例就是这么变红的。
+
+        生产路径上目前不会触发（那些字典只在 `init_plugin` 里被赋值），
+        但**不能依赖这个巧合** —— 一处静默的数据丢弃，代价远大于这里几行判断。
+        """
+        if isinstance(existing, dict) and existing:
+            for k, v in existing.items():
+                mapping[k] = v
+        return mapping
 
     def _migrate_legacy_state_once(self) -> None:
         """
