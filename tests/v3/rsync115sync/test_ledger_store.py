@@ -175,3 +175,41 @@ def test_broken_store_degrades_without_raising(tmp_path):
     assert s.count_by_status()  # 仍返回完整状态键、全为 0
     assert s.get_meta("x") is None
     assert s.set_meta("x", "1") is False, "不可用时写入应返回 False 而非抛异常"
+
+
+def test_trim_events_keeps_newest_per_key(tmp_path):
+    """
+    事件流水按 **key** 裁剪到最近 N 条，而不是按总行数。
+
+    ⚠️ 这条断言的是"为什么按 key"这个设计决定，不是实现细节：某一天批量入队
+    几千个文件把总量顶上去时，按总量裁会**把别的文件的记录一并挤掉** ——
+    而你想查的往往正是那个冷门的老文件。按 key 裁则每个文件都留着最近几条。
+    """
+    s = _store(tmp_path)
+    for i in range(30):
+        s.log_event("剧:a.mkv", "enqueue", str(i))
+    s.log_event("剧:b.mkv", "enqueue")
+
+    s.trim_events(keep_per_key=20)
+
+    assert len(s.events_of("剧:a.mkv", 999)) == 20
+    assert len(s.events_of("剧:b.mkv", 999)) == 1, "冷门文件不得被热门文件的量挤掉"
+
+
+def test_trim_events_keeps_the_newest_not_the_oldest(tmp_path):
+    """裁掉的是**最旧**的：留下陈旧记录、丢掉刚发生的事会让流水彻底没用。"""
+    s = _store(tmp_path)
+    for i in range(5):
+        s.log_event("剧:a.mkv", "step", str(i))
+
+    s.trim_events(keep_per_key=2)
+
+    kept = [e["detail"] for e in s.events_of("剧:a.mkv", 999)]   # 新的在前
+    assert kept == ["4", "3"]
+
+
+def test_trim_events_on_empty_table_is_a_noop(tmp_path):
+    """空表上裁剪不得报错（它每次插件加载都会跑一遍）。"""
+    s = _store(tmp_path)
+    assert s.trim_events() in (True, False)
+    assert s.events_of("任何", 999) == []

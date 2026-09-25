@@ -2107,6 +2107,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._migrate_legacy_state_once()
         except Exception as e:
             logger.warning(f"[Rsync115Sync] 旧数据迁移失败（不影响运行，下次启动会重试）: {e}")
+        # 事件流水是只增不改的，且目前没有 UI 读它（`events_of` 暂只被测试使用）
+        # —— 不裁就是纯占磁盘。按 key 裁，保证每个文件都留着最近几条。
+        # 放在这里而不是定时任务里：它是幂等的维护动作，加载时做一次就够。
+        try:
+            trimmed = self._ledger.trim_events()
+            if trimmed:
+                logger.info(f"[Rsync115Sync] 📒 事件流水已裁剪 {trimmed} 条"
+                            f"（每个文件保留最近 20 条）")
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 事件流水裁剪失败（已忽略）: {e}")
         self._bind_ledger_maps()
 
     def _bind_ledger_maps(self) -> None:

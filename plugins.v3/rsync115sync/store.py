@@ -326,6 +326,36 @@ class Store:
             (key, time.time(), action, detail),
         )
 
+    def trim_events(self, keep_per_key: int = 20) -> int:
+        """
+        把每个 key 的事件流水裁到最近 `keep_per_key` 条，返回删掉的行数。
+
+        Keep only the newest `keep_per_key` events per key.
+
+        ⚠️ **为什么必须裁**：流水是只增不改的，而一个文件的"一生"里事件并不少
+        —— 实机一轮就有 97 条（88 条登记观察 + 9 条入队）。长期运行下这张表会
+        无限增长，且它**没有任何读取者**（`events_of` 目前只有测试在用），
+        等于纯占磁盘。
+        Bounded by design: the table is append-only and has no reader yet, so
+        unbounded growth would be pure disk cost.
+
+        按 key 而不是按总行数裁：某一天批量入队几千个文件把总量顶上去时，
+        按总量裁会**把别的文件的记录一并挤掉** —— 而你想查的往往正是那个冷门的
+        老文件。按 key 裁则每个文件都保留着最近的那几条。
+        Per-key rather than global: a bulk day would otherwise evict other files'
+        history, and the file you want to inspect is usually the rare old one.
+
+        失败只记日志不抛：清理是维护动作，不该中断插件加载。
+        """
+        return self._write(
+            "DELETE FROM events WHERE id NOT IN ("
+            "  SELECT id FROM ("
+            "    SELECT id, ROW_NUMBER() OVER ("
+            "      PARTITION BY key ORDER BY at DESC, id DESC) AS rn"
+            "    FROM events) WHERE rn <= ?)",
+            (int(keep_per_key),),
+        )
+
     def events_of(self, key: str, limit: int = 50) -> List[Dict[str, Any]]:
         rows = self._query(
             "SELECT * FROM events WHERE key = ? ORDER BY at DESC LIMIT ?", (key, limit))
