@@ -1,31 +1,31 @@
 
-.plugin-page[data-v-4f77a092] {
+.plugin-page[data-v-77d6df5d] {
   width: 100%;
   box-sizing: border-box;
   /* 桌面端外边距。原为内联 style 且带 !important，
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
   padding: 18px 22px !important;
 }
-.page-main-card[data-v-4f77a092] {
+.page-main-card[data-v-77d6df5d] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   width: 100%;
 }
-.header-surface[data-v-4f77a092] {
+.header-surface[data-v-77d6df5d] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-4f77a092] {
+.header-card-item .header-subtitle[data-v-77d6df5d] {
   margin-top: 6px;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
    宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
    内容区顶部内边距被强制归零。
    故此处：间距由 margin-top 提供（margin 不受该 padding !important 约束，是稳定生效的方案）。 */
-.header-card-item + .v-card-text[data-v-4f77a092] {
+.header-card-item + .v-card-text[data-v-77d6df5d] {
   margin-top: 16px;
 }
-.header-icon-box[data-v-4f77a092] {
+.header-icon-box[data-v-77d6df5d] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -34,7 +34,7 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
 }
-.stat-card[data-v-4f77a092] {
+.stat-card[data-v-77d6df5d] {
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
 }
 /* 首行三个数据卡片的 border-top 曾整条不可见（实测于真实宿主，勿凭理论回退）。
@@ -49,53 +49,53 @@
    使内容顶边与容器顶边重合（实测 -8px → +4px，即列内边距，边框完整露出）。
    刻意不去覆写 .v-card-text 的顶部内边距 —— 那需要穿过宿主样式表并加 !important，
    宿主改版即失效；而归零负边距与宿主改版无关，重装依赖也不会被冲掉。 */
-.strm-stat-row[data-v-4f77a092] {
+.strm-stat-row[data-v-77d6df5d] {
   margin-top: 0 !important;
   margin-bottom: 12px !important;
 }
-.stat-info[data-v-4f77a092] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
+.stat-info[data-v-77d6df5d] { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06);
 }
-.stat-primary[data-v-4f77a092] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
+.stat-primary[data-v-77d6df5d] { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06);
 }
-.stat-error[data-v-4f77a092] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
+.stat-error[data-v-77d6df5d] { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06);
 }
-.stat-warning[data-v-4f77a092] { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.06);
+.stat-warning[data-v-77d6df5d] { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.06);
 }
 /* 中性色卡片（"上次源端扫描""补传剩余"）。刻意不用彩色：它们不是**问题指标**，
    而是两种"进度读数"—— 用彩色会让看板在一切正常时也显得刺眼，
    而这类常年常驻的数字一旦刺眼，用户就会开始无视整行。 */
-.stat-muted[data-v-4f77a092] { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.03);
+.stat-muted[data-v-77d6df5d] { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.03);
 }
 /* 第二行不受首行那条 border-top 约束（它不在滚动容器顶边），
    但上边距要压掉 Vuetify 的 -12px，否则两行会贴在一起。 */
-.stat-row-secondary[data-v-4f77a092] {
+.stat-row-secondary[data-v-77d6df5d] {
   margin-top: 0 !important;
   margin-bottom: 12px !important;
 }
-.action-strip[data-v-4f77a092] {
+.action-strip[data-v-77d6df5d] {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
 }
-.queue-item-card[data-v-4f77a092] {
+.queue-item-card[data-v-77d6df5d] {
   background: rgb(var(--v-theme-surface, 255, 255, 255));
   border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
 }
-.batch-bar[data-v-4f77a092] {
+.batch-bar[data-v-77d6df5d] {
   border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
 }
-.failed-item-card[data-v-4f77a092] {
+.failed-item-card[data-v-77d6df5d] {
   background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
   border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
 }
-.empty-box[data-v-4f77a092] {
+.empty-box[data-v-77d6df5d] {
   border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
 }
 /* 分页条：与列表用虚线分隔，弱化存在感，避免抢占内容注意力 */
-.pager-bar[data-v-4f77a092] {
+.pager-bar[data-v-77d6df5d] {
   border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
   padding-top: 12px;
 }
-.pager-btn[data-v-4f77a092] {
+.pager-btn[data-v-77d6df5d] {
   /* 与说明文字基线对齐，避免按钮内图标把行高撑开 */
   letter-spacing: normal;
 }
@@ -106,7 +106,7 @@
    断点沿用 Vuetify 的 sm（600px），与模板里的 flex-sm-row 保持一致。 */
 @media (max-width: 599.98px) {
   /* 移动端收窄外层留白，把宽度还给内容（外层 + 卡片内层共省下约 36px） */
-.plugin-page[data-v-4f77a092] {
+.plugin-page[data-v-77d6df5d] {
     padding: 10px 12px !important;
 }
   /* 顶栏按钮"超出范围"的根因在这里：
@@ -116,50 +116,50 @@
      把 append 列改成 minmax(0, max-content)：优先按内容宽度，宽度不足时允许收缩，
      收缩后按钮组依 .header-append 的 flex-wrap 换行，从而始终留在卡片内。
      必须用 :deep()：.v-card-item__append 由 Vuetify 组件渲染，scoped 选择器匹配不到 */
-[data-v-4f77a092] .v-card-item {
+[data-v-77d6df5d] .v-card-item {
     grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
 }
-[data-v-4f77a092] .v-card-item__content {
+[data-v-77d6df5d] .v-card-item__content {
     min-width: 0;
 }
-.body-surface[data-v-4f77a092] {
+.body-surface[data-v-77d6df5d] {
     padding-left: 10px !important;
     padding-right: 10px !important;
 }
   /* 顶栏右侧按钮组：允许换行并右对齐，避免刷新/配置/关闭三个按钮挤出卡片 */
-.header-append[data-v-4f77a092] {
+.header-append[data-v-77d6df5d] {
     flex-wrap: wrap;
     justify-content: flex-end;
 }
   /* 操作工具条：按钮组纵向铺满，按钮本身在窄屏下占满整行更好点按 */
-.action-strip-row[data-v-4f77a092] {
+.action-strip-row[data-v-77d6df5d] {
     align-items: stretch;
 }
-.action-group[data-v-4f77a092] {
+.action-group[data-v-77d6df5d] {
     width: 100%;
 }
-.action-group > .v-btn[data-v-4f77a092] {
+.action-group > .v-btn[data-v-77d6df5d] {
     flex: 1 1 auto;
 }
   /* 操作反馈文字可能很长（含文件数），允许换行而不是把同行按钮顶出去 */
-.action-msg[data-v-4f77a092] {
+.action-msg[data-v-77d6df5d] {
     width: 100%;
     margin-right: 0 !important;
     white-space: normal;
     word-break: break-word;
 }
   /* 列表行在窄屏改为纵向堆叠后，左侧信息区需占满整行 */
-.list-row-main[data-v-4f77a092] {
+.list-row-main[data-v-77d6df5d] {
     width: 100%;
 }
   /* 右侧操作区占满整行并允许换行；
      注：flex-shrink 在纵向堆叠下作用于纵轴，此处无需覆盖，保持工具类的 flex-shrink-0 即可 */
-.list-row-actions[data-v-4f77a092] {
+.list-row-actions[data-v-77d6df5d] {
     width: 100%;
     flex-wrap: wrap;
 }
   /* 批量辅助条说明文字：占满剩余宽度并允许折行 */
-.batch-hint[data-v-4f77a092] {
+.batch-hint[data-v-77d6df5d] {
     width: 100%;
     white-space: normal;
     word-break: break-word;

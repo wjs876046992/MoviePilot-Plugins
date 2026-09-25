@@ -208,7 +208,7 @@ const statusData = ref({
   source_cursor: {},
   source_scan_last: 0,
   source_scan_enabled: true,
-  source_scan_cron: '*/10 * * * *',
+  source_scan_cron: '*/30 * * * *',
   // 入库闸门挡下的扩展名分布（累计）：扩展名 → 次数。
   ingest_skipped_by_ext: {},
   strm_suspects: {},
@@ -2973,6 +2973,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4f77a092"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-77d6df5d"]]);
 
 export { App as default };

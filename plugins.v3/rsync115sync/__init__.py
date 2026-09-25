@@ -652,7 +652,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     #   ① 源端游标扫描（主通道，`_scan_source_cursor`）—— **完整性的唯一承担者**。
     #      按文件 mtime 与持久化游标比对，覆盖整理入库、手动入库、外部搬入、
     #      以及插件不可用期间发生的一切。它不依赖宿主事件，因此没有「事件丢失」
-    #      这个失效模式。定时 service 驱动，默认 10 分钟一轮。
+    #      这个失效模式。定时 service 驱动，默认 30 分钟一轮。
     #
     #   ② Webhook（`on_webhook_message`，本文件下方）—— 「9KG 专属通道 + 加速器」。
     #      它让文件**早一点**进队列，但**不承担完整性**：即使它整条失效，
@@ -1233,7 +1233,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         | 判据 | 「mtime 晚于**上次扫描时间**」 | 「mtime 晚于**游标 - 重叠窗口**」 |
         | 入队去向 | `_missed_queue`（**无条件跳过冷却**） | `_pending_queue`（正常冷却） |
         | 游标推进 | **无条件**推进（入队失败也推） | 仅在成功入队后推进 |
-        | 由谁驱动 | 挂在同步 cron 内部（会被补传饿死） | 独立 service，10 分钟一轮 |
+        | 由谁驱动 | 挂在同步 cron 内部（会被补传饿死） | 独立 service，cron `*/30` |
 
         旧实现那三条的合成效果是：「扫描刚发现一个 10 秒前刚落地的文件 →
         判为『错过的』→ 不吃冷却 → 本轮上传」。而源端扫描**没有"文件写完了"
@@ -1243,7 +1243,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         成本：每轮**每映射一次** `os.walk`，纯本地目录遍历，不触碰 115 挂载点，
         因此零 115 API 请求、不触发风控。与补传前置扫描（`_api_backfill_scan`）
-        的成本性质相同，只是节奏独立（10 分钟）。
+        的成本性质相同，只是节奏独立（默认 cron `*/30`）。
 
         :return: 本次新入队的文件数 / number of files newly enqueued
         """
@@ -1335,8 +1335,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         ⚠️ 为什么必须是两个、不能合成一个：这两者的**节奏由不同因素决定**，
         合并会互相绑架。
 
-          · **发现层的节奏**只该由「媒体多久出现一次」决定 —— 10 分钟一轮，
-            与上传无关。它很便宜（纯本地 os.walk，零 115 API）。
+          · **发现层的节奏**只该由「媒体多久出现一次」决定 —— 默认 30 分钟一轮，
+            与上传无关。它很便宜（纯本地 os.walk，零 115 API），但**不是零成本**：
+            大库下每轮要整树遍历一次，所以没必要扫得比"入库发生"更勤。
           · **传输层的节奏**由冷却时长与 cron 决定，还要与补传队列争批次与配额。
 
         合并到传输 cron 里的后果是实测过的：`_scheduled_sync` 第一件事是
@@ -1380,7 +1381,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         为什么要有这一层：扫描是**定时 service**，宿主把它丢到调度线程里跑；
         未捕获的异常会被记成「插件错误」，而这只是发现层的一次失败 ——
-        下一轮（10 分钟后）会重新扫到同一批文件（游标没推进），自愈。
+        下一轮（默认 30 分钟后）会重新扫到同一批文件（游标没推进），自愈。
         所以这里最该做的是**记日志并让本轮安静结束**，而不是抛出。
         """
         if not self._enabled or not self._source_scan_enabled:
@@ -2251,7 +2252,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             cron 的最小粒度是分钟，因此向上取整到分钟（600 秒 → `*/10`）；
             小于 60 秒的值按 1 分钟处理，并在日志里说明 —— 静默夹紧会让用户
             以为自己配的 30 秒生效了。
-          · 都没有 → 默认 `*/10 * * * *`。
+          · 都没有 → 默认 `*/30 * * * *`。
 
         ⚠️ 表达式本身**不在这里校验**：非法 cron 由 `CronTrigger.from_crontab`
         在注册 service 时抛错，而那条路已有 try/except 与日志（与「定时检查」

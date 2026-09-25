@@ -41,60 +41,93 @@
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用同步助手</div>
-              <div class="text-caption text-medium-emphasis">总控主开关，开启后生效定时轮询与事件监听</div>
+              <div class="text-caption text-medium-emphasis">总控主开关，开启后生效定时轮询与入库监听</div>
             </div>
             <v-switch v-model="config.enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
+          <!-- ⚠️ 这三个 setting-row 的说明必须保持**一两行**。
+               它们与右侧控件同处一个 space-between 横排，而文字列若长到拒绝收缩，
+               就会把控件挤成一条缝甚至挤出可视区（此前「源端扫描 Cron」那条四行说明
+               就是这么把输入框挡住的）。详细语义写在模块顶部的 alert 里 ——
+               卡片内只留"这一项是干什么的"一句话。详见 §4.0g ②/⑤。 -->
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
             <div>
               <div class="font-weight-bold text-body-2">启用入库监听</div>
-              <div class="text-caption text-medium-emphasis">
-                Webhook 通知与源端扫描共用的总闸；关闭后两种入库来源都不再入队
-                （定时同步与命令仍可用）
-              </div>
+              <div class="text-caption text-medium-emphasis">Webhook 与源端扫描共用的总闸</div>
             </div>
             <v-switch v-model="config.listen_transfer" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <!-- 源端扫描 = 入库发现的**主通道**（2026-09-25 起取代宿主的整理完成事件订阅）。
-               默认开启，且不再需要"谨慎"标签：它的判据已经与"mtime 变新"解耦
-               （见后端 _scan_source_cursor 与 _cooldown_basis 的说明）。 -->
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-t">
             <div>
               <div class="font-weight-bold text-body-2">
                 源端扫描入库
                 <v-chip size="x-small" color="primary" variant="tonal" class="ml-1 font-weight-bold">主通道</v-chip>
               </div>
-              <div class="text-caption text-medium-emphasis">
-                按固定间隔遍历本地源目录，把 mtime 晚于游标的文件纳入冷却队列。
-                这是<b>入库发现的主通道</b>：整理入库、手动放进媒体库、外部工具搬入、
-                以及插件重载期间发生的入库，它都能看见 —— 不依赖任何外部通知。
-                关闭后只剩 Webhook 一条路，只会发现发送端主动通知的文件。
-              </div>
+              <div class="text-caption text-medium-emphasis">遍历本地源目录发现新入库，不依赖任何外部通知</div>
             </div>
             <v-switch v-model="config.source_scan_enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <div class="setting-row d-flex align-start justify-space-between px-4 py-3">
+          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
             <div>
               <div class="font-weight-bold text-body-2">源端扫描 Cron 规则</div>
-              <div class="text-caption text-medium-emphasis">
-                与「定时检查」同一套 cron 写法，因此可以表达"只在夜里扫"这类节奏
-                （默认 <code>*/10 * * * *</code>，即每 10 分钟）。
-                每轮只做本地目录遍历，不访问 115 挂载点，<b>不消耗上传配额、不触发风控</b>。
-                发现的文件仍要经过冷却才会上传，所以扫得更勤并不会让上传更早，
-                只是让文件更早进队列。
-              </div>
+              <div class="text-caption text-medium-emphasis">多久扫一轮（默认 30 分钟）</div>
             </div>
             <v-text-field
               v-model="config.source_scan_cron"
               variant="outlined"
               density="compact"
               hide-details
-              placeholder="*/10 * * * *"
+              placeholder="*/30 * * * *"
               style="max-width: 190px"
             ></v-text-field>
+          </div>
+
+          <!-- 入库发现的完整语义集中在这里（卡片内只留一句话，见上） -->
+          <div class="px-4 pb-3">
+            <v-alert type="info" variant="tonal" density="compact" class="rounded-lg text-body-2 mb-0">
+              <div class="font-weight-bold mb-1">入库是怎么被发现的</div>
+              本插件有<b>两条</b>入库来源，分工是刻意的：
+              <div class="mt-1">
+                <b>① 源端扫描 —— 主通道，完整性的唯一承担者。</b>
+                按上面的 cron 遍历各映射的本地源目录，把「修改时间晚于上次成功扫描时刻」的文件纳入冷却队列。
+                整理入库、手动放进媒体库、外部工具搬入，以及插件重载期间发生的入库，它都能看见。
+                <b>每轮只做本地目录遍历，不访问 115 挂载点，不消耗上传配额、不触发风控。</b>
+                扫得更勤<b>不会</b>让文件更早上传（进队列后还要等满冷却），只是让它更早进队列。
+              </div>
+              <div class="mt-1">
+                <b>② Webhook —— 加速器，不承担完整性。</b>
+                发送端主动通知（见下方「怎么把入库推给本插件」）。它让文件早一点进队列，
+                但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。
+              </div>
+              <div class="mt-1">
+                关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到
+                「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 ——
+                那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。
+              </div>
+            </v-alert>
+          </div>
+          <!-- Webhook 接入信息：与上面的开关同属「入库监听」这一个模块 ——
+               它们回答的是同一件事（入库怎么进来），拆成两块会让人以为要分别配置。 -->
+          <div class="setting-row px-4 py-3 border-t">
+            <div class="font-weight-bold text-body-2 mb-1">怎么把入库推给本插件（Webhook）</div>
+            <div class="text-caption text-medium-emphasis">
+              在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
+              <br>
+              <code>http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
+              <br>
+              也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
+              <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
+              本插件都不会处理，那些报文归平台自己的解析器管。
+              <br>
+              本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听
+              （这是<b>有意的设计</b>，不是待办 —— 媒体服务器自己的入库归平台处理）。
+              <br>
+              推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
+              （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
+            </div>
           </div>
         </div>
 
@@ -455,41 +488,6 @@
           </div>
         </div>
 
-        <!-- 模块 5：Webhook 入库（第二来源） -->
-        <div class="section-header d-flex align-center mb-2 mt-5">
-          <div class="font-weight-bold text-subtitle-2 d-flex align-center">
-            <v-icon size="18" color="primary" class="mr-1">mdi-webhook</v-icon>
-            Webhook 入库（第二来源）
-          </div>
-        </div>
-
-        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
-          现有的入库监听挂宿主的「整理完成」事件，因此看不到三类入库：
-          <b>手动放进媒体库</b>、<b>外部工具搬入</b>、<b>整理事件漏发</b>。
-          Webhook 作为<b>补充来源</b>覆盖它们 —— 不是替代，同一条入库走两条路进来时，
-          冷却队列的重复检测会保证不重复上传。
-        </v-alert>
-
-        <div class="settings-group-card rounded-xl overflow-hidden mb-4">
-          <div class="setting-row px-4 py-3">
-            <div class="font-weight-bold text-body-2 mb-1">怎么把入库推给本插件</div>
-            <div class="text-caption text-medium-emphasis">
-              在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
-              <br>
-              <code>http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
-              <br>
-              也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
-              <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
-              本插件都不会处理，那些报文归平台自己的解析器管。
-              <br>
-              本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听
-              （这是<b>有意的设计</b>，不是待办 —— 媒体服务器自己的入库归平台处理）。
-              <br>
-              推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
-              （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
-            </div>
-          </div>
-        </div>
       </v-card-text>
 
       <!-- 底部操作按钮 -->
@@ -530,7 +528,7 @@ const config = ref({
   source_scan_enabled: true,
   // cron 表达式（与「定时检查」同一套写法）。旧版这里是「间隔秒数」，
   // 后端会把它换算成等价的 */N 表达式并保留，见 _read_source_scan_cron。
-  source_scan_cron: '*/10 * * * *',
+  source_scan_cron: '*/30 * * * *',
   notify: true,
   // 4h：源端扫描引入后，冷却期多了一层职责 —— 等文件写完（见上面的 hint）
   delay_hours: 4.0,
