@@ -723,8 +723,35 @@ onMounted(() => {
      · 在字段**外面**额外渲染一个标题（本类），只在窄屏显示；
      · 窄屏下给字段加 `no-notch`，把缺口宽度压成 0（见媒体查询里的规则）。
    桌面端完全不显示框外标题，外观与改动前一致。 */
+/* ⚠️ 这里**刻意不做 `display:none` + 媒体查询打开的开关**。
+   我最初就是这么写的：基础样式隐藏、`@media (max-width:600px)` 里显示。
+   CSS 与产物都验证过是对的，但用户实测**仍然看不到上下排列**。
+
+   原因是那个媒体查询的成立条件 —— "viewport 宽度 ≤ 600px" —— 在真实宿主里
+   没能按预期成立（宿主页面若带非 `width=device-width` 的 viewport 声明，
+   手机上的 CSS 像素宽度就不是 600 以下，`max-width` 永远不会匹配）。
+
+   **教训**：把一个视觉决策挂在"我猜会成立的宽度条件"上，就多了一个我无法
+   验证的假设。而这个插件在"猜条件"上已经栽过多次（见文件里其它注释）。
+   改为**无条件上下排列**：不判断宽度，因此没有任何条件可失配。
+   代价是桌面端每个输入框上方也多一行标题 —— 但那正是用户要的排版。 */
 .stacked-label {
+  display: block;
+  margin-bottom: 4px;
+}
+/* 框内 label 的隐藏与缺口压平：**无条件生效**，与 .stacked-label 配对。
+   Vuetify 在 outlined 变体里把 label 渲染了**两份** —— 一份在 `v-field__field`
+   里（框内浮动的那个）、一份在 outline 的 `__notch` 里（边框缺口处）。
+   既然标题已经移到框外，这两份都必须藏掉，且缺口要压成 0 ——
+   否则上边框会留一道空白豁口（缺口宽度原本等于 notch 里那个 label 的宽度）。 */
+:deep(.no-notch .v-field__field > .v-label),
+:deep(.no-notch .v-field__outline__notch .v-label) {
   display: none;
+}
+:deep(.no-notch .v-field__outline__notch) {
+  flex: 0 0 0;
+  margin: 0;
+  max-width: 0;
 }
 .radius-sm {
   border-radius: 4px !important;
@@ -918,28 +945,6 @@ onMounted(() => {
   /* 纵排时为了对齐加的那点负缩进，横排下要还回去 */
   .setting-row-inline > .v-switch {
     margin-left: 0;
-  }
-  /* ② 移动端：显示框外 label（与输入框上下排列） */
-  .stacked-label {
-    display: block;
-    margin-bottom: 4px;
-  }
-  /* ② 移动端：把边框缺口压成 0。
-     Vuetify 在 outlined 框的 notch 里放了 label 的副本，且缺口宽度 = 该副本宽度。
-     框外已有标题，缺口就只剩"一道空白" —— 这里把它的横向占位与内边距归零，
-     使上边框连成一条直线。 */
-  :deep(.no-notch .v-field__outline__notch) {
-    flex: 0 0 0;
-    margin: 0;
-    max-width: 0;
-  }
-  :deep(.no-notch .v-field__outline__notch .v-label) {
-    display: none;
-  }
-  /* 框内的那个 label 也要藏起来（outlined 变体会渲染两份：一份在 __field 里、
-     一份在 outline 的 notch 里）。留着它会在框内与输入值重叠。 */
-  :deep(.no-notch .v-field__field > .v-label) {
-    display: none;
   }
   /* ⚠️ **必须重置纵排下的 flex 基准**。
      桌面端给文字列设的是 `flex: 1 1 20rem`（20rem 是**宽度**基准，用来决定何时

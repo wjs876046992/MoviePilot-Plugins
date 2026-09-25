@@ -554,19 +554,37 @@ def test_mobile_labels_sit_above_their_inputs():
         f"手机会出现「上边框一道空白豁口」（Vuetify 的 notch 里藏着 label 副本）"
     )
 
-    # ③ 框外 label 默认隐藏、仅窄屏显示
-    base = css[:css.find("@media")]
-    assert re.search(r"\.stacked-label\s*\{[^}]*display:\s*none", base), (
-        ".stacked-label 必须在基础样式里 display:none —— 桌面端应保持原有的框内 label 外观"
+    # ③ 框外 label 必须**无条件显示**，不得依赖于媒体查询
+    #
+    # ⚠️ 这里记录一次真实的失败：我最初写的是「基础样式 display:none +
+    # `@media (max-width:600px)` 里 display:block」。CSS 与产物都逐字验证过是对的，
+    # 但用户实测**仍然看不到上下排列** —— 那个媒体查询的成立条件
+    # （viewport 宽度 ≤ 600px）在真实宿主里没能按预期成立。
+    #
+    # 教训：把一个视觉决策挂在"我猜会成立的宽度条件"上，就多了一个**无法验证的假设**。
+    # 改为无条件排布后，不存在任何可失配的条件。
+    # 所以这条断言现在要求：.stacked-label 的 display 是 block，且**不出现在任何
+    # 媒体查询里**。
+    no_comments = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+    m_lbl = re.search(r"\.stacked-label\s*\{([^}]*)\}", no_comments)
+    assert m_lbl, "未找到 .stacked-label 基础规则"
+    assert "display: block" in m_lbl.group(1), (
+        ".stacked-label 必须无条件 display:block —— 不要用媒体查询去打开它，"
+        "那个宽度条件在真实宿主里可能不成立（已实测踩过）"
     )
-    mq = css[css.find("@media"):]
-    assert re.search(r"\.stacked-label\s*\{[^}]*display:\s*block", mq), (
-        "移动端未把 .stacked-label 显示出来"
+    mq_idx = no_comments.find("@media")
+    assert mq_idx > 0, "未找到媒体查询块"
+    assert "stacked-label" not in no_comments[mq_idx:], (
+        ".stacked-label 不得出现在媒体查询里 —— 排布不应依赖宽度条件"
     )
 
-    # ④ notch 压平与框内 label 隐藏都必须在媒体查询里（否则桌面端也被改）
+    # ④ notch 压平与框内 label 隐藏必须与 .stacked-label 一样无条件生效
     for need in ("v-field__outline__notch", "v-field__field > .v-label"):
-        assert need in mq, f"移动端缺少对 `{need}` 的处理"
+        assert need in no_comments[:mq_idx], (
+            f"`{need}` 的隐藏/压平必须放在**基础样式**里（与 .stacked-label 配对）—— "
+            f"若只写在媒体查询内，宿主宽度条件不成立时框内 label 不会消失、"
+            f"边框还会留一道空白豁口"
+        )
 
 
 def test_form_fields_are_not_visually_clipped():
