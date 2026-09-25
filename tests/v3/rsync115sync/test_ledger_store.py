@@ -185,7 +185,13 @@ def test_trim_events_keeps_newest_per_key(tmp_path):
     几千个文件把总量顶上去时，按总量裁会**把别的文件的记录一并挤掉** ——
     而你想查的往往正是那个冷门的老文件。按 key 裁则每个文件都留着最近几条。
     """
+    from app.plugins.rsync115sync.store import STATUS_CANDIDATE
+
     s = _store(tmp_path)
+    # ⚠️ 必须先建台账行：事件的生命周期**跟随台账行**，无主的事件会被
+    # `trim_events` 清掉（见 test_trim_events_drops_events_of_departed_files）。
+    for key in ("剧:a.mkv", "剧:b.mkv"):
+        s.upsert(key, STATUS_CANDIDATE, enqueued_at=1.0)
     for i in range(30):
         s.log_event("剧:a.mkv", "enqueue", str(i))
     s.log_event("剧:b.mkv", "enqueue")
@@ -198,7 +204,10 @@ def test_trim_events_keeps_newest_per_key(tmp_path):
 
 def test_trim_events_keeps_the_newest_not_the_oldest(tmp_path):
     """裁掉的是**最旧**的：留下陈旧记录、丢掉刚发生的事会让流水彻底没用。"""
+    from app.plugins.rsync115sync.store import STATUS_CANDIDATE
+
     s = _store(tmp_path)
+    s.upsert("剧:a.mkv", STATUS_CANDIDATE, enqueued_at=1.0)
     for i in range(5):
         s.log_event("剧:a.mkv", "step", str(i))
 
@@ -228,7 +237,10 @@ def test_trim_events_returns_a_row_count_not_a_bool(tmp_path):
     注意 `True == 1` 在 Python 里成立，所以"断言它是真值"永远抓不到这个 bug ——
     必须断言**类型**与**具体数值**。
     """
+    from app.plugins.rsync115sync.store import STATUS_CANDIDATE
+
     s = _store(tmp_path)
+    s.upsert("剧:a.mkv", STATUS_CANDIDATE, enqueued_at=1.0)
     for i in range(30):
         s.log_event("剧:a.mkv", "enqueue", str(i))
 
@@ -239,3 +251,38 @@ def test_trim_events_returns_a_row_count_not_a_bool(tmp_path):
 
     # 幂等：再裁一次没有东西可删，必须返回 0
     assert s.trim_events(keep_per_key=20) == 0
+
+
+def test_trim_events_drops_events_of_departed_files(tmp_path):
+    """
+    ⚠️ 台账行已经不在的事件必须清掉 —— **这才是无上限增长的那一半**。
+
+    只按 key 裁是不够的：每个成功同步的文件都会给它的 key 留下若干条事件
+    （实机：`arm_watch` 88 条 + 出队时的 `dequeue`），随后那一行被删掉，
+    事件却留了下来。按 key 裁**看不见它们**（没有对应的台账行），
+    于是它们只会一直堆积。
+
+    规则一句话：**事件的生命周期跟随台账行**。行没了，它的历史既没有锚点
+    也没有读者（`events_of` 是按 key 查的，没有任何地方会枚举已离场的 key）。
+
+    ⚠️ 因此 `dequeue` 的可见窗口是"到下次插件加载为止" —— 你要查"它怎么不见了"
+    的时刻，恰恰是刚跑完一轮、还在看台账的时候。
+    """
+    from app.plugins.rsync115sync.store import STATUS_CANDIDATE
+
+    s = _store(tmp_path)
+    # 模拟：3 个文件同步成功后出队（台账行被删），1 个仍在跟踪
+    for i in range(3):
+        key = f"剧:gone{i}.mkv"
+        s.upsert(key, STATUS_CANDIDATE, enqueued_at=1.0)
+        s.log_event(key, "enqueue")
+        s.log_event(key, "dequeue", "candidate")
+        s.delete(key)
+    s.upsert("剧:alive.mkv", STATUS_CANDIDATE, enqueued_at=1.0)
+    s.log_event("剧:alive.mkv", "enqueue")
+
+    removed = s.trim_events()
+
+    assert removed == 6, "已出队文件的 6 条事件都该被清掉"
+    assert s.events_of("剧:gone0.mkv") == []
+    assert [e["action"] for e in s.events_of("剧:alive.mkv")] == ["enqueue"]

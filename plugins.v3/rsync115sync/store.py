@@ -370,7 +370,18 @@ class Store:
 
         失败返回 0、只记日志不抛：清理是维护动作，不该中断插件加载。
         """
-        return self._write_count(
+        # ① 无主事件：台账行已经不在（同步成功后出队是最常见的路径）。
+        # ⚠️ 只按 key 裁是**不够**的 —— 每个成功同步的文件都会给它的 key 留下
+        # 若干条事件，随后那一行被删掉，事件却留了下来：日积月累是无上限的。
+        # 规则一句话：**事件的生命周期跟随台账行**。行没了，它的历史就没有
+        # 锚点也没有读者（`events_of` 是按 key 查的，而没有任何地方会去枚举
+        # 已离场的 key）。
+        # Orphans are the unbounded part: per-key trimming cannot see rows whose
+        # ledger entry is gone, and every successful sync leaves one behind.
+        removed = self._write_count(
+            "DELETE FROM events WHERE key NOT IN (SELECT key FROM files)")
+        # ② 每个仍在跟踪的文件保留最近 N 条
+        removed += self._write_count(
             "DELETE FROM events WHERE id NOT IN ("
             "  SELECT id FROM ("
             "    SELECT id, ROW_NUMBER() OVER ("
@@ -378,6 +389,7 @@ class Store:
             "    FROM events) WHERE rn <= ?)",
             (int(keep_per_key),),
         )
+        return removed
 
     def events_of(self, key: str, limit: int = 50) -> List[Dict[str, Any]]:
         rows = self._query(
@@ -680,12 +692,17 @@ class LedgerMapping(MutableMapping):
         if existed and self._events and self._ledger is not None:
             # 离场也记一条，并把**从哪个队列走的**写进 detail。
             #
-            # ⚠️ 只记这个的话仍然答不出"为什么走"（同步成功 / 被忽略 / 源端已删
-            # 走的是同一个出口）—— 那是调用方的语义，不是替身能知道的。
-            # 但"什么时候走的"本身有用：配上前后两条日志里的原因，就能把这个
-            # 文件的一生串起来。留一个空洞反而会让流水看起来像丢过数据。
+            # ⚠️ 它答不出"为什么走"（同步成功 / 被忽略 / 源端已删走的是同一个
+            # 出口）—— 那是调用方的语义，不是替身能知道的。它给出的是"什么时候
+            # 走的、从哪个队列"，配上前后两条日志里的原因就能串起来。
+            #
+            # ⚠️ **可见窗口是"到下次插件加载为止"**：`trim_events` 会删掉台账行
+            # 已经不存在的事件（那正是大多数离场事件的下场）。这不是缺陷 ——
+            # 你要查"它怎么不见了"的时刻，恰恰是刚跑完一轮、还在看台账的时候；
+            # 而保留它到永远等于给每个同步成功的文件永久记账。
             # The reason lives in the caller; the timestamp is recorded here so the
             # timeline has no hole, and the surrounding log lines supply the why.
+            # Lifetime: this survives until the next plugin load (see trim_events).
             self._ledger.log_event(key, "dequeue", self._status)
         if self._ledger is not None:
             self._ledger.delete(key)
