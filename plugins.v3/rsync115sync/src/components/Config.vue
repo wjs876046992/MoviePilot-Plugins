@@ -3,7 +3,7 @@
     <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
-      <v-card-item class="header-surface header-card-item px-5 py-4">
+      <v-card-item class="header-surface header-card-item card-pad-x py-4">
         <template #prepend>
           <div class="header-icon-box mr-3">
             <v-icon color="primary" size="22">mdi-cloud-sync</v-icon>
@@ -25,7 +25,7 @@
       </v-card-item>
 
       <!-- 状态提醒条 -->
-      <div v-if="successMessage || error" class="px-5 pt-3">
+      <div v-if="successMessage || error" class="card-pad-x pt-3">
         <v-alert v-if="successMessage" type="success" variant="tonal" class="rounded-lg mb-2" closable @click:close="successMessage = null">
           {{ successMessage }}
         </v-alert>
@@ -35,10 +35,10 @@
       </div>
 
       <!-- 表单主体滚动区 -->
-      <v-card-text class="config-body px-5 py-4 overflow-y-auto">
+      <v-card-text class="config-body card-pad-x py-4 overflow-y-auto">
         <!-- 模块 1：基础开关 -->
         <div class="settings-group-card rounded-xl overflow-hidden mb-4">
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用同步助手</div>
               <div class="text-caption text-medium-emphasis">总控主开关，开启后生效定时轮询与入库监听</div>
@@ -51,7 +51,7 @@
                就会把控件挤成一条缝甚至挤出可视区（此前「源端扫描 Cron」那条四行说明
                就是这么把输入框挡住的）。详细语义写在模块顶部的 alert 里 ——
                卡片内只留"这一项是干什么的"一句话。详见 §4.0g ②/⑤。 -->
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">启用入库监听</div>
               <div class="text-caption text-medium-emphasis">Webhook 与源端扫描共用的总闸</div>
@@ -67,7 +67,7 @@
                代价是它在一片蓝色说明块里显得像是另一种东西 —— 用户直接指出
                「样式和其它描述模块不一样，其他是蓝色的」。层级已经由**位置**
                表达（紧跟在所属开关之后），不需要再靠换一套配色去强调。 -->
-          <div class="px-4 pb-3">
+          <div class="row-pad-x pb-3">
             <CollapsibleNote title="怎么把入库推给本插件（Webhook）" class="mb-0">
     在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
                   <br>
@@ -89,7 +89,7 @@
           </CollapsibleNote>
           </div>
 
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-t">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-t">
             <div>
               <div class="font-weight-bold text-body-2">
                 源端扫描入库
@@ -105,7 +105,7 @@
                就不存在"文字把输入框挤掉"这件事，与文字多长、窗口多宽都无关。
                前三次我都在调 flex 宽度分配（减字数、加 wrap、加 basis），
                都没解决；改用不依赖 flex 计算的排布后，挤压在结构上不可能发生。 -->
-          <div class="setting-row setting-row-stacked px-4 py-3">
+          <div class="setting-row setting-row-stacked row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">源端扫描 Cron 规则</div>
               <div class="text-caption text-medium-emphasis">多久扫一轮（默认 30 分钟）</div>
@@ -121,7 +121,7 @@
           </div>
 
           <!-- 入库发现的完整语义集中在这里（卡片内只留一句话，见上） -->
-          <div class="px-4 pb-3">
+          <div class="row-pad-x pb-3">
             <CollapsibleNote title="入库是怎么被发现的" class="mb-0">
     本插件有<b>两条</b>入库来源，分工是刻意的：
                   <div class="mt-1">
@@ -302,7 +302,7 @@
           </CollapsibleNote>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用上传限流</div>
               <div class="text-caption text-medium-emphasis">按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控</div>
@@ -311,7 +311,7 @@
           </div>
 
           <!-- 实时换算：把生硬的秒数/个数翻译成用户能直观判断的速率 -->
-          <div v-if="config.rate_limit_enabled" class="px-4 py-2 batch-bar">
+          <div v-if="config.rate_limit_enabled" class="row-pad-x py-2 batch-bar">
             <div class="d-flex align-center flex-wrap ga-2">
               <v-chip size="small" color="primary" variant="tonal" class="font-weight-bold">
                 <v-icon start size="14">mdi-speedometer</v-icon>
@@ -326,7 +326,7 @@
               <div v-for="(w, i) in rateConfigWarnings" :key="i">⚠️ {{ w }}</div>
             </div>
           </div>
-          <div class="px-4 py-3">
+          <div class="row-pad-x py-3">
             <v-row density="compact">
               <v-col cols="12" sm="6">
                 <v-text-field
@@ -465,7 +465,7 @@
         </CollapsibleNote>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
-          <div class="setting-row setting-row-stacked px-4 py-3 border-b">
+          <div class="setting-row setting-row-stacked row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
               <div class="text-caption text-medium-emphasis">
@@ -486,7 +486,7 @@
               hide-details
             ></v-text-field>
           </div>
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+          <div class="setting-row d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">当前状态</div>
               <div class="text-caption text-medium-emphasis">
@@ -502,7 +502,7 @@
       </v-card-text>
 
       <!-- 底部操作按钮 -->
-      <v-card-actions class="config-actions px-5 py-3 border-t bg-surface">
+      <v-card-actions class="config-actions card-pad-x py-3 border-t bg-surface">
         <v-btn variant="tonal" rounded="lg" color="primary" @click="notifySwitch">
           <v-icon start size="16">mdi-view-dashboard-outline</v-icon>
           查看监控看板
@@ -696,6 +696,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* ---- 横向留白：本组件自己控制，不动框架的 .px-4 / .px-5 ----
+   ⚠️ 为什么不直接覆盖 `.px-5`：那是 Vuetify 的**全局实用类**（$spacer 4px × 5
+   = 20px），联邦插件与宿主共用同一个文档 —— 在这里覆盖它会波及其它插件的界面，
+   而且属于"用 !important 改别人的东西"，出问题极难定位。
+   正确做法是**用自己的类**表达自己的意图（本插件的留白是 12px / 10px），
+   模板里不再使用会把 20px 带进来的通用类。
+   手机屏幕窄，这 8~10px 的收窄是实打实还给内容的。 */
+.card-pad-x {
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+}
+.row-pad-x {
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+
 .plugin-config {
   width: 100%;
   box-sizing: border-box;
@@ -841,11 +857,33 @@ onMounted(() => {
   :deep(.v-card-item__content) {
     min-width: 0;
   }
-  /* 开关类设置行：改为纵向排列，控件左对齐，避免被挤出右边界 */
+  /* 设置行：默认改为纵向排列，避免控件被挤出右边界 */
   .setting-row {
     flex-direction: column;
     align-items: flex-start !important;
     gap: 8px;
+  }
+  /* ④ **开关行例外：保持横排，开关钉在右边。**
+     用户反馈：「开关光秃秃地在下面，不美观」—— 纵排后开关掉到文字下方、
+     左对齐，看起来像是漏排了一个元素，而不是"这一项的开关"。
+
+     与"输入框行"（setting-row-stacked，仍走纵排）的区别：
+       · 开关是**小控件**（约 36×20px），横排下它占宽很小、挤压风险低；
+       · 输入框是**宽控件**（需要 200px+），横排下才真正会被文字挤没 ——
+         那正是之前栽过三次的那一类，所以它继续纵排。
+
+     ⚠️ 这条横排**必须**同时满足三个前提，否则"挤压"会以另一种形式回来：
+       1. 文字列可收缩（`flex: 1 1 20rem; min-width: 15rem`，见基础样式）；
+       2. 父级 `flex-wrap: wrap` —— 真放不下时**整块换行**而不是压没开关；
+       3. 父级 `overflow: hidden` —— 不允许横向溢出被卡片裁掉。
+     三者都在基础样式里，这里只把主轴翻回 row。 */
+  .setting-row-inline {
+    flex-direction: row;
+    align-items: center !important;
+  }
+  /* 纵排时为了对齐加的那点负缩进，横排下要还回去 */
+  .setting-row-inline > .v-switch {
+    margin-left: 0;
   }
   /* ⚠️ **必须重置纵排下的 flex 基准**。
      桌面端给文字列设的是 `flex: 1 1 20rem`（20rem 是**宽度**基准，用来决定何时

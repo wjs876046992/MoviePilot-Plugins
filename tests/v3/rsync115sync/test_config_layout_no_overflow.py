@@ -344,3 +344,129 @@ def test_long_notes_are_collapsible_by_default():
         f"还有 {len(leftovers)} 个长说明未折叠 —— 手机端会占满屏幕，"
         f"请改用 <CollapsibleNote title=\"…\">"
     )
+
+
+def test_note_has_no_decorative_alert_icon():
+    """
+    折叠说明块必须关掉 Vuetify 自带的 `mdi-information`（`:icon="false"`）。
+
+    **为什么**（用户反馈：去掉左侧像 i 的图标，腾出更多空间）：
+    `type="info"` 会让 Vuetify 自动挂一个 **28px** 的 prepend 图标
+    （源码 `icon.value = props.icon ?? '$'+type`，且 `.v-alert__prepend` 未被隐藏）。
+    它是纯装饰 —— 标题已经说明这是什么块 —— 却在手机窄屏上实打实吃掉一块横向空间。
+
+    保留的是 16px 的**折叠箭头**：它是唯一提示"这行可以点开"的线索。
+    """
+    note = _read_component("CollapsibleNote.vue")
+    assert re.search(r':icon="false"', note), (
+        "CollapsibleNote 必须传 :icon=\"false\" —— 否则 info 类型会自动挂一个 28px "
+        "的 mdi-information 图标，白占手机端横向空间（用户明确要求去掉）"
+    )
+    # 折叠箭头必须保留（否则看不出可展开）
+    assert "mdi-chevron-down" in note or "mdi-chevron-right" in note, (
+        "折叠箭头不得移除：它是唯一提示「这行可以点开」的线索"
+    )
+
+
+def test_hint_is_pushed_to_the_right():
+    """「（点击展开）」必须靠右（用户要求）。用 margin-left:auto 而非 justify-space-between。"""
+    note = _read_component("CollapsibleNote.vue")
+    # ⚠️ 必须锚定**行首**的 `.note-hint {`：组件里还有一条
+    # `.note-head:hover .note-hint { opacity: 1 }`，它排在前面 ——
+    # 不锚行首的正则会先匹配到那条，然后断言 margin-left 缺失而误报。
+    # （这类"哨兵匹配到相邻规则"的错误本会话已犯过多次，一律改用锚定写法。）
+    m = re.search(r"^\.note-hint\s*\{(.*?)^\}", note, re.DOTALL | re.MULTILINE)
+    assert m, "未找到独立的 .note-hint 样式规则"
+    assert "margin-left: auto" in m.group(1), (
+        "「（点击展开）」需要 margin-left:auto 推到最右侧；"
+        "若改用 justify-space-between，长标题会把标题本身也推走，读起来像两个并列元素"
+    )
+
+
+def test_padding_does_not_override_framework_utilities():
+    """
+    横向留白必须用**本组件自己的类**，不得覆盖框架的 `.px-4` / `.px-5`。
+
+    **为什么**（用户反馈：左右 padding 小一点，腾出更大空间）：
+    `.px-5` 是 Vuetify 的**全局实用类**（`$spacer` 4px × 5 = 20px）。联邦插件与
+    宿主共用同一个文档 —— 在本插件里覆盖 `.px-5` 会波及其它插件的界面，而且属于
+    "用 !important 改别人的东西"，出问题极难定位。
+
+    正确做法：模板里不再使用会把 20px 带进来的通用类，改用本组件自己的
+    `.card-pad-x`（12px）/ `.row-pad-x`（10px）—— 意图由自己的类名表达，
+    影响面限于本组件。
+    """
+    src = _read_component("Config.vue")
+    code = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+    body = _template(src)
+
+    # 1) 模板里不得再用框架的 px-4 / px-5（它们会把 16/20px 带进来）
+    used = re.findall(r'class="[^"]*\b(px-[45])\b', body)
+    assert not used, (
+        f"模板里仍在用框架留白类 {sorted(set(used))} —— 请改用 row-pad-x / card-pad-x；"
+        f"否则手机端每个设置行会多占 6~10px 横向空间"
+    )
+    # 2) 自己的类必须有定义
+    for cls, want in (("card-pad-x", 12), ("row-pad-x", 10)):
+        m = re.search(rf"\.{cls}\s*\{{(.*?)\}}", code, re.DOTALL)
+        assert m, f"未定义 .{cls}"
+        assert f"padding-left: {want}px" in m.group(1) and f"padding-right: {want}px" in m.group(1), (
+            f".{cls} 应为左右各 {want}px"
+        )
+    # 3) 绝不去覆盖框架实用类
+    for bad in (".px-4", ".px-5", ".py-3", ".px-3"):
+        assert not re.search(rf"{re.escape(bad)}\s*\{{", code), (
+            f"不得覆盖框架实用类 {bad} —— 联邦插件与宿主共用文档，会波及其它界面"
+        )
+
+
+def test_mobile_switch_rows_stay_horizontal():
+    """
+    手机端**开关行**保持横排、开关钉在右侧；**输入框行**仍走纵排。
+
+    **为什么**（用户反馈：手机端开关光秃秃地在下面，不美观）：
+    移动端媒体查询把 `.setting-row` 一律改成 `flex-direction: column`，于是开关
+    掉到文字下方、左对齐 —— 看起来像漏排了一个元素，而不像"这一项的开关"。
+
+    ## 为什么开关可以横排、输入框不行
+
+      · 开关是小控件（约 36×20px），横排下占宽很小、挤压风险低；
+      · 输入框是宽控件（需 200px+），横排下会被文字挤没 —— 那正是之前栽过
+        **三次**的那一类（见 test_input_rows_do_not_rely_on_flex_width_math）。
+
+    横排能成立的前提是基础样式里那三条：文字列可收缩、父级 `flex-wrap: wrap`、
+    父级 `overflow: hidden`。本用例把它们一起断言，因为少任何一条，
+    "挤压"都会以另一种形式回来（换行/溢出/被裁）。
+    """
+    src = _read_component("Config.vue")
+    css = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+
+    mq = re.search(r"@media[^{]*max-width: 599\.98px[^{]*\{(.*)", css, re.DOTALL)
+    assert mq, "未找到移动端媒体查询块"
+    block = mq.group(1)
+
+    # 开关行必须在媒体查询里被翻回 row
+    inline = re.search(r"\.setting-row-inline\s*\{(.*?)\}", block, re.DOTALL)
+    assert inline, "移动端未定义 .setting-row-inline"
+    assert "flex-direction: row" in inline.group(1), (
+        "手机端开关行应保持横排（flex-direction: row）—— 否则开关掉到下方、左对齐，"
+        "用户反馈「光秃秃地在下面，不美观」"
+    )
+
+    # 且出现顺序在 .setting-row{column} 之后（同权重下后者生效）
+    assert block.find(".setting-row-inline {") > block.find(".setting-row {"), (
+        ".setting-row-inline 必须写在 .setting-row{flex-direction:column} **之后** —— "
+        "两者同为单类选择器、权重相同，靠源码顺序决胜"
+    )
+
+    # 三条前提必须在基础样式里（媒体查询之外）
+    base = css[:css.find("@media")]
+    for need, why in (
+        ("flex-wrap: wrap", "放不下时整块换行，而不是把开关压没"),
+        ("overflow: hidden", "禁止横向溢出被卡片裁掉"),
+        ("flex: 1 1 20rem", "文字列有可收缩的基准宽度"),
+    ):
+        assert need in base, f"基础样式缺少 `{need}` —— {why}"
+
+    # 输入框行必须仍然是纵排（不能被这次改动带偏）
+    assert "setting-row-stacked" in src, "输入框行的纵排类不见了"

@@ -8,7 +8,7 @@ const _hoisted_1$1 = ["aria-expanded", "onKeydown"];
 const _hoisted_2$1 = { class: "font-weight-bold" };
 const _hoisted_3$1 = {
   key: 0,
-  class: "text-medium-emphasis ml-1 note-hint"
+  class: "text-medium-emphasis note-hint"
 };
 const _hoisted_4$1 = { class: "mt-1" };
 
@@ -36,6 +36,7 @@ return (_ctx, _cache) => {
     type: "info",
     variant: "tonal",
     density: "compact",
+    icon: false,
     class: "rounded-lg text-body-2 collapsible-note"
   }, {
     default: _withCtx$1(() => [
@@ -76,7 +77,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-90833ee6"]]);
+const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-2251128a"]]);
 
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
@@ -85,16 +86,16 @@ const _hoisted_1 = { class: "plugin-config" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = {
   key: 0,
-  class: "px-5 pt-3"
+  class: "card-pad-x pt-3"
 };
 const _hoisted_4 = { class: "settings-group-card rounded-xl overflow-hidden mb-4" };
-const _hoisted_5 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
-const _hoisted_6 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
-const _hoisted_7 = { class: "px-4 pb-3" };
-const _hoisted_8 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-t" };
+const _hoisted_5 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
+const _hoisted_6 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3" };
+const _hoisted_7 = { class: "row-pad-x pb-3" };
+const _hoisted_8 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-t" };
 const _hoisted_9 = { class: "font-weight-bold text-body-2" };
-const _hoisted_10 = { class: "setting-row setting-row-stacked px-4 py-3" };
-const _hoisted_11 = { class: "px-4 pb-3" };
+const _hoisted_10 = { class: "setting-row setting-row-stacked row-pad-x py-3" };
+const _hoisted_11 = { class: "row-pad-x pb-3" };
 const _hoisted_12 = { class: "section-header d-flex align-center justify-space-between mb-2" };
 const _hoisted_13 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
 const _hoisted_14 = {
@@ -113,10 +114,10 @@ const _hoisted_20 = { class: "font-weight-bold text-subtitle-2 d-flex align-cent
 const _hoisted_21 = { class: "settings-group-card rounded-xl overflow-hidden pa-4" };
 const _hoisted_22 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
 const _hoisted_23 = { class: "settings-group-card rounded-xl overflow-hidden" };
-const _hoisted_24 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
+const _hoisted_24 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
 const _hoisted_25 = {
   key: 0,
-  class: "px-4 py-2 batch-bar"
+  class: "row-pad-x py-2 batch-bar"
 };
 const _hoisted_26 = { class: "d-flex align-center flex-wrap ga-2" };
 const _hoisted_27 = { class: "text-caption text-medium-emphasis" };
@@ -124,14 +125,14 @@ const _hoisted_28 = {
   key: 0,
   class: "text-caption text-warning font-weight-medium mt-1"
 };
-const _hoisted_29 = { class: "px-4 py-3" };
+const _hoisted_29 = { class: "row-pad-x py-3" };
 const _hoisted_30 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
 const _hoisted_31 = { class: "dep-split rounded-lg mb-3" };
 const _hoisted_32 = { class: "dep-split-row" };
 const _hoisted_33 = { class: "dep-split-row" };
 const _hoisted_34 = { class: "settings-group-card rounded-xl overflow-hidden" };
-const _hoisted_35 = { class: "setting-row setting-row-stacked px-4 py-3 border-b" };
-const _hoisted_36 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
+const _hoisted_35 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
+const _hoisted_36 = { class: "setting-row d-flex align-center justify-space-between row-pad-x py-3" };
 const {ref,computed,onMounted} = await importShared('vue');
 
 
@@ -341,7 +342,7 @@ return (_ctx, _cache) => {
       variant: "outlined"
     }, {
       default: _withCtx(() => [
-        _createVNode(_component_v_card_item, { class: "header-surface header-card-item px-5 py-4" }, {
+        _createVNode(_component_v_card_item, { class: "header-surface header-card-item card-pad-x py-4" }, {
           prepend: _withCtx(() => [
             _createElementVNode("div", _hoisted_2, [
               _createVNode(_component_v_icon, {
@@ -441,7 +442,7 @@ return (_ctx, _cache) => {
                 : _createCommentVNode("", true)
             ]))
           : _createCommentVNode("", true),
-        _createVNode(_component_v_card_text, { class: "config-body px-5 py-4 overflow-y-auto" }, {
+        _createVNode(_component_v_card_text, { class: "config-body card-pad-x py-4 overflow-y-auto" }, {
           default: _withCtx(() => [
             _createElementVNode("div", _hoisted_4, [
               _createElementVNode("div", _hoisted_5, [
@@ -1278,7 +1279,7 @@ return (_ctx, _cache) => {
           ]),
           _: 1
         }),
-        _createVNode(_component_v_card_actions, { class: "config-actions px-5 py-3 border-t bg-surface" }, {
+        _createVNode(_component_v_card_actions, { class: "config-actions card-pad-x py-3 border-t bg-surface" }, {
           default: _withCtx(() => [
             _createVNode(_component_v_btn, {
               variant: "tonal",
@@ -1334,6 +1335,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1765f201"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-08e286af"]]);
 
 export { Config as default };

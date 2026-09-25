@@ -23,10 +23,16 @@
     - 展开状态**不持久化**：它是阅读辅助，不是设置；记住它反而会让"我上次展开过"
       变成一种隐形状态，下次打开页面时看到的内容不一致。
   -->
+  <!-- ⚠️ `:icon="false"` 是必需的：`type="info"` 会让 Vuetify 自动挂一个
+       **28px 的 `mdi-information`**（源码 `icon.value = props.icon ?? '$'+type`，
+       且 `.v-alert__prepend` 并未被隐藏）。那个图标纯装饰 —— 标题已经说明这是
+       什么块了，而它在手机窄屏上实打实地吃掉一块横向空间。
+       折叠箭头（16px）保留：它是**唯一**提示"这行可以点开"的线索。 -->
   <v-alert
     type="info"
     variant="tonal"
     density="compact"
+    :icon="false"
     class="rounded-lg text-body-2 collapsible-note"
   >
     <div
@@ -40,7 +46,7 @@
     >
       <v-icon size="16" class="mr-1 flex-shrink-0">{{ open ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
       <span class="font-weight-bold">{{ title }}</span>
-      <span v-if="!open" class="text-medium-emphasis ml-1 note-hint">（点击展开）</span>
+      <span v-if="!open" class="text-medium-emphasis note-hint">（点击展开）</span>
     </div>
     <div v-show="open" class="mt-1"><slot /></div>
   </v-alert>
@@ -70,6 +76,12 @@ function toggle() { open.value = !open.value }
 .note-hint {
   font-weight: normal;
   opacity: 0.75;
+  /* ③ 推到同一行最右端。用 margin-left:auto 而不是给标题行 justify-space-between：
+     后者在标题很长时会把它也一起推走，读起来像两个并列元素；
+     这里标题固定靠左跟随箭头，「（点击展开）」单独吸右。 */
+  margin-left: auto;
+  padding-left: 8px;
+  white-space: nowrap;
 }
 /* 折叠时标题行是唯一的抓手，给它一个明确的焦点样式（键盘用户） */
 .note-head:focus-visible {
