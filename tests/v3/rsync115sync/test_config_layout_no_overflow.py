@@ -152,3 +152,43 @@ def test_input_rows_do_not_rely_on_flex_width_math():
         # 且该行确实含输入框（否则这条断言没有意义）
         seg = body[m.end():body.find("<!--", m.end()) if body.find("<!--", m.end()) > 0 else m.end() + 4000]
         assert "v-text-field" in seg, f"「{label}」行内未找到 v-text-field，用例前提不成立"
+
+
+def test_description_blocks_share_one_style():
+    """
+    页面里的说明块必须用**同一种样式**（`v-alert type="info" variant="tonal"`）。
+
+    **为什么专门钉一条**：Webhook 接入说明曾用自制的 `.sub-note`（灰底 + 左侧
+    竖线）来表达"它从属于上面的开关"。层级确实表达出来了，但代价是它在一片
+    蓝色说明块里显得**像是另一种东西** —— 用户直接指出「样式和其它描述模块
+    不一样，其他是蓝色的」。
+
+    结论：**层级应该由位置表达（紧跟在所属开关之后），而不是靠换一套配色**。
+    页面里出现第二种"说明块样式"时，读者得先分辨"这两种蓝/灰是不是在说不同的事"，
+    而它其实不承载任何额外语义。
+
+    这条断言的做法是：找出所有形如「标题 + 正文说明」的块，检查它们的容器类
+    是否一致 —— 出现新的自制样式类就失败。
+    """
+    src = _config_vue()
+    # ⚠️ 必须**先剥掉注释**再查。
+    # 第一版直接在全文里找 ".sub-note"，命中的是**解释"为什么不再用 .sub-note"的注释**
+    # —— 一条正确地描述了历史的注释被判成"样式复活了"。这与本项目已记过三次的
+    # 同类错误一模一样（grep 命中注释 / 绑死引号 / 剥标签剥掉包裹）。
+    code = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+    code = re.sub(r"<!--.*?-->", " ", code, flags=re.DOTALL)
+    # 已知的说明块容器：v-alert（统一）+ 历史上的自制类（禁止复活）
+    forbidden = ["sub-note", "note-block", "desc-block"]
+    for token in forbidden:
+        assert token not in code, (
+            f"出现了非统一的说明块样式 {token!r} —— 页面里只该有 v-alert type=\"info\" "
+            f"（用户已反馈过：自制的灰底/竖线样式与其它说明块不一致）"
+        )
+    # 且说明块确实用的是统一的 v-alert 形态
+    body = _template(src)
+    alerts = re.findall(r'<v-alert[^>]*type="([a-z]+)"[^>]*variant="([a-z]+)"', body)
+    assert alerts, "未找到任何 v-alert 说明块"
+    info_tonal = [a for a in alerts if a == ("info", "tonal")]
+    assert len(info_tonal) >= 3, (
+        f"说明块应统一为 type=info variant=tonal，实际只有 {len(info_tonal)} 个"
+    )

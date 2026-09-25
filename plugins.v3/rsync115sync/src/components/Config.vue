@@ -61,10 +61,15 @@
 
           <!-- Webhook 接入说明：**挂在「启用入库监听」这一项下面** ——
                那个开关管的就是这条来源能不能进来，接入方式紧跟着它读才顺。
-               用左侧竖线 + 缩进做出从属关系，避免看起来像另一个并列开关。 -->
-          <div class="sub-note px-4 py-3">
-            <div class="font-weight-bold text-body-2 mb-1">怎么把入库推给本插件（Webhook）</div>
-            <div class="text-caption text-medium-emphasis">
+
+               ⚠️ 样式必须与页面其它说明块**完全一致**（v-alert type="info" variant="tonal"）。
+               这里曾用过自制的 `.sub-note`（灰底 + 左侧竖线）来表达"从属关系"，
+               代价是它在一片蓝色说明块里显得像是另一种东西 —— 用户直接指出
+               「样式和其它描述模块不一样，其他是蓝色的」。层级已经由**位置**
+               表达（紧跟在所属开关之后），不需要再靠换一套配色去强调。 -->
+          <div class="px-4 pb-3">
+            <v-alert type="info" variant="tonal" density="compact" class="rounded-lg text-body-2 mb-0">
+              <div class="font-weight-bold mb-1">怎么把入库推给本插件（Webhook）</div>
               在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
               <br>
               <!-- ⚠️ 这个地址必须允许换行，否则它是**整页最长的一串不可断字符**
@@ -82,7 +87,7 @@
               <br>
               推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
               （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
-            </div>
+            </v-alert>
           </div>
 
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-t">
@@ -816,20 +821,6 @@ onMounted(() => {
   width: 100%;
   max-width: 240px;
 }
-/* 「某一项的从属说明」：挂在它所属的开关下面，用左侧竖线 + 缩进表示层级。
-   为什么需要这层视觉：说明块与开关**同为卡片内的块**，只靠先后顺序表达从属
-   关系不够 —— 用户会把「怎么把入库推给本插件」读成另一个并列的配置项，
-   而实际上它一个配置项都没有，是对上面那个开关的补充说明。
-   竖线的颜色取主题 primary，与它所属开关的强调色一致。 */
-.sub-note {
-  border-left: 3px solid rgba(var(--v-theme-primary, 24, 103, 192), 0.35);
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.015);
-}
-/* 左侧竖线占 3px，所以内容列要相应右移，否则文字会贴在竖线上 */
-.sub-note > div {
-  padding-left: 12px;
-}
-
 /* ⚠️ 这里刻意**不**给控件加 `flex: 1 1 100%`。那会让每个输入框永远独占一行
    （即使宽屏有空间），把原本紧凑的"左说明 + 右输入框"布局改掉。
    已有的 `flex: 0 0 auto`（见上）配合父级 `flex-wrap: wrap` 已经足够：
