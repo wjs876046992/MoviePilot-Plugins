@@ -193,14 +193,17 @@ def test_description_blocks_share_one_style():
             f"出现了非统一的说明块样式 {token!r} —— 页面里只该有 v-alert type=\"info\" "
             f"（用户已反馈过：自制的灰底/竖线样式与其它说明块不一致）"
         )
-    # 且说明块确实用的是统一的 v-alert 形态
-    body = _template(src)
-    alerts = re.findall(r'<v-alert[^>]*type="([a-z]+)"[^>]*variant="([a-z]+)"', body)
-    assert alerts, "未找到任何 v-alert 说明块"
-    info_tonal = [a for a in alerts if a == ("info", "tonal")]
-    assert len(info_tonal) >= 3, (
-        f"说明块应统一为 type=info variant=tonal，实际只有 {len(info_tonal)} 个"
+    # 说明块的**统一形态由组件保证**：所有长说明都走 CollapsibleNote，
+    # 而它内部固定用 `<v-alert type="info" variant="tonal">`。
+    # ⚠️ 这里不能再数"页面里有几个 info alert" —— 长说明已全部收进组件，
+    # 页面模板里那个计数自然变成 0，第一版就是这么误报的。
+    note = _read_component("CollapsibleNote.vue")
+    assert re.search(r'<v-alert[^>]*type="info"[^>]*variant="tonal"', note), (
+        "CollapsibleNote 必须内部固定用 type=info variant=tonal —— "
+        "用户此前专门要求过所有说明块外观一致（都是蓝色）"
     )
+    # 折叠组件必须被配置页真正使用（否则本文件其它断言都是空转）
+    assert "<CollapsibleNote" in _template(src), "配置页未使用 CollapsibleNote"
 
 
 def test_theme_variables_have_no_literal_fallback():
@@ -294,4 +297,50 @@ def test_column_direction_resets_flex_basis():
         "`.setting-row > div:first-child` 的 flex 基准 —— 桌面端那个 "
         "`flex: 1 1 20rem` 会转而控制**高度**，让每个开关行凭空多出约 320px"
         "（用户实测：手机端「启用同步助手」占了很大的高度）"
+    )
+
+
+def test_long_notes_are_collapsible_by_default():
+    """
+    配置页的长说明必须**默认折叠**，点击展开。
+
+    **为什么**（用户反馈）：手机屏幕窄，配置页的描述都展开着时占十几行，
+    一屏放不下一个设置项 —— 用户得不停滚动才能找到真正要改的开关。
+    桌面端宽屏时这个问题不明显，所以只有手机用户会先报出来。
+
+    ## 实现约束（这条断言同时钉住三件事）
+
+    1. **用 `v-show` 而不是 `v-if`**：`v-if` 会把内容从 DOM 里移除，
+       折叠状态下 Ctrl+F 找不到任何关键词 —— 而"想确认某条说明怎么写"
+       恰恰是用户会去搜索的场景（也正是他会想展开那条说明的时候）。
+       `v-show` 保留 DOM、只切 `display`，搜索能得到反馈。
+    2. **默认关闭**：`ref(false)`。
+    3. **不得用 `v-expansion-panels`**：那会引入一套新的视觉语言（面板边框、
+       联动语义），而这些说明各自依附于**它上面那个**设置项，不是一组并列面板；
+       且用户此前专门要求过所有说明块"样式一致、都是蓝色"。
+    """
+    src = _read_component("CollapsibleNote.vue")
+    assert "v-show" in src, "折叠应使用 v-show（保留 DOM，Ctrl+F 仍能搜到关键词）"
+    # ⚠️ 不能简单断言"模板里没有 v-if" —— 组件用 v-if 控制「（点击展开）」
+    # 那个小提示的显隐，那是合理的。要检查的是**承载折叠内容的容器**。
+    # （第一版就是这么写错的，一条正确的实现被自己的哨兵判红。）
+    tmpl = src.split("<template>")[1].split("</template>")[0]
+    slot_line = next((ln for ln in tmpl.splitlines() if "<slot" in ln or "slot />" in ln), "")
+    assert slot_line, "未找到承载内容的 <slot>"
+    assert "v-show" in slot_line, f"折叠内容的容器必须用 v-show，实际：{slot_line.strip()}"
+    assert "v-if" not in slot_line, f"折叠内容不得用 v-if，实际：{slot_line.strip()}"
+    assert re.search(r"const open = ref\(false\)", src), "必须默认折叠（ref(false)）"
+
+    # 配置页：长说明都应改用该组件，模板里不应再有裸露的 info alert
+    cfg = _read_component("Config.vue")
+    body = cfg[cfg.find("<template>"):cfg.rfind("</template>")]
+    assert "CollapsibleNote" in cfg, "配置页未使用可折叠说明组件"
+    assert "<v-expansion-panels" not in body, (
+        "不得改用 v-expansion-panels —— 这些说明各自依附于它上面的设置项，"
+        "不是一组并列面板；且会破坏所有说明块外观一致的前提"
+    )
+    leftovers = re.findall(r'<v-alert[^>]*type="info"[^>]*>', body)
+    assert not leftovers, (
+        f"还有 {len(leftovers)} 个长说明未折叠 —— 手机端会占满屏幕，"
+        f"请改用 <CollapsibleNote title=\"…\">"
     )

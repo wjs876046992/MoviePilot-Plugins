@@ -68,26 +68,25 @@
                「样式和其它描述模块不一样，其他是蓝色的」。层级已经由**位置**
                表达（紧跟在所属开关之后），不需要再靠换一套配色去强调。 -->
           <div class="px-4 pb-3">
-            <v-alert type="info" variant="tonal" density="compact" class="rounded-lg text-body-2 mb-0">
-              <div class="font-weight-bold mb-1">怎么把入库推给本插件（Webhook）</div>
-              在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
-              <br>
-              <!-- ⚠️ 这个地址必须允许换行，否则它是**整页最长的一串不可断字符**
-                   （约 80 字符无空格），会把所在行撑出卡片宽度，而卡片是
-                   overflow-hidden —— 右侧内容（含同一模块里 cron 输入框那一列）
-                   会被整条裁掉。`word-break: break-all` 让它在任意字符处折行。 -->
-              <code class="wrap-anywhere">http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
-              <br>
-              也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
-              <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
-              本插件都不会处理，那些报文归平台自己的解析器管。
-              <br>
-              本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听
-              （这是<b>有意的设计</b>，不是待办 —— 媒体服务器自己的入库归平台处理）。
-              <br>
-              推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
-              （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
-            </v-alert>
+            <CollapsibleNote title="怎么把入库推给本插件（Webhook）" class="mb-0">
+    在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
+                  <br>
+                  <!-- ⚠️ 这个地址必须允许换行，否则它是**整页最长的一串不可断字符**
+                       （约 80 字符无空格），会把所在行撑出卡片宽度，而卡片是
+                       overflow-hidden —— 右侧内容（含同一模块里 cron 输入框那一列）
+                       会被整条裁掉。`word-break: break-all` 让它在任意字符处折行。 -->
+                  <code class="wrap-anywhere">http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
+                  <br>
+                  也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
+                  <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
+                  本插件都不会处理，那些报文归平台自己的解析器管。
+                  <br>
+                  本插件没有任何需要在这里配置的项：只认上面这个标识，其余来源一概不监听
+                  （这是<b>有意的设计</b>，不是待办 —— 媒体服务器自己的入库归平台处理）。
+                  <br>
+                  推送内容支持单个文件路径或目录（目录会自动展开），事件请用<b>入库类</b>
+                  （如 <code>library.new</code>）—— 播放类事件会被自动忽略，填了也不会误触发上传。
+          </CollapsibleNote>
           </div>
 
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-t">
@@ -123,27 +122,26 @@
 
           <!-- 入库发现的完整语义集中在这里（卡片内只留一句话，见上） -->
           <div class="px-4 pb-3">
-            <v-alert type="info" variant="tonal" density="compact" class="rounded-lg text-body-2 mb-0">
-              <div class="font-weight-bold mb-1">入库是怎么被发现的</div>
-              本插件有<b>两条</b>入库来源，分工是刻意的：
-              <div class="mt-1">
-                <b>① 源端扫描 —— 主通道，完整性的唯一承担者。</b>
-                按上面的 cron 遍历各映射的本地源目录，把「修改时间晚于上次成功扫描时刻」的文件纳入冷却队列。
-                整理入库、手动放进媒体库、外部工具搬入，以及插件重载期间发生的入库，它都能看见。
-                <b>每轮只做本地目录遍历，不访问 115 挂载点，不消耗上传配额、不触发风控。</b>
-                扫得更勤<b>不会</b>让文件更早上传（进队列后还要等满冷却），只是让它更早进队列。
-              </div>
-              <div class="mt-1">
-                <b>② Webhook —— 加速器，不承担完整性。</b>
-                发送端主动通知（接入方式见上方「怎么把入库推给本插件」）。它让文件早一点进队列，
-                但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。
-              </div>
-              <div class="mt-1">
-                关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到
-                「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 ——
-                那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。
-              </div>
-            </v-alert>
+            <CollapsibleNote title="入库是怎么被发现的" class="mb-0">
+    本插件有<b>两条</b>入库来源，分工是刻意的：
+                  <div class="mt-1">
+                    <b>① 源端扫描 —— 主通道，完整性的唯一承担者。</b>
+                    按上面的 cron 遍历各映射的本地源目录，把「修改时间晚于上次成功扫描时刻」的文件纳入冷却队列。
+                    整理入库、手动放进媒体库、外部工具搬入，以及插件重载期间发生的入库，它都能看见。
+                    <b>每轮只做本地目录遍历，不访问 115 挂载点，不消耗上传配额、不触发风控。</b>
+                    扫得更勤<b>不会</b>让文件更早上传（进队列后还要等满冷却），只是让它更早进队列。
+                  </div>
+                  <div class="mt-1">
+                    <b>② Webhook —— 加速器，不承担完整性。</b>
+                    发送端主动通知（接入方式见上方「怎么把入库推给本插件」）。它让文件早一点进队列，
+                    但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。
+                  </div>
+                  <div class="mt-1">
+                    关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到
+                    「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 ——
+                    那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。
+                  </div>
+          </CollapsibleNote>
           </div>
         </div>
 
@@ -162,31 +160,30 @@
         <!-- 字段说明集中在本模块顶部。卡片内只留"这里填什么"的极短提示 ——
              说明散在每个输入框的 hint 里时，用户要滚动才能拼出完整语义，
              而且同一句话会在每个映射卡片里重复一遍（映射越多越乱）。 -->
-        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
-          <div class="font-weight-bold mb-1">每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录</div>
-          插件只同步这些映射内的文件，不会扫描其它位置。
-          <div class="mt-2"><b>任务备注名称</b>：会成为文件清单的前缀（如
-            <code>电视剧:剧名/剧名 S01E01.mkv</code>）。改名不会导致重复同步，
-            但会让旧的异常清单条目失去对应关系，建议一次定好。</div>
-          <div class="mt-1"><b>本地源目录</b>：NAS 上的媒体目录，需在容器内可访问。</div>
-          <div class="mt-1"><b>CD2 挂载 115 目录</b>：上面对应的网盘目标目录。</div>
-          <div class="mt-1"><b>同步所有文件类型</b>：关闭时只传下方「同步的扩展名」白名单里的文件
-            （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别：
-            收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）——
-            否则「全都要上传」就变成了「只传被点到名的那一个」。</div>
-          <div class="mt-1"><b>strm 目录</b>：可选。填了才对该映射启用上传结果交叉验证 ——
-            同步成功后进入观察期，到期仍未生成对应 <code>.strm</code> 会标记为「疑似上传异常」。
-            看板可先请 STRM 助手补生成（成本低、多半直接解决），确认无效后再删旧重传。
-            观察与扫描全程纯本地，<b>零 115 API</b>。
-            <b>不依赖 P115StrmHelper</b>：任何会生成 .strm 的插件都可以，
-            甚至完全不用插件、只填一个目录也能工作。</div>
-          <div class="mt-1"><b>网盘目录</b>：可选，<b>仅「先尝试生成 strm」</b>用得到。
-            填该映射在 115 网盘里的目录（<b>不是</b> CD2 挂载路径）；本地 strm 目录与
-            网盘目录是两棵独立的树，无法自动推导，所以要单独填。
-            注意助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配会被拒绝
-            （提示路径匹配错误）。<b>依赖 P115StrmHelper</b>；留空只是该映射不能用补生成，
-            不影响同步、对账、观察与删旧重传。</div>
-        </v-alert>
+        <CollapsibleNote title="每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录" class="mb-3">
+    插件只同步这些映射内的文件，不会扫描其它位置。
+              <div class="mt-2"><b>任务备注名称</b>：会成为文件清单的前缀（如
+                <code>电视剧:剧名/剧名 S01E01.mkv</code>）。改名不会导致重复同步，
+                但会让旧的异常清单条目失去对应关系，建议一次定好。</div>
+              <div class="mt-1"><b>本地源目录</b>：NAS 上的媒体目录，需在容器内可访问。</div>
+              <div class="mt-1"><b>CD2 挂载 115 目录</b>：上面对应的网盘目标目录。</div>
+              <div class="mt-1"><b>同步所有文件类型</b>：关闭时只传下方「同步的扩展名」白名单里的文件
+                （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别：
+                收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）——
+                否则「全都要上传」就变成了「只传被点到名的那一个」。</div>
+              <div class="mt-1"><b>strm 目录</b>：可选。填了才对该映射启用上传结果交叉验证 ——
+                同步成功后进入观察期，到期仍未生成对应 <code>.strm</code> 会标记为「疑似上传异常」。
+                看板可先请 STRM 助手补生成（成本低、多半直接解决），确认无效后再删旧重传。
+                观察与扫描全程纯本地，<b>零 115 API</b>。
+                <b>不依赖 P115StrmHelper</b>：任何会生成 .strm 的插件都可以，
+                甚至完全不用插件、只填一个目录也能工作。</div>
+              <div class="mt-1"><b>网盘目录</b>：可选，<b>仅「先尝试生成 strm」</b>用得到。
+                填该映射在 115 网盘里的目录（<b>不是</b> CD2 挂载路径）；本地 strm 目录与
+                网盘目录是两棵独立的树，无法自动推导，所以要单独填。
+                注意助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配会被拒绝
+                （提示路径匹配错误）。<b>依赖 P115StrmHelper</b>；留空只是该映射不能用补生成，
+                不影响同步、对账、观察与删旧重传。</div>
+          </CollapsibleNote>
 
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
           <div v-for="(pair, idx) in config.sync_pairs" :key="idx" class="pair-card rounded-xl pa-4">
@@ -295,15 +292,14 @@
         </div>
 
         <!-- 通俗说明：为什么需要限流，用大白话讲清风控逻辑 -->
-        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-2 text-body-2">
-          <div class="font-weight-bold mb-1">为什么需要限流？</div>
-          115 网盘会统计<b>单位时间内上传的文件个数</b>。大量小文件（尤其是字幕、样张）
-          在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。
-          <br>
-          本插件用两层限制来避免：<b>单批上限</b>控制一次传输提交多少文件，
-          <b>窗口配额</b>控制一段时间内累计上传多少文件。超出的部分不会丢弃，
-          会在下一个窗口自动继续，直到全部传完。
-        </v-alert>
+        <CollapsibleNote title="为什么需要限流？" class="mb-2">
+    115 网盘会统计<b>单位时间内上传的文件个数</b>。大量小文件（尤其是字幕、样张）
+              在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。
+              <br>
+              本插件用两层限制来避免：<b>单批上限</b>控制一次传输提交多少文件，
+              <b>窗口配额</b>控制一段时间内累计上传多少文件。超出的部分不会丢弃，
+              会在下一个窗口自动继续，直到全部传完。
+          </CollapsibleNote>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
@@ -415,8 +411,8 @@
             不依赖任何插件
           </v-chip>
         </div>
-        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
-          <b>它是用来发现「假成功」的</b>：CD2 改名失败时，挂载视图会显示目标文件
+        <CollapsibleNote title="它解决的是「假成功」—— 为什么对账看不出来" class="mb-3">
+          CD2 改名失败时，挂载视图会显示目标文件
           「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账
           与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角<b>结构上看不见</b>这种失败。
           <br>
@@ -430,7 +426,7 @@
           <b>发现疑似后怎么处理</b>：「缺 strm」有两种成因，处理成本差很多 ——
           <b>①</b> strm 插件自己漏生成（云端文件其实是好的）；<b>②</b> CD2 改名失败假成功
           （云端只有半成品，必须删旧重传）。插件<b>无法从本地视角区分</b>这两者。
-        </v-alert>
+        </CollapsibleNote>
 
         <!-- 依赖边界对照表：本模块是「核心不依赖、可选增强依赖」的典型，
              分开列出来，避免用户以为整个功能都要装 P115StrmHelper -->
@@ -456,9 +452,8 @@
           </div>
         </div>
 
-        <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
-          <b>「先尝试生成 strm」的启用前提（两处都要配）</b>：
-          <br><b>①</b> 上方目录映射里为该映射填写「<b>网盘目录</b>」
+        <CollapsibleNote title="「先尝试生成 strm」的启用前提（两处都要配）" class="mb-3">
+          <b>①</b> 上方目录映射里为该映射填写「<b>网盘目录</b>」
           （115 网盘里的真实路径，与本地 strm 目录是两棵独立的树，无法自动推导）；
           <br><b>②</b> 该网盘路径必须已在 P115StrmHelper 的<b>「全量同步路径」</b>里配置过 ——
           助手的 <code>/p115_strm</code> 只接受它自己这个列表里的路径，其它字段
@@ -467,7 +462,7 @@
           注意这一步会<b>访问 115 网盘</b>（助手按目录遍历云端），因此看板上是手动触发、
           逐目录去重，且单次涉及目录数有上限（超过则整批拒绝，不会自动放大访问量）。
           <b>不配也不影响上面「本插件独立完成」的任何一项</b>。
-        </v-alert>
+        </CollapsibleNote>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
           <div class="setting-row setting-row-stacked px-4 py-3 border-b">
@@ -523,6 +518,7 @@
 </template>
 
 <script setup>
+import CollapsibleNote from './CollapsibleNote.vue'
 import { ref, computed, onMounted } from 'vue'
 
 const props = defineProps({

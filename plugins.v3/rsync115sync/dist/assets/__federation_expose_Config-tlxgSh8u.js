@@ -1,6 +1,83 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
+const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,withModifiers:_withModifiers,withKeys:_withKeys,renderSlot:_renderSlot,vShow:_vShow,withDirectives:_withDirectives,createBlock:_createBlock$1} = await importShared('vue');
+
+
+const _hoisted_1$1 = ["aria-expanded", "onKeydown"];
+const _hoisted_2$1 = { class: "font-weight-bold" };
+const _hoisted_3$1 = {
+  key: 0,
+  class: "text-medium-emphasis ml-1 note-hint"
+};
+const _hoisted_4$1 = { class: "mt-1" };
+
+const {ref: ref$1} = await importShared('vue');
+
+
+
+const _sfc_main$1 = {
+  __name: 'CollapsibleNote',
+  props: {
+  title: { type: String, required: true },
+},
+  setup(__props) {
+
+
+
+const open = ref$1(false);
+function toggle() { open.value = !open.value; }
+
+return (_ctx, _cache) => {
+  const _component_v_icon = _resolveComponent$1("v-icon");
+  const _component_v_alert = _resolveComponent$1("v-alert");
+
+  return (_openBlock$1(), _createBlock$1(_component_v_alert, {
+    type: "info",
+    variant: "tonal",
+    density: "compact",
+    class: "rounded-lg text-body-2 collapsible-note"
+  }, {
+    default: _withCtx$1(() => [
+      _createElementVNode$1("div", {
+        class: "note-head d-flex align-center",
+        role: "button",
+        tabindex: "0",
+        "aria-expanded": open.value ? 'true' : 'false',
+        onClick: toggle,
+        onKeydown: [
+          _withKeys(_withModifiers(toggle, ["prevent"]), ["enter"]),
+          _withKeys(_withModifiers(toggle, ["prevent"]), ["space"])
+        ]
+      }, [
+        _createVNode$1(_component_v_icon, {
+          size: "16",
+          class: "mr-1 flex-shrink-0"
+        }, {
+          default: _withCtx$1(() => [
+            _createTextVNode$1(_toDisplayString$1(open.value ? 'mdi-chevron-up' : 'mdi-chevron-down'), 1)
+          ]),
+          _: 1
+        }),
+        _createElementVNode$1("span", _hoisted_2$1, _toDisplayString$1(__props.title), 1),
+        (!open.value)
+          ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_3$1, "（点击展开）"))
+          : _createCommentVNode$1("", true)
+      ], 40, _hoisted_1$1),
+      _withDirectives(_createElementVNode$1("div", _hoisted_4$1, [
+        _renderSlot(_ctx.$slots, "default", {}, undefined, true)
+      ], 512), [
+        [_vShow, open.value]
+      ])
+    ]),
+    _: 3
+  }))
+}
+}
+
+};
+const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-90833ee6"]]);
+
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
@@ -55,7 +132,6 @@ const _hoisted_33 = { class: "dep-split-row" };
 const _hoisted_34 = { class: "settings-group-card rounded-xl overflow-hidden" };
 const _hoisted_35 = { class: "setting-row setting-row-stacked px-4 py-3 border-b" };
 const _hoisted_36 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
-
 const {ref,computed,onMounted} = await importShared('vue');
 
 
@@ -397,14 +473,11 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_7, [
-                _createVNode(_component_v_alert, {
-                  type: "info",
-                  variant: "tonal",
-                  density: "compact",
-                  class: "rounded-lg text-body-2 mb-0"
+                _createVNode(CollapsibleNote, {
+                  title: "怎么把入库推给本插件（Webhook）",
+                  class: "mb-0"
                 }, {
                   default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
-                    _createElementVNode("div", { class: "font-weight-bold mb-1" }, "怎么把入库推给本插件（Webhook）", -1),
                     _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： ", -1),
                     _createElementVNode("br", null, null, -1),
                     _createElementVNode("code", { class: "wrap-anywhere" }, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync", -1),
@@ -476,14 +549,11 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_11, [
-                _createVNode(_component_v_alert, {
-                  type: "info",
-                  variant: "tonal",
-                  density: "compact",
-                  class: "rounded-lg text-body-2 mb-0"
+                _createVNode(CollapsibleNote, {
+                  title: "入库是怎么被发现的",
+                  class: "mb-0"
                 }, {
                   default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
-                    _createElementVNode("div", { class: "font-weight-bold mb-1" }, "入库是怎么被发现的", -1),
                     _createTextVNode(" 本插件有", -1),
                     _createElementVNode("b", null, "两条", -1),
                     _createTextVNode("入库来源，分工是刻意的： ", -1),
@@ -541,14 +611,11 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
-            _createVNode(_component_v_alert, {
-              type: "info",
-              variant: "tonal",
-              density: "compact",
-              class: "rounded-lg mb-3 text-body-2"
+            _createVNode(CollapsibleNote, {
+              title: "每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录",
+              class: "mb-3"
             }, {
               default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
-                _createElementVNode("div", { class: "font-weight-bold mb-1" }, "每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录", -1),
                 _createTextVNode(" 插件只同步这些映射内的文件，不会扫描其它位置。 ", -1),
                 _createElementVNode("div", { class: "mt-2" }, [
                   _createElementVNode("b", null, "任务备注名称"),
@@ -860,14 +927,11 @@ return (_ctx, _cache) => {
               }),
               _cache[43] || (_cache[43] = _createTextVNode(" 上传限流与风控退避 ", -1))
             ]),
-            _createVNode(_component_v_alert, {
-              type: "info",
-              variant: "tonal",
-              density: "compact",
-              class: "rounded-lg mb-2 text-body-2"
+            _createVNode(CollapsibleNote, {
+              title: "为什么需要限流？",
+              class: "mb-2"
             }, {
               default: _withCtx(() => [...(_cache[44] || (_cache[44] = [
-                _createElementVNode("div", { class: "font-weight-bold mb-1" }, "为什么需要限流？", -1),
                 _createTextVNode(" 115 网盘会统计", -1),
                 _createElementVNode("b", null, "单位时间内上传的文件个数", -1),
                 _createTextVNode("。大量小文件（尤其是字幕、样张） 在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。 ", -1),
@@ -1076,15 +1140,12 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
-            _createVNode(_component_v_alert, {
-              type: "info",
-              variant: "tonal",
-              density: "compact",
-              class: "rounded-lg mb-3 text-body-2"
+            _createVNode(CollapsibleNote, {
+              title: "它解决的是「假成功」—— 为什么对账看不出来",
+              class: "mb-3"
             }, {
               default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
-                _createElementVNode("b", null, "它是用来发现「假成功」的", -1),
-                _createTextVNode("：CD2 改名失败时，挂载视图会显示目标文件 「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账 与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角", -1),
+                _createTextVNode(" CD2 改名失败时，挂载视图会显示目标文件 「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账 与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角", -1),
                 _createElementVNode("b", null, "结构上看不见", -1),
                 _createTextVNode("这种失败。 ", -1),
                 _createElementVNode("br", null, null, -1),
@@ -1149,16 +1210,11 @@ return (_ctx, _cache) => {
                 ], -1))
               ])
             ]),
-            _createVNode(_component_v_alert, {
-              type: "info",
-              variant: "tonal",
-              density: "compact",
-              class: "rounded-lg mb-3 text-body-2"
+            _createVNode(CollapsibleNote, {
+              title: "「先尝试生成 strm」的启用前提（两处都要配）",
+              class: "mb-3"
             }, {
               default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
-                _createElementVNode("b", null, "「先尝试生成 strm」的启用前提（两处都要配）", -1),
-                _createTextVNode("： ", -1),
-                _createElementVNode("br", null, null, -1),
                 _createElementVNode("b", null, "①", -1),
                 _createTextVNode(" 上方目录映射里为该映射填写「", -1),
                 _createElementVNode("b", null, "网盘目录", -1),
@@ -1278,6 +1334,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-04816cb0"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1765f201"]]);
 
 export { Config as default };
