@@ -37,7 +37,7 @@ return (_ctx, _cache) => {
     variant: "tonal",
     density: "compact",
     icon: false,
-    class: "rounded-lg text-body-2 collapsible-note"
+    class: "radius-sm text-body-2 collapsible-note"
   }, {
     default: _withCtx$1(() => [
       _createElementVNode$1("div", {
@@ -77,7 +77,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-2251128a"]]);
+const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-b0f1714d"]]);
 
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
@@ -88,7 +88,7 @@ const _hoisted_3 = {
   key: 0,
   class: "card-pad-x pt-3"
 };
-const _hoisted_4 = { class: "settings-group-card rounded-xl overflow-hidden mb-4" };
+const _hoisted_4 = { class: "settings-group-card radius-lg overflow-hidden mb-4" };
 const _hoisted_5 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
 const _hoisted_6 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3" };
 const _hoisted_7 = { class: "row-pad-x pb-3" };
@@ -106,14 +106,14 @@ const _hoisted_15 = { class: "d-flex align-center justify-space-between mb-3" };
 const _hoisted_16 = { class: "font-weight-bold text-body-2 text-primary" };
 const _hoisted_17 = {
   key: 1,
-  class: "empty-hint-box text-center py-6 rounded-xl mb-4 text-caption text-disabled"
+  class: "empty-hint-box text-center py-6 radius-lg mb-4 text-caption text-disabled"
 };
 const _hoisted_18 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_19 = { class: "settings-group-card rounded-xl overflow-hidden pa-4 mb-4" };
+const _hoisted_19 = { class: "settings-group-card radius-lg overflow-hidden pa-4 mb-4" };
 const _hoisted_20 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_21 = { class: "settings-group-card rounded-xl overflow-hidden pa-4" };
+const _hoisted_21 = { class: "settings-group-card radius-lg overflow-hidden pa-4" };
 const _hoisted_22 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
-const _hoisted_23 = { class: "settings-group-card rounded-xl overflow-hidden" };
+const _hoisted_23 = { class: "settings-group-card radius-lg overflow-hidden" };
 const _hoisted_24 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
 const _hoisted_25 = {
   key: 0,
@@ -127,10 +127,10 @@ const _hoisted_28 = {
 };
 const _hoisted_29 = { class: "row-pad-x py-3" };
 const _hoisted_30 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_31 = { class: "dep-split rounded-lg mb-3" };
+const _hoisted_31 = { class: "dep-split radius-sm mb-3" };
 const _hoisted_32 = { class: "dep-split-row" };
 const _hoisted_33 = { class: "dep-split-row" };
-const _hoisted_34 = { class: "settings-group-card rounded-xl overflow-hidden" };
+const _hoisted_34 = { class: "settings-group-card radius-lg overflow-hidden" };
 const _hoisted_35 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
 const _hoisted_36 = { class: "setting-row d-flex align-center justify-space-between row-pad-x py-3" };
 const {ref,computed,onMounted} = await importShared('vue');
@@ -337,7 +337,7 @@ return (_ctx, _cache) => {
 
   return (_openBlock(), _createElementBlock("div", _hoisted_1, [
     _createVNode(_component_v_card, {
-      class: "d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card",
+      class: "d-flex flex-column h-100 radius-lg overflow-hidden config-main-card",
       elevation: "0",
       variant: "outlined"
     }, {
@@ -361,7 +361,7 @@ return (_ctx, _cache) => {
               icon: "",
               variant: "text",
               size: "small",
-              class: "rounded-lg close-btn",
+              class: "radius-sm close-btn",
               onClick: notifyClose
             }, {
               default: _withCtx(() => [
@@ -415,7 +415,7 @@ return (_ctx, _cache) => {
                     key: 0,
                     type: "success",
                     variant: "tonal",
-                    class: "rounded-lg mb-2",
+                    class: "radius-sm mb-2",
                     closable: "",
                     "onClick:close": _cache[0] || (_cache[0] = $event => (successMessage.value = null))
                   }, {
@@ -430,7 +430,7 @@ return (_ctx, _cache) => {
                     key: 1,
                     type: "error",
                     variant: "tonal",
-                    class: "rounded-lg mb-2",
+                    class: "radius-sm mb-2",
                     closable: "",
                     "onClick:close": _cache[1] || (_cache[1] = $event => (error.value = null))
                   }, {
@@ -594,7 +594,7 @@ return (_ctx, _cache) => {
                 size: "small",
                 variant: "tonal",
                 color: "primary",
-                rounded: "lg",
+                "radius-sm": "",
                 onClick: addPair
               }, {
                 default: _withCtx(() => [
@@ -664,7 +664,7 @@ return (_ctx, _cache) => {
                   (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(config.value.sync_pairs, (pair, idx) => {
                     return (_openBlock(), _createElementBlock("div", {
                       key: idx,
-                      class: "pair-card rounded-xl pa-4"
+                      class: "pair-card radius-lg pa-4"
                     }, [
                       _createElementVNode("div", _hoisted_15, [
                         _createElementVNode("span", _hoisted_16, "映射任务 #" + _toDisplayString(idx + 1), 1),
@@ -1283,7 +1283,7 @@ return (_ctx, _cache) => {
           default: _withCtx(() => [
             _createVNode(_component_v_btn, {
               variant: "tonal",
-              rounded: "lg",
+              "radius-sm": "",
               color: "primary",
               onClick: notifySwitch
             }, {
@@ -1305,7 +1305,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_v_btn, {
               variant: "flat",
               color: "primary",
-              rounded: "lg",
+              "radius-sm": "",
               class: "px-6",
               onClick: saveConfig,
               loading: saving.value
@@ -1335,6 +1335,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-08e286af"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9df2c203"]]);
 
 export { Config as default };

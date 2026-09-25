@@ -7,20 +7,20 @@ const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withC
 const _hoisted_1 = { class: "plugin-page" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = { class: "d-flex align-center flex-wrap justify-end ga-1 header-append" };
-const _hoisted_4 = { class: "stat-card stat-info rounded-xl pa-3 text-center" };
+const _hoisted_4 = { class: "stat-card stat-info radius-lg pa-3 text-center" };
 const _hoisted_5 = { class: "text-h5 font-weight-black text-info" };
 const _hoisted_6 = { class: "text-caption text-medium-emphasis mt-1" };
-const _hoisted_7 = { class: "stat-card stat-primary rounded-xl pa-3 text-center" };
+const _hoisted_7 = { class: "stat-card stat-primary radius-lg pa-3 text-center" };
 const _hoisted_8 = { class: "text-h5 font-weight-black text-primary" };
-const _hoisted_9 = { class: "stat-card stat-error rounded-xl pa-3 text-center" };
+const _hoisted_9 = { class: "stat-card stat-error radius-lg pa-3 text-center" };
 const _hoisted_10 = { class: "text-h5 font-weight-black text-error" };
-const _hoisted_11 = { class: "stat-card stat-muted rounded-xl pa-2 text-center" };
+const _hoisted_11 = { class: "stat-card stat-muted radius-lg pa-2 text-center" };
 const _hoisted_12 = { class: "text-subtitle-1 font-weight-black" };
-const _hoisted_13 = { class: "stat-card stat-warning rounded-xl pa-2 text-center" };
+const _hoisted_13 = { class: "stat-card stat-warning radius-lg pa-2 text-center" };
 const _hoisted_14 = { class: "text-subtitle-1 font-weight-black text-warning" };
-const _hoisted_15 = { class: "stat-card stat-warning rounded-xl pa-2 text-center" };
+const _hoisted_15 = { class: "stat-card stat-warning radius-lg pa-2 text-center" };
 const _hoisted_16 = { class: "text-subtitle-1 font-weight-black text-warning" };
-const _hoisted_17 = { class: "stat-card stat-muted rounded-xl pa-2 text-center" };
+const _hoisted_17 = { class: "stat-card stat-muted radius-lg pa-2 text-center" };
 const _hoisted_18 = { class: "text-subtitle-1 font-weight-black" };
 const _hoisted_19 = {
   key: 0,
@@ -47,7 +47,7 @@ const _hoisted_27 = {
   class: "mt-1"
 };
 const _hoisted_28 = { class: "mt-1" };
-const _hoisted_29 = { class: "action-strip rounded-xl pa-3 mb-4" };
+const _hoisted_29 = { class: "action-strip radius-lg pa-3 mb-4" };
 const _hoisted_30 = { class: "action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2" };
 const _hoisted_31 = { class: "action-group d-flex align-center flex-wrap ga-2" };
 const _hoisted_32 = { class: "action-group d-flex align-center flex-wrap ga-2" };
@@ -87,7 +87,7 @@ const _hoisted_46 = {
 const _hoisted_47 = { class: "text-caption text-medium-emphasis" };
 const _hoisted_48 = {
   key: 2,
-  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
+  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center"
 };
 const _hoisted_49 = { key: 4 };
 const _hoisted_50 = {
@@ -105,7 +105,7 @@ const _hoisted_55 = {
 const _hoisted_56 = { class: "text-caption text-medium-emphasis" };
 const _hoisted_57 = {
   key: 2,
-  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
+  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center"
 };
 const _hoisted_58 = { key: 5 };
 const _hoisted_59 = {
@@ -166,7 +166,7 @@ const _hoisted_89 = {
 const _hoisted_90 = { class: "text-caption text-medium-emphasis" };
 const _hoisted_91 = {
   key: 2,
-  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center"
+  class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center"
 };
 
 const {ref,computed,onMounted,onUnmounted} = await importShared('vue');
@@ -1185,7 +1185,7 @@ return (_ctx, _cache) => {
 
   return (_openBlock(), _createElementBlock("div", _hoisted_1, [
     _createVNode(_component_v_card, {
-      class: "d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card",
+      class: "d-flex flex-column h-100 radius-lg overflow-hidden page-main-card",
       elevation: "0",
       variant: "outlined"
     }, {
@@ -1211,7 +1211,7 @@ return (_ctx, _cache) => {
                 variant: "tonal",
                 color: "primary",
                 size: "small",
-                class: "rounded-lg mr-1",
+                class: "radius-sm mr-1",
                 onClick: fetchStatus,
                 loading: loading.value
               }, {
@@ -1236,7 +1236,7 @@ return (_ctx, _cache) => {
               }, 8, ["loading"]),
               _createVNode(_component_v_btn, {
                 color: "primary",
-                rounded: "lg",
+                "radius-sm": "",
                 variant: "outlined",
                 size: "small",
                 class: "px-3 font-weight-medium mr-1",
@@ -1260,7 +1260,7 @@ return (_ctx, _cache) => {
                 icon: "",
                 variant: "text",
                 size: "small",
-                class: "rounded-lg close-btn text-medium-emphasis",
+                class: "radius-sm close-btn text-medium-emphasis",
                 onClick: notifyClose
               }, {
                 default: _withCtx(() => [
@@ -1422,7 +1422,7 @@ return (_ctx, _cache) => {
                   type: isThrottled.value || sourceScanProblem.value ? 'warning' : 'info',
                   variant: "tonal",
                   density: "compact",
-                  class: "rounded-lg mb-3 text-body-2"
+                  class: "radius-sm mb-3 text-body-2"
                 }, {
                   default: _withCtx(() => [
                     (isThrottled.value)
@@ -1471,7 +1471,7 @@ return (_ctx, _cache) => {
                   type: webhookStat.value.rejected > 0 ? 'warning' : 'info',
                   variant: "tonal",
                   density: "compact",
-                  class: "rounded-lg mb-3 text-body-2"
+                  class: "radius-sm mb-3 text-body-2"
                 }, {
                   default: _withCtx(() => [
                     _createElementVNode("div", _hoisted_25, [
@@ -1520,7 +1520,7 @@ return (_ctx, _cache) => {
                   type: "warning",
                   variant: "tonal",
                   density: "compact",
-                  class: "rounded-lg mb-3 text-body-2"
+                  class: "radius-sm mb-3 text-body-2"
                 }, {
                   default: _withCtx(() => [
                     _cache[43] || (_cache[43] = _createElementVNode("div", { class: "font-weight-medium" }, [
@@ -1555,7 +1555,7 @@ return (_ctx, _cache) => {
                     color: "success",
                     variant: "flat",
                     size: "small",
-                    rounded: "lg",
+                    "radius-sm": "",
                     onClick: runNow,
                     loading: runningNow.value,
                     disabled: statusData.value.is_running
@@ -1589,7 +1589,7 @@ return (_ctx, _cache) => {
                     color: "primary",
                     variant: "tonal",
                     size: "small",
-                    rounded: "lg",
+                    "radius-sm": "",
                     onClick: triggerSync,
                     loading: syncing.value,
                     disabled: statusData.value.is_running
@@ -1612,7 +1612,7 @@ return (_ctx, _cache) => {
                     color: "warning",
                     variant: "tonal",
                     size: "small",
-                    rounded: "lg",
+                    "radius-sm": "",
                     onClick: triggerRetry,
                     loading: retrying.value,
                     disabled: statusData.value.is_running || (!statusData.value.last_status?.missing_files?.length && !statusData.value.last_status?.corrupt_files?.length)
@@ -1635,7 +1635,7 @@ return (_ctx, _cache) => {
                     color: "info",
                     variant: "tonal",
                     size: "small",
-                    rounded: "lg",
+                    "radius-sm": "",
                     onClick: scanBackfill,
                     loading: backfillScanning.value,
                     disabled: statusData.value.is_running
@@ -1669,7 +1669,7 @@ return (_ctx, _cache) => {
                         color: "error",
                         variant: "text",
                         size: "small",
-                        rounded: "lg",
+                        "radius-sm": "",
                         onClick: clearBackfill,
                         disabled: statusData.value.is_running
                       }, {
@@ -1699,7 +1699,7 @@ return (_ctx, _cache) => {
                         size: "small",
                         variant: "tonal",
                         color: selectMode.value ? 'error' : 'secondary',
-                        rounded: "lg",
+                        "radius-sm": "",
                         onClick: toggleSelectMode
                       }, {
                         default: _withCtx(() => [
@@ -1723,7 +1723,7 @@ return (_ctx, _cache) => {
                         size: "small",
                         variant: "flat",
                         color: selectedStrmOnly.value ? 'warning' : 'primary',
-                        rounded: "lg",
+                        "radius-sm": "",
                         loading: batchSyncing.value,
                         disabled: !selectedKeys.value.length || statusData.value.is_running,
                         onClick: batchSyncSelected
@@ -1761,7 +1761,7 @@ return (_ctx, _cache) => {
                         size: "small",
                         variant: "tonal",
                         color: "secondary",
-                        rounded: "lg",
+                        "radius-sm": "",
                         loading: batchSyncing.value,
                         disabled: !selectedKeys.value.length || statusData.value.is_running,
                         onClick: _cache[0] || (_cache[0] = $event => (ignoreStrmSuspects(selectedKeys.value.filter((k) => k in (statusData.value.strm_suspects || {})))))
@@ -1903,7 +1903,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(queuePaged.value.slice, (item) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: item.key,
-                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
+                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_39, [
                               (selectMode.value)
@@ -1943,7 +1943,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "tonal",
                                 color: "primary",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 class: "px-2",
                                 loading: itemLoading.value === item.key,
                                 disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== item.key),
@@ -1982,7 +1982,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
                           onClick: _cache[2] || (_cache[2] = $event => (paged.value.pageRef.value = paged.value.page - 1))
@@ -2009,7 +2009,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
                           onClick: _cache[3] || (_cache[3] = $event => (paged.value.pageRef.value = paged.value.page + 1))
@@ -2054,7 +2054,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(failedPaged.value.slice, (entry) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: entry.kind + ':' + entry.file,
-                            class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
+                            class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_51, [
                               (selectMode.value)
@@ -2091,7 +2091,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "tonal",
                                 color: "primary",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 class: "px-2",
                                 loading: itemLoading.value === _ctx.file,
                                 disabled: statusData.value.is_running || (!!itemLoading.value && itemLoading.value !== _ctx.file),
@@ -2156,7 +2156,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
                           onClick: _cache[6] || (_cache[6] = $event => (paged.value.pageRef.value = paged.value.page - 1))
@@ -2183,7 +2183,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
                           onClick: _cache[7] || (_cache[7] = $event => (paged.value.pageRef.value = paged.value.page + 1))
@@ -2253,7 +2253,7 @@ return (_ctx, _cache) => {
                             size: "x-small",
                             variant: "tonal",
                             color: "primary",
-                            rounded: "lg",
+                            "radius-sm": "",
                             loading: strmScanning.value,
                             disabled: !statusData.value.strm_check_enabled,
                             onClick: scanStrm
@@ -2278,7 +2278,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "text",
                                 color: "secondary",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 loading: itemLoading.value === 'strm:prune',
                                 onClick: pruneStrmSuspects
                               }, {
@@ -2312,7 +2312,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "tonal",
                                 color: "success",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 loading: itemLoading.value === 'strm:gen',
                                 disabled: statusData.value.is_running || !helperReady.value,
                                 onClick: generateStrm
@@ -2372,7 +2372,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "tonal",
                                 color: "warning",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 loading: itemLoading.value === 'strm:all',
                                 disabled: statusData.value.is_running,
                                 onClick: retryAllStrmSuspects
@@ -2399,7 +2399,7 @@ return (_ctx, _cache) => {
                               type: "warning",
                               variant: "tonal",
                               density: "compact",
-                              class: "rounded-lg mb-2 text-body-2"
+                              class: "radius-sm mb-2 text-body-2"
                             }, {
                               default: _withCtx(() => [
                                 _createElementVNode("div", _hoisted_63, " 「先尝试生成 strm」当前不可用：" + _toDisplayString(helperReason.value), 1),
@@ -2432,7 +2432,7 @@ return (_ctx, _cache) => {
                               type: "info",
                               variant: "tonal",
                               density: "compact",
-                              class: "rounded-lg mb-2 text-body-2"
+                              class: "radius-sm mb-2 text-body-2"
                             }, {
                               default: _withCtx(() => [
                                 _createElementVNode("div", _hoisted_64, _toDisplayString(plainText(strmScanMsg.value)), 1)
@@ -2447,7 +2447,7 @@ return (_ctx, _cache) => {
                                 size: "x-small",
                                 variant: "text",
                                 color: "primary",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 loading: itemLoading.value === 'strmchk:all',
                                 onClick: checkAllWatching
                               }, {
@@ -2482,7 +2482,7 @@ return (_ctx, _cache) => {
                               (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(strmWatchingEntries.value, (entry) => {
                                 return (_openBlock(), _createElementBlock("div", {
                                   key: 'w-' + entry.key,
-                                  class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
+                                  class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                                 }, [
                                   _createElementVNode("div", _hoisted_68, [
                                     _createElementVNode("div", _hoisted_69, [
@@ -2514,7 +2514,7 @@ return (_ctx, _cache) => {
                                       size: "x-small",
                                       variant: "tonal",
                                       color: "primary",
-                                      rounded: "lg",
+                                      "radius-sm": "",
                                       class: "px-2",
                                       loading: itemLoading.value === 'strmchk:' + entry.key,
                                       onClick: $event => (checkWatching(entry.key))
@@ -2553,7 +2553,7 @@ return (_ctx, _cache) => {
                                       size: "x-small",
                                       variant: "tonal",
                                       color: "warning",
-                                      rounded: "lg",
+                                      "radius-sm": "",
                                       class: "px-2",
                                       loading: itemLoading.value === 'strmfail:' + entry.key,
                                       onClick: $event => (confirmWatchFailed(entry.key))
@@ -2600,7 +2600,7 @@ return (_ctx, _cache) => {
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(strmPaged.value.slice, (key) => {
                             return (_openBlock(), _createElementBlock("div", {
                               key: 's-' + key,
-                              class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
+                              class: "failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                             }, [
                               _createElementVNode("div", _hoisted_75, [
                                 (selectMode.value)
@@ -2682,7 +2682,7 @@ return (_ctx, _cache) => {
                                   size: "x-small",
                                   variant: "tonal",
                                   color: "success",
-                                  rounded: "lg",
+                                  "radius-sm": "",
                                   class: "px-2",
                                   loading: itemLoading.value === 'strmgen:' + key,
                                   disabled: statusData.value.is_running || !helperReady.value,
@@ -2721,7 +2721,7 @@ return (_ctx, _cache) => {
                                       size: "x-small",
                                       variant: "tonal",
                                       color: "primary",
-                                      rounded: "lg",
+                                      "radius-sm": "",
                                       class: "px-2",
                                       loading: itemLoading.value === 'strmcf:' + key,
                                       onClick: $event => (confirmSuspectFailed(key))
@@ -2759,7 +2759,7 @@ return (_ctx, _cache) => {
                                   size: "x-small",
                                   variant: "tonal",
                                   color: "warning",
-                                  rounded: "lg",
+                                  "radius-sm": "",
                                   class: "px-2",
                                   loading: itemLoading.value === 'strm:' + key,
                                   disabled: statusData.value.is_running,
@@ -2792,7 +2792,7 @@ return (_ctx, _cache) => {
                                   size: "x-small",
                                   variant: "tonal",
                                   color: "secondary",
-                                  rounded: "lg",
+                                  "radius-sm": "",
                                   class: "px-2",
                                   loading: itemLoading.value === 'strmign:' + key,
                                   onClick: $event => (ignoreStrmSuspects([key]))
@@ -2836,7 +2836,7 @@ return (_ctx, _cache) => {
                               _createVNode(_component_v_btn, {
                                 size: "small",
                                 variant: "text",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 class: "pager-btn",
                                 disabled: paged.value.page <= 1,
                                 onClick: _cache[8] || (_cache[8] = $event => (paged.value.pageRef.value = paged.value.page - 1))
@@ -2863,7 +2863,7 @@ return (_ctx, _cache) => {
                               _createVNode(_component_v_btn, {
                                 size: "small",
                                 variant: "text",
-                                rounded: "lg",
+                                "radius-sm": "",
                                 class: "pager-btn",
                                 disabled: paged.value.page >= paged.value.pages,
                                 onClick: _cache[9] || (_cache[9] = $event => (paged.value.pageRef.value = paged.value.page + 1))
@@ -2895,7 +2895,7 @@ return (_ctx, _cache) => {
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(ignoredPaged.value.slice, (rule, idx) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'i-' + idx,
-                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2"
+                            class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                           }, [
                             _createElementVNode("div", _hoisted_84, [
                               _createElementVNode("div", _hoisted_85, _toDisplayString(rule.rule), 1),
@@ -2954,7 +2954,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page <= 1,
                           onClick: _cache[10] || (_cache[10] = $event => (paged.value.pageRef.value = paged.value.page - 1))
@@ -2981,7 +2981,7 @@ return (_ctx, _cache) => {
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
-                          rounded: "lg",
+                          "radius-sm": "",
                           class: "pager-btn",
                           disabled: paged.value.page >= paged.value.pages,
                           onClick: _cache[11] || (_cache[11] = $event => (paged.value.pageRef.value = paged.value.page + 1))
@@ -3030,6 +3030,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-26d8eb61"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-97cd2700"]]);
 
 export { App as default };

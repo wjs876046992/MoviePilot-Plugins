@@ -470,3 +470,43 @@ def test_mobile_switch_rows_stay_horizontal():
 
     # 输入框行必须仍然是纵排（不能被这次改动带偏）
     assert "setting-row-stacked" in src, "输入框行的纵排类不见了"
+
+
+def test_border_radius_is_half_of_vuetify_defaults():
+    """
+    圆角必须减半，且**用自己的类名**而不是覆盖框架的 `rounded-*`。
+
+    **为什么**（用户要求：圆角弧度减少一半）：
+    Vuetify 的 rounded 实用类是 `xs 2px / sm 2px / lg 8px / xl 24px`，**且带
+    `!important`**。联邦插件与宿主共用同一个文档 —— 覆盖它们会波及其它插件的
+    界面，属于"用 !important 改别人的东西"。所以改用本组件自己的类：
+
+        .radius-lg = 12px   （原 rounded-xl = 24px，减半）
+        .radius-sm =  4px   （原 rounded-lg =  8px，减半）
+        .radius-sm 同时用于按钮（原 rounded prop = "lg" = 8px）
+
+    ⚠️ 踩过的坑：我一开始把按钮的 `rounded="lg"` 改成 `rounded="sm"`，
+    以为"sm 比 lg 小一档 = 4px" —— **实际 sm 是 2px**（不是 4px，也不是 lg 的一半）。
+    凭"档位名称"猜数值是错的；数值要照框架的映射表读。
+    这也是改用自己的类名的另一个理由：**意图（4px）写在原地，不靠记忆档位**。
+    """
+    for name in ("Config.vue", "Page.vue", "CollapsibleNote.vue"):
+        src = _read_component(name)
+        code = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+
+        # 1) 不得再使用框架的 rounded-* 实用类或 rounded="…" prop
+        assert not re.search(r'\brounded-(?:xs|sm|md|lg|xl)\b', code), (
+            f"{name} 仍在使用框架的 rounded-* 实用类（带 !important，会波及宿主/其它插件）"
+        )
+        assert not re.search(r'rounded="(?:xs|sm|md|lg|xl)"', code), (
+            f"{name} 仍在使用 rounded=\"…\" prop —— 请注意 sm=2px（不是 4px），"
+            f"数值口径容易记错，请改用 radius-sm / radius-lg 类"
+        )
+
+    # 2) 圆角值必须正好是框架默认的一半
+    cfg = _read_component("Config.vue")
+    m_lg = re.search(r"\.radius-lg\s*\{([^}]*)\}", cfg, re.DOTALL)
+    m_sm = re.search(r"\.radius-sm\s*\{([^}]*)\}", cfg, re.DOTALL)
+    assert m_lg and m_sm, "未定义 radius-lg / radius-sm"
+    assert "border-radius: 12px" in m_lg.group(1), "radius-lg 应为 12px（原 xl=24px 的一半）"
+    assert "border-radius: 4px" in m_sm.group(1), "radius-sm 应为 4px（原 lg=8px 的一半）"

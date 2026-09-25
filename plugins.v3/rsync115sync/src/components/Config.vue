@@ -1,6 +1,6 @@
 <template>
   <div class="plugin-config">
-    <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden config-main-card" elevation="0" variant="outlined">
+    <v-card class="d-flex flex-column h-100 radius-lg overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
       <v-card-item class="header-surface header-card-item card-pad-x py-4">
@@ -17,7 +17,7 @@
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
         <template #append>
-          <v-btn icon variant="text" size="small" class="rounded-lg close-btn" @click="notifyClose">
+          <v-btn icon variant="text" size="small" class="radius-sm close-btn" @click="notifyClose">
             <v-icon size="18">mdi-close</v-icon>
             <v-tooltip activator="parent" location="bottom">关闭配置</v-tooltip>
           </v-btn>
@@ -26,10 +26,10 @@
 
       <!-- 状态提醒条 -->
       <div v-if="successMessage || error" class="card-pad-x pt-3">
-        <v-alert v-if="successMessage" type="success" variant="tonal" class="rounded-lg mb-2" closable @click:close="successMessage = null">
+        <v-alert v-if="successMessage" type="success" variant="tonal" class="radius-sm mb-2" closable @click:close="successMessage = null">
           {{ successMessage }}
         </v-alert>
-        <v-alert v-if="error" type="error" variant="tonal" class="rounded-lg mb-2" closable @click:close="error = null">
+        <v-alert v-if="error" type="error" variant="tonal" class="radius-sm mb-2" closable @click:close="error = null">
           {{ error }}
         </v-alert>
       </div>
@@ -37,7 +37,7 @@
       <!-- 表单主体滚动区 -->
       <v-card-text class="config-body card-pad-x py-4 overflow-y-auto">
         <!-- 模块 1：基础开关 -->
-        <div class="settings-group-card rounded-xl overflow-hidden mb-4">
+        <div class="settings-group-card radius-lg overflow-hidden mb-4">
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用同步助手</div>
@@ -151,7 +151,7 @@
             <v-icon size="18" color="primary" class="mr-1">mdi-folder-swap-outline</v-icon>
             同步目录映射对 ({{ config.sync_pairs.length }})
           </div>
-          <v-btn size="small" variant="tonal" color="primary" rounded="lg" @click="addPair">
+          <v-btn size="small" variant="tonal" color="primary" radius-sm @click="addPair">
             <v-icon start size="16">mdi-plus</v-icon>
             添加目录映射
           </v-btn>
@@ -186,7 +186,7 @@
           </CollapsibleNote>
 
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
-          <div v-for="(pair, idx) in config.sync_pairs" :key="idx" class="pair-card rounded-xl pa-4">
+          <div v-for="(pair, idx) in config.sync_pairs" :key="idx" class="pair-card radius-lg pa-4">
             <div class="d-flex align-center justify-space-between mb-3">
               <span class="font-weight-bold text-body-2 text-primary">映射任务 #{{ idx + 1 }}</span>
               <v-btn icon size="x-small" variant="text" color="error" @click="removePair(idx)">
@@ -227,7 +227,7 @@
             </v-row>
           </div>
         </div>
-        <div v-else class="empty-hint-box text-center py-6 rounded-xl mb-4 text-caption text-disabled">
+        <div v-else class="empty-hint-box text-center py-6 radius-lg mb-4 text-caption text-disabled">
           暂未配置任何目录映射，点击上方按钮添加你的本地媒体目录与 CD2 挂载路径
         </div>
 
@@ -236,7 +236,7 @@
           <v-icon size="18" color="primary" class="mr-1">mdi-timer-sand</v-icon>
           入库冷却缓冲与调度
         </div>
-        <div class="settings-group-card rounded-xl overflow-hidden pa-4 mb-4">
+        <div class="settings-group-card radius-lg overflow-hidden pa-4 mb-4">
           <v-row density="comfortable">
             <v-col cols="12" sm="6">
               <v-text-field
@@ -271,7 +271,7 @@
           <v-icon size="18" color="primary" class="mr-1">mdi-shield-check-outline</v-icon>
           CD2 核心过滤与防假死参数
         </div>
-        <div class="settings-group-card rounded-xl overflow-hidden pa-4">
+        <div class="settings-group-card radius-lg overflow-hidden pa-4">
           <v-row density="compact">
             <v-col cols="12" sm="6">
               <v-text-field v-model.number="config.rsync_timeout" label="rsync I/O 超时 (秒)" type="number" variant="outlined" density="compact" hint="网络异常中断时快速失败，防止 FUSE 挂起死锁" persistent-hint></v-text-field>
@@ -301,7 +301,7 @@
               会在下一个窗口自动继续，直到全部传完。
           </CollapsibleNote>
 
-        <div class="settings-group-card rounded-xl overflow-hidden">
+        <div class="settings-group-card radius-lg overflow-hidden">
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用上传限流</div>
@@ -430,7 +430,7 @@
 
         <!-- 依赖边界对照表：本模块是「核心不依赖、可选增强依赖」的典型，
              分开列出来，避免用户以为整个功能都要装 P115StrmHelper -->
-        <div class="dep-split rounded-lg mb-3">
+        <div class="dep-split radius-sm mb-3">
           <div class="dep-split-row">
             <v-chip size="x-small" color="success" variant="tonal" class="font-weight-bold flex-shrink-0">
               本插件独立完成
@@ -464,7 +464,7 @@
           <b>不配也不影响上面「本插件独立完成」的任何一项</b>。
         </CollapsibleNote>
 
-        <div class="settings-group-card rounded-xl overflow-hidden">
+        <div class="settings-group-card radius-lg overflow-hidden">
           <div class="setting-row setting-row-stacked row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
@@ -503,12 +503,12 @@
 
       <!-- 底部操作按钮 -->
       <v-card-actions class="config-actions card-pad-x py-3 border-t bg-surface">
-        <v-btn variant="tonal" rounded="lg" color="primary" @click="notifySwitch">
+        <v-btn variant="tonal" radius-sm color="primary" @click="notifySwitch">
           <v-icon start size="16">mdi-view-dashboard-outline</v-icon>
           查看监控看板
         </v-btn>
         <v-spacer></v-spacer>
-        <v-btn variant="flat" color="primary" rounded="lg" class="px-6" @click="saveConfig" :loading="saving">
+        <v-btn variant="flat" color="primary" radius-sm class="px-6" @click="saveConfig" :loading="saving">
           <v-icon start size="16">mdi-content-save</v-icon>
           保存配置
         </v-btn>
@@ -696,6 +696,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* ---- 圆角：本组件自己定义，不用框架的 rounded-* ----
+   ⚠️ 为什么不覆盖 `.rounded-xl` / `.rounded-lg`：它们是 Vuetify 的全局实用类
+   **且带 `!important`**（xs2px / sm4px / md6px / lg8px / xl24px / 0）。
+   联邦插件与宿主共用同一个文档，覆盖它们会波及其它插件的界面，而且属于
+   "用 !important 改别人的东西"。改用本组件自己的类名表达自己的意图：
+     用户要求「圆角弧度减少一半」→ 24px 的卡片类收成 12px、8px 的按钮/块类收成 4px。 */
+.radius-lg {
+  border-radius: 12px !important;
+}
+.radius-sm {
+  border-radius: 4px !important;
+}
+
 /* ---- 横向留白：本组件自己控制，不动框架的 .px-4 / .px-5 ----
    ⚠️ 为什么不直接覆盖 `.px-5`：那是 Vuetify 的**全局实用类**（$spacer 4px × 5
    = 20px），联邦插件与宿主共用同一个文档 —— 在这里覆盖它会波及其它插件的界面，

@@ -1,6 +1,6 @@
 <template>
   <div class="plugin-page">
-    <v-card class="d-flex flex-column h-100 rounded-xl overflow-hidden page-main-card" elevation="0" variant="outlined">
+    <v-card class="d-flex flex-column h-100 radius-lg overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->
       <v-card-item class="header-surface header-card-item px-5 py-3 border-b">
@@ -25,15 +25,15 @@
         </div>
         <template #append>
           <div class="d-flex align-center flex-wrap justify-end ga-1 header-append">
-            <v-btn icon variant="tonal" color="primary" size="small" class="rounded-lg mr-1" @click="fetchStatus" :loading="loading">
+            <v-btn icon variant="tonal" color="primary" size="small" class="radius-sm mr-1" @click="fetchStatus" :loading="loading">
               <v-icon size="18">mdi-refresh</v-icon>
               <v-tooltip activator="parent" location="bottom">刷新状态</v-tooltip>
             </v-btn>
-            <v-btn color="primary" rounded="lg" variant="outlined" size="small" class="px-3 font-weight-medium mr-1" @click="notifySwitch">
+            <v-btn color="primary" radius-sm variant="outlined" size="small" class="px-3 font-weight-medium mr-1" @click="notifySwitch">
               <v-icon start size="16">mdi-cog-outline</v-icon>
               配置
             </v-btn>
-            <v-btn icon variant="text" size="small" class="rounded-lg close-btn text-medium-emphasis" @click="notifyClose">
+            <v-btn icon variant="text" size="small" class="radius-sm close-btn text-medium-emphasis" @click="notifyClose">
               <v-icon size="18">mdi-close</v-icon>
               <v-tooltip activator="parent" location="bottom">关闭</v-tooltip>
             </v-btn>
@@ -49,19 +49,19 @@
              第一行**必须保持是这一行**（它是滚动容器顶边对齐的那一行）。 -->
         <v-row class="mb-2 strm-stat-row">
           <v-col cols="12" sm="4" class="pa-1">
-            <div class="stat-card stat-info rounded-xl pa-3 text-center">
+            <div class="stat-card stat-info radius-lg pa-3 text-center">
               <div class="text-h5 font-weight-black text-info">{{ statusData.cooling_count || 0 }}</div>
               <div class="text-caption text-medium-emphasis mt-1">冷却缓冲中 (设定 {{ statusData.delay_hours || 4 }}h)</div>
             </div>
           </v-col>
           <v-col cols="12" sm="4" class="pa-1">
-            <div class="stat-card stat-primary rounded-xl pa-3 text-center">
+            <div class="stat-card stat-primary radius-lg pa-3 text-center">
               <div class="text-h5 font-weight-black text-primary">{{ statusData.ready_count || 0 }}</div>
               <div class="text-caption text-medium-emphasis mt-1">冷却就绪待传输</div>
             </div>
           </v-col>
           <v-col cols="12" sm="4" class="pa-1">
-            <div class="stat-card stat-error rounded-xl pa-3 text-center">
+            <div class="stat-card stat-error radius-lg pa-3 text-center">
               <div class="text-h5 font-weight-black text-error">
                 {{ (statusData.last_status?.missing_files?.length || 0) + (statusData.last_status?.corrupt_files?.length || 0) }}
               </div>
@@ -79,7 +79,7 @@
                · 窗口用量 → 是不是被限流卡住了（到上限就只剩等待） -->
         <v-row class="mb-3 stat-row-secondary">
           <v-col cols="6" sm="3" class="pa-1">
-            <div class="stat-card stat-muted rounded-xl pa-2 text-center">
+            <div class="stat-card stat-muted radius-lg pa-2 text-center">
               <div class="text-subtitle-1 font-weight-black">
                 {{ sourceScanAgoShort }}
               </div>
@@ -87,19 +87,19 @@
             </div>
           </v-col>
           <v-col cols="6" sm="3" class="pa-1">
-            <div class="stat-card stat-warning rounded-xl pa-2 text-center">
+            <div class="stat-card stat-warning radius-lg pa-2 text-center">
               <div class="text-subtitle-1 font-weight-black text-warning">{{ statusData.strm_watching || 0 }}</div>
               <div class="text-caption text-medium-emphasis">strm 观察中</div>
             </div>
           </v-col>
           <v-col cols="6" sm="3" class="pa-1">
-            <div class="stat-card stat-warning rounded-xl pa-2 text-center">
+            <div class="stat-card stat-warning radius-lg pa-2 text-center">
               <div class="text-subtitle-1 font-weight-black text-warning">{{ strmSuspectCount }}</div>
               <div class="text-caption text-medium-emphasis">strm 疑似异常</div>
             </div>
           </v-col>
           <v-col cols="6" sm="3" class="pa-1">
-            <div class="stat-card stat-muted rounded-xl pa-2 text-center">
+            <div class="stat-card stat-muted radius-lg pa-2 text-center">
               <div class="text-subtitle-1 font-weight-black">
                 {{ statusData.backfill_remaining || 0 }}<span
                   v-if="statusData.backfill_total" class="text-caption text-medium-emphasis">/{{ statusData.backfill_total }}</span>
@@ -115,7 +115,7 @@
           :type="isThrottled || sourceScanProblem ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
-          class="rounded-lg mb-3 text-body-2"
+          class="radius-sm mb-3 text-body-2"
         >
           <div v-if="isThrottled" class="font-weight-medium">
             ⏸ 为避免触发 115 风控，上传已自动暂停，约 {{ blockedMinutes }} 分钟后恢复，无需手动操作。
@@ -161,7 +161,7 @@
           :type="webhookStat.rejected > 0 ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
-          class="rounded-lg mb-3 text-body-2"
+          class="radius-sm mb-3 text-body-2"
         >
           <div class="font-weight-medium">
             🪝 Webhook 入库：
@@ -204,7 +204,7 @@
           type="warning"
           variant="tonal"
           density="compact"
-          class="rounded-lg mb-3 text-body-2"
+          class="radius-sm mb-3 text-body-2"
         >
           <div class="font-weight-medium">
             ⏭ 有文件因<b>扩展名不在同步白名单</b>被跳过（累计）
@@ -222,14 +222,14 @@
         </v-alert>
 
         <!-- 快捷操作工具条 -->
-        <div class="action-strip rounded-xl pa-3 mb-4">
+        <div class="action-strip radius-lg pa-3 mb-4">
           <div class="action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2">
             <div class="action-group d-flex align-center flex-wrap ga-2">
               <!-- 「立即运行一次」= 不等两个 cron：立刻扫一次源端 + 跑一轮就绪同步。
                    刻意**不**绕过冷却/限流/批次上限 —— 冷却期的现职是"等文件写完"，
                    绕过它会把半截文件传给 115（§3.10 的云端残留）。
                    要立刻传某个已冷却的文件，用列表里的单条「立即同步」。 -->
-              <v-btn color="success" variant="flat" size="small" rounded="lg" @click="runNow" :loading="runningNow" :disabled="statusData.is_running">
+              <v-btn color="success" variant="flat" size="small" radius-sm @click="runNow" :loading="runningNow" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-flash</v-icon>
                 立即运行一次
                 <v-tooltip activator="parent" location="top">
@@ -237,22 +237,22 @@
                   冷却时长、限流与批次上限照常生效 —— 冷却中的文件不会被提前上传。
                 </v-tooltip>
               </v-btn>
-              <v-btn color="primary" variant="tonal" size="small" rounded="lg" @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
+              <v-btn color="primary" variant="tonal" size="small" radius-sm @click="triggerSync" :loading="syncing" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-play</v-icon>
                 同步已就绪媒体
               </v-btn>
-              <v-btn color="warning" variant="tonal" size="small" rounded="lg" @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
+              <v-btn color="warning" variant="tonal" size="small" radius-sm @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
                 <v-icon start size="16">mdi-refresh</v-icon>
                 定向重试失败文件
               </v-btn>
-              <v-btn color="info" variant="tonal" size="small" rounded="lg" @click="scanBackfill" :loading="backfillScanning" :disabled="statusData.is_running">
+              <v-btn color="info" variant="tonal" size="small" radius-sm @click="scanBackfill" :loading="backfillScanning" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-database-arrow-up-outline</v-icon>
                 补传存量媒体
                 <v-tooltip activator="parent" location="top">
                   扫描本地存量媒体（含同名字幕）并分批补传；只读源端目录，不遍历 115
                 </v-tooltip>
               </v-btn>
-              <v-btn v-if="statusData.backfill_remaining" color="error" variant="text" size="small" rounded="lg" @click="clearBackfill" :disabled="statusData.is_running">
+              <v-btn v-if="statusData.backfill_remaining" color="error" variant="text" size="small" radius-sm @click="clearBackfill" :disabled="statusData.is_running">
                 <v-icon start size="16">mdi-cancel</v-icon>
                 取消补传
               </v-btn>
@@ -274,7 +274,7 @@
                 size="small"
                 variant="tonal"
                 :color="selectMode ? 'error' : 'secondary'"
-                rounded="lg"
+                radius-sm
                 @click="toggleSelectMode"
               >
                 <v-icon start size="16">{{ selectMode ? 'mdi-close' : 'mdi-checkbox-multiple-marked-outline' }}</v-icon>
@@ -285,7 +285,7 @@
                 size="small"
                 variant="flat"
                 :color="selectedStrmOnly ? 'warning' : 'primary'"
-                rounded="lg"
+                radius-sm
                 :loading="batchSyncing"
                 :disabled="!selectedKeys.length || statusData.is_running"
                 @click="batchSyncSelected"
@@ -302,7 +302,7 @@
                 size="small"
                 variant="tonal"
                 color="secondary"
-                rounded="lg"
+                radius-sm
                 :loading="batchSyncing"
                 :disabled="!selectedKeys.length || statusData.is_running"
                 @click="ignoreStrmSuspects(selectedKeys.filter((k) => k in (statusData.strm_suspects || {})))"
@@ -365,7 +365,7 @@
         <!-- 标签 1：延迟冷却队列 -->
         <div v-if="currentTab === 'queue'">
           <div v-if="queueList.length" class="d-flex flex-column ga-2">
-            <div v-for="item in queuePaged.slice" :key="item.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <div v-for="item in queuePaged.slice" :key="item.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
               <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
@@ -397,7 +397,7 @@
                   size="x-small"
                   variant="tonal"
                   color="primary"
-                  rounded="lg"
+                  radius-sm
                   class="px-2"
                   :loading="itemLoading === item.key"
                   :disabled="statusData.is_running || (!!itemLoading && itemLoading !== item.key)"
@@ -415,7 +415,7 @@
           <!-- 分页条：三个标签共用，绑定各自页码 -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
               @click="paged.pageRef.value = paged.page - 1"
             >
@@ -426,7 +426,7 @@
               共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
             </span>
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
               @click="paged.pageRef.value = paged.page + 1"
             >
@@ -435,7 +435,7 @@
           </div>
           <!-- 空态显式绑定清单长度：不要用 v-else 挂在分页条上 —— 那会让
                「单页数据」时同时显示条目与空态（已忽略标签曾因此自相矛盾） -->
-          <div v-if="!queueList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <div v-if="!queueList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-check-circle-outline</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">暂无正在冷却中的媒体文件</div>
           </div>
@@ -445,7 +445,7 @@
         <div v-if="currentTab === 'failed'">
           <div v-if="failedCount" class="d-flex flex-column ga-2">
             <!-- 缺失未同步 + 大小残缺：合并为一个列表以便统一分页 -->
-            <div v-for="entry in failedPaged.slice" :key="entry.kind + ':' + entry.file" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <div v-for="entry in failedPaged.slice" :key="entry.kind + ':' + entry.file" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
               <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                 <v-checkbox
                   v-if="selectMode"
@@ -477,7 +477,7 @@
                   size="x-small"
                   variant="tonal"
                   color="primary"
-                  rounded="lg"
+                  radius-sm
                   class="px-2"
                   :loading="itemLoading === file"
                   :disabled="statusData.is_running || (!!itemLoading && itemLoading !== file)"
@@ -497,7 +497,7 @@
           <!-- 分页条：三个标签共用，绑定各自页码 -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
               @click="paged.pageRef.value = paged.page - 1"
             >
@@ -508,14 +508,14 @@
               共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
             </span>
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
               @click="paged.pageRef.value = paged.page + 1"
             >
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
           </div>
-          <div v-if="!failedCount" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <div v-if="!failedCount" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center">
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">冷却队列与待重试文件经对账全部一致，零缺失零残缺！</div>
           </div>
@@ -547,7 +547,7 @@
                 size="x-small"
                 variant="tonal"
                 color="primary"
-                rounded="lg"
+                radius-sm
                 :loading="strmScanning"
                 :disabled="!statusData.strm_check_enabled"
                 @click="scanStrm"
@@ -563,7 +563,7 @@
                 size="x-small"
                 variant="text"
                 color="secondary"
-                rounded="lg"
+                radius-sm
                 :loading="itemLoading === 'strm:prune'"
                 @click="pruneStrmSuspects"
               >
@@ -586,7 +586,7 @@
                 size="x-small"
                 variant="tonal"
                 color="success"
-                rounded="lg"
+                radius-sm
                 :loading="itemLoading === 'strm:gen'"
                 :disabled="statusData.is_running || !helperReady"
                 @click="generateStrm"
@@ -609,7 +609,7 @@
                 size="x-small"
                 variant="tonal"
                 color="warning"
-                rounded="lg"
+                radius-sm
                 :loading="itemLoading === 'strm:all'"
                 :disabled="statusData.is_running"
                 @click="retryAllStrmSuspects"
@@ -628,7 +628,7 @@
               type="warning"
               variant="tonal"
               density="compact"
-              class="rounded-lg mb-2 text-body-2"
+              class="radius-sm mb-2 text-body-2"
             >
               <div class="font-weight-medium mb-1">
                 「先尝试生成 strm」当前不可用：{{ helperReason }}
@@ -651,7 +651,7 @@
               type="info"
               variant="tonal"
               density="compact"
-              class="rounded-lg mb-2 text-body-2"
+              class="radius-sm mb-2 text-body-2"
             >
               <div class="font-weight-medium" style="white-space: pre-wrap">{{ plainText(strmScanMsg) }}</div>
             </v-alert>
@@ -680,7 +680,7 @@
                 size="x-small"
                 variant="text"
                 color="primary"
-                rounded="lg"
+                radius-sm
                 :loading="itemLoading === 'strmchk:all'"
                 @click="checkAllWatching"
               >
@@ -694,7 +694,7 @@
               </v-btn>
             </div>
             <div v-if="strmWatchingEntries.length" class="d-flex flex-column ga-2 mb-3">
-              <div v-for="entry in strmWatchingEntries" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div v-for="entry in strmWatchingEntries" :key="'w-' + entry.key" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
                 <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-truncate">{{ entry.key }}</div>
@@ -722,7 +722,7 @@
                     size="x-small"
                     variant="tonal"
                     color="primary"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strmchk:' + entry.key"
                     @click="checkWatching(entry.key)"
@@ -742,7 +742,7 @@
                     size="x-small"
                     variant="tonal"
                     color="warning"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strmfail:' + entry.key"
                     @click="confirmWatchFailed(entry.key)"
@@ -766,7 +766,7 @@
               当前无疑似异常。若怀疑有文件上传失败但从未被观察过，点上方「扫描缺 strm 的文件」主动反查。
             </div>
             <div class="d-flex flex-column ga-2">
-              <div v-for="key in strmPaged.slice" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+              <div v-for="key in strmPaged.slice" :key="'s-' + key" class="failed-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
                 <div class="list-row-main d-flex align-center overflow-hidden mr-sm-3 mr-0">
                   <v-checkbox
                     v-if="selectMode"
@@ -825,7 +825,7 @@
                     size="x-small"
                     variant="tonal"
                     color="success"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strmgen:' + key"
                     :disabled="statusData.is_running || !helperReady"
@@ -845,7 +845,7 @@
                     size="x-small"
                     variant="tonal"
                     color="primary"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strmcf:' + key"
                     @click="confirmSuspectFailed(key)"
@@ -864,7 +864,7 @@
                     size="x-small"
                     variant="tonal"
                     color="warning"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strm:' + key"
                     :disabled="statusData.is_running"
@@ -880,7 +880,7 @@
                     size="x-small"
                     variant="tonal"
                     color="secondary"
-                    rounded="lg"
+                    radius-sm
                     class="px-2"
                     :loading="itemLoading === 'strmign:' + key"
                     @click="ignoreStrmSuspects([key])"
@@ -900,7 +900,7 @@
             <!-- 通用分页条：strm 独立成标签后与其它三个标签共用 paged 的绑定 -->
             <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
               <v-btn
-                size="small" variant="text" rounded="lg" class="pager-btn"
+                size="small" variant="text" radius-sm class="pager-btn"
                 :disabled="paged.page <= 1"
                 @click="paged.pageRef.value = paged.page - 1"
               >
@@ -911,7 +911,7 @@
                 共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
               </span>
               <v-btn
-                size="small" variant="text" rounded="lg" class="pager-btn"
+                size="small" variant="text" radius-sm class="pager-btn"
                 :disabled="paged.page >= paged.pages"
                 @click="paged.pageRef.value = paged.page + 1"
               >
@@ -924,7 +924,7 @@
 <!-- 标签 4：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
-            <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between rounded-xl pa-3 ga-2">
+            <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
               <div class="list-row-main overflow-hidden mr-sm-3 mr-0">
                 <div class="font-weight-bold text-body-2 text-truncate">{{ rule.rule }}</div>
                 <div class="text-caption text-medium-emphasis mt-0.5">
@@ -945,7 +945,7 @@
           <!-- 分页条：三个标签共用，绑定各自页码 -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
               @click="paged.pageRef.value = paged.page - 1"
             >
@@ -956,14 +956,14 @@
               共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
             </span>
             <v-btn
-              size="small" variant="text" rounded="lg" class="pager-btn"
+              size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
               @click="paged.pageRef.value = paged.page + 1"
             >
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
           </div>
-          <div v-if="!ignoredList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 rounded-xl text-center">
+          <div v-if="!ignoredList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-eye-off-outline</v-icon>
             <div class="text-caption font-weight-bold text-medium-emphasis">当前没有忽略任何文件</div>
           </div>
@@ -1965,6 +1965,19 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* ---- 圆角：本组件自己定义，不用框架的 rounded-* ----
+   ⚠️ 为什么不覆盖 `.rounded-xl` / `.rounded-lg`：它们是 Vuetify 的全局实用类
+   **且带 `!important`**（xs2px / sm4px / md6px / lg8px / xl24px / 0）。
+   联邦插件与宿主共用同一个文档，覆盖它们会波及其它插件的界面，而且属于
+   "用 !important 改别人的东西"。改用本组件自己的类名表达自己的意图：
+     用户要求「圆角弧度减少一半」→ 24px 的卡片类收成 12px、8px 的按钮/块类收成 4px。 */
+.radius-lg {
+  border-radius: 12px !important;
+}
+.radius-sm {
+  border-radius: 4px !important;
+}
+
 .plugin-page {
   width: 100%;
   box-sizing: border-box;

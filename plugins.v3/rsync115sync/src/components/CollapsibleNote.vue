@@ -33,7 +33,7 @@
     variant="tonal"
     density="compact"
     :icon="false"
-    class="rounded-lg text-body-2 collapsible-note"
+    class="radius-sm text-body-2 collapsible-note"
   >
     <div
       class="note-head d-flex align-center"
@@ -64,6 +64,19 @@ function toggle() { open.value = !open.value }
 </script>
 
 <style scoped>
+/* ---- 圆角：本组件自己定义，不用框架的 rounded-* ----
+   ⚠️ 为什么不覆盖 `.rounded-xl` / `.rounded-lg`：它们是 Vuetify 的全局实用类
+   **且带 `!important`**（xs2px / sm4px / md6px / lg8px / xl24px / 0）。
+   联邦插件与宿主共用同一个文档，覆盖它们会波及其它插件的界面，而且属于
+   "用 !important 改别人的东西"。改用本组件自己的类名表达自己的意图：
+     用户要求「圆角弧度减少一半」→ 24px 的卡片类收成 12px、8px 的按钮/块类收成 4px。 */
+.radius-lg {
+  border-radius: 12px !important;
+}
+.radius-sm {
+  border-radius: 4px !important;
+}
+
 .note-head {
   cursor: pointer;
   /* 点击热区上下各留一点，手机上更好按 */
