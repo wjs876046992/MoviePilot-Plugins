@@ -153,3 +153,119 @@ def test_paginate_clamps_page_when_list_shrinks():
     assert paginate(10, 5) == 1        # 只有 1 页 → 回到第 1 页
     assert paginate(45, 5) == 3        # 3 页 → 夹到最后一页
     assert paginate(45, 2) == 2        # 未越界则不动
+
+# --------------------------------------------------------------------------
+# ⚠️ 分页最常见的静默错误：把「页内下标」当「全表下标」用
+# --------------------------------------------------------------------------
+
+def test_paginated_lists_never_use_the_loop_index_for_actions():
+    """
+    分页列表里**不得**用 v-for 的下标去执行"全表操作"。
+
+    ## 这里修掉的是一个真 bug（早于本次改造就存在）
+
+    「已忽略」列表原本是：
+
+        <div v-for="(rule, idx) in ignoredPaged.slice" ...>
+          <v-btn @click="removeIgnore(idx)">
+
+    而 `ignore.remove_rule` 按**全表绝对下标** pop。`idx` 是**页内下标**：
+    第 1 页碰巧正确（页内 0..14 == 全表 0..14），**从第 2 页起会删错规则** ——
+    点第 2 页第 1 条会删掉全表第 1 条；而且删完列表变短，下标进一步漂移，
+    用户看到的是"点了恢复，结果另一条消失了"。
+
+    已改为传**规则文本**（唯一，且后端本来就支持）。
+
+    ## 为什么这条断言值得存在
+
+    这类错误**不会报错、也不会崩**，只是悄悄操作了另一条数据 ——
+    而它在第 1 页上表现完全正常，所以手工点几下根本发现不了。
+    唯一可靠的防线是结构断言：分页列表的 v-for 不许取下标。
+    """
+    import os
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    src = open(os.path.join(root, "plugins.v3", "rsync115sync",
+                            "src", "components", "Page.vue"),
+               encoding="utf-8").read()
+
+    # 取出所有「在分页切片上迭代」的 v-for（两种形态都要抓到）：
+    #   · `v-for="item in queuePaged.slice"`      → 合规（没取下标）
+    #   · `v-for="(rule, idx) in ignoredPaged.slice"` → 违规（取了页内下标）
+    # ⚠️ 只抓括号形态是不够的 —— 修复之后全部都是无括号形态，那样这条断言
+    # 会"因为一个都匹配不到"而变成空跑（第一版就是这么写的，`assert paged_loops`
+    # 当场报 `[]`）。必须两种都抓，再按"有没有括号"分流。
+    paged_loops = re.findall(r'v-for="([^"]*?)\s+in\s+(\w+Paged\.slice)"', src)
+    offenders = [f"`{vars_} in {src_}`" for vars_, src_ in paged_loops
+                 if vars_.strip().startswith("(")]
+    assert paged_loops, (
+        f"没有找到任何分页列表 —— 正则失效了（找到 {len(paged_loops)} 个），"
+        f"这条断言会变成空跑，先修正则"
+    )
+    assert len(paged_loops) >= 5, (
+        f"只找到 {len(paged_loops)} 个分页列表，预期至少 5 个"
+        f"（队列 / 对账 / 观察中 / 待处理 / 已忽略）—— 正则或列表漏了"
+    )
+    assert not offenders, (
+        f"分页列表取了循环下标，它会被当成全表下标用：{offenders}。"
+        f"改用条目的唯一标识（key / 规则文本）传参。"
+    )
+
+
+def test_unignore_sends_the_rule_text_not_an_index():
+    """恢复忽略必须传规则文本（后端按全表下标 pop，页内下标会删错）。"""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    src = open(os.path.join(root, "plugins.v3", "rsync115sync",
+                            "src", "components", "Page.vue"),
+               encoding="utf-8").read()
+    assert "removeIgnore(rule.rule)" in src, "恢复忽略没有传规则文本"
+    assert "removeIgnore(idx)" not in src, "恢复忽略仍在传页内下标"
+    assert "{ rule }" in src, "请求体没有带 rule"
+
+
+# --------------------------------------------------------------------------
+# 「扩展名被跳过」提示已按用户要求移除
+# --------------------------------------------------------------------------
+
+def test_extension_skip_alert_is_removed():
+    """
+    看板不再显示「有文件因扩展名不在同步白名单被跳过」。
+
+    ⚠️ 移除的是**看板提示与它的累计统计**，不是入库闸门本身 ——
+    闸门照旧拦截，且每个扩展名第一次出现时仍会打一条 info 日志
+    （看板提示被用户要求移除，日志留作排查依据）。
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    vue = open(os.path.join(root, "plugins.v3", "rsync115sync",
+                            "src", "components", "Page.vue"),
+               encoding="utf-8").read()
+    py = open(os.path.join(root, "plugins.v3", "rsync115sync", "__init__.py"),
+              encoding="utf-8").read()
+
+    for text, where in ((vue, "Page.vue"), (py, "__init__.py")):
+        assert "ingest_skip_stat" not in text, f"{where} 仍残留统计持久化"
+        assert "ingest_skipped_by_ext" not in text, f"{where} 仍残留 /status 字段"
+    assert "扩展名不在同步白名单" not in vue, "看板提示没删干净"
+    assert "_note_ingest_skips" not in py, "统计收集函数没删干净"
+
+
+def test_ingest_gate_still_logs_the_first_drop():
+    """
+    闸门本身与它的日志必须保留 —— 移除的只是看板提示。
+
+    「某一类文件 100% 被丢弃」曾在看板与日志上都没有痕迹（音频全丢就是
+    这样潜伏了多个版本）。用户要求移除看板提示后，**日志是唯一的线索**，
+    所以这条 assert 守的是"别把日志也一起删了"。
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    py = open(os.path.join(root, "plugins.v3", "rsync115sync", "__init__.py"),
+              encoding="utf-8").read()
+    assert "扩展名未纳入同步白名单，跳过" in py, "闸门的 info 日志被一起删了"
+

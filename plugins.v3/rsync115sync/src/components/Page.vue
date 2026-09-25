@@ -248,33 +248,6 @@
           </div>
         </v-alert>
 
-        <!-- 入库闸门丢弃分布：**只在真的丢过东西时出现**。
-             这一块是补上一个此前的盲区 —— 被扩展名白名单挡下的文件原先只写
-             debug 日志，看板上完全没有痕迹，于是「某一类文件 100% 被丢弃」
-             可以潜伏多个版本（音频就是这样全丢的）。
-             显示的是累计值，不随重载清零，否则问题会再次隐形。 -->
-        <v-alert
-          v-if="skippedExtRows.length"
-          type="warning"
-          variant="tonal"
-          density="compact"
-          class="radius-sm mb-3 text-body-2"
-        >
-          <div class="font-weight-medium">
-            ⏭ 有文件因<b>扩展名不在同步白名单</b>被跳过（累计）
-          </div>
-          <div class="mt-1">
-            <span v-for="(row, i) in skippedExtRows" :key="row.ext">
-              <template v-if="i > 0"> · </template>
-              <code>{{ row.label }}</code> {{ row.count }} 个
-            </span>
-          </div>
-          <div class="mt-1">
-            如需同步这些类型，请到配置页把它们加入「同步的扩展名」；
-            若确实不需要（如 .nfo、.jpg），忽略本提示即可。
-          </div>
-        </v-alert>
-
         <!-- 快捷操作工具条 -->
         <div class="action-strip radius-lg pa-3 mb-4">
           <div class="action-strip-row d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between ga-2">
@@ -944,7 +917,7 @@
 <!-- 标签 4：已忽略清单 -->
         <div v-if="currentTab === 'ignored'">
           <div v-if="ignoredList.length" class="d-flex flex-column ga-2">
-            <div v-for="(rule, idx) in ignoredPaged.slice" :key="'i-' + idx" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
+            <div v-for="rule in ignoredPaged.slice" :key="'i-' + rule.rule" class="queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2">
               <div class="list-row-main overflow-hidden mr-sm-3 mr-0">
                 <div class="font-weight-bold text-body-2 text-truncate">{{ rule.rule }}</div>
                 <div class="text-caption text-medium-emphasis mt-0.5">
@@ -955,7 +928,15 @@
               </div>
               <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
                 <v-chip size="x-small" color="secondary" variant="tonal" class="font-weight-bold">已忽略</v-chip>
-                <v-btn icon size="x-small" variant="text" color="success" @click="removeIgnore(idx)">
+                <!-- ⚠️ 传**规则文本**而不是下标。
+                     下标在这个位置是坏的：`ignore.remove_rule` 按**全表绝对下标**
+                     pop，而这里拿到的是 `ignoredPaged.slice` 的**页内下标** ——
+                     第 1 页碰巧对（0..14 就是全表 0..14），**第 2 页起会删错规则**
+                     （点第 2 页第 1 条会删掉全表第 1 条），而且删完列表长度变化
+                     会让下标进一步漂移。规则文本唯一，且后端本来就直接支持。
+                     这类"页内下标当全表下标用"是分页最常见的静默错误，见
+                     test_dashboard_pagination.py 的用例。 -->
+                <v-btn icon size="x-small" variant="text" color="success" @click="removeIgnore(rule.rule)">
                   <v-icon size="16">mdi-restore</v-icon>
                   <v-tooltip activator="parent" location="top">恢复对账</v-tooltip>
                 </v-btn>
@@ -1025,8 +1006,6 @@ const statusData = ref({
   source_scan_last: 0,
   source_scan_enabled: true,
   source_scan_cron: '*/30 * * * *',
-  // 入库闸门挡下的扩展名分布（累计）：扩展名 → 次数。
-  ingest_skipped_by_ext: {},
   strm_suspects: {},
   strm_watch_detail: {},
   // key → 'sync' | 'gen'：该观察条目的计时基准。补生成移回观察期的条目用的是
@@ -1144,17 +1123,6 @@ const sourceScanAgoText = computed(() => {
   return `${Math.floor(hours / 24)} 天`
 })
 // 闸门丢弃分布 → 表格行。按次数降序（最该关注的排最前）。
-const skippedExtRows = computed(() => {
-  const raw = statusData.value.ingest_skipped_by_ext || {}
-  return Object.keys(raw)
-    .map((ext) => ({
-      ext,
-      label: ext === '(无扩展名)' ? '无扩展名' : `.${ext}`,
-      count: Number(raw[ext]) || 0,
-    }))
-    .filter((row) => row.count > 0)
-    .sort((a, b) => b.count - a.count)
-})
 
 // 时长文案（秒 → 「2 分 30 秒」）。进度区有三处要用它（已运行 / 剩余 / 无输出多久），
 // 收一处免得三份实现慢慢分叉。
@@ -1849,9 +1817,11 @@ async function ignoreFile(file, match = 'exact') {
   }
 }
 
-async function removeIgnore(index) {
+// 按**规则文本**移除（不是下标）—— 见模板里那段说明：列表是分页渲染的，
+// 页内下标与全表下标不是一回事，用下标会删错。
+async function removeIgnore(rule) {
   try {
-    const res = await props.api.post('plugin/Rsync115Sync/unignore', { index })
+    const res = await props.api.post('plugin/Rsync115Sync/unignore', { rule })
     actionMsg.value = res?.message || '已恢复对账'
     fetchStatus()
   } catch (e) {

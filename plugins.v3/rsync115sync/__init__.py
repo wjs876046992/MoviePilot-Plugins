@@ -253,7 +253,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 它是一条「这条路是不是在丢东西」的证据，清掉就等于让问题再次隐形。
         # 说明：这里曾是整个插件里最危险的一处盲区 —— 闸门丢弃只记 debug，
         # 看板四个计数里没有它，于是「音频 100% 被丢」潜伏了多个版本。
-        self._ingest_skip_stat: Dict[str, int] = {}
 
         # 4h：源端扫描没有"文件写完了"信号，冷却期因此多了一层职责 —— 等文件写完
         # （正在写入的文件 mtime 恰恰最新）。2h 对慢写的大文件不够，见 USAGE。
@@ -544,9 +543,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 新版本新增的计数键抹掉，看板取字段时拿到 KeyError。
         # 入库闸门挡下的扩展名分布（累计）。与 webhook_stat 同样必须持久化：
         # 它的全部价值就是「长期累计」，重载即清零等于没有。
-        saved_skip_stat = self.get_data("ingest_skip_stat") or {}
-        if isinstance(saved_skip_stat, dict):
-            self._ingest_skip_stat = {str(k): int(v) for k, v in saved_skip_stat.items()}
         saved_wh_stat = self.get_data("webhook_stat") or {}
         if isinstance(saved_wh_stat, dict):
             self._webhook_stat_now().update(saved_wh_stat)
@@ -843,7 +839,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     added_paths.append(sub)
 
         counts["skipped_by_ext"] = skipped_ext
-        self._note_ingest_skips(skipped_ext)
 
         # 看板/日志用：本批是否有目录被展开（不改变入队总数，故单独计数）
         if counts["added"] > 0:
@@ -1849,36 +1844,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     # 现在只有一条通道：宿主的 `webhook_parser` 契约（认领确认发给本插件的报文）。
     # 自建匿名端点已于 2026-09-22 移除，原因见 DEVELOPMENT §9.18。
 
-    def _note_ingest_skips(self, skipped_ext: Dict[str, int]) -> None:
-        """
-        把「被扩展名闸门挡下」的分布累加进运行态，供看板展示。
-
-        Accumulate extensions blocked by the ingest gate so the dashboard can
-        answer "which file types are being silently dropped".
-
-        为什么值得专门做：闸门丢弃此前只写 debug 日志，而看板的四个计数里没有它
-        —— 「某一类文件 100% 被丢弃」在界面上**完全没有痕迹**。这不是假设：
-        音频曾因此全丢（用户的默认白名单里一个音频扩展名都没有），直到逐行
-        读代码才发现。一条只增不清的分布就足以让这种情况在第一次发生时暴露。
-
-        Why it matters: this exact blind spot let "100% of audio files dropped"
-        survive multiple releases. A monotonically growing histogram is enough to
-        make that visible the first time it happens.
-        """
-        if not skipped_ext:
-            return
-        stat = getattr(self, "_ingest_skip_stat", None)
-        if not isinstance(stat, dict):
-            stat = {}
-            self._ingest_skip_stat = stat
-        for ext, n in skipped_ext.items():
-            stat[ext] = int(stat.get(ext, 0)) + int(n)
-        try:
-            self.save_data("ingest_skip_stat", stat)
-        except Exception:
-            # 统计落盘失败绝不能影响入库本身
-            pass
-
     @staticmethod
     def _wh_stat() -> Dict[str, Any]:
         """
@@ -2392,7 +2357,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 调用，此时 `__init__` 没跑过、该属性不存在。为看板统计抛
                 # AttributeError 会把「同步本身完全正常」表现成异常（本项目已记录过
                 # 这一类缺陷，见 _webhook_stat_now 的同一处理）。
-                "ingest_skipped_by_ext": dict(getattr(self, "_ingest_skip_stat", None) or {}),
                 # 源端游标扫描（主入库通道）的可见状态
                 "source_scan_enabled": self._source_scan_enabled,
                 "source_scan_cron": self._source_scan_cron,
