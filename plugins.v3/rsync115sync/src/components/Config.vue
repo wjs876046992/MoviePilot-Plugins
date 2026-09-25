@@ -851,6 +851,18 @@ onMounted(() => {
     align-items: flex-start !important;
     gap: 8px;
   }
+  /* ⚠️ **必须重置纵排下的 flex 基准**。
+     桌面端给文字列设的是 `flex: 1 1 20rem`（20rem 是**宽度**基准，用来决定何时
+     换行）。但一旦主轴变成 column，这个 `flex-basis` 就转而控制**高度** ——
+     于是手机端每一个"开关 + 说明"行都会凭空多出约 320px 的高度，
+     表现为「启用同步助手」这类行奇高、一屏放不下两项。
+     （用户实测反馈：手机端「启用同步助手」占了很大的高度。）
+     纵排下不需要任何宽度分配：宽度由 `align-items: stretch` 给满，
+     高度应完全由内容决定，所以重置为 `flex: 0 0 auto`。 */
+  .setting-row > div:first-child {
+    flex: 0 0 auto;
+    min-width: 0;
+  }
   .setting-row > .v-switch {
     margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
   }

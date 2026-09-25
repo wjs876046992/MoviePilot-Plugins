@@ -246,3 +246,52 @@ def test_theme_variables_have_no_literal_fallback():
             f"深色模式下卡片没有背景、而文字色来自宿主（浅色）→ 文字看不见。"
             f"正确写法：rgb(var(--v-theme-surface))，不要兜底。"
         )
+
+
+def test_column_direction_resets_flex_basis():
+    """
+    媒体查询把设置行改成纵向排布时，**必须重置子项的 flex 基准**。
+
+    ## 为什么（用户实测反馈：手机端「启用同步助手」占了很大的高度）
+
+    `flex-basis` 度量的是**主轴方向**上的尺寸。桌面端给文字列设的是：
+
+        .setting-row > div:first-child { flex: 1 1 20rem; }   /* 20rem = 320px */
+
+    这里的 `20rem` 是**宽度**基准 —— 用来决定"一行放不下时要不要整体换行"。
+
+    但一旦媒体查询把主轴改成纵向：
+
+        .setting-row { flex-direction: column; }
+
+    同一个 `flex-basis` 就**转而控制高度** —— 于是手机端每个"开关 + 说明"行
+    凭空多出约 320px，表现为「启用同步助手」这类行奇高、一屏放不下两项。
+
+    ⚠️ 这与"设置行被挤压"是同一类错误的另一面：**改主轴方向时必须同时检查
+    依赖主轴方向的属性**（flex-basis / width / height / margin-inline 等）。
+    我加 `flex: 1 1 20rem` 时只想着桌面端的横向排布，没意识到已有的移动端
+    媒体查询会把主轴翻过来。
+
+    这条断言的做法：在移动端媒体查询块内，若 `.setting-row` 被设为
+    `flex-direction: column`，则必须存在对 `.setting-row > div:first-child`
+    的 flex 重置（`flex: 0 0 auto` 或显式 `flex-basis: auto`）。
+    """
+    src = _read_component("Config.vue")
+    css = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+
+    # 取移动端媒体查询块（本文件只有一个 max-width 断点）
+    mq = re.search(r"@media[^{]*max-width:\s*599\.98px[^{]*\{(.*)", css, re.DOTALL)
+    assert mq, "未找到移动端媒体查询块"
+    block = mq.group(1)
+
+    if "flex-direction: column" not in block:
+        return  # 没有翻主轴，本条不适用
+
+    # 块内必须重置文字列的 flex 基准
+    assert re.search(r"\.setting-row\s*>\s*div:first-child\s*\{[^}]*flex:\s*0\s+0\s+auto", block) \
+        or re.search(r"\.setting-row\s*>\s*div:first-child\s*\{[^}]*flex-basis:\s*auto", block), (
+        "移动端把 .setting-row 改成了 flex-direction: column，但没有重置 "
+        "`.setting-row > div:first-child` 的 flex 基准 —— 桌面端那个 "
+        "`flex: 1 1 20rem` 会转而控制**高度**，让每个开关行凭空多出约 320px"
+        "（用户实测：手机端「启用同步助手」占了很大的高度）"
+    )
