@@ -875,11 +875,12 @@
     "name": "115网盘同步助手",
     "description": "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、看板单条/批量手动触发与命令定向重试",
     "author": "HermanWu",
-    "version": "0.2.7",
+    "version": "0.3.0",
     "level": 1,
     "system_version": ">=3.0.0",
     "repo": "https://github.com/wjs876046992/MoviePilot-Plugins",
     "history": {
+      "v0.3.0": "**台账重构 + 判定收敛**（4 批）。① 建 SQLite 文件台账 `ledger.sqlite3`（files / events / meta 三表）+ 一次性迁移 `ignored_files` 与 `strm_suspects`。② 4 类与文件有关的状态（冷却队列 / 观察期 / 待处理 / 补生成标记）切到台账，~175 处读写点经两个 dict 替身（`LedgerMapping` 按 status、`LedgerFieldMap` 按列）保持一行未改。③ **砍掉「云端可见性」整套判定**：该观测点对改名失败这个主成因没有鉴别力 —— CD2 挂载视图必然显示成「可见、大小一致」（改名失败的残留与正式文件字节数相同），据此拦人必然拦错。判据收敛成一条：**`.strm` 存不存在**。连带删除 5 个 DEST 常量、`dest_probe_outcome` / `_dest_visibility` / `_annotate_dest` / `_remove_dest_residues` / `_promote_watch_to_suspects`、`/strm_probe` 与 `/strm_confirm_failed` 两个端点、`/rsync_strm failed` 子命令、看板的「确认失败」按钮与云端可见性文案。④ 补生成标记并入台账。新增结构哨兵用例组（AST 断言已删标识符不得复活）。",
       "v0.2.7": "修复扫描结果的数字对账：① `_strm_scan` 的 `data` 补上 `skipped_ignored` / `skipped_watching` / `candidates` —— 此前只在 `message` 里写了「因忽略规则跳过 N 个」，而看板读的是 `data`，于是显示成「缺 2 个、新增 0 个」却不说为什么（用户实测追问「检测到两个，却没有出现在疑似列表里」）；看板现同时列出缺 strm 的文件名。② 补生成标记改为「跟着忽略走」：`_add_ignore_rule` 与无效条目清理此前只清 watch/suspect 两个字典，漏了 `_strm_gen_requested`，留下幽灵记录；新增 `_prune_orphan_gen_markers` 在载入时兜底清理两个清单都已不存在的标记。",
       "v0.2.6": "修复「点删旧重传没反应/没重传」：① 删旧重传改为**先预检后删除** —— 执行锁、风控退避、窗口配额、挂载未就绪这几道闸门原先都在删除**之后**才判，命中即「文件已从云端删掉却永远不重传」，而看板路径不传 channel_event，连提示都发不出来；② 疑似清单的「确认失败」原先只收观察期条目，于是提示里「已在疑似清单 → 直接点删旧重传」在插件侧无处落地（普通疑似条目没有 force 通道）—— 现在接受已在清单的条目并就地标记为已确认，疑似行也补上了「确认失败」按钮；③ 预检为尽力而为，任何异常按放行处理，绝不自己变成新的阻塞点。",
       "v0.2.5": "修复「删旧重传」被过度保护挡住：云端可见性探测此前只比大小，而改名失败的残留大小与正式文件完全一致（实测），于是这条守卫在你最需要它的场景（文件名带 `..随机6位`）里必然拦人。现在探测改为同时读目录、识别该文件的传输残留（`paths.is_temp_residue_name`，本机 rsync 3.4.1 中断实测命名 `.影片.mkv.WCTOKM`），判成「有残留」时直接放行删旧重传并连同残留一并删除；探测真正显示「可见且大小一致且无残留」时才提示先查生成侧。",
