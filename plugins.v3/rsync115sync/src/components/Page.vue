@@ -109,6 +109,53 @@
           </v-col>
         </v-row>
 
+        <!-- 传输进度：**只在跑同步时出现**（statusData.progress 为 null 时整块隐藏）。
+             为什么要有它：在此之前一次 28 分钟的传输在看板上全程是黑屏 ——
+             唯一能看到的只有「正在同步 ⏳」这五个字。
+             数据来自 rsync 的 --info=progress2（整批累计），字段含义见 progress.py。 -->
+        <div v-if="progress" class="progress-card radius-lg pa-3 mb-3">
+          <div class="d-flex align-center flex-wrap ga-2 mb-2">
+            <v-icon size="16" class="progress-icon">mdi-cloud-upload-outline</v-icon>
+            <span class="font-weight-medium text-body-2">{{ progress.phase || '传输' }}</span>
+            <v-chip size="x-small" variant="tonal" color="info" class="font-weight-bold">
+              {{ progress.pair_name }} ({{ progress.pair_index }}/{{ progress.pair_total }})
+            </v-chip>
+            <span class="text-caption text-medium-emphasis ms-auto">{{ progressElapsed }}</span>
+          </div>
+
+          <v-progress-linear
+            :model-value="progress.percent || 0"
+            :color="progress.percent >= 100 ? 'success' : 'primary'"
+            height="14"
+            rounded
+            striped
+          >
+            <template #default="{ value }">
+              <span class="text-caption font-weight-bold">{{ Math.ceil(value) }}%</span>
+            </template>
+          </v-progress-linear>
+
+          <div class="d-flex flex-wrap ga-x-4 ga-y-1 mt-2 text-caption">
+            <span v-if="progressFile" class="progress-file text-medium-emphasis">
+              <v-icon size="12" class="mr-1">mdi-file-outline</v-icon>{{ progressFile }}
+            </span>
+            <span v-if="progress.rate" class="text-medium-emphasis">⚡ {{ progress.rate }}</span>
+            <span v-if="progress.eta && progress.percent < 100" class="text-medium-emphasis">
+              ⏳ 约剩 {{ progress.eta }}
+            </span>
+            <span v-if="progress.files_total" class="text-medium-emphasis">
+              📦 {{ progressFilesDone }}/{{ progress.files_total }} 个文件
+            </span>
+          </div>
+
+          <!-- ⚠️ 「最近更新 x 秒前」不是装饰：rsync 在扫描/收尾阶段会长时间不出声
+               （实测一批传完会重复打印若干条 100%），只看百分比会以为卡死了。
+               这一行把"在慢慢传"与"真卡住了"分开 —— 这也是后端停滞看门狗的依据。 -->
+          <div v-if="progressStaleText" class="text-caption mt-1 progress-stale">
+            {{ progressStaleText }}
+          </div>
+        </div>
+
         <!-- 补传 / 限流 / 源端扫描提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
           v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || statusData.strm_watching || sourceScanProblem"
@@ -1073,6 +1120,53 @@ const skippedExtRows = computed(() => {
     .sort((a, b) => b.count - a.count)
 })
 
+// 时长文案（秒 → 「2 分 30 秒」）。进度区有三处要用它（已运行 / 剩余 / 无输出多久），
+// 收一处免得三份实现慢慢分叉。
+function formatDuration(totalSecs) {
+  const secs = Math.max(0, Math.floor(Number(totalSecs) || 0))
+  if (secs < 60) return `${secs} 秒`
+  const m = Math.floor(secs / 60)
+  const rem = secs % 60
+  if (m < 60) return rem ? `${m} 分 ${rem} 秒` : `${m} 分`
+  const h = Math.floor(m / 60)
+  return `${h} 小时 ${m % 60} 分`
+}
+
+// ---- 传输进度 ----
+// 后端只在**跑同步时**给 progress（空闲为 null），因此这里用真值判断即可，
+// 不必逐个字段判空（见 _progress_snapshot_clear 的说明：任务结束就清掉）。
+const progress = computed(() => statusData.value.progress || null)
+
+const progressFile = computed(() => {
+  const f = progress.value?.file
+  if (!f) return ''
+  // 只显示文件名（完整相对路径太长会把这一行挤爆，且用户认的是文件名）
+  return String(f).split('/').pop()
+})
+
+// progress2 只给"还剩几个"（to-chk=A/B），已完成数要自己减。
+const progressFilesDone = computed(() => {
+  const p = progress.value
+  if (!p || p.files_total == null || p.files_left == null) return ''
+  return Math.max(0, p.files_total - p.files_left)
+})
+
+const progressElapsed = computed(() => {
+  const secs = progress.value?.elapsed_seconds
+  if (secs == null) return ''
+  return `已运行 ${formatDuration(secs)}`
+})
+
+// ⚠️ 这是"卡住了吗"的唯一线索（见模板里的说明）。阈值取 20 秒：
+// rsync 传输中约每秒一帧，超过 20 秒没帧就该让用户知道"现在没在动"。
+const progressStaleText = computed(() => {
+  const p = progress.value
+  if (!p) return ''
+  if (p.stale_seconds == null) return '等待 rsync 输出…'
+  if (p.stale_seconds < 20) return ''
+  return `⚠️ 已 ${formatDuration(p.stale_seconds)} 没有收到 rsync 输出`
+})
+
 const failedCount = computed(() =>
   (statusData.value.last_status?.missing_files?.length || 0) +
   (statusData.value.last_status?.corrupt_files?.length || 0)
@@ -1697,6 +1791,9 @@ async function fetchStatus() {
     console.error('获取状态失败:', e)
   } finally {
     loading.value = false
+    // 取到状态后立刻决定下一轮的节奏：同步开始/结束都能在一轮之内自动切换，
+    // 用户不必刷新页面（否则"进度条开始动"会晚最多 30 秒才被发现）。
+    reschedule()
   }
 }
 
@@ -1770,9 +1867,26 @@ async function triggerRetry() {
   }
 }
 
+// 轮询节奏**跟着运行状态走**：
+//   · 空闲 30 秒 —— 空闲时没有"正在变"的东西，快轮询只是白耗宿主资源；
+//   · 同步中 5 秒 —— 唯一会变的是传输进度，而进度条卡住 30 秒毫无意义。
+// 排程由 reschedule() 在每次取到状态后决定，因此"开始/结束同步"能自动切换，
+// 不需要用户刷新页面。
+const POLL_IDLE_MS = 30000
+const POLL_RUNNING_MS = 5000
+let pollMs = POLL_IDLE_MS
+
+function reschedule() {
+  const want = statusData.value.is_running ? POLL_RUNNING_MS : POLL_IDLE_MS
+  if (want === pollMs) return
+  pollMs = want
+  if (timer) clearInterval(timer)
+  timer = setInterval(fetchStatus, pollMs)
+}
+
 onMounted(() => {
   fetchStatus()
-  timer = setInterval(fetchStatus, 30000)
+  timer = setInterval(fetchStatus, pollMs)
 })
 
 onUnmounted(() => {
@@ -1829,6 +1943,28 @@ onUnmounted(() => {
   justify-content: center;
   background: rgba(var(--v-theme-primary), 0.12);
 }
+/* 传输进度卡片。用 primary 淡底 + 一致的边框，与上方统计卡片同一视觉语言 ——
+   它是"正在发生"的状态，不是"要你处理"的告警，所以不抢眼但一眼能看见。
+   ⚠️ 颜色一律走 `rgb(var(--v-theme-x))` / `rgba(var(--v-theme-x), a)`：
+   Vuetify 的主题变量是**裸 RGB 三元组**（如 `--v-theme-primary: 33,150,243`），
+   写 `rgb(var(--v-theme-primary, 255,255,255))` 这种带字面量兜底的形态会构成
+   非法值、整条声明被丢弃 —— 深色模式下文字直接消失（本仓踩过，见 CLAUDE 约定）。 */
+.progress-card {
+  border: 1px solid rgba(var(--v-theme-primary), 0.24);
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+.progress-icon { color: rgb(var(--v-theme-primary)); }
+/* 当前文件名可能很长（剧名+季+集），用 min-width:0 + ellipsis 让它自己收缩，
+   而不是把同一行的速率/ETA 挤压换行。 */
+.progress-file {
+  max-width: 42rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「已 N 秒没有输出」是告警语义，用 warning 色；它出现时用户该知道"现在没在动"。 */
+.progress-stale { color: rgb(var(--v-theme-warning)); }
+
 .stat-card {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }

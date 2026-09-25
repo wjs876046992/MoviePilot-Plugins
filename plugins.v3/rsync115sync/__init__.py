@@ -173,6 +173,7 @@ from .paths import (  # noqa: E402
 # 本插件的」），但它不再是某个自建端点的内部函数 —— 自建端点已于 2026-09-22 移除，
 # 现在唯一的载体是宿主的平台 webhook 链路，见 DEVELOPMENT §9.18。
 from . import webhook as _wh  # noqa: E402
+from . import progress as _progress  # noqa: E402
 from . import store as _store_mod  # noqa: E402
 from .store import Store as _Store  # noqa: E402
 
@@ -181,7 +182,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.3.0"
+    plugin_version = "0.3.1"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -388,6 +389,18 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._lock = threading.Lock()
         self._is_running: bool = False
         self._current_process: Optional[subprocess.Popen] = None
+        # ---- 传输进度（看板显示用；见 progress.py 的模块说明）----
+        #
+        # 它是一次同步任务的**瞬时观测**，不是可恢复的状态：进程死了进度就没了
+        # （本插件刻意不用 --partial/--inplace —— 115 的秒传要求完整文件参与
+        # 哈希，断点续传会让已传部分作废）。因此它**不进台账、不落盘**，
+        # 只在内存里给看板读。
+        # Transient by design: it is an observation of a running process, not
+        # resumable state. Never persisted.
+        self._progress: Dict[str, Any] = {}
+        # 读取线程写、/status 读，必须加锁。锁本身也必须在实例上 ——
+        # 模块级锁会让宿主的两个虚拟分身互相阻塞（见 test_split_contract）。
+        self._progress_lock = threading.Lock()
         # 补传扫描互斥锁：防止用户连点按钮触发多次并发的全库目录遍历
         # 与上面的 _lock 分开：扫描是只读的，不应阻塞（也不应被）同步任务占用，
         # 但必须与其他扫描互斥
@@ -2450,6 +2463,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 记了多少、都在什么状态" —— 用户要知道 SQLite 里是不是真的
                 # 有东西，不必为此翻数据库。
                 "ledger": self._ledger_overview(),
+                # 传输进度快照（**只在跑同步时有值**，空闲为 None）。
+                # 前端据此整块显示/隐藏进度区，不必逐个字段判空。
+                # ⚠️ 它是瞬时观测：任务结束就被清掉（见 _progress_reset /
+                # _progress_snapshot_clear）—— 留着过期数字比没有更糟。
+                "progress": self._progress_snapshot(),
             }
         }
 
@@ -2934,6 +2952,123 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         """
         threading.Thread(target=self._execute_sync, args=(mode, custom_files, channel_event), daemon=True).start()
 
+    # ---- 传输进度 / transfer progress ------------------------------------
+
+    def _progress_state(self) -> Tuple[Dict[str, Any], Any]:
+        """
+        取 (进度字典, 锁)，**缺失时惰性补建**。
+
+        Lazily create the progress dict/lock when absent.
+
+        ⚠️ 为什么不是简单地在 `init_plugin` 里建好就算：本仓有大量
+        `__new__` 构造的最小实例（单测、`/status` 的若干调用路径），它们从不跑
+        `init_plugin`，因此这些属性**不存在**。本仓为同一件事已经栽过四次
+        （`_rate_limit_enabled` / `_upload_window_secs` / `_ledger` / 这里），
+        每次表现都是"某个接口突然 AttributeError"。
+        加上这个访问器之后，进度相关的读写**不可能**再因此抛异常 ——
+        它比在每个调用点写 `getattr` 更难犯错。
+        Minimal `__new__`-built instances never run init_plugin, so these attributes
+        may not exist. Self-healing access removes a whole class of failures.
+        """
+        lock = self.__dict__.get("_progress_lock")
+        if lock is None:
+            lock = threading.Lock()
+            self.__dict__["_progress_lock"] = lock
+        state = self.__dict__.get("_progress")
+        if state is None:
+            state = {}
+            self.__dict__["_progress"] = state
+        return state, lock
+
+    def _progress_reset(self, mode: str, total_pairs: int) -> None:
+        """
+        一轮同步开始时重置进度（上一轮的残留必须清掉，否则看板会显示过期数字）。
+
+        Reset progress at the start of a run. A stale snapshot from the previous run
+        is worse than none: the dashboard would show a plausible-looking percentage
+        for a process that is no longer running.
+        """
+        state, lock = self._progress_state()
+        with lock:
+            state.update({
+                "mode": mode,
+                "started_at": time.time(),
+                "updated_at": None,
+                "pair_index": 0,
+                "pair_total": total_pairs,
+                "pair_name": "",
+                "file": "",
+                "files_total": None,
+                "files_left": None,
+                "percent": 0,
+                "bytes": 0,
+                "rate": "",
+                "eta": "",
+                "phase": "准备",
+            })
+
+    def _progress_update(self, **fields: Any) -> None:
+        """
+        合并式更新进度字段（读取线程每收到一条 progress2 就调一次）。
+
+        Merge-update the progress snapshot. `updated_at` 由这里统一打戳 ——
+        前端靠它算"最近更新 x 秒前"，因为 rsync 在扫描/收尾阶段会**长时间静默**，
+        光看百分比不变会让人以为卡死了（实测：一批传完会重复打印若干条 100%）。
+        """
+        state, lock = self._progress_state()
+        with lock:
+            if not state:
+                return
+            state.update(fields)
+            state["updated_at"] = time.time()
+
+    def _progress_snapshot(self) -> Optional[Dict[str, Any]]:
+        """
+        给 /status 的进度快照（**只读副本**，防止调用方拿到内部字典）。
+
+        A read-only copy for /status. 未运行时返回 None —— 前端据此整块隐藏，
+        不必判断字段是否齐全。
+        """
+        state, lock = self._progress_state()
+        with lock:
+            if not state:
+                return None
+            snap = dict(state)
+        # 由快照算派生字段，不存进状态里（避免两份时间互相漂移）
+        start = snap.get("started_at")
+        upd = snap.get("updated_at")
+        now = time.time()
+        snap["elapsed_seconds"] = int(now - start) if start else 0
+        snap["stale_seconds"] = int(now - upd) if upd else None
+        return snap
+
+    def _progress_snapshot_clear(self) -> None:
+        """任务收尾时清空进度快照（看板据此整块隐藏进度区）。"""
+        state, lock = self._progress_state()
+        with lock:
+            state.clear()
+
+    def _consume_rsync_segment(self, text: str) -> Optional[str]:
+        """
+        处理 rsync 输出里的一个**片段**，返回"若不是进度行，它是什么"。
+
+        Handle one rsync output segment. Returns the segment when it is *not*
+        progress output (so the caller can keep it for the change log), else None.
+
+        ⚠️ 为什么按"片段"而不是"行"：progress2 用 `\r` 分隔（实测），
+        所以「一行」这个概念在这股流里不成立 —— 必须把 `\r` 与 `\n` 都当分隔符。
+        Progress frames are separated by \r, not \n, so the unit here is a segment.
+        """
+        parsed = _progress.parse_progress_line(text)
+        if parsed is not None:
+            self._progress_update(**parsed)
+            return None
+        # 不是进度行：再看看是不是"某个文件开始传了"的 `-v` 文件名行
+        name = _progress.current_file_of(text)
+        if name:
+            self._progress_update(file=name)
+        return text
+
     def _execute_sync(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
         """
         同步主流程：本插件唯一真正与 115 交互的地方。
@@ -2986,6 +3121,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._last_status["error"] = ""
 
             total_pairs = len(self._sync_pairs)
+            self._progress_reset(mode, total_pairs)
             logger.info("=" * 60)
             logger.info(f"[Rsync115Sync] ▶ 开始执行同步任务 (模式: {mode}，共 {total_pairs} 个映射)")
             logger.info(f"[Rsync115Sync] 触发来源: {'聊天指令' if channel_event else ('看板/API 手动' if custom_files else '定时巡检')}")
@@ -3072,6 +3208,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     "--no-group",
                     "--omit-dir-times",
                     f"--timeout={self._rsync_timeout}",
+                    # 整批累计进度（不是 --progress 的每文件进度条）。
+                    # 实测：每秒一条，含累计字节 / 百分比 / 速率 / ETA，
+                    # 单文件完成时额外带 (xfr#N, to-chk=A/B)。
+                    # ⚠️ 缺了它看板在一次 28 分钟的传输里全程黑屏 ——
+                    # 这是本功能唯一的开关。
+                    "--info=progress2",
                 ]
 
                 # 仅当对端是 rsync 守护进程(rsync://)时才能使用 --contimeout，
@@ -3222,6 +3364,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     logger.info(f"[Rsync115Sync] [{pair_name}] ✂ 本批受批次上限限制，"
                                 f"本次处理 {len(pair_files)} 个，剩余 {deferred} 个留待下轮")
 
+                # 进入新一组：更新阶段与组序号，并把上一组的文件/百分比清掉
+                # （否则新一组刚起步时，看板会显示上一组停在 100% 的残留数字）
+                self._progress_update(pair_index=idx + 1, pair_name=pair_name,
+                                      phase="传输", file="", percent=0, bytes=0,
+                                      rate="", eta="", files_total=len(pair_files),
+                                      files_left=len(pair_files))
                 logger.info(f"[Rsync115Sync] [{pair_name}] 待传输 {len(pair_files)} 个文件:")
                 for _p in pair_files:
                     logger.info(f"[Rsync115Sync] [{pair_name}]   - {_p}")
@@ -3246,22 +3394,132 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 logger.info(f"[Rsync115Sync] [{pair_name}] ▶ 启动 rsync (模式 {mode}，{len(pair_files)} 个文件)")
                 logger.debug(f"[Rsync115Sync] [{pair_name}] 完整命令: {' '.join(shlex.quote(c) for c in cmd)}")
 
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+                # errors="replace"：文件名可能含非 UTF-8 字节（Windows 来源的媒体库
+                # 很常见），解码失败会抛 UnicodeDecodeError 打断整个读取线程。
+                # 宁可让日志里那一个名字显示成问号，也不能因此丢掉整股输出。
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           text=True, bufsize=1, errors="replace")
                 self._current_process = process
 
-                try:
-                    stdout, stderr = process.communicate(timeout=self._task_timeout)
-                    exit_code = process.returncode
-                except subprocess.TimeoutExpired:
-                    logger.error(f"[Rsync115Sync] [{pair_name}] ❌ 传输超时（超过 {self._task_timeout} 秒）强制 Kill！")
+                # ---- 边跑边读 stdout（拿实时进度），stderr 走另一个线程 ----
+                #
+                # ⚠️ **为什么不用 `communicate(timeout=...)`**：它把整股输出缓冲到
+                # 进程结束才返回 —— 一次 28 分钟的传输就是看板上 28 分钟黑屏。
+                #
+                # ⚠️ **为什么必须逐字符读，不能用 `readline()`**：实测（`cat -A`）
+                # 进度帧之间是用 **`\r`** 分隔的，整块帧只在该文件**传完时**才补一个
+                # `\n`。也就是说 `readline()` 要等整个文件传完才返回 —— 传一个
+                # 4GB 文件就是几分钟不更新，与"实时"正好相反。
+                #     f1.bin$
+                #     ^M 32,768 0%..^M 2,000,000 50%..(xfr#1, to-chk=1/2)$
+                #     f2.bin$
+                # Progress frames are \r-separated and only terminated by \n when the
+                # *file* finishes, so readline() would stall for the whole file.
+                #
+                # ⚠️ **两个管道都必须被持续消费**：写满 64KB 管道缓冲区后子进程会
+                # 阻塞在写操作上、整个传输卡死。因此 stderr 也必须有读者线程。
+                # Both pipes need a live reader or the child blocks on a full pipe.
+                stdout_lines: List[str] = []
+                stderr_chunks: List[str] = []
+                # 用单元素 list 当可变信箱：读取线程写、主线程读，靠它判"是否还在动"
+                io_clock = {"last": time.time()}
+
+                def _read_stdout() -> None:
+                    buf = ""
+                    try:
+                        while True:
+                            ch = process.stdout.read(1)
+                            if not ch:
+                                break
+                            if ch in ("\r", "\n"):
+                                if buf:
+                                    kept = self._consume_rsync_segment(buf)
+                                    if kept is not None:
+                                        stdout_lines.append(kept)
+                                buf = ""
+                                # 只有收到完整片段才算"动过"。这正是"停滞检测"
+                                # 的依据：rsync 传输中约每秒一帧，长时间没有帧
+                                # 就是真有问题（而不是"在慢慢传"）。
+                                io_clock["last"] = time.time()
+                                continue
+                            buf += ch
+                    except (ValueError, OSError):
+                        # kill 后管道关闭，读会抛 —— 与读到 EOF 同义，正常收尾
+                        pass
+                    if buf:
+                        kept = self._consume_rsync_segment(buf)
+                        if kept is not None:
+                            stdout_lines.append(kept)
+
+                def _read_stderr() -> None:
+                    try:
+                        while True:
+                            ch = process.stderr.read(1)
+                            if not ch:
+                                break
+                            stderr_chunks.append(ch)
+                    except (ValueError, OSError):
+                        pass
+
+                reader_out = threading.Thread(target=_read_stdout, daemon=True)
+                reader_err = threading.Thread(target=_read_stderr, daemon=True)
+                reader_out.start()
+                reader_err.start()
+
+                # ---- 超时语义与改动前逐字一致 ----
+                # 总时限判据仍是"从启动算起 task_timeout 秒"，与既有配置项含义完全
+                # 对应；只是改由这里自己算，因为不能再依赖 communicate() 的 timeout。
+                hard_deadline = time.time() + self._task_timeout
+                # 停滞看门狗是**兜底**，因此刻意比 rsync 自己的 `--timeout` 更宽：
+                # rsync 的 I/O 超时会先触发（它能给出正经的退出码与错误信息），
+                # 我们这条只在"rsync 活着但彻底不出声"时才动手，避免抢先生效
+                # 而把一个本可恢复的传输杀掉。
+                # Deliberately looser than rsync's own --timeout so rsync gets to
+                # report first; this only catches "alive but completely silent".
+                stall_limit = self._rsync_timeout + 60
+                timed_out_hard = timed_out_stall = False
+                while True:
+                    if process.poll() is not None:
+                        break
+                    now = time.time()
+                    if now >= hard_deadline:
+                        timed_out_hard = True
+                        break
+                    if now - io_clock["last"] >= stall_limit:
+                        timed_out_stall = True
+                        break
+                    time.sleep(0.5)
+
+                if timed_out_hard or timed_out_stall:
+                    if timed_out_hard:
+                        logger.error(f"[Rsync115Sync] [{pair_name}] ❌ 传输超时"
+                                     f"（超过 {self._task_timeout} 秒）强制 Kill！")
+                    else:
+                        logger.error(f"[Rsync115Sync] [{pair_name}] ❌ 传输停滞"
+                                     f"（超过 {stall_limit} 秒无任何输出）强制 Kill！")
                     process.kill()
-                    stdout, stderr = process.communicate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+
+                reader_out.join(timeout=10)
+                reader_err.join(timeout=10)
+                stdout = "\n".join(stdout_lines)
+                stderr = "".join(stderr_chunks)
+                if timed_out_hard or timed_out_stall:
                     exit_code = -9
                     has_error = True
-
+                else:
+                    exit_code = process.returncode
                 rsync_cost = int(time.time() - rsync_start)
                 # 记录 rsync 关键输出，便于排查传输失败原因
                 if exit_code == 0:
+                    # ⚠️ 进度帧**不在** stdout 里（读取线程已把它们全部消化掉了）：
+                    # `_read_stdout` 只把"非进度"片段攒进 stdout_lines。
+                    # 若哪天有人把进度解析挪走，这里会立刻把几百条进度碎片当成
+                    # "变更记录"打出来（实测每秒一条），注意这一条与 progress.py 的
+                    # 耦合方向：**是进度模块决定这行算不算进度**。
                     up_files = [ln for ln in (stdout or "").splitlines() if ln and not ln.endswith("/") and ln != "./"]
                     logger.info(f"[Rsync115Sync] [{pair_name}] ✅ rsync 完成，退出码 0，耗时 {rsync_cost} 秒，"
                                 f"输出 {len(up_files)} 行变更记录")
@@ -3556,6 +3814,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         finally:
             self._is_running = False
             self._current_process = None
+            # 进度是"正在跑"的观测：任务结束就该消失。留着它会让看板在空闲时
+            # 显示上一轮的百分比，而那是个已经结束的进程的数字。
+            self._progress_snapshot_clear()
             self._lock.release()
 
     def _audit_files_integrity(self, source_dir: str, target_dir: str, pair_name: str,
