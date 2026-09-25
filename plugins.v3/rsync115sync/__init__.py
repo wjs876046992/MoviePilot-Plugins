@@ -503,6 +503,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         saved_queue = self.get_data("pending_queue") or {}
         if isinstance(saved_queue, dict):
             self._seed_ledger_from_saved(self._pending_queue, saved_queue, "enqueued_at")
+        # 补生成标记同样只在「台账里还没有这一列的值」时由旧数据补上。
+        # ⚠️ 列视图的 `_load()` 只读 **IS NOT NULL** 的行，所以这里要按
+        # 「该 key 在台账里没有标记」判断，而不是"台账里没有这一行" ——
+        # 一个文件完全可能已经在台账里（status=suspect）却还没被补生成过。
+        saved_gen = self.get_data("strm_gen_requested") or {}
+        if isinstance(saved_gen, dict):
+            self._seed_ledger_from_saved(self._strm_gen_requested, saved_gen,
+                                         "gen_requested_at")
         self._last_status["missing_files"] = self.get_data("missing_files") or []
         self._last_status["corrupt_files"] = self.get_data("corrupt_files") or []
         saved_ignored = self.get_data("ignored_files") or []
@@ -552,9 +560,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 放在这里而不是只在写入时过滤：写入过滤拦不住升级前已落盘的坏条目，
             # 用户会看到一堆永远处理不掉的东西，只能手工改数据文件。
             self._prune_invalid_strm_suspects()
-        saved_gen = self.get_data("strm_gen_requested") or {}
-        if isinstance(saved_gen, dict):
-            self._strm_gen_requested = saved_gen
+        # ⚠️ 补生成标记**不再从这里恢复**：它已切到台账的 `gen_requested_at`
+        # 列，`_bind_ledger_maps()` 构造列视图时已经把内容载入内存。
+        # 首启（台账里还没有这一列的值）时，`_seed_ledger_from_saved` 会把旧的
+        # `save_data("strm_gen_requested")` 内容喂进台账 —— 迁移路径仍然兜住。
         # 观察清单同样要载入即清洗（非视频文件永远不会生成 strm）。
         # ⚠️ 必须放在 `_strm_gen_requested` 恢复**之后**：清洗会连带失效该文件的
         # 补生成标记，早于此处调用就只能清掉一个空的标记字典，旧标记会留下来，
@@ -665,7 +674,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         for key in list(self._strm_gen_requested.keys()):
             if _ignore_is_ignored(key, self._ignored_rules):
                 self._strm_gen_requested.pop(key, None)
-        self.save_data("strm_gen_requested", self._strm_gen_requested)
         # 清单可能因此清空，重置通知闩锁（与 _strm_arm_watch 同一收尾逻辑）
         self._reset_strm_notified_if_clear()
         return True
@@ -2146,9 +2154,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             getattr(self, "_strm_suspects", None),
             _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_SUSPECT,
                                      ts_field="verified_at",
-                                     extra_from_value={"origin": "origin",
-                                                       "dest": "dest",
-                                                       "gen_requested_at": "gen"}))
+                                     extra_from_value={"origin": "origin"}))
+        # 「已请助手补生成过」这一列**与 status 正交**（一个文件可以既在冷却队列
+        # 又被补生成过），因此它走**列视图**而不是某个 status 替身 —— 见
+        # store.LedgerFieldMap 的说明。调用点仍是普通的 dict 用法，一行不用改。
+        self._strm_gen_requested = self._adopt_into_ledger(
+            getattr(self, "_strm_gen_requested", None),
+            _store_mod.LedgerFieldMap(self._ledger, "gen_requested_at"))
 
     def _seed_ledger_from_saved(self, mapping, saved: Dict[str, Any],
                                 ts_field: str) -> None:

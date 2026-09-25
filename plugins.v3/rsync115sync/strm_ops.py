@@ -182,7 +182,6 @@ class StrmOpsMixin:
 
         if removed:
             self.save_data("strm_suspects", self._strm_suspects)
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
             logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 疑似条目"
                            f"（非视频 / 已忽略 / 源端已删 / 映射已取消验证），剩余 "
                            f"{len(self._strm_suspects)} 个")
@@ -205,13 +204,20 @@ class StrmOpsMixin:
         用户实测数据里见过这种残留（`strm_suspects` 为空、标记还在）。
         A marker is meaningful only for an entry in one of the two lists; orphans
         linger invisibly and later mislabel a fresh observation.
+
+        ⚠️ 切到台账之后，**同一行上的标记会随行一起消失** —— 条目被
+        `_prune_invalid_strm_suspects` / `_prune_invalid_strm_watch` 摘掉时，
+        `LedgerMapping.__delitem__` 删的是整行，`gen_requested_at` 那一列自然
+        不在了。本函数因此只剩**跨 status 的那一类**孤儿要管：标记挂在
+        `synced` / `ignored` / `candidate` 这些行上，而它们不属于任何一个清单。
+        Row deletion now takes the marker with it, so only markers on rows whose
+        status is outside both lists can still be orphaned.
         """
         orphans = [k for k in list(self._strm_gen_requested.keys())
                    if k not in self._strm_watch and k not in self._strm_suspects]
         for key in orphans:
             self._strm_gen_requested.pop(key, None)
         if orphans:
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
             logger.warning(f"[Rsync115Sync] 🧹 已清理 {len(orphans)} 个孤儿补生成标记"
                            f"（条目已不在任何清单中）: {_brief_paths(orphans)}")
         return len(orphans)
@@ -246,7 +252,6 @@ class StrmOpsMixin:
             logger.info(f"[Rsync115Sync] 🧹 清理无效 strm 观察条目（{skip_text}）: {key}")
         if removed:
             self.save_data("strm_watch", self._strm_watch)
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
             logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 观察条目"
                            f"（非视频文件不会生成 strm），剩余 {len(self._strm_watch)} 个")
         return removed
@@ -347,7 +352,6 @@ class StrmOpsMixin:
                 self.save_data("strm_suspects", self._strm_suspects)
             if k in self._strm_gen_requested:
                 self._strm_gen_requested.pop(k, None)
-                self.save_data("strm_gen_requested", self._strm_gen_requested)
             armed += 1
         if armed:
             self.save_data("strm_watch", self._strm_watch)
@@ -442,7 +446,6 @@ class StrmOpsMixin:
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
             if new_suspects:
                 # 日志里把「补生成后仍无」单独标出来：排查时这一条的信息量远大于
                 # 普通到期，混在一起的计数会让人误以为两者同样可疑。
@@ -810,7 +813,6 @@ class StrmOpsMixin:
         if changed:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
 
         settled = [r["key"] for r in results if r["state"] == _strm.SETTLED]
         suspects = [r["key"] for r in results if r["state"] == _strm.SUSPECT]
@@ -1058,7 +1060,6 @@ class StrmOpsMixin:
         self._strm_gen_requested = {}
         self.save_data("strm_suspects", self._strm_suspects)
         self.save_data("strm_watch", self._strm_watch)
-        self.save_data("strm_gen_requested", self._strm_gen_requested)
         self._reset_strm_notified_if_clear()
         logger.info(f"[Rsync115Sync] 🧹 已清空 strm 清单：疑似 {suspects} 个 / 待观察 {watching} 个")
         return {"success": True,
@@ -1259,7 +1260,6 @@ class StrmOpsMixin:
         now_ts = time.time()
         for key in matched:
             self._strm_gen_requested[key] = now_ts
-        self.save_data("strm_gen_requested", self._strm_gen_requested)
         self._rearm_after_gen_request(matched, now_ts)
 
         logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(sent_dirs)} 个目录 / "

@@ -15,7 +15,7 @@ import pytest
 
 from app.plugins.rsync115sync.store import (
     STATUS_CANDIDATE, STATUS_PENDING_VERIFY, STATUS_SUSPECT,
-    LedgerMapping, Store,
+    LedgerFieldMap, LedgerMapping, Store,
 )
 
 
@@ -193,3 +193,72 @@ def test_mapping_degrades_without_ledger(tmp_path):
     q["a"] = 1.0                # 不得抛
     assert q["a"] == 1.0
     assert q.pop("a", None) == 1.0
+
+
+# --------------------------------------------------------------------------
+# LedgerFieldMap：与 status 正交的「列视图」
+# --------------------------------------------------------------------------
+
+def test_field_map_reads_and_writes_a_single_column(tmp_path):
+    """
+    列视图只碰它对应的那一列，**不动 status，也不动同行其它字段**。
+
+    这是它存在的全部理由：`gen_requested_at`（补生成标记）与 status 是正交的
+    —— 一个文件可以既在冷却队列、又被补生成过。用整行 upsert 去写它就必须
+    连 status 一起写，而调用方（`_strm_gen_requested.pop(key)` 这种）压根不知道
+    当前 status 是什么。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    ledger.upsert("TV:a.mkv", STATUS_SUSPECT, enqueued_at=1.0)
+
+    fm = LedgerFieldMap(ledger, "gen_requested_at")
+    fm["TV:a.mkv"] = 123.0
+
+    row = ledger.get("TV:a.mkv")
+    assert row["gen_requested_at"] == 123.0
+    assert row["status"] == STATUS_SUSPECT, "写标记不得改动 status"
+    assert row["enqueued_at"] == 1.0, "写标记不得改动同行其它字段"
+
+
+def test_field_map_pop_clears_the_column(tmp_path):
+    """
+    `pop` 必须把列置回 **NULL**，而不是留着一个旧值。
+
+    ⚠️ 这条是 `Store.clear_field` 存在的理由：`upsert` 用
+    `COALESCE(excluded.x, files.x)` 表达「没传的字段就别动」，
+    于是**没有任何办法**通过它写入 NULL —— 清空一个正交字段必须走
+    `clear_field`。少了它，"撤销补生成标记"会变成一个静默的空操作。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    ledger.upsert("TV:a.mkv", STATUS_SUSPECT, gen_requested_at=5.0)
+    fm = LedgerFieldMap(ledger, "gen_requested_at")
+
+    assert fm.pop("TV:a.mkv", None) == 5.0
+    assert fm.pop("TV:a.mkv", None) is None, "pop 缺失键必须返回默认值而不是抛异常"
+    assert ledger.get("TV:a.mkv")["gen_requested_at"] is None
+    assert "TV:a.mkv" not in fm
+
+
+def test_field_map_never_inserts_a_row(tmp_path):
+    """
+    给台账里不存在的 key 打标记是**空操作**，不得凭空 INSERT 一行。
+
+    凭空插入的那一行没有 status —— 它既不在任何清单里、也不会被任何清理逻辑
+    摘掉，是纯粹的幽灵记录。语义上"给一个已经不受跟踪的文件打补生成标记"
+    也没有意义。
+    """
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    fm = LedgerFieldMap(ledger, "gen_requested_at")
+
+    fm["从未跟踪过的文件"] = 9.0
+
+    assert ledger.get("从未跟踪过的文件") is None
+    assert len(ledger.by_status(STATUS_SUSPECT)) == 0
+
+
+def test_field_map_reloads_from_ledger(tmp_path):
+    """列视图与字典替身一样：真相源是台账，新实例能读回同一份内容。"""
+    ledger = Store(tmp_path / "ledger.sqlite3")
+    ledger.upsert("TV:a.mkv", STATUS_SUSPECT, gen_requested_at=7.0)
+
+    assert LedgerFieldMap(ledger, "gen_requested_at")["TV:a.mkv"] == 7.0

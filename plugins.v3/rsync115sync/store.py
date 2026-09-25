@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -268,6 +269,34 @@ class Store:
         except Exception:
             return False
 
+    def set_field(self, key: str, field: str, value: Any) -> bool:
+        """
+        只改一行的某一个字段，**不动 status、不动其它字段**。
+
+        Update a single column without touching the row's status or siblings.
+
+        ⚠️ 存在的理由：`upsert` 的写语义是"插一行或整行更新"，而有些字段与
+        status 是**正交**的 —— 补生成标记（`gen_requested_at`）就属于这一类：
+        它描述"这个文件被请过补生成"，与"这个文件现在处于 candidate 还是
+        pending_verify"毫无关系。用 `upsert` 去写它就必须连 status 一起写，
+        而调用方（一个字典替身）压根不知道当前 status 是什么。
+        Carrying status along would force the caller to know something it has no
+        business knowing; this writes exactly one column.
+        """
+        return self._write(f"UPDATE files SET {field} = ? WHERE key = ?", (value, key))
+
+    def clear_field(self, key: str, field: str) -> bool:
+        """
+        把一行的某个字段置为 **NULL**（与 `set_field(key, field, None)` 不同：
+        后者在 `upsert` 的语义里是"不修改"，会静默地什么都不做）。
+
+        ⚠️ 这个区别是有代价的教训：`upsert` 用 `COALESCE(excluded.x, files.x)`
+        表达"没传的字段就别动"，于是**没有任何办法**通过它写入 NULL。
+        清空一个正交字段（撤销"已补生成"标记）必须走这条路。
+        NULL cannot be expressed through upsert's COALESCE semantics.
+        """
+        return self._write(f"UPDATE files SET {field} = NULL WHERE key = ?", (key,))
+
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         rows = self._query("SELECT * FROM files WHERE key = ?", (key,))
         return dict(rows[0]) if rows else None
@@ -307,7 +336,126 @@ class Store:
 # 台账支持的「字典替身」：以 SQLite 为真相源、对外仍是 dict 接口
 # ==========================================================================
 
-from collections.abc import MutableMapping  # noqa: E402
+class LedgerFieldMap(MutableMapping):
+    """
+    把一个**台账字段**暴露成 dict 接口 —— 与 `LedgerMapping` 同一手法，
+    只是它对应的不是某个 status，而是某一列。
+
+    Expose a single ledger *column* as a dict-like view.
+
+    ## 它为什么必须存在
+
+    台账里有两类状态：
+
+      · **与 status 一一对应**的（冷却队列 = candidate、观察期 = pending_verify、
+        待处理 = suspect）—— 用 `LedgerMapping` 一个替身顶一个队列；
+      · **与 status 正交**的（`gen_requested_at`：这个文件被请过补生成）——
+        一个文件既可能在 candidate 也可能在 pending_verify，同时又是"补生成过"的。
+
+    第二类如果硬塞进某个 status 替身，就必须先知道"它现在是什么 status"，
+    而调用方（`_strm_gen_requested.pop(key)` 这种）只知道 key。做成独立的一列视图，
+    调用点依旧一行不用改。
+
+    ⚠️ 它**不做插入**：`self[k] = ts` 只更新已存在的行。若 key 不在台账里，
+    写会被静默跳过 —— 这是对的，因为"给一个台账里没有的文件打补生成标记"
+    在语义上没有意义（那个文件已经不受跟踪了），凭空 INSERT 会造出一行
+    没有 status 的幽灵记录。
+    Zero status: this view never inserts, so a write for a key the ledger no longer
+    tracks is a no-op instead of a ghost row.
+    """
+
+    def __init__(self, ledger: "Store", field: str):
+        self._ledger = ledger
+        self._field = field
+        self._cache: Dict[str, float] = {}
+        self._load()
+
+    def _load(self) -> None:
+        self._cache = {}
+        if self._ledger is None or not getattr(self._ledger, "usable", False):
+            return
+        for row in self._ledger._query(
+                f"SELECT key, {self._field} AS v FROM files WHERE {self._field} IS NOT NULL"):
+            try:
+                self._cache[str(row["key"])] = float(row["v"])
+            except (TypeError, ValueError):
+                continue
+
+    def reload(self) -> None:
+        self._load()
+
+    # ---- MutableMapping ------------------------------------------------
+    def __getitem__(self, key: str) -> float:
+        return self._cache[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        try:
+            ts = float(value)
+        except (TypeError, ValueError):
+            return
+        self._cache[key] = ts
+        if self._ledger is not None:
+            self._ledger.set_field(key, self._field, ts)
+
+    def __delitem__(self, key: str) -> None:
+        self._cache.pop(key, None)
+        if self._ledger is not None:
+            self._ledger.clear_field(key, self._field)
+
+    def pop(self, key, *args):
+        """与 `LedgerMapping.pop` 同一理由：`q.pop(k, None)` 必须不抛异常。"""
+        if key in self._cache:
+            value = self._cache.pop(key)
+            if self._ledger is not None:
+                self._ledger.clear_field(key, self._field)
+            return value
+        if args:
+            return args[0]
+        raise KeyError(key)
+
+    def setdefault(self, key, default=None):
+        if key in self._cache:
+            return self._cache[key]
+        self[key] = default
+        return default
+
+    def clear(self) -> None:
+        for key in list(self._cache):
+            if self._ledger is not None:
+                self._ledger.clear_field(key, self._field)
+        self._cache.clear()
+
+    def update(self, other=(), **kwargs) -> None:      # type: ignore[override]
+        items = dict(other, **kwargs) if other else dict(**kwargs)
+        for k, v in items.items():
+            self[k] = v
+
+    def keys(self):
+        return self._cache.keys()
+
+    def values(self):
+        return self._cache.values()
+
+    def items(self):
+        return self._cache.items()
+
+    def get(self, key, default=None):
+        return self._cache.get(key, default)
+
+    def __iter__(self):
+        return iter(self._cache)
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._cache
+
+    def __repr__(self) -> str:
+        return f"<LedgerFieldMap {self._field} n={len(self._cache)}>"
+
+
+
 
 
 class LedgerMapping(MutableMapping):
