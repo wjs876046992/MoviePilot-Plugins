@@ -30,6 +30,15 @@ def _config_vue() -> str:
     pytest.skip("Config.vue 未找到")
 
 
+def _read_component(name: str) -> str:
+    """按文件名读组件源码（两个组件共用一套布局/配色不变量）。"""
+    for parent in Path(__file__).resolve().parents:
+        p = parent / "plugins.v3" / "rsync115sync" / "src" / "components" / name
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    pytest.skip(f"{name} 未找到")
+
+
 def _template(src: str) -> str:
     """取模板部分，并去掉注释与标签，只留用户能看到的文本与属性。"""
     body = src[src.find("<template>"):src.rfind("</template>")]
@@ -192,3 +201,48 @@ def test_description_blocks_share_one_style():
     assert len(info_tonal) >= 3, (
         f"说明块应统一为 type=info variant=tonal，实际只有 {len(info_tonal)} 个"
     )
+
+
+def test_theme_variables_have_no_literal_fallback():
+    """
+    主题变量不得带**三值字面量兜底**（`var(--v-theme-x, 1, 2, 3)`）。
+
+    ## 为什么这是错的（已实测确认，不是风格问题）
+
+    Vuetify 把主题色写成**裸三元组**并**自带 rgb() 消费**：
+
+        /* Vuetify 生成：theme.mjs 的 genCssVariables */
+        .v-theme--dark { --v-theme-surface: 18,18,18; }
+        /* Vuetify 消费 */
+        .bg-surface { background-color: rgb(var(--v-theme-surface)) !important; }
+
+    因此我们自己写 CSS 时，**绝不能**再套一层并把三元组当兜底：
+
+        ❌  rgb(var(--v-theme-surface, 255, 255, 255))
+            变量有值 → rgb(255, 255, 255) ？？ 变量本身是 "255,255,255"，
+            于是变成 rgb(255, 255, 255) —— 参数个数对不上，**整条声明被丢弃**
+        ✅  rgb(var(--v-theme-surface))
+
+    声明被丢弃的直接后果：卡片没有背景，而文字色由宿主提供 —— 深色模式下
+    宿主给的是浅色文字，落在页面底色上就是「文字看不见」。用户实测反馈：
+    **深色模式下手机端与 PC 端文字都看不见**。
+
+    ⚠️ 注意这条与"兜底值本身是不是浅色"无关 —— 只要写了三值兜底，**无论深浅
+    都会让整条声明失效**。所以我修的不是"把白色换成深色"，而是去掉那个兜底。
+    （第一版我曾以为"深色下兜底太浅"才是病因，那个诊断方向是错的。*)
+
+    反面同样要拦：`var(--v-theme-x)` 是允许的（变量缺失时声明自然失效，
+    回退到宿主样式，这是正确行为）。
+    """
+    for name in ("Config.vue", "Page.vue"):
+        src = _read_component(name)
+        code = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+        code = re.sub(r"<!--.*?-->", " ", code, flags=re.DOTALL)
+        bad = re.findall(r"var\(--v-theme-[a-z-]+,\s*[0-9]+\s*,\s*[0-9]+\s*,\s*[0-9]+\s*\)", code)
+        assert not bad, (
+            f"{name} 里的主题变量带了三值字面量兜底：{bad[:3]}；"
+            f"Vuetify 的 --v-theme-* 是裸三元组（如 '18,18,18'）且自带 rgb() 消费，"
+            f"再套一层 rgb() 会构造出参数个数非法的值，**整条声明被浏览器丢弃** → "
+            f"深色模式下卡片没有背景、而文字色来自宿主（浅色）→ 文字看不见。"
+            f"正确写法：rgb(var(--v-theme-surface))，不要兜底。"
+        )

@@ -708,12 +708,12 @@ onMounted(() => {
   padding: 18px 22px !important;
 }
 .config-main-card {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  background: rgb(var(--v-theme-surface));
   width: 100%;
 }
 .header-surface {
-  background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
-  border-bottom: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.08) 0%, rgba(var(--v-theme-primary), 0.02) 100%);
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
@@ -735,18 +735,18 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+  background: rgba(var(--v-theme-primary), 0.12);
 }
 .settings-group-card {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .pair-card {
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.02);
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+  background: rgba(var(--v-theme-on-surface), 0.02);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
 }
 .empty-hint-box {
-  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.16);
 }
 
 /* 设置行的宽度分配：说明文字可收缩换行，右侧控件**不被挤压**。

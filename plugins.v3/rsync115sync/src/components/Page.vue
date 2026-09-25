@@ -1973,11 +1973,11 @@ onUnmounted(() => {
   padding: 18px 22px !important;
 }
 .page-main-card {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
+  background: rgb(var(--v-theme-surface));
   width: 100%;
 }
 .header-surface {
-  background: linear-gradient(135deg, rgba(var(--v-theme-primary, 24, 103, 192), 0.08) 0%, rgba(var(--v-theme-primary, 24, 103, 192), 0.02) 100%);
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.08) 0%, rgba(var(--v-theme-primary), 0.02) 100%);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
@@ -1998,10 +1998,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(var(--v-theme-primary, 24, 103, 192), 0.12);
+  background: rgba(var(--v-theme-primary), 0.12);
 }
 .stat-card {
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.08);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 /* 首行三个数据卡片的 border-top 曾整条不可见（实测于真实宿主，勿凭理论回退）。
    成因：宿主把内容区顶部内边距归零（见上方 .header-card-item + .v-card-text 注释），
@@ -2019,14 +2019,14 @@ onUnmounted(() => {
   margin-top: 0 !important;
   margin-bottom: 12px !important;
 }
-.stat-info { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06); }
-.stat-primary { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06); }
-.stat-error { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06); }
-.stat-warning { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.06); }
+.stat-info { background: rgba(var(--v-theme-info), 0.06); }
+.stat-primary { background: rgba(var(--v-theme-primary), 0.06); }
+.stat-error { background: rgba(var(--v-theme-error), 0.06); }
+.stat-warning { background: rgba(var(--v-theme-warning), 0.06); }
 /* 中性色卡片（"上次源端扫描""补传剩余"）。刻意不用彩色：它们不是**问题指标**，
    而是两种"进度读数"—— 用彩色会让看板在一切正常时也显得刺眼，
    而这类常年常驻的数字一旦刺眼，用户就会开始无视整行。 */
-.stat-muted { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.03); }
+.stat-muted { background: rgba(var(--v-theme-on-surface), 0.03); }
 /* 第二行不受首行那条 border-top 约束（它不在滚动容器顶边），
    但上边距要压掉 Vuetify 的 -12px，否则两行会贴在一起。 */
 .stat-row-secondary {
@@ -2035,26 +2035,26 @@ onUnmounted(() => {
 }
 
 .action-strip {
-  background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.06);
+  background: rgba(var(--v-theme-on-surface), 0.025);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
 }
 .queue-item-card {
-  background: rgb(var(--v-theme-surface, 255, 255, 255));
-  border: 1px solid rgba(var(--v-theme-on-surface, 0, 0, 0), 0.07);
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
 }
 .batch-bar {
-  border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
 }
 .failed-item-card {
-  background: rgba(var(--v-theme-error, 176, 0, 32), 0.04);
-  border: 1px solid rgba(var(--v-theme-error, 176, 0, 32), 0.18);
+  background: rgba(var(--v-theme-error), 0.04);
+  border: 1px solid rgba(var(--v-theme-error), 0.18);
 }
 .empty-box {
-  border: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.16);
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.16);
 }
 /* 分页条：与列表用虚线分隔，弱化存在感，避免抢占内容注意力 */
 .pager-bar {
-  border-top: 1px dashed rgba(var(--v-theme-on-surface, 0, 0, 0), 0.14);
+  border-top: 1px dashed rgba(var(--v-theme-on-surface), 0.14);
   padding-top: 12px;
 }
 .pager-btn {
