@@ -188,119 +188,18 @@ def watch_state_of(key: str, watch: Dict[str, Any],
     return "sync", now_ts
 
 
-# 「目标端探测」的结论。四个取值都要能被调用方区分开，理由见 dest_probe_outcome。
-DEST_OK = "ok"                    # 可见、大小一致、**且目录里没有残留** → 文件是好的
-DEST_SIZE_MISMATCH = "mismatch"   # 可见但大小不符 → 传到一半
-DEST_ABSENT = "absent"            # 不可见 → 云端没有正式文件
-DEST_UNKNOWN = "unknown"          # 探测无效（挂载未就绪 / 源端没了 / 读不到大小）
-# 可见、大小一致，**但同目录里存在该文件的残留**（形如 `影片.mkv..xrp4gj`）。
-#
-# 为什么必须与 DEST_OK 分开：`--size-only` 的判据只有大小，而改名失败的残留
-# 大小与正式文件**完全一致**（3.10 实测），所以「大小一致」对改名失败这个
-# **主成因**毫无鉴别力 —— 它一直是假阳性。而 CD2 改名失败时正式名根本不存在，
-# 挂载视图里那个「正式名」其实是视图过期；`os.listdir` 则是直读目录内容，
-# 能同时看到残留与改名失败的痕迹。有残留 ⇒ 「文件已完整落地」这个结论不成立。
-# Same size but a residue exists: since --size-only compares size alone and a
-# rename-failure residue is byte-identical in size, "same size" never discriminated
-# this case. A residue means the final rename did not complete.
-DEST_RESIDUE = "residue"
-
-
-def dest_probe_outcome(dest_size: Optional[int], src_size: Optional[int],
-                       dest_missing: bool, residue_found: bool = False) -> str:
-    """
-    把一个文件的「目标端可见性探测」折算成结论。
-
-    Turn one file's destination-visibility probe into a verdict.
-
-    **为什么需要它**：补生成之后仍无 strm 时，本地视角分不出四种成因，用户只能
-    自己猜「到底云端有没有这个文件」。而目标端是 CD2 挂载点 —— 读它的大小是
-    **纯本地调用、零 115 API**，这一步探测能把其中三种直接分开：
-
-    | 探测结果 | 云端情况 | 该不该删旧重传 |
-    |---|---|---|
-    | 不可见 | 没有正式文件（从未传成功 / 改名失败只剩残留） | ✅ 正确（且删除是空操作） |
-    | 大小不符 | 传到一半 | ✅ 正确 |
-    | 大小一致 | 文件是好的（rsync 会跳过） | ⚠️ **纯属白删**，且 rsync 照样跳过 |
-
-    **⚠️ 它只能用来「排除删旧重传」，绝不能当作「已同步」的证据。**
-    3.11 记录的「CD2 假成功」正是：挂载视图显示大小正常，而 115 上只有改名
-    失败的残留（残留大小与正式文件完全一致，见 3.10 —— 用大小根本分不出来）。
-    也就是说本函数最右边那一列的「大小一致」有一个已知的假阳性方向：
-    它会把「改名失败 + 视图过期」误判成「文件完好」。
-    这个方向的错误**只导致「建议你先别删」**，代价是多查一次助手，可接受；
-    反过来若拿它去触发删除或跳过上传，就会真的漏掉坏文件 —— 因此调用方
-    只允许用它做「不要动手」的建议，不允许用它做「已经好了」的结论。
-    Only safe for the "don't delete" direction: the fake-success case makes
-    "same size" optimistic, and optimistically skipping work is harmless only
-    when the work skipped is a deletion.
-
-    参数用 `None` 表达「读不到」，而不是布尔值：`os.path.getsize` 在挂载点抖动时
-    会抛 OSError，把它压成 False 会与「确实不存在」混为一谈。
-    "Unreadable" is expressed as None rather than collapsed into a boolean, because
-    a flaky mount and a genuinely absent file must not look the same.
-
-    ⚠️ **`same_size` 不等于「文件没事」** —— 这正是本函数存在的理由。
-    `--size-only` 只看大小，而改名失败的残留大小与正式文件完全一致，
-    「大小一致」对改名失败这个主成因毫无鉴别力。因此真正的判据是
-    `residue_found`：**同目录里有该文件的残留 ⇒ 最后一次改名没有完成**，
-    此时无论大小是否一致都不能得出「云端是好的」。
-    Same size proves less than it looks: a rename-failure residue is byte-identical
-    in size, so the discriminating input is whether a residue exists at all.
-
-    ⚠️ 分支顺序**是承重的**（与 3.10 排查时的第一版不同：那时只有大小一个维度，
-    8 种组合枚举过重排等价；加了残留维度后不再等价，别再按那条结论推理）。
-    残留判定必须先于大小判定：残留存在时大小必然「一致」（它就是从正式文件改名
-    失败来的），若先判大小就会返回 DEST_OK 把坏文件判成好的。
-    Branch order is load-bearing now: the residue check must precede the size check.
-    """
-    if dest_missing:
-        # ⚠️ 残留不算「正式文件存在」：残留的命名不是正式名。
-        # 但**挂载视图可能连残留都看不到**（它只认正式名），所以这里不因残留
-        # 改判 —— 不可见就是不可见，删旧重传本来就是对症处置。
-        return DEST_ABSENT
-    if dest_size is None or src_size is None:
-        return DEST_UNKNOWN
-    if residue_found:
-        return DEST_RESIDUE
-    return DEST_OK if dest_size == src_size else DEST_SIZE_MISMATCH
-
-
-def dest_path_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
-    """
-    队列 key → 目标端（CD2 挂载内）对应文件的绝对路径；无法归属时返回 None。
-
-    Map a queue key to its absolute destination path on the CD2 mount.
-
-    与 `_delete_dest_files_for_retry` 的构造口径一致（同样按映射名前缀归属、
-    同样 `dest` 根 + 相对路径），但不做任何删除动作 —— 这里只是读。
-    """
-    from .paths import pair_name as _pair_name
-    for pair in pairs:
-        pn = _pair_name(pair)
-        if pn and key.startswith(f"{pn}:"):
-            dest_root = (pair.get("dest") or "").strip().rstrip("/")
-            if not dest_root:
-                return None
-            rel = key.split(f"{pn}:", 1)[1].lstrip("/")
-            if not rel:
-                return None
-            return posixpath.join(dest_root, rel)
-    return None
-
-
-def dest_root_of(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
-    """队列 key 所属映射的目标端根目录；无法归属时返回 None。
-
-    The mapping's destination root — used as the mount-readiness probe: if even the
-    root is unreadable the whole verdict set must degrade to DEST_UNKNOWN.
-    """
-    from .paths import pair_name as _pair_name
-    for pair in pairs:
-        pn = _pair_name(pair)
-        if pn and key.startswith(f"{pn}:"):
-            return (pair.get("dest") or "").strip().rstrip("/") or None
-    return None
+# 疑似来源标记。**只有两个来源**，且二者语义不同：
+#   · scan  —— 扫描/关键字反查发现「源端有、strm 端没有」。判据只看文件存在性，
+#              **从未同步过的文件也会命中**（不入库路径就靠它兜底）。可信度低。
+#   · watch —— 这个文件**同步成功过**，随后在宽限期内没等到 strm。可信度高：
+#              它确实传过，缺 strm 说明这一轮上传没真正完成。
+# 这个区别是**事实记录**而不是建议 —— 两者该做什么完全一样（没有 strm 就是
+# 待处理），所以它只用于看板上的解释文案与排查。
+# Suspect source. `scan` may include files that were never uploaded; `watch` means
+# the file did sync and the strm still did not appear. Recorded as a fact only —
+# both are handled identically, because the criterion is just "no strm".
+ORIGIN_WATCH = "watch"
+ORIGIN_SCAN = "scan"
 
 
 def _ts_or(value: Any, fallback: float) -> float:
@@ -320,26 +219,6 @@ def grace_secs_of(grace_minutes: Any) -> float:
     return max(MIN_GRACE_MINUTES, minutes) * 60
 
 
-# 疑似来源标记。主动扫描与同步后观察的判据不同、可信度也不同，必须在数据里
-# 分开记录，否则用户看到一堆疑似却不知道「为什么突然多出来这些」。
-# Suspect origins. A proactive scan and a post-sync watch have different criteria
-# and different confidence, so the origin must be recorded with the entry.
-ORIGIN_WATCH = "watch"      # 同步成功后观察到期仍未生成（可信度高：该文件确实传过）
-ORIGIN_SCAN = "scan"        # 主动扫描发现源端有、strm 端没有（**可能是从未上传过**）
-# 第三种 origin：**用户在看板上确认了该文件没传上去**（例如在 115 里亲眼看到
-# 只有改名失败的残留），因此越过重新计时的窗口直接入清单。
-#
-# 为什么必须单独记一个 origin，而不是复用 watch/scan：它是唯一一条「结论来自
-# 人而不是探测器」的入口，而下游的删旧重传守卫要凭这个区别决定放不放行 ——
-# CD2 挂载视图「可见且大小一致」的已知假阳性，只有当事人的确认能推翻。
-# 混用 origin 会让守卫再也分不出「机器觉得没问题」与「人已经确认有问题」，
-# 那道人命关天的拦截就只能二选一：要么永不放行（用户被卡死），要么一律放行
-# （坏文件被静默放过）。
-#
-# 之所以敢让它越权，是因为它**不绕过任何数据护栏**：key 仍必须在观察清单里
-# （用户只能对插件已经盯着的文件下这个结论，不能凭空构造路径），删除仍走
-# 相对路径精确对齐（_delete_dest_files_for_retry 的三道闸），重传正常入队。
-ORIGIN_CONFIRMED = "confirmed"
 # 注：「已补生成过」这一状态**没有**做成第三种 origin。
 # 它是与来源正交的一个维度（watch 与 scan 都可能被补生成过），硬塞进 origin
 # 会让两个维度互相覆盖。改用实例上的 _strm_gen_requested 字典单独记录，

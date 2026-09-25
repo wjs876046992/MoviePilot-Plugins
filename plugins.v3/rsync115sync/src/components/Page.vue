@@ -731,31 +731,9 @@
                     检查 strm
                     <v-tooltip activator="parent" location="top" max-width="320">
                       立即比对，不等窗口、不等巡检。<br>
-                      已生成 ⇒ 立刻解除观察；窗口已过仍无 ⇒ 立刻转入疑似清单
-                      （并附云端可见性结论，告诉你能不能删旧重传）。<br>
-                      窗口内仍无 ⇒ 会顺手探一次云端可见性，告诉你
-                      「等下去会怎样」，免得白等到期。<br>
+                      已生成 ⇒ 立刻解除观察；仍未生成 ⇒ 到期后转入待处理清单。<br>
+                      判据只看 .strm 有没有生成，不读 CD2 挂载视图。<br>
                       纯本地读取，不访问 115、不消耗配额。
-                    </v-tooltip>
-                  </v-btn>
-                  <v-btn
-                    size="x-small"
-                    variant="tonal"
-                    color="warning"
-                    radius-sm
-                    class="px-2"
-                    :loading="itemLoading === 'strmfail:' + entry.key"
-                    @click="confirmWatchFailed(entry.key)"
-                  >
-                    <v-icon start size="14">mdi-alert-circle-check-outline</v-icon>
-                    确认失败
-                    <v-tooltip activator="parent" location="top" max-width="340">
-                      你已在 115 上确认这个文件没传上去（例如只剩
-                      <code>xxx.mkv..随机6位</code> 残留、正式文件不存在）⇒
-                      不必再等窗口，立刻转入疑似清单，随后可「删旧重传」。<br>
-                      窗口衡量的是「还可能有救」，不是「你必须等多久」——
-                      已经知道答案时，工具不该让你排队等探测器。<br>
-                      纯本地操作，不访问 115、不改动任何文件。
                     </v-tooltip>
                   </v-btn>
                 </div>
@@ -785,25 +763,12 @@
                            「补生成无效 ⇒ 云端缺文件」：助手可能压根没执行（路径不在
                            它的全量列表里就直接拒绝），那种情况下 strm 当然不会出现，
                            而云端文件是好的。只陈述已发生的事实，判断留给用户。 -->
-                      <!-- 用户确认过的条目优先说明来源：它既不是「等到期」也不是
-                           「补生成后仍无」，而是当事人已经去 115 看过了。把它混进
-                           另外两种说法里，用户会以为这是插件自己判出来的。 -->
-                      <template v-if="confirmedKeys[key]">
-                        你已确认该文件未真正上传 —— 点「删旧重传」时插件会先把云端
-                        探测结论摊给你看，再点一次即照常执行
-                      </template>
-                      <template v-else-if="genRequested[key]">
+                      <template v-if="genRequested[key]">
                         已请求 strm 助手补生成，窗口内仍未看到 .strm ——
                         请到助手侧确认它是真的生成了（可能漏生成），还是报了「匹配目录失败」
                       </template>
                       <template v-else>
                         同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
-                      </template>
-                      <!-- 云端可见性结论：入清单时探测一次（纯本地读，零 115 API）。
-                           有了它，用户不必先去 115 里翻一遍才知道该怎么处理。 -->
-                      <template v-if="destHint(key)">
-                        <br>
-                        <span :class="`text-${destColor(key)}`">🔎 {{ destHint(key) }}</span>
                       </template>
                     </div>
                   </div>
@@ -814,10 +779,7 @@
                        （路径不在它的全量列表里就直接拒绝），那种情况下 strm 当然不会
                        出现，但云端文件是好的。把「命令发出」当成「生成失败」会误导
                        用户去删一个完好的云端文件。 -->
-                  <v-chip v-if="confirmedKeys[key]" size="x-small" color="error" variant="flat" class="font-weight-bold">
-                    你已确认未上传
-                  </v-chip>
-                  <v-chip v-else-if="genRequested[key]" size="x-small" color="info" variant="tonal" class="font-weight-bold">
+                  <v-chip v-if="genRequested[key]" size="x-small" color="info" variant="tonal" class="font-weight-bold">
                     补生成后仍无
                   </v-chip>
                   <v-chip v-else size="x-small" color="warning" variant="flat" class="font-weight-bold">疑似异常</v-chip>
@@ -838,26 +800,6 @@
                     <v-tooltip v-if="helperReady" activator="parent" location="top" max-width="340">
                       请 strm 助手重新生成该文件所在网盘目录的 .strm。
                       成功 ⇒ 无需删旧重传；仍无 ⇒ 云端确实缺文件，再删旧重传。
-                    </v-tooltip>
-                  </v-btn>
-                  <v-btn
-                    v-if="!confirmedKeys[key]"
-                    size="x-small"
-                    variant="tonal"
-                    color="primary"
-                    radius-sm
-                    class="px-2"
-                    :loading="itemLoading === 'strmcf:' + key"
-                    @click="confirmSuspectFailed(key)"
-                  >
-                    <v-icon start size="14">mdi-alert-circle-check-outline</v-icon>
-                    确认失败
-                    <v-tooltip activator="parent" location="top" max-width="340">
-                      你已在 115 上确认它是坏的（只剩改名失败的残留、正式文件不存在）⇒
-                      标记为「已确认」。<br>
-                      之后点「删旧重传」时，插件会先把那次云端探测的结论摊给你看，
-                      再点一次即照常执行 —— 不必绕「重启同步任务」。<br>
-                      纯本地操作，不访问 115、不删除任何文件。
                     </v-tooltip>
                   </v-btn>
                   <v-btn
@@ -1196,46 +1138,6 @@ const helperReason = computed(
 // 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
 const genRequested = computed(() => statusData.value.strm_gen_requested || {})
 
-// 用户确认过「没传上去」的条目（origin === 'confirmed'）。
-// 与 genRequested 正交：两者都可能在同一条上出现，但看板只显示其中一个说法 ——
-// 「你已确认未上传」压过「补生成后仍无」，因为前者是当事人给出的事实。
-const confirmedKeys = computed(() => {
-  const out = {}
-  for (const [key, entry] of Object.entries(statusData.value.strm_suspects || {})) {
-    if (entry && entry.origin === 'confirmed') out[key] = true
-  }
-  return out
-})
-
-// 条目的**云端可见性**结论（入清单时探测一次，纯本地读取）。
-//
-// 它回答的是用户最想问的那个问题：「点进 115 看过没有，云端到底有没有这个文件？」
-//   云端不可见 / 大小不符 → 删旧重传正是对症的，删除要么是空操作要么真的清了脏文件
-//   可见且大小一致     → 文件是好的，删了纯属白删（rsync 还会 --size-only 跳过）
-//
-// ⚠️ 它带一个**已知的假阳性方向**：CD2 视图过期时（3.11 的「假成功」形态），
-// 坏文件也会显示成大小一致。因此这里只用来做「别动手」的建议，
-// 绝不作为「已经同步好了」的结论 —— 文案里也不许写成后者。
-const destVerdict = (key) => (statusData.value.strm_suspects?.[key] || {}).dest || ''
-
-const destHint = (key) => ({
-  absent: '云端不可见（可能从未传成功，或改名失败只剩残留）—— 删旧重传可修',
-  mismatch: '云端有文件但大小不符（传到一半）—— 删旧重传可修',
-  residue: '云端只有改名失败的残留（名字带随机后缀，大小与正式文件一样）—— 删旧重传可修',
-  ok: '云端可见且大小一致、且目录里没有残留 —— 文件很可能完好；请先查 strm 生成侧',
-  unknown: '云端可见性未知（CD2 挂载未就绪或读不到）',
-}[destVerdict(key)] || '')
-
-const destColor = (key) => ({
-  absent: 'warning',
-  mismatch: 'warning',
-  // residue 与 ok 必须**不同色**：两者外观（大小）一样，含义却相反 ——
-  // residue 是坏文件的**确凿证据**（改名未完成），ok 才是「先别动手」。
-  residue: 'warning',
-  ok: 'success',
-  unknown: 'grey',
-}[destVerdict(key)] || 'grey')
-
 // 选中项中有多少属于 strm 疑似清单。
 // 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，
 // 因此批量按钮必须按选中项的成分决定走哪条通道，不能只看当前在哪个标签页
@@ -1415,106 +1317,20 @@ async function clearBackfill() {
   }
 }
 
-// strm 疑似异常：确认后删旧重传（删除是破坏性操作，先弹确认框）
-// 确认「这个文件确实没传上云端」—— 越过后端窗口，直接转入疑似清单。
-//
-// 为什么需要它：观察期是给「还可能有救」留的时间，而用户常常已经知道答案
-// （在 115 里看到只剩 `xxx.mkv..随机6位` 残留、正式文件压根不存在）。此前
-// 唯一的路是干等到期 —— 最长 6 小时，而且窗口内看板连处理按钮都不给。
-// 窗口是下界，不该变成上限。
-async function confirmWatchFailed(key) {
-  const ok = window.confirm(
-    // 原生对话框不渲染 Markdown，写成纯文本（否则用户看到一堆星号）
-    `你确认这个文件没有真的传到 115（只是挂载视图看着像成功）？\n\n${key}\n\n` +
-    `1. 立即结束观察期，转入「疑似异常」清单（不等窗口）\n` +
-    `2. 之后可在清单里点「删旧重传」\n\n` +
-    `⚠️ 若只是 strm 插件漏生成（文件其实是好的），重传也不会重复上传，` +
-    `但会白耗一次删除与配额 —— 拿不准时先点「检查 strm」。\n\n` +
-    `本操作纯本地：不访问 115、不改动任何文件，仅移动清单条目。\n\n确定继续吗？`
-  )
-  if (!ok) return
-  await postStrmConfirmFailed([key], 'strmfail:' + key)
-}
 
-// 疑似清单里的「确认失败」。
+// 删旧重传的唯一提交入口（单条 / 批量勾选 / 「全部删旧重传」共用）。
 //
-// 存在的理由：观察期之外**没有别的动作**能表达「我已确认它是坏的」，而普通疑似
-// 条目（origin=watch）既不会被放行、也不该被放行 —— 它没有任何用户确认的记录。
-// 于是「插件说云端完好、用户说云端是坏的」这件事在清单里无从表达，两边都是死路。
-// 这个按钮就是补上那个缺失的动作：只打标记，不碰文件。
-async function confirmSuspectFailed(key) {
-  const ok = window.confirm(
-    '你已在 115 上确认这个文件没传上去（比如只剩改名失败的残留、' +
-    '正式文件不存在）？\n\n' + key + '\n\n' +
-    '1. 标记为「已确认」（不删除、不修改任何文件）\n' +
-    '2. 之后点「删旧重传」时，插件会先把云端探测结论给你看，再点一次即执行\n\n' +
-    '本操作纯本地：不访问 115、不改动云端。\n\n确定继续吗？'
-  )
-  if (!ok) return
-  await postStrmConfirmFailed([key], 'strmcf:' + key)
-}
-
-// 与单条共用同一实现（避免两条路径的提示文案与离场处理漂移）。
-async function postStrmConfirmFailed(keys, loadingKey) {
-  itemLoading.value = loadingKey
-  try {
-    const res = await props.api.post('plugin/Rsync115Sync/strm_confirm_failed', { keys })
-    if (res && res.success) {
-      strmScanMsg.value = res.message || '已转入疑似清单'
-      // ⚠️ 只清**离开观察期**的那些（moved/restored）。`marked` 是「本来就在
-      // 疑似清单里、就地改标记」的条目 —— 它们仍然在清单里、并仍应保持勾选，
-      // 把它们一起清掉会让用户下一次批量操作对着空选择提交。
-      const gone = new Set([...(res.data?.moved || []), ...(res.data?.restored || [])])
-      if (gone.size) selectedKeys.value = selectedKeys.value.filter((k) => !gone.has(k))
-    } else {
-      strmScanMsg.value = res?.message || '操作失败'
-    }
-    await fetchStatus()
-  } catch (e) {
-    strmScanMsg.value = '操作出错: ' + e.message
-  } finally {
-    itemLoading.value = ''
-  }
-}
-
-// 删旧重传的**唯一**提交入口（单条 / 批量勾选 / 「全部删旧重传」共用）。
+// ⚠️ 这里曾经有一层二次确认：后端复探 CD2 挂载后若判成「可见且大小一致」，
+// 会返回 `needs_force`，前端把那段探测原文弹给用户、再点一次才带 `force` 重发。
+// 那道守卫已随「云端可见性」整套删除 —— 它在 CD2 改名失败这个主成因上必然
+// 判成「文件是好的」，于是把唯一能修复的动作挡在门外（详见后端 _api_strm_retry）。
+// 现在请求一次即执行，判据是「待处理清单里没有对应 strm」。
 //
-// ⚠️ force 二次确认必须收在这里，不能三处各写一遍：「后端拦下并要求二次确认」
-// 这条路径只有在**已由用户确认的坏文件**上才会触发，正是最需要它工作的场景 ——
-// 若只有一处实现，另外两处就会表现为「点了没反应」，而用户很可能正是从批量
-// 入口点的。
-// The force retry is centralised for the same reason as the backend guard: a path
-// implemented in one caller but not the others fails exactly where it matters.
-// 把后端文案规整成**纯文本**再显示（并交给 window.confirm 弹二次确认）。
-//
-// ⚠️ 这一层是必要的，因为同一个字符串有两个消费方：远程命令把它发到聊天渠道
-// （那里 Markdown 是渲染的），看板把它塞进纯文本区块（**不渲染**）。
-// 后端因此只能产出纯文本 —— 但历史上有几处文案留着 `**加粗**`，用户在看板上
-// 看到的就是一堆星号。收敛在这里消掉，比让每一处回复各自记得「不要加星号」更可靠。
-// The same string is consumed by chat (Markdown-aware) and by the dashboard (plain
-// text), so the dashboard normalises it here rather than trusting every call site.
-function plainText(text) {
-  return String(text ?? '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')   // 去掉加粗标记，保留内容
-    .replace(/`([^`]+)`/g, '$1')       // 去掉行内代码标记
-    .replace(/[ \t]+\n/g, '\n')        // 行尾空格（含拼接留下的）
-}
-
+// ⚠️ 保留 plainText：后端的文案同时面向聊天渠道（渲染 Markdown）与看板
+// （纯文本区块，不渲染）。显示在前者之外的地方都要先规整掉 `**` 与行内代码
+// 标记，否则用户看到的就是一堆星号。
 async function postStrmRetry(keys) {
-  const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { keys })
-  if (!res || res.success || !res.needs_force) return res
-  // 后端拒绝了本次请求并附上那一刻的探测结论（通常是「可见且大小一致」）：
-  // 把原文交给用户再问一次，才算真正推翻了那道守卫。
-  //
-  // ⚠️ 必须走 plainText：原生对话框既不渲染 Markdown，也不吃 Vue 的样式，
-  // 原文里的 `**` 与残留的空行会原样显示成一堆星号与空白。
-  const again = window.confirm(
-    plainText(res.message) + '\n\n' +
-    '你已在 115 上亲眼确认过这些文件是坏的（而不是 strm 漏生成）吗？\n' +
-    '确认 ⇒ 立即删除并重传；取消 ⇒ 什么也不做。'
-  )
-  if (!again) return res
-  return props.api.post('plugin/Rsync115Sync/strm_retry', { keys, force: true })
+  return props.api.post('plugin/Rsync115Sync/strm_retry', { keys })
 }
 
 async function retryStrmSuspect(key) {

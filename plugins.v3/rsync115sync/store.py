@@ -143,13 +143,10 @@ class Store:
                     gen_requested_at REAL,
                     retry_count      INTEGER NOT NULL DEFAULT 0,
                     last_error       TEXT,
-                    -- 疑似来源（watch / scan / confirmed）。改造前放在
+                    -- 疑似来源（watch / scan）。改造前放在
                     -- `_strm_suspects[key]["origin"]`：这条疑点是同步后观察判出来的、
                     -- 还是主动扫描扫出来的 —— 可信度不同，看板要显示。
                     origin           TEXT,
-                    -- 云端可见性结论。**纯展示**：它有已知假阳性（CD2 改名失败时
-                    -- 坏文件也显示大小一致），因此绝不参与任何清理判据。
-                    dest             TEXT,
                     updated_at       REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
@@ -183,7 +180,11 @@ class Store:
 
         Idempotent ADD COLUMN for ledgers created by an earlier build.
         """
-        want = {"files": [("origin", "TEXT"), ("dest", "TEXT")]}
+        # ⚠️ 只补**当前版本真正会写**的列。历史上有过一列 `dest`（云端可见性
+        # 结论），它随那整套判定一起删了 —— 已经建过表的机器上那一列会留着，
+        # 空着不碍事；这里不再补，免得新库上凭空多出一列没人写的字段。
+        # Only columns the current build actually writes are added here.
+        want = {"files": [("origin", "TEXT")]}
         try:
             with self._connect() as conn:
                 for table, cols in want.items():
@@ -224,7 +225,6 @@ class Store:
                verified_at: Optional[float] = None,
                gen_requested_at: Optional[float] = None,
                origin: Optional[str] = None,
-               dest: Optional[str] = None,
                last_error: Optional[str] = None,
                bump_retry: bool = False) -> bool:
         """
@@ -243,8 +243,8 @@ class Store:
                     INSERT INTO files (key, pair, rel_path, status, ingest_source,
                                        src_mtime, enqueued_at, synced_at, verified_at,
                                        gen_requested_at, retry_count, last_error,
-                                       origin, dest, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       origin, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         status           = excluded.status,
                         ingest_source    = excluded.ingest_source,
@@ -256,13 +256,12 @@ class Store:
                         gen_requested_at = COALESCE(excluded.gen_requested_at, files.gen_requested_at),
                         last_error       = COALESCE(excluded.last_error, files.last_error),
                         origin           = COALESCE(excluded.origin, files.origin),
-                        dest             = COALESCE(excluded.dest, files.dest),
                         retry_count      = files.retry_count + ?,
                         updated_at       = excluded.updated_at
                     """,
                     (key, pair, rel_path, status, ingest_source, src_mtime, enqueued_at,
                      synced_at, verified_at, gen_requested_at, 0, last_error,
-                     origin, dest, now,
+                     origin, now,
                      1 if bump_retry else 0),
                 )
             return True
@@ -384,7 +383,7 @@ class LedgerMapping(MutableMapping):
         台账行 → 旧代码期望的值形态。
 
         ⚠️ 还原成**与改造前一致**的形状是这一步的关键：旧代码会写
-        `self._strm_suspects[k]["dest"]`、`entry.get("ts")` 等，形状不对就是
+        `entry.get("origin")`、`entry.get("ts")` 等，形状不对就是
         KeyError/TypeError。宁可在这里多写几行转换，也不要让调用方感知到存储变了。
         """
         row = dict(row)

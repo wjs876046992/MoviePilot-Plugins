@@ -1807,10 +1807,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # 早先注册过一个返回同样数据的 GET /strm_suspects，全仓库零调用，
             # 已移除避免两条取数路径返回同一份状态而产生分歧。
             {"path": "/strm_check", "endpoint": self._api_strm_check, "methods": ["POST"], "auth": "bear"},
-            # 用户确认「确实没传上去」→ 越过观察窗口直接转疑似（纯本地，零 115 API）。
-            {"path": "/strm_confirm_failed", "endpoint": self._api_strm_confirm_failed,
-             "methods": ["POST"], "auth": "bear"},
-            {"path": "/strm_probe", "endpoint": self._api_strm_probe, "methods": ["POST"], "auth": "bear"},
+            # ⚠️ 曾注册过 /strm_confirm_failed 与 /strm_probe，随「云端可见性」整套
+            # 一并移除：前者靠的是一道已被证明判错的守卫（见 _api_strm_retry），
+            # 后者本身就是那条判据的入口。判据只剩 strm 存在与否。
             {"path": "/strm_scan", "endpoint": self._api_strm_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_prune", "endpoint": self._api_strm_prune, "methods": ["POST"], "auth": "bear"},
             {"path": "/strm_ignore", "endpoint": self._api_strm_ignore, "methods": ["POST"], "auth": "bear"},

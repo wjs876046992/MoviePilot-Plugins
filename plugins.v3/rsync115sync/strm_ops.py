@@ -59,7 +59,6 @@ from .constants import (  # noqa: E402
 from .paths import (  # noqa: E402
     brief_paths as _brief_paths,
     excluded_dir_names as _excluded_dir_names,
-    is_temp_residue_name as _is_temp_residue_name,
     pair_name as _pair_name,
     rel_path_of_key as _rel_path_of_key,
     valid_exts_of as _valid_exts_of,
@@ -103,11 +102,15 @@ class StrmOpsMixin:
         Migrate the suspect list to the origin-carrying shape.
 
         v0.1.7 及更早存的是 `{key: 时间戳}`；v0.1.8 起改为
-        `{key: {"ts": 时间戳, "origin": "watch"|"scan"}}`。旧条目一律按
-        `watch` 处理 —— 那个版本只存在观察这一条来源，语义上就是正确的归属。
-        迁移必须容忍三种脏数据：非 dict、值不是数字、值已经是新格式。
-        Legacy entries are all attributed to `watch` (the only origin that existed
-        then). Tolerates non-dict input and already-migrated entries.
+        `{key: {ts, origin}}`。旧条目一律按 `watch` 处理 —— 那个版本只存在
+        观察这一条来源，语义上就是正确的归属。
+        Tolerates non-dict input, non-numeric values, and already-migrated entries.
+
+        ⚠️ `origin` 字段名保留不改：它既在 `save_data` 的旧 JSON 里，也是
+        台账 `files.origin` 这一列的名字。改名要同时动迁移代码与已有数据库，
+        收益只是好看一点 —— 不做。（历史上有过第三个取值 `confirmed`，
+        随「云端可见性」整套删除；读到它的旧条目会退化成 `watch`，与它
+        真实的来路一致：那批条目本来就是同步成功后才进清单的。）
         """
         if not isinstance(raw, dict):
             return {}
@@ -116,7 +119,8 @@ class StrmOpsMixin:
             if isinstance(value, dict) and "ts" in value:
                 migrated[str(key)] = {
                     "ts": float(value.get("ts") or 0.0),
-                    "origin": str(value.get("origin") or _strm.ORIGIN_WATCH),
+                    "origin": ("scan" if str(value.get("origin")) == _strm.ORIGIN_SCAN
+                               else _strm.ORIGIN_WATCH),
                 }
                 continue
             try:
@@ -246,61 +250,6 @@ class StrmOpsMixin:
             logger.warning(f"[Rsync115Sync] 🧹 已清理 {removed} 个无效 strm 观察条目"
                            f"（非视频文件不会生成 strm），剩余 {len(self._strm_watch)} 个")
         return removed
-
-    def _promote_watch_to_suspects(self, keys: List[str], origin: str,
-                                   reason: str) -> Dict[str, Any]:
-        """
-        把观察期条目**提前**判为疑似（越过窗口），返回 {moved, restored, skipped}。
-
-        Promote watching entries to suspects *ahead of* the grace window.
-
-        为什么需要这条越权通道：窗口是给「还可能有救」留的时间，而用户有时**已经
-        知道**答案 —— 在 115 里看到只有改名失败的残留、或上传根本没完成。此时
-        观察期唯一能做的就是让用户干等到期，最长 6 小时（补生成后 1 小时），
-        期间看板甚至不提供任何处理按钮。窗口是**下界**，不该变成上限。
-        The window is a lower bound on "how long it might still appear", never an
-        upper bound on how long the user must wait before acting.
-
-        ⚠️ 只接受**已在观察清单里**的 key：用户只能对插件已经盯着的文件下这个
-        结论，不能凭一个字符串构造出任意路径送进疑似清单（那里的条目会通向
-        「删除云端文件」）。观察清单本身就是这里唯一的权限边界。
-        The watching list is the sole permission boundary: it is what makes the key
-        a file we already decided to track, rather than an arbitrary path.
-
-        已按同一结论入清单的条目只摘掉观察副本（restored），**不刷新时间戳** ——
-        否则每点一次「确认失败」都会把「首次疑似时间」推后，用户看不出它挂了多久。
-        Re-confirming does not reset the timestamp, for the same reason the sweep
-        never refreshes it.
-        """
-        now_ts = time.time()
-        moved: List[str] = []
-        restored: List[str] = []
-        for key in keys:
-            if key not in self._strm_watch:
-                continue
-            prior = self._strm_suspects.get(key)
-            self._strm_watch.pop(key, None)
-            # 补生成标记一并失效：它描述的是一次针对该文件的生成请求，而这里
-            # 已经改成「确认没传上去」—— 留着它，看板会把它标成「补生成后仍无」，
-            # 把一个用户确认的事实说成一次生成失败的推断。
-            self._strm_gen_requested.pop(key, None)
-            if isinstance(prior, dict) and prior.get("origin") == origin:
-                restored.append(key)
-                continue
-            self._strm_suspects[key] = {"ts": now_ts, "origin": origin}
-            moved.append(key)
-
-        if moved or restored:
-            self.save_data("strm_watch", self._strm_watch)
-            self.save_data("strm_suspects", self._strm_suspects)
-            self.save_data("strm_gen_requested", self._strm_gen_requested)
-        if moved:
-            # 附云端可见性结论：用户看到清单时就知道「插件眼里云端是什么样」，
-            # 与自己的判断不符时不必再猜是哪一步出了分歧。
-            self._annotate_dest(moved)
-            logger.warning(f"[Rsync115Sync] 📺 {len(moved)} 个观察期条目由用户{reason}，"
-                           f"已提前转入疑似清单: {_brief_paths(moved)}")
-        return {"moved": moved, "restored": restored}
 
     def _strm_expected_path(self, key: str) -> Optional[str]:
         """由队列 key 推导「应当生成」的 .strm 绝对路径；无 strm_dir 的映射返回 None。"""
@@ -490,11 +439,6 @@ class StrmOpsMixin:
             # ⚠️ 有意**保留** _strm_gen_requested：这些条目正是「已经请助手生成过、
             # 宽限期到仍无 strm」的那批，标记必须留着，用户才知道这已经是补生成
             # 之后的结果（判定比首次疑似硬得多），而不是又一轮普通疑似。
-        if new_suspects:
-            # 给这批新疑似附上云端可见性结论。用户拿到清单的同时就知道该不该动手，
-            # 不必再去 115 里翻一遍 —— 纯本地读取，失败也不影响清单本身。
-            self._annotate_dest(new_suspects)
-
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
@@ -667,9 +611,6 @@ class StrmOpsMixin:
             added += 1
 
         if added:
-            # 附上云端可见性结论：用户看到清单时同时知道「该不该动手」，
-            # 不必再自己去 115 里翻。纯本地读取，失败也不影响清单本身。
-            self._annotate_dest(candidates[:added])
             self.save_data("strm_suspects", self._strm_suspects)
         logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
                     f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
@@ -866,13 +807,6 @@ class StrmOpsMixin:
                 results.append({"key": key, "state": state, "clock": clock})
             else:
                 results.append({"key": key, "state": state, "clock": clock})
-        # 本次转入疑似的条目：附上云端可见性结论。
-        # 放在**判定之后**（而不是移动时）是关键：探测本身要读挂载点，
-        # 与「strm 是否已生成」的判定无关，早探一步只是白白多读一次。
-        if results:
-            self._annotate_dest([r["key"] for r in results
-                                 if r["state"] == _strm.SUSPECT])
-
         if changed:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
@@ -913,44 +847,16 @@ class StrmOpsMixin:
             msg = (f"🗑️ 非视频文件（字幕/图片等不会生成 strm）：{len(non_video)} 个已移出观察。"
                    f"这类文件本就不参与 strm 交叉验证 —— 它们没有指针文件是正常的。")
         else:
-            # 仍在窗口内：strm 没出来是正常的，但用户真正想知道的往往不是
-            # 「还要等多久」，而是「等下去会怎样」。**顺手探一次云端可见性**
-            # 就能把这句回答掉：云端有文件 ⇒ 问题在生成侧，窗口过了也别急着删；
-            # 云端看不到 ⇒ 窗口过了直接删旧重传即可（云端没文件时删除是空操作）。
+            # 仍在窗口内：strm 没出来是正常的。用户真正想知道的是「等下去会怎样」，
+            # 而唯一能承重的判据只有 strm 本身 —— 所以这里只回答等待规则。
             #
-            # 只探本次**被明确问到的**那几个 key（纯本地读取，零 115 API），
-            # 不为整个清单预探 —— 用户问一个，就只读一个。
-            try:
-                verdicts = self._dest_visibility(still)
-            except Exception as e:
-                logger.warning(f"[Rsync115Sync] 检查时云端可见性探测异常（已忽略）: {e}")
-                verdicts = {}
-            intact = [k for k in still if verdicts.get(k) == _strm.DEST_OK]
-            absent = [k for k in still if verdicts.get(k) == _strm.DEST_ABSENT]
-            residue = [k for k in still if verdicts.get(k) == _strm.DEST_RESIDUE]
-            if residue:
-                # 探到残留 = 「传完了但没改名」的确凿证据，比大小一致有用得多。
-                # 这条必须排在 intact 之前，且要明确说「可以删」—— 用户此前正是在
-                # 这里被告知「文件很可能完好、别删」，于是被卡住。
-                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
-                       f"🔎 探到 {len(residue)} 个文件旁边有改名失败的残留"
-                       f"（名字带随机后缀，大小与正式文件一样）—— 这正是「传完了、"
-                       f"改名那一步没成」的形态，云端并没有可用的正式文件。"
-                       f"窗口过后直接删旧重传即可，插件会连残留一并清掉。")
-            elif intact:
-                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
-                       f"🔎 云端文件可见、大小与源端一致，且目录里没有残留 ——"
-                       f"说明文件本身大概率是好的，问题出在 strm 生成侧。"
-                       f"窗口过后先别急着删旧重传，请先查助手配置与生成日志"
-                       f"（若你已在 115 上确认文件是坏的，点「确认失败」即可照常删）。")
-            elif absent:
-                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。\n"
-                       f"🔎 云端看不到这些文件 —— 说明很可能是从未传成功、"
-                       f"或改名失败只剩残留。窗口过后直接删旧重传即可："
-                       f"云端没有文件时删除是空操作，不会白删，也不会重复上传。")
-            else:
-                msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。"
-                       f"strm 生成不实时，若刚跑完生成任务请稍等再试。")
+            # ⚠️ 这里曾经会**顺手探一次 CD2 挂载的「云端可见性」**，并据此分三路
+            # 给建议（可见/不可见/有残留）。已按需求整条砍掉：挂载视图对
+            # 「CD2 看起来正常、云端其实是改名失败的残留」这个主成因根本不可信，
+            # 它给出的结论注定有一边是错的，而错的那一边会把用户引向错误动作。
+            # 判据收敛成一条：**strm 存在与否**。挂载视图不参与任何判断。
+            msg = (f"⏳ 仍未生成 strm（{len(still)} 个），窗口还没到。"
+                   f"strm 生成不实时，若刚跑完生成任务请稍等再试。")
 
         if entered:
             # 手动检查与自动巡检**走同一个通知口径**。
@@ -972,139 +878,6 @@ class StrmOpsMixin:
                          "still_watching": still,
                          "removed": gone + no_dir, "results": results}}
 
-    def _dest_visibility(self, keys: List[str]) -> Dict[str, str]:
-        """
-        探测这些文件在**目标端（CD2 挂载）**的可见性，返回 key → 结论。
-
-        Probe destination visibility for the given keys (pure local reads).
-
-        **为什么值得做**：补生成之后仍无 strm 时，本地视角分不出四种成因，
-        用户只能猜「云端到底有没有这个文件」。而目标端就在挂载里，读它的大小是
-        纯本地调用、零 115 API —— 这一步把其中三种直接分开，用户不用再去 115 里找。
-
-        两种边界都按「探测无效」处理，绝不硬给结论：
-
-        - **挂载未就绪**：`dest` 根目录都读不到时（CD2 没挂上 / 容器里路径变了），
-          `os.path.exists` 对每个文件都返回 False —— 若照此判定，整批会被扣上
-          「云端没有文件」的帽子，而这只是挂载没就绪。必须先验证根目录。
-        - **读不到大小**：挂载点抖动时 `getsize` 会抛 OSError，这与「确实不存在」
-          是两回事，一并归入 unknown。
-
-        源码端（`src`）消失的文件也归 unknown：既无从重传，也没必要给建议。
-        Reads only; never deletes or uploads (see strm.dest_probe_outcome for why the
-        "same size" verdict may only ever be used to *recommend inaction*).
-        """
-        roots_ready: Dict[str, bool] = {}
-        # 目录列表缓存（父目录 → listdir 结果 或 None=读不到）。批内文件高度集中在
-        # 少数几个目录，逐个 listdir 会把同一目录在 CD2 挂载上读几十遍。
-        root_cache: Dict[str, Any] = {}
-        out: Dict[str, str] = {}
-        for key in keys:
-            dest_root = _strm.dest_root_of(key, self._sync_pairs)
-            if dest_root not in roots_ready:
-                try:
-                    roots_ready[dest_root] = bool(dest_root) and os.path.isdir(dest_root)
-                except OSError:
-                    roots_ready[dest_root] = False
-            if not roots_ready.get(dest_root):
-                # 挂载未就绪：整组（同一 dest 根）一律不给结论
-                out[key] = _strm.DEST_UNKNOWN
-                continue
-
-            dest_file = _strm.dest_path_of(key, self._sync_pairs)
-            if not dest_file:
-                out[key] = _strm.DEST_UNKNOWN
-                continue
-            dest_missing = not os.path.exists(dest_file)
-
-            src_root = _strm.source_root_of(key, self._sync_pairs)
-            # 相对路径必须由前缀匹配还原：任务名含冒号时 split(":", 1) 会多切出
-            # 一段，拼出的源端路径永远不存在 → 误报「源端已消失」。
-            rel = _rel_path_of_key(key, self._sync_pairs) or key
-            src_file = os.path.join(src_root, rel) if src_root else None
-
-            def _size(path):
-                if not path:
-                    return None
-                try:
-                    return os.path.getsize(path)
-                except OSError:
-                    return None
-
-            out[key] = _strm.dest_probe_outcome(
-                _size(dest_file), _size(src_file), dest_missing,
-                residue_found=self._has_dest_residue(dest_file, root_cache))
-        return out
-
-    def _has_dest_residue(self, dest_file: str,
-                          root_cache: Optional[Dict[str, Any]] = None) -> bool:
-        """
-        目标端该文件所在目录里，是否存在它的**传输残留**（改名未完成）。
-
-        Is there an aborted-transfer residue next to the destination file?
-
-        **为什么这是整条「云端可见性」判定的关键**：`--size-only` 只看大小，而
-        改名失败的残留大小与正式文件完全一致（DEVELOPMENT 3.10 实测），所以
-        「可见且大小一致」对**主成因**毫无鉴别力 —— 用户实测反馈「疑似列表删除
-        重传失败，文件大小一致但名字不对，带 `..`」，正是被这条假阳性挡住的。
-        残留名字是唯一能区分「传完了」与「传完了但改名失败」的证据。
-        A residue is the only evidence separating "done" from "done but never renamed";
-        sizes are identical by construction.
-
-        残留名判据见 `paths.is_temp_residue_name`。
-
-        ⚠️ 读不到目录（挂载抖动 / 权限）时返回 **True**（保守）：
-        返回 False 会把这个文件判成 `DEST_OK`，而在改名失败这一主成因下
-        `DEST_OK` 恰好是错的那一边 —— 探测的两种错误方向里，宁可偏向
-        「先别删、去查一下」，也不要偏向「文件没事」。
-
-        目录列表按**父目录**缓存（`root_cache`，由调用方在同一次探测里传入）：
-        一批文件常集中在少数几个目录，逐个 listdir 会把同一目录读几十遍，
-        而这是 CD2 挂载上的真实 I/O。
-        Unreadable directory ⇒ True (conservative); listings cached per directory
-        because a batch usually shares few directories and listdir hits the mount.
-        """
-        directory = os.path.dirname(dest_file)
-        official = os.path.basename(dest_file)
-        if root_cache is None:
-            root_cache = {}
-        if directory not in root_cache:
-            try:
-                root_cache[directory] = os.listdir(directory)
-            except OSError as e:
-                logger.warning(f"[Rsync115Sync] 残留探测：目录读取失败，按「有残留」保守处理: "
-                               f"{directory}: {e}")
-                root_cache[directory] = None
-        names = root_cache[directory]
-        if names is None:
-            return True
-        return any(_is_temp_residue_name(n, official) for n in names)
-
-    def _annotate_dest(self, keys: List[str]) -> Dict[str, str]:
-        """
-        给新入疑似清单的条目附上云端可见性结论（写进条目自身，看板直接读)。
-
-        Attach the destination verdict to freshly created suspect entries so the
-        dashboard can show it without a second round-trip.
-
-        ⚠️ 这个结论**只影响展示与建议**，不得参与任何清单清理判据：它的假阳性
-        方向是「把坏文件看成好的」，据此把条目从清单里删掉，就会让一个真正的
-        坏文件从此不再被提醒 —— 与「忽略」的后果一样严重而更隐蔽。
-        Display-only: the verdict's false-positive direction is "bad file looks fine",
-        so it must never feed a pruning or skipping decision.
-        """
-        try:
-            verdicts = self._dest_visibility(keys)
-        except Exception as e:
-            # 探测失败不能影响清单维护本身（它只是个附加信息）
-            logger.warning(f"[Rsync115Sync] 目标端可见性探测异常（已忽略）: {e}")
-            return {}
-        for key, verdict in verdicts.items():
-            entry = self._strm_suspects.get(key)
-            if isinstance(entry, dict):
-                entry["dest"] = verdict
-        return verdicts
-
     def check_one(self, key: str, now_ts: float, grace_secs: float) -> Tuple[str, Optional[str]]:
         """
         对单个观察期条目做一次探测与判定（**巡检与手动检查的唯一共用实现**）。
@@ -1125,7 +898,7 @@ class StrmOpsMixin:
         """
         strm_exists = os.path.exists(self._strm_expected_path(key) or "")
         src_root = _strm.source_root_of(key, self._sync_pairs)
-        # 同 _dest_visibility：相对路径用前缀匹配还原，否则任务名含冒号时
+        # 相对路径用前缀匹配还原（`_rel_path_of_key`），否则任务名含冒号时
         # 会把仍在源端的文件判成 source_gone 而清理掉观察记录。
         src_exists = (not src_root) or os.path.exists(
             os.path.join(src_root, _rel_path_of_key(key, self._sync_pairs) or ""))
@@ -1347,105 +1120,9 @@ class StrmOpsMixin:
         return {"success": True, "message": msg,
                 "data": {"ignored": added, "already_ignored": already}}
 
-    def _api_strm_probe(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        看板入口：探测疑似文件的云端可见性（只读，零 115 API）。
-
-        与 `_api_strm_scan` 同样**不加执行锁**：它只读挂载点与源目录，
-        不启动 rsync、不占窗口配额，同步跑着的时候照样能查。
-        """
-        keys = [k for k in ((body or {}).get("keys") or [])
-                if k in self._strm_suspects]
-        if not keys:
-            return {"success": False, "message": "所选文件不在疑似异常清单中"}
-        verdicts = self._dest_visibility(keys)
-        counts: Dict[str, int] = {}
-        for v in verdicts.values():
-            counts[v] = counts.get(v, 0) + 1
-        logger.info(f"[Rsync115Sync] 🔎 目标端可见性探测：{len(keys)} 个 → {counts}")
-        return {"success": True, "data": {"verdicts": verdicts, "counts": counts}}
-
     def _api_strm_check(self, body: Dict[str, Any]) -> Dict[str, Any]:
         """看板入口：立即检查观察期条目的 strm 是否已生成。"""
         return self._check_watch_now((body or {}).get("keys") or [])
-
-    def _api_strm_confirm_failed(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        看板入口：用户确认「这些文件确实没传上云端」，越过窗口直接转疑似。
-
-        Dashboard entry point: the user has confirmed the cloud copy really is
-        missing, so promote these watching entries to suspects without waiting out
-        the window.
-
-        **为什么需要它**：判定窗口衡量的是「还可能有救」的时间，而用户常常已经
-        知道答案（115 里只剩 `影片.mkv..xrp4gj` 残留，正式文件压根没有）。此时
-        唯一的路是干等到期 —— 最长 6 小时，宽限期内看板还**不提供任何处理
-        按钮**（只读，这是刻意的：窗口内的文件大多是好的）。工具不该让知道答案
-        的人排队等探测器。
-        The window measures how long a file might still appear, not how long the user
-        must wait. An owner who has already looked in 115 should not have to sit out a
-        6-hour timer that exists to protect them from a premature judgement.
-
-        ⚠️ 这不是「绕过护栏」，因为护栏分两类，这里只动了一类：
-          · **数据护栏**（能不能删到别的东西）—— 一条都没动：只接受观察清单里
-            的 key，删除仍走相对路径精确对齐的三道闸（见 _delete_dest_files_for_retry）；
-          · **判定护栏**（怕误判所以多等一会儿）—— 用户显式推翻的正是这一条。
-        把两类混作一团，才会得出「窗口不可越过」这种把用户锁死的结论。
-        Only the *judgement* guard is overridden, never a data guard: which files may be
-        touched is still decided by the watching list and the exact-path delete checks.
-
-        纯本地操作（不访问 115、不占配额），因此**不加执行锁**，与「检查 strm」同口径。
-        """
-        keys = [str(k).strip() for k in ((body or {}).get("keys") or []) if str(k).strip()]
-        if not keys:
-            return {"success": False, "message": "未指定文件"}
-        in_watch = [k for k in keys if k in self._strm_watch]
-        # ⚠️ **已经在疑似清单里的条目也要认**：用户的确认不该因为「它恰好已经
-        # 到期进了清单」而失效。原先只收观察期条目，于是提示里那句
-        # 「条目已在疑似清单 → 直接点删旧重传」在插件侧根本无处落地 ——
-        # 而普通疑似条目（origin=watch）既没有 force 通道，也确实不该有
-        # （它没有任何「用户确认过」的记录）。用户被夹在中间，两边都是死路。
-        # 现在把疑似条目一并打上 confirmed 标记，等于补上那个缺失的动作。
-        # Suspects are accepted too: the user's confirmation must not depend on
-        # whether the entry happened to expire into the list already.
-        already = [k for k in keys if k in self._strm_suspects]
-        outside = [k for k in keys if k not in self._strm_watch and k not in self._strm_suspects]
-        if outside:
-            # 记日志而不是静默忽略：这条日志是「用户以为点了、其实什么也没发生」
-            # 的唯一线索（例如被另一个标签页的操作先一步解除了观察）。
-            logger.warning(f"[Rsync115Sync] 确认失败的请求含非观察期条目，已忽略: {outside[:3]}")
-        if not in_watch and not already:
-            return {"success": False,
-                    "message": "所选文件既不在观察期也不在疑似清单中"}
-
-        res = self._promote_watch_to_suspects(in_watch, _strm.ORIGIN_CONFIRMED,
-                                              "确认「上传未完成」")
-        moved, restored = res["moved"], res["restored"]
-
-        # 已在清单里的：就地改 origin，让它同样获得「被用户确认过」的身份。
-        # 时间戳保留 —— 首次疑似时间不该因为补一次确认而往后跳。
-        marked = 0
-        for key in already:
-            entry = self._strm_suspects.get(key)
-            if not isinstance(entry, dict) or entry.get("origin") == _strm.ORIGIN_CONFIRMED:
-                continue
-            entry["origin"] = _strm.ORIGIN_CONFIRMED
-            marked += 1
-        if marked:
-            self.save_data("strm_suspects", self._strm_suspects)
-            logger.warning(f"[Rsync115Sync] 📺 {marked} 个已在疑似清单的条目被用户确认"
-                           f"「上传未完成」，已标记为 confirmed: {_brief_paths(already)}")
-
-        total = len(moved) + len(restored) + marked
-        # 不调用 _reset_strm_notified_if_clear：本操作只会让清单变长，
-        # 「清空后重置通知闩锁」在这里恒为空操作 —— 写上去只会让人以为
-        # 它在这一步有作用，下次改动时按这个错误前提去推理。
-        msg = (f"已按你的确认处理 {total} 个文件（未等观察窗口）。\n"
-               f"接下来点「删旧重传」：插件的云端可见性探测若显示「可见且大小一致」，"
-               f"插件会先把那次探测结论摊给你看，再点一次即照常删除并重传。")
-        return {"success": True, "message": msg,
-                "data": {"moved": moved, "restored": restored,
-                         "marked": already, "ignored": outside}}
 
     def _api_strm_scan(self) -> Dict[str, Any]:
         """
@@ -1620,11 +1297,9 @@ class StrmOpsMixin:
         不做无确认的自动重传：strm 插件自身漏生成也会表现为"该有而没有"，
         误报源无法排除，删除是破坏性操作，必须用户确认。
 
-        ⚠️ 本方法只在**用户确认过的条目**上完全生效，理由见下方 `force` 的说明：
-        在 CD2 假成功这一主成因下，「云端可见且大小一致」必然成立，若把它当成
-        硬失败，用户就会永远删不掉那个坏文件 —— 那道守卫反而成了死角。
-        In the fake-success case "same size" is *always* what the mount reports, so
-        treating it as a hard failure would lock the user out of the only fix.
+        判据只有一条：**待处理清单里没有对应 strm**。挂载视图不参与判断 ——
+        它对 CD2 改名失败这个主成因给出的结论恰好是错的（详见下方说明）。
+        The only criterion is the missing strm; the mount view is never consulted.
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
@@ -1639,131 +1314,17 @@ class StrmOpsMixin:
         if not allowed:
             return {"success": False, "message": "所选文件不在疑似异常清单中"}
 
-        # ⚠️ 删旧重传前**重新探一次**云端可见性，而不是复用清单里那份陈旧结论。
+        # 这里曾经有一道「云端可见性复探」的守卫：删之前重探 CD2 挂载，判成
+        # 「可见且大小一致」就整批拦下并要用户二次确认（`needs_force`），
+        # 另有一条 `origin == confirmed` 的越权通道专门用来推翻它。
         #
-        # 清单里那份是「入清单那一刻」的探测结果（可能是一小时前），而用户是看到
-        # 建议之后才点的按钮 —— 中间完全可能又跑过一次同步，文件已经传好了。
-        # 拿旧结论去决定「要不要删」，等于用一个过期的事实做破坏性判断。
-        #
-        # 只有 DEST_OK 才拦。**这是本插件唯一一处让探测结果影响行为的地方**，
-        # 且方向是「少做一次破坏性操作」：
-        #   · 若反过来拿它做「已同步」的依据，就会真的漏掉坏文件 —— 不做。
-        #
-        # ⚠️ DEST_RESIDUE **不在拦阻之列**，这正是 v0.2.5 修的过度保护：
-        # 改名失败时残留与正式文件大小完全一致，旧判据只看大小，于是这条守卫
-        # 在它最该放行的主成因上必然拦人（用户实测「大小一致但名字带 ..，删不了」）。
-        # 现在探测能看见残留 ⇒ 判成 DEST_RESIDUE ⇒ 这是**确凿的坏文件证据**，
-        # 删旧重传正是对症处置，没有任何理由拦。
-        # Re-probe right before deleting: the stored verdict may predate a sync that
-        # already fixed the file. DEST_RESIDUE is a positive failure signal (the final
-        # rename never completed) and must NOT be blocked — blocking it was the
-        # over-protection users hit, because a residue is byte-identical in size.
-        try:
-            fresh = self._dest_visibility(allowed)
-        except Exception as e:
-            logger.warning(f"[Rsync115Sync] 重传前可见性探测异常（按原逻辑继续）: {e}")
-            fresh = {}
-        residue = [k for k in allowed if fresh.get(k) == _strm.DEST_RESIDUE]
-        if residue:
-            logger.warning(f"[Rsync115Sync] ✅ 探测到 {len(residue)} 个文件名带残留后缀"
-                           f"（改名未完成，大小与正式文件一致），放行删旧重传: "
-                           f"{_brief_paths(residue)}")
-        intact = [k for k in allowed if fresh.get(k) == _strm.DEST_OK]
-
-        # ---- 已被用户确认「确实没传上去」的条目：这道守卫必须让路 ----
-        #
-        # 先看数字：本轮请求里这些条目**全部**探测为「可见且大小一致」。全中不是
-        # 巧合，而正是 CD2 假成功的**预期形态** —— 挂载视图压根反映不出改名失败
-        # （见 DEVELOPMENT.md 3.10/3.11）。也就是说，如果把它们拦下来，用户就会
-        # 永久删不掉这个坏文件：唯一的出口是「重启同步任务再点」，而重启后 CD2
-        # 视图重新拉取，很可能还是「可见且大小一致」，无限循环。
-        #
-        # 所以默认拦、**确认后放行**，并把「是谁推翻的」写进日志。这不是放宽护栏：
-        #   · 数据护栏（只能删精确对应的那一个路径）一条都没动；
-        #   · 被推翻的只是「机器替你保的险」，而当事人已经亲自看过 115 了。
-        # 反过来若不给这个出口，那道守卫就从「防误删」变成「防修复」。
-        # All-confirmed short-circuit: in the fake-success case "same size" is exactly
-        # what the stale view reports, so a hard block would make the bad file
-        # impossible to fix. Data guards are untouched; only the judgement guard yields.
-        #
-        # 分两段处理而不是「整批是不是都确认过」：勾选是跨标签页保留的，一批里
-        # 混着「用户确认过的」与「只是机器报的」很常见，按整批判断会让前者被后者
-        # 拖累（怎么点都删不掉），而按条目分开判断时，两边的语义都保持原样 ——
-        # 确认过的可以放行，没确认过的照旧被保护。
-        force = bool((body or {}).get("force"))
-
-        def _confirmed(k: str) -> bool:
-            entry = self._strm_suspects.get(k)
-            return isinstance(entry, dict) and entry.get("origin") == _strm.ORIGIN_CONFIRMED
-
-        intact_plain = [k for k in intact if not _confirmed(k)]
-        intact_confirmed = [k for k in intact if _confirmed(k)]
-
-        # ⚠️ 必须先判「未确认的」再判「已确认的」，**顺序是承重的**：
-        # 批里混着两类是常态（勾选跨标签页保留），而「未确认」这一支是整批拒绝。
-        # 若先返回 needs_force，前端就会把这次拒绝当成「用户确认不足」去弹二确认，
-        # 用户点两次之后仍被拒 —— 而真正该告诉他的是「这批里有你没确认过的条目，
-        # 先取消勾选它们」。先讲更普遍、更需要用户动手的那条规则。
-        if intact_plain:
-            listed = "\n".join(f"• {k}" for k in intact_plain[:_MAX_LOGGED_PATHS])
-            more = (f"\n（另有 {len(intact_plain) - _MAX_LOGGED_PATHS} 个未列出）"
-                    if len(intact_plain) > _MAX_LOGGED_PATHS else "")
-            # ⚠️ 同批里有「已确认」的条目时**整批拒绝**，而不是删一半留一半：
-            # 半执行的破坏性操作会让用户完全无法判断「刚才那次点击到底做了什么」，
-            # 而重试成本只是取消勾选、再点一次。宁可让用户多点一次，也不做
-            # 「部分成功」这种事后无法对账的结果。
-            same_batch = (f"\n（同批中你已确认过的 {len(intact_confirmed)} 个也一并保持原样："
-                          f"取消勾选本批其它条目后，只对它们重试即可）"
-                          if intact_confirmed else "")
-            # ⚠️ 文案写成**纯文本**（不用 `**加粗**`、段落之间用显式 `\n\n`）：
-            # 同一个字符串既发到聊天渠道、也直接显示在看板的纯文本区块里，
-            # 而那些区块不做 Markdown 渲染 —— 写 `**` 的结果是用户看到一堆星号。
-            # 段落分隔同理：Python 的隐式字符串拼接会把几段黏成一行（用户在真机上
-            # 看到的就是「…传不上去）：• 9KG:… 也就是说云端很可能是好的…」这种
-            # 挤在一起的文本）。
-            logger.warning(f"[Rsync115Sync] ⛔ 已拦下 {len(intact_plain)} 个"
-                           f"「云端文件完好」的删旧重传请求：{_brief_paths(intact_plain)}")
-            return {"success": False,
-                    "message": f"这些文件的云端副本可见、且大小与源端一致，"
-                               f"删掉纯属白删（rsync 也会因 --size-only 跳过，传不上去）：\n"
-                               f"{listed}{more}{same_batch}\n"
-                               f"\n"
-                               f"也就是说云端很可能是好的，问题出在 strm 生成环节。"
-                               f"请先检查：\n"
-                               f"· STRM 助手插件是否把该网盘目录配在「全量同步路径」里\n"
-                               f"· 助手的媒体识别是否正常（生成日志里「总共生成 N 个 STRM」的 N）\n"
-                               f"· 该目录的网盘路径与本插件「网盘目录」是否填的是同一个\n"
-                               f"\n"
-                               f"本判定基于 CD2 挂载视图，存在「视图过期」的已知假阳性"
-                               f"（云端只剩改名失败的残留时它照样显示完好）。"
-                               f"若你已在 115 上确认文件是坏的，先点「确认失败」"
-                               f"（它在这一行按钮里），再点「删旧重传」—— 插件会先把那次"
-                               f"探测结论摊给你看，再点一次即照常删除并重传。\n"
-                               f"不必重启同步任务。"}
-
-        if intact_confirmed and not force:
-            # 走到这里说明批里**没有未确认的**条目（上面那支已整批返回），
-            # 因此这条提醒不会与「先取消勾选」混在一起，用户不会被引向错误的操作。
-            #
-            # 首次点击只提醒、不动手：确认要落在**删除这一步**上，而不是靠一句
-            # 「已确认」给后面所有破坏性操作授予通行权。二次确认还有个更实际的
-            # 作用 —— 它给出了那一刻探测的真实结论，可能和用户以为的不一样。
-            listed = "\n".join(f"• {k}" for k in intact_confirmed[:_MAX_LOGGED_PATHS])
-            more = (f"\n（另有 {len(intact_confirmed) - _MAX_LOGGED_PATHS} 个未列出）"
-                    if len(intact_confirmed) > _MAX_LOGGED_PATHS else "")
-            return {"success": False, "needs_force": True,
-                    "message": f"你已确认这些文件没传上去，但插件的探测仍显示它们"
-                               f"可见且大小与源端一致：\n{listed}{more}\n\n"
-                               f"这正是 CD2 视图过期（改名失败只剩残留）的典型形态 ——"
-                               f"探测只能证明「挂载视图这么显示」，证明不了云端真的完整。\n"
-                               f"你已在 115 上亲眼确认过的话，再点一次「删旧重传」即可执行"
-                               f"（本次未改动任何文件）。"}
-        if intact_confirmed:
-            logger.warning(f"[Rsync115Sync] ⚠️ 用户已确认「上传未完成」，"
-                           f"放行 {len(intact_confirmed)} 个探测为「可见且大小一致」的"
-                           f"删旧重传请求（CD2 视图假成功的预期形态）: "
-                           f"{_brief_paths(intact_confirmed)}")
-
+        # 已整条删除，理由是那道守卫**在最该放行的主成因上必然拦人**：
+        # CD2 改名失败时挂载视图照样显示「可见、大小一致」（残留与正式文件
+        # 字节数相同），于是插件告诉用户「文件很可能是好的、别删」，
+        # 而真相恰恰相反。判据只能来自 strm —— 它不存在，就该走删旧重传。
+        # The old re-probe guard blocked exactly the case it was meant to allow:
+        # a rename-failure residue is byte-identical in size, so the mount reports
+        # "visible and same size" for a file that is not usable at all.
         # ---- 删旧**之前**先确认这轮传得动 ----
         #
         # 顺序是承重的：先删后传的实现里，任何一条前置闸门（执行锁、风控退避、
@@ -1956,12 +1517,13 @@ class StrmOpsMixin:
                                f"{dest_file}: {e}")
 
             if dest_size is None:
-                # 目标端本就没有**正式文件**：无需删除，可直接重传。
-                # ⚠️ 但改名失败的**典型形态**正是「正式名不存在、只剩残留」——
-                # 残留必须在这里就清掉：否则它永远留在云端，且让之后每一次
-                # 可见性探测都判成 DEST_RESIDUE（用户会看到清单上一直挂着
-                # 「有残留」的注记，却找不到可删的东西）。
-                self._remove_dest_residues(dest_file, pair_name, rel_p)
+                # 目标端本就没有正式文件：无需删除，可直接重传。
+                #
+                # ⚠️ 这里曾经顺带调用 `_remove_dest_residues()` 去清同目录里
+                # `.<正式名>.<随机后缀>` 的残留。那条通道随「云端可见性」整套
+                # 一起删除了：它是为**展示**（避免清单上永远挂着「有残留」
+                # 注记）而存在，并非重传本身需要的动作 —— 删旧重传的判据是
+                # 「strm 不存在」，与残留无关，重传照样会发生。
                 logger.info(f"[Rsync115Sync] [{pair_name}] 目标端无正式文件，无需清理，直接重传: {rel_p}")
                 deleted.append(key)
                 continue
@@ -1986,55 +1548,8 @@ class StrmOpsMixin:
                 undeletable.append(key)
                 continue
 
-            # 正式文件已清掉，顺带清掉同目录里它的残留（改名失败的半成品）。
-            # 残留不清会留下两个后果：① 云端永久堆积垃圾；② 之后每次可见性探测
-            # 都会因它判成 DEST_RESIDUE，清单上永远带着一条「有残留」的注记。
-            self._remove_dest_residues(dest_file, pair_name, rel_p)
+            # （清理同目录残留的动作随「云端可见性」整套删除，见上）
             logger.info(f"[Rsync115Sync] [{pair_name}] 🧹 已删除目标端待重传文件: {rel_p} "
                         f"（删前大小 {dest_size} 字节）")
             deleted.append(key)
         return deleted, undeletable
-
-    def _remove_dest_residues(self, dest_file: str, pair_name: str, rel_p: str) -> List[str]:
-        """
-        删除目标端**属于该正式文件**的传输残留（改名失败的半成品），返回已删名字。
-
-        Remove aborted-transfer residues belonging to this exact official file.
-
-        为什么由插件来删（原先的结论是「残留只能在 115 云端手动清」）：那条结论
-        成立的前提是**插件认不出哪个文件是残留**。现在有了精确判据
-        （`paths.is_temp_residue_name`：同目录 + 正式名 + 短随机后缀），
-        残留不再是「不敢碰的陌生文件」，而是可以点名删除的垃圾 —— 而且它正是
-        让可见性探测长期误判的那条证据。
-
-        ⚠️ 判据只对**同目录、同一正式名**生效，不会波及别的文件：
-        删除的是 `os.listdir(父目录)` 里通过该判据的名字，逐个 `os.remove`。
-        Only names matching the predicate for this very file are touched.
-
-        删除失败只记日志、不影响重传：残留删不掉顶多是留个垃圾，
-        而它会导致后续探测保守判成「有残留」—— 宁可留着也别让整次重传失败。
-        """
-        directory = os.path.dirname(dest_file)
-        official = os.path.basename(dest_file)
-        try:
-            names = os.listdir(directory)
-        except OSError as e:
-            logger.warning(f"[Rsync115Sync] [{pair_name}] 残留清理：目录读取失败，跳过: "
-                           f"{directory}: {e}")
-            return []
-        removed: List[str] = []
-        for name in names:
-            if not _is_temp_residue_name(name, official):
-                continue
-            path = os.path.join(directory, name)
-            try:
-                os.remove(path)
-                removed.append(name)
-            except OSError as e:
-                logger.warning(f"[Rsync115Sync] [{pair_name}] 残留删除失败（已忽略，不影响重传）: "
-                               f"{path}: {e}")
-        if removed:
-            logger.info(f"[Rsync115Sync] [{pair_name}] 🧹 已清理 {len(removed)} 个传输残留"
-                        f"（改名失败的半成品）: {_brief_paths(removed)}")
-        return removed
-

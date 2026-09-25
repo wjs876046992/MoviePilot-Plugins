@@ -187,47 +187,28 @@ def test_check_one_does_not_touch_persistence():
 
 
 # --------------------------------------------------------------------------
-# 窗口内检查：顺手探一次云端可见性（回答「等下去会怎样」）
+# 窗口内检查：只回答等待规则，不读 CD2 挂载
 # --------------------------------------------------------------------------
 
-def test_check_within_window_probes_cloud_visibility(tmp_path):
+def test_check_within_window_does_not_probe_cloud_visibility(tmp_path):
     """
-    窗口内检查虽不改状态，但必须**顺手探一次云端可见性**。
+    窗口内检查**不再探测云端可见性**，只回答等待规则。
 
-    用户点「检查 strm」时真正的疑问往往不是「还要等多久」，而是「等下去会怎样」。
-    探一次就能回答：云端有文件 ⇒ 问题在生成侧，窗口过了也别急着删；
-    云端看不到 ⇒ 窗口过了直接删旧重传即可。
+    这里曾经会顺手探一次 CD2 挂载并分三路给建议。已整条删除：挂载视图对
+    「CD2 看起来正常、云端其实是改名失败的残留」这个主成因根本不可信，
+    两边的结论必有一边是错的，而错的那一边会把用户引向错误动作。
+    判据只剩一条 —— **.strm 存在与否**。
+
+    ⚠️ 因此这条断言是**反向**的：只要在窗口内的回答里再次出现「云端」，
+    说明有人把那条判据又接回来了。
     """
     plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
-    # dest 端刻意留空 → 云端不可见
     res = plugin._api_strm_check({"keys": [KEY]})
 
     assert res["success"] is True
     assert KEY in plugin._strm_watch, "窗口内不应解除观察"
-    assert "云端" in res["message"], "应给出云端可见性的结论"
-    assert "删旧重传" in res["message"], "并说明该结论对后续操作意味着什么"
-
-
-def test_check_within_window_says_do_not_delete_when_cloud_copy_intact(tmp_path):
-    """
-    云端可见且大小一致时，窗口内的回答必须是「别急着删」。
-
-    这是探测唯一被允许的用法方向：它的假阳性是「把坏文件看成好的」，
-    因此只能用来劝用户**先别动手**，不能反过来说「文件是好的、可以放心」。
-    """
-    plugin = _plugin(str(tmp_path), watch={KEY: time.time()})
-    pair = plugin._sync_pairs[0]
-    with open(os.path.join(pair["src"], "a.mkv"), "wb") as fh:
-        fh.write(b"x" * 100)
-    dest_file = os.path.join(pair["dest"], "a.mkv")
-    os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-    with open(dest_file, "wb") as fh:
-        fh.write(b"x" * 100)
-
-    res = plugin._api_strm_check({"keys": [KEY]})
-
-    assert KEY in plugin._strm_watch
-    assert "大小" in res["message"] and "别急" in res["message"]
+    assert "云端" not in res["message"], "窗口内不该再给云端可见性结论"
+    assert "窗口" in res["message"], "该说的是等待规则"
 
 
 def test_check_notifies_when_entry_becomes_suspect(tmp_path):

@@ -146,14 +146,13 @@ def test_delete_removes_from_both_cache_and_ledger(tmp_path):
 
 
 def test_extra_fields_roundtrip_for_suspects(tmp_path):
-    """疑似条目的 `origin` / `dest` 必须能带过一轮存取。"""
+    """疑似条目的 `origin` 必须能带过一轮存取（台账里它是一列，不是 JSON blob）。"""
     ledger, s = _mk(tmp_path, STATUS_SUSPECT, ts_field="verified_at",
-                    extra_from_value={"origin": "origin", "dest": "dest"})
-    s["TV:a.mkv"] = {"ts": 1.0, "origin": "watch", "dest": "residue"}
+                    extra_from_value={"origin": "origin"})
+    s["TV:a.mkv"] = {"ts": 1.0, "origin": "watch"}
     s2 = LedgerMapping(ledger, STATUS_SUSPECT, ts_field="verified_at",
-                       extra_from_value={"origin": "origin", "dest": "dest"})
+                       extra_from_value={"origin": "origin"})
     assert s2["TV:a.mkv"]["origin"] == "watch"
-    assert s2["TV:a.mkv"]["dest"] == "residue"
 
 
 def test_unknown_fields_in_value_are_ignored(tmp_path):
