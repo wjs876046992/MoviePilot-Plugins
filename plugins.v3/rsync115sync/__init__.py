@@ -13,7 +13,6 @@ from app.core.event import Event, EventType, eventmanager
 from app.plugins import _PluginBase
 from app.sdk.logging import logger
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 try:
     from app.schemas.types import MessageType
@@ -136,8 +135,9 @@ from .constants import (  # noqa: E402
     MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
     MAX_PATH_CHARS as _MAX_PATH_CHARS,
     SOURCE_CURSOR_OVERLAP_SECS as _SOURCE_CURSOR_OVERLAP_SECS,
+    SOURCE_SCAN_CRON_DEFAULT as _SOURCE_SCAN_CRON_DEFAULT,
     SOURCE_SCAN_ENABLED_DEFAULT as _SOURCE_SCAN_ENABLED_DEFAULT,
-    SOURCE_SCAN_INTERVAL as _SOURCE_SCAN_INTERVAL,
+    SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT as _SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT,
     P115_PAN_DIR_HINT as _P115_PAN_DIR_HINT,
     P115_PAN_MAPPING_FIELD as _P115_PAN_MAPPING_FIELD,
     P115_STRM_COMMAND as _P115_STRM_COMMAND,
@@ -218,8 +218,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         "rsync_timeout": "_rsync_timeout",
     }
     # 源端游标扫描的节奏与重叠窗口（见 constants.SOURCE_SCAN_*）。
-    _SOURCE_SCAN_INTERVAL = _SOURCE_SCAN_INTERVAL
+    _SOURCE_SCAN_CRON_DEFAULT = _SOURCE_SCAN_CRON_DEFAULT
     _SOURCE_SCAN_ENABLED_DEFAULT = _SOURCE_SCAN_ENABLED_DEFAULT
+    _SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT = _SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT
     _SOURCE_CURSOR_OVERLAP_SECS = _SOURCE_CURSOR_OVERLAP_SECS
 
     def __init__(self):
@@ -228,7 +229,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._listen_transfer: bool = True
         # 源端游标扫描（入库发现的**主通道**，取代已删除的整理事件订阅）
         self._source_scan_enabled: bool = self._SOURCE_SCAN_ENABLED_DEFAULT
-        self._source_scan_interval: int = self._SOURCE_SCAN_INTERVAL
+        self._source_scan_cron: str = self._SOURCE_SCAN_CRON_DEFAULT
         self._notify: bool = True
         # ---- Webhook 入库（第二来源，见 webhook.py 头注释）----
         # 注：这里曾有 `_webhook_channels`（来源渠道过滤，默认 emby），已于
@@ -304,7 +305,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 旧格式（纯 float）在 _load 时自动迁移，见 init_plugin。
         # Value shape changed from float to dict to record the suspect's origin.
         self._strm_suspects: Dict[str, Dict[str, Any]] = {}
-        self._strm_grace_hours: float = 6.0            # 宽限期（小时），可配置
+        self._strm_grace_minutes: int = 5              # 宽限期（分钟），可配置
         self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
         self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
         self._strm_notified: bool = False              # 疑似清单是否已推送过通知（防重复打扰）
@@ -439,8 +440,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._source_scan_enabled = bool(
                 config.get("source_scan_enabled", self._SOURCE_SCAN_ENABLED_DEFAULT)
             )
-            self._source_scan_interval = max(
-                60, int(config.get("source_scan_interval") or self._SOURCE_SCAN_INTERVAL))
+            self._source_scan_cron = self._read_source_scan_cron(config)
             self._notify = config.get("notify", True)
             self._delay_hours = float(config.get("delay_hours", 4.0))
             self._cron = config.get("cron", "0 */2 * * *")
@@ -460,7 +460,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
             # strm 交叉验证配置（总开关与宽限期；每映射的 strm_dir 在 sync_pairs 内）
             self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
-            self._strm_grace_hours = max(0.5, float(config.get("strm_grace_hours") or 6.0))
+            self._strm_grace_minutes = self._read_grace_minutes(config)
+            self._warn_on_legacy_grace_unit(config)
             # 老配置迁移：把「从未调整过」的旧默认值平滑升到新默认值
             self._migrate_legacy_defaults(config)
 
@@ -550,7 +551,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 f"[Rsync115Sync] v{self.plugin_version} 初始化完成 | "
                 f"启用={self._enabled} 监听入库={self._listen_transfer} | "
                 f"冷却={self._delay_hours}h 定时={self._cron} | "
-                f"源端扫描={'每 %d 分钟' % (self._source_scan_interval // 60) if self._source_scan_enabled else '关'} | "
+                f"源端扫描={'cron ' + self._source_scan_cron if self._source_scan_enabled else '关'} | "
                 f"映射 {len(self._sync_pairs)} 组: {pair_summary} | "
                 f"队列: 冷却 {len(self._pending_queue)} / 补传 {len(self._backfill_queue)} | "
                 f"限流={'开' if self._rate_limit_enabled else '关'}"
@@ -1352,7 +1353,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 services.append({
                     "id": "Rsync115Sync_SourceScan",
                     "name": "源端扫描入库（主通道）",
-                    "trigger": IntervalTrigger(seconds=max(60, self._source_scan_interval)),
+                    "trigger": CronTrigger.from_crontab(self._source_scan_cron),
                     "func": self._scan_source_cursor_safe,
                     "kwargs": {}
                 })
@@ -1942,11 +1943,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "enabled": self._enabled,
                 "listen_transfer": self._listen_transfer,
                 "source_scan_enabled": self._source_scan_enabled,
-                "source_scan_interval": self._source_scan_interval,
+                "source_scan_cron": self._source_scan_cron,
                 # webhook（第二入库来源）：入口只认 `source=rsync115sync`，
                 # 无可配置项。曾有的渠道白名单已随其移除（DEVELOPMENT §4.0a）。
                 "strm_check_enabled": self._strm_check_enabled,
-                "strm_grace_hours": self._strm_grace_hours,
+                "strm_grace_minutes": self._strm_grace_minutes,
                 "notify": self._notify,
                 "delay_hours": self._delay_hours,
                 "cron": self._cron,
@@ -1973,8 +1974,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._source_scan_enabled = bool(
             config.get("source_scan_enabled", self._SOURCE_SCAN_ENABLED_DEFAULT)
         )
-        self._source_scan_interval = max(
-            60, int(config.get("source_scan_interval") or self._SOURCE_SCAN_INTERVAL))
+        self._source_scan_cron = self._read_source_scan_cron(config)
         self._notify = config.get("notify", True)
         self._delay_hours = float(config.get("delay_hours", 4.0))
         self._cron = config.get("cron", "0 */2 * * *")
@@ -1994,7 +1994,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
         # strm 交叉验证配置（与 init_plugin 保持一致）
         self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
-        self._strm_grace_hours = max(0.5, float(config.get("strm_grace_hours") or 6.0))
+        self._strm_grace_minutes = self._read_grace_minutes(config)
+        self._warn_on_legacy_grace_unit(config)
         self.update_config(config)
         refreshed = self._refresh_scheduled_job()
         return {
@@ -2065,7 +2066,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "ingest_skipped_by_ext": dict(getattr(self, "_ingest_skip_stat", None) or {}),
                 # 源端游标扫描（主入库通道）的可见状态
                 "source_scan_enabled": self._source_scan_enabled,
-                "source_scan_interval": self._source_scan_interval,
+                "source_scan_cron": self._source_scan_cron,
                 "source_cursor": dict(self._source_cursor),
                 "source_scan_last": self._source_scan_last,
                 "ready_count": ready_count,
@@ -2100,7 +2101,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     for k in self._strm_watch},
                 "strm_regrace_hours": _strm.REGRACE_HOURS,
                 "strm_watching": len(self._strm_watch),
-                "strm_grace_hours": self._strm_grace_hours,
+                "strm_grace_minutes": self._strm_grace_minutes,
                 "strm_check_enabled": self._strm_check_enabled,
                 # 已请 strm 助手补生成过的 key → 时间戳，看板据此标出
                 # 「已请求生成，等待结果」，避免用户重复点击（每次都会让助手
@@ -2116,7 +2117,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # `statusData.upload_window_secs || 1800` —— 而 /status 从来不返回
                 # 这个键，于是那行文案**永远按 1800 秒算**，即使用户把窗口改成了
                 # 其它值。默认值恰好正确，所以这个缺口一直没被发现。
-                "upload_window_secs": self._upload_window_secs,
+                #
+                # ⚠️ 必须带 getattr 兜底：本方法会被 `__new__` 构造的实例调用
+                # （单测与部分宿主路径），此时 `__init__` 没跑过。
+                # 我加这个键时漏了兜底，当场让 5 条既有用例报 AttributeError ——
+                # 同一个坑本文件里已经记过两次（见上方两条同款注释），这是第三次。
+                # 新增任何 /status 字段时，先问自己：`__new__` 实例上它有值吗？
+                "upload_window_secs": int(
+                    getattr(self, "_upload_window_secs", 1800)),
                 "upload_blocked_until": self._upload_blocked_until,
                 "last_force_ts": self._last_force_ts,
                 "force_cooldown_days": self._force_cooldown_days,
@@ -2205,6 +2213,99 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     #     本插件只认 `source=rsync115sync`，其它来源归平台自己的解析器，
     #     因此不存在「需要用户声明接收哪些渠道」这件事。
     # 保留本注释是为了让「配置页/接口里为什么没有 webhook 项」有据可查。
+
+    @staticmethod
+    def _read_grace_minutes(config: Dict[str, Any]) -> int:
+        """
+        读取观察宽限期（分钟）。**缺失**回默认，**填了 0** 则夹到下限 1。
+
+        Read the grace window in minutes: missing → default; an explicit 0 → the
+        lower bound, not the default.
+
+        ⚠️ 这里刻意**不用** `config.get(k) or default` —— 那个写法把 `0` 和
+        "没填" 当成同一件事，于是"我想尽快判定所以填 0"的用户会**静默拿到 5 分钟**，
+        而不是他想要的"最短"。差别看似很小（都是等一会儿才判定），但方向是反的：
+        用户表达的是"越小越好"，代码给了一个比它大 5 倍的值，而且屏幕上那个框
+        显示的就是他填的 0。
+        `delay_hours` 同理（那里的 hint 明说"设为 0 可关闭等待"），它用的是
+        `config.get(k, default)` 而不是 `or`，语义一致。
+        """
+        raw = config.get("strm_grace_minutes")
+        if raw is None or raw == "":
+            return _strm.DEFAULT_GRACE_MINUTES
+        try:
+            return max(_strm.MIN_GRACE_MINUTES, int(float(raw)))
+        except (TypeError, ValueError):
+            return _strm.DEFAULT_GRACE_MINUTES
+
+    def _read_source_scan_cron(self, config: Dict[str, Any]) -> str:
+        """
+        读取源端扫描的 cron 表达式，并兼容旧的「间隔秒数」配置。
+
+        Read the source-scan cron, migrating the old "interval in seconds" key.
+
+        兼容规则（**必须存在**，否则老用户升级后节奏会静默变化）：
+
+          · 有 `source_scan_cron` → 用它；
+          · 否则有 `source_scan_interval`（秒）→ 换算成等价的 `*/N * * * *`。
+            cron 的最小粒度是分钟，因此向上取整到分钟（600 秒 → `*/10`）；
+            小于 60 秒的值按 1 分钟处理，并在日志里说明 —— 静默夹紧会让用户
+            以为自己配的 30 秒生效了。
+          · 都没有 → 默认 `*/10 * * * *`。
+
+        ⚠️ 表达式本身**不在这里校验**：非法 cron 由 `CronTrigger.from_crontab`
+        在注册 service 时抛错，而那条路已有 try/except 与日志（与「定时检查」
+        同一个处理方式）。在这里再校验一次会形成两处判据，迟早不一致。
+        """
+        cron = str(config.get("source_scan_cron") or "").strip()
+        if cron:
+            return cron
+
+        legacy = config.get("source_scan_interval")
+        if legacy is not None:
+            try:
+                secs = int(float(legacy))
+            except (TypeError, ValueError):
+                secs = 0
+            if secs > 0:
+                minutes = max(1, round(secs / 60))
+                if secs < 60:
+                    logger.info(f"[Rsync115Sync] 源端扫描间隔 {secs} 秒小于 cron 的最小粒度"
+                                f"（1 分钟），已按 1 分钟处理")
+                logger.info(f"[Rsync115Sync] 源端扫描间隔已从「{secs} 秒」换算为 cron "
+                            f"表达式「*/{minutes} * * * *」（该配置项已改为 cron，见配置页）")
+                return f"*/{minutes} * * * *"
+
+        return self._SOURCE_SCAN_CRON_DEFAULT
+
+    @staticmethod
+    def _warn_on_legacy_grace_unit(config: Dict[str, Any]) -> None:
+        """
+        旧的 `strm_grace_hours`（小时）已换成 `strm_grace_minutes`（分钟）。
+
+        The grace window unit changed from hours to minutes; the key was renamed.
+
+        ⚠️ **必须显式提示，不能静默换算。** 旧键里存的 `6.0` 表示 6 小时；
+        若按同名语义继续读并换个单位解释，它会变成 **6 分钟** —— 而 6 分钟正是
+        最坏的一种表现：strm 还没生成就大面积判成"疑似上传异常"，
+        于是用户收到一堆假的坏消息，然后开始无视这个功能。
+        （换个方向把 `6.0` 当小时再换算成 360 分钟同样错，只是错得不那么吵。）
+
+        正确做法就是**不猜**：值回落到新默认（5 分钟），并明确告诉用户旧值已失效、
+        需要自己去配置页重设一次。配置页那栏的 hint 里也写着单位是分钟。
+
+        Static 是为了能在 `__new__` 构造的实例上跑（单测路径）；它只读 config、只写日志。
+        """
+        if not config or config.get("strm_grace_minutes") is not None:
+            return
+        legacy = config.get("strm_grace_hours")
+        if legacy is None:
+            return
+        logger.info(f"[Rsync115Sync] ⚠️ 配置项「strm_grace_hours」已废弃：观察宽限期的单位从"
+                    f"**小时**改为**分钟**，键名随之改为 strm_grace_minutes。"
+                    f"你原来的值（{legacy} 小时）不会被自动换算 —— 静默换个单位去解释同一个数"
+                    f"会让 6 小时变成 6 分钟，从而大面积误报。"
+                    f"当前已回落到新默认 {5} 分钟，请到配置页「strm 交叉验证」里按分钟重设。")
 
     def _migrate_legacy_defaults(self, config: Dict[str, Any]):
         """
@@ -2867,7 +2968,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                         armed = self._strm_arm_watch(sorted(succeeded_keys))
                         if armed:
                             logger.info(f"[Rsync115Sync] [{pair_name}] 📺 已登记 {armed} 个文件进入 "
-                                        f"strm 观察期（{self._strm_grace_hours}h 内未生成 strm 将标记疑似异常）")
+                                        f"strm 观察期（{self._strm_grace_minutes} 分钟内未生成 strm 将标记疑似异常）")
 
                 # 重试模式成功：同样登记 strm 观察（重传后自动复核 strm 是否生成，
                 # 生成即自动解除疑点，无需用户再确认）

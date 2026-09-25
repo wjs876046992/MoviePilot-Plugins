@@ -37,11 +37,20 @@ SOURCE_GONE = "source_gone"    # 清理：源端文件已消失，无从验证�
 # never applied to the file.
 NOT_WATCHABLE = "not_watchable"
 
-# 宽限期下限（小时）。防止 0 值把「上传中/刮削中」直接判成异常。
-# Lower bound on the grace window, so a 0 value cannot turn "still uploading"
-# into a false alarm.
-MIN_GRACE_HOURS = 0.5
-DEFAULT_GRACE_HOURS = 6.0
+# 宽限期单位是**分钟**（2026-09-25 从小时改过来，默认 6h → 5min）。
+#
+# ⚠️ 单位改动意味着**旧配置值不再有可比性**，因此配置键也换了名
+# （`strm_grace_hours` → `strm_grace_minutes`）。见 `init_plugin` 里对旧键的
+# 显式提示：发现旧键时会记一条 info 说明它已失效，而不是静默换个单位去解释
+# 同一个数 —— "6.0 从小时变分钟"会把 6 小时的需求悄悄变成 6 分钟，
+# 而 6 分钟正是最坏的一种表现（大面积误报疑似异常）。
+# The unit changed, so the config key was renamed too. Silently reinterpreting an
+# existing "6.0" as minutes would turn a 6-hour window into 6 minutes.
+
+# 宽限期下限（分钟）。防止 0 值把「上传中/刮削中」直接判成异常。
+# 1 分钟不是"推荐值"，只是兜住 0 与负数 —— 真正决定误报率的是用户配的值。
+MIN_GRACE_MINUTES = 1
+DEFAULT_GRACE_MINUTES = 5
 
 # 补生成（请 strm 助手重生成指针文件）后的重新计时窗口（小时）。
 #
@@ -302,13 +311,13 @@ def _ts_or(value: Any, fallback: float) -> float:
         return fallback
 
 
-def grace_secs_of(grace_hours: Any) -> float:
-    """宽限期（小时）→ 秒，并施加下限，防止 0/负数把上传中的文件判成异常。"""
+def grace_secs_of(grace_minutes: Any) -> float:
+    """宽限期（分钟）→ 秒，并施加下限，防止 0/负数把上传中的文件判成异常。"""
     try:
-        hours = float(grace_hours)
+        minutes = float(grace_minutes)
     except (TypeError, ValueError):
-        hours = DEFAULT_GRACE_HOURS
-    return max(MIN_GRACE_HOURS, hours) * 3600
+        minutes = DEFAULT_GRACE_MINUTES
+    return max(MIN_GRACE_MINUTES, minutes) * 60
 
 
 # 疑似来源标记。主动扫描与同步后观察的判据不同、可信度也不同，必须在数据里

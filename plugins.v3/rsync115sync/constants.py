@@ -147,11 +147,19 @@ STRM_CHECK_INTERVAL = 1800
 #     且游标随扫描推进，同一批文件不会反复"变新"（这是旧实现被默认关闭的原因）。
 SOURCE_SCAN_ENABLED_DEFAULT = True
 
-# 扫描间隔。**独立于同步 cron**（原先挂在 `_execute_sync(ready)` 内部，
+# 扫描节奏。**独立于同步 cron**（原先挂在 `_execute_sync(ready)` 内部，
 # 而 `_scheduled_sync` 是"补传优先 and return" —— 补传一忙扫描整轮不跑）。
-# 10 分钟：每轮每映射一次 os.walk，纯本地 IO、零 115 API；媒体的时效以分钟计
-# 已经足够（上传本身还要过 4h 冷却）。
-SOURCE_SCAN_INTERVAL = 600
+#
+# 2026-09-25：从"固定间隔（秒）"改为**cron 表达式**，与「定时检查」用同一套写法。
+# 理由：固定间隔表达不了"只在夜里扫"这类需求，而大库的整树遍历有成本；
+# cron 表达力更强且用户已经熟悉本插件另一处 cron 字段。
+# 每轮只是本地 os.walk，零 115 API，所以默认给一个较密的 `*/10`。
+SOURCE_SCAN_CRON_DEFAULT = "*/10 * * * *"
+
+# 兼容：旧配置里存的是秒（int）。发现 `source_scan_interval` 存在时按它换算成
+# 等价的 cron，避免"升级后扫描节奏突然变成默认值"。换算只在**无法整除**时
+# 退化为最接近的 `*/N`（cron 不支持秒，故下限是 1 分钟）。
+SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT = 600
 
 # 游标重叠窗口（秒）。`os.path.getmtime` 的比较是严格大于，而同一秒批量落盘
 # 很常见（整季拷贝、SMB 一次写入）。mtime 恰好等于游标的文件会被严格比较

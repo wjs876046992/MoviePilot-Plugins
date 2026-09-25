@@ -436,7 +436,7 @@ class StrmOpsMixin:
                          f"{'功能已关闭' if not self._strm_check_enabled else f'观察清单为空（疑似 {len(self._strm_suspects)} 个）'}")
             return {"checked": 0, "ok": 0, "new_suspects": 0}
 
-        grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
+        grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
         settled_ok: List[str] = []
         new_suspects: List[str] = []
         # 其中「补生成后仍无」的那部分：与普通到期分开计数，日志与通知里
@@ -505,7 +505,7 @@ class StrmOpsMixin:
                 gen_note = (f"，其中 {len(gen_suspects)} 个是补生成后仍无"
                             if gen_suspects else "")
                 logger.warning(f"[Rsync115Sync] 📺 strm 交叉验证发现 {len(new_suspects)} 个疑似上传异常"
-                               f"（宽限期 {self._strm_grace_hours}h 内未见 strm 生成{gen_note}）: "
+                               f"（宽限期 {self._strm_grace_minutes} 分钟内未见 strm 生成{gen_note}）: "
                                f"{_brief_paths(new_suspects)}")
                 self._notify_strm_suspects(new_suspects)
             elif settled_ok:
@@ -539,7 +539,7 @@ class StrmOpsMixin:
                 text=(
                     f"⚠️ 本次新发现 {len(new_suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
                     f"{listed}{more}\n\n"
-                    f"判定依据：同步已报告成功，但 {self._strm_grace_hours}h 内未在 strm 目录生成对应文件。\n"
+                    f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。\n"
                     f"💡 请先确认 strm 插件本身是否正常（媒体是否识别、功能是否开启），\n"
                     f"   再前往看板「strm 疑似异常」标签处理：\n"
                     f"   ① 先点「先尝试生成 strm」——若只是漏生成，这一步就能解决，无需重传；\n"
@@ -822,7 +822,7 @@ class StrmOpsMixin:
         纯本地文件检查，零 115 API，因此**不加执行锁**（不占配额、不与同步冲突）。
         """
         now_ts = time.time()
-        grace_secs = _strm.grace_secs_of(self._strm_grace_hours)
+        grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
         targets = [k for k in (keys or []) if k in self._strm_watch]
         if not targets:
             return {"success": False, "message": "所选文件已不在观察期（可能已被处理或解除）"}

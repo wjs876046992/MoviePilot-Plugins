@@ -76,24 +76,24 @@
             <v-switch v-model="config.source_scan_enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+          <div class="setting-row d-flex align-start justify-space-between px-4 py-3">
             <div>
-              <div class="font-weight-bold text-body-2">源端扫描间隔（分钟）</div>
+              <div class="font-weight-bold text-body-2">源端扫描 Cron 规则</div>
               <div class="text-caption text-medium-emphasis">
-                每轮只做本地目录遍历，不访问 115 挂载点，因此不消耗上传配额、不触发风控。
-                10 分钟对媒体入库已足够（上传本身还要经过冷却）。
+                与「定时检查」同一套 cron 写法，因此可以表达"只在夜里扫"这类节奏
+                （默认 <code>*/10 * * * *</code>，即每 10 分钟）。
+                每轮只做本地目录遍历，不访问 115 挂载点，<b>不消耗上传配额、不触发风控</b>。
+                发现的文件仍要经过冷却才会上传，所以扫得更勤并不会让上传更早，
+                只是让文件更早进队列。
               </div>
             </div>
             <v-text-field
-              v-model.number="config.source_scan_interval_minutes"
-              type="number"
-              min="1"
-              max="1440"
+              v-model="config.source_scan_cron"
               variant="outlined"
               density="compact"
               hide-details
-              style="max-width: 110px"
-              suffix="分钟"
+              placeholder="*/10 * * * *"
+              style="max-width: 190px"
             ></v-text-field>
           </div>
         </div>
@@ -110,13 +110,33 @@
           </v-btn>
         </div>
 
+        <!-- 字段说明集中在本模块顶部。卡片内只留"这里填什么"的极短提示 ——
+             说明散在每个输入框的 hint 里时，用户要滚动才能拼出完整语义，
+             而且同一句话会在每个映射卡片里重复一遍（映射越多越乱）。 -->
         <v-alert type="info" variant="tonal" density="compact" class="rounded-lg mb-3 text-body-2">
-          为每个媒体库配置一对路径：<b>本地源目录</b> → <b>CD2 挂载的 115 目录</b>。
+          <div class="font-weight-bold mb-1">每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录</div>
           插件只同步这些映射内的文件，不会扫描其它位置。
-          <b>「同步所有文件类型」</b>关闭时只传视频与字幕（推荐），开启后连同 nfo、图片等一律上传；
-          文件类型由下方「同步的扩展名」统一控制。开启该选项的映射还有一个区别：
-          webhook 只推来一个文件时，同目录下的其它文件会一并入队（不递归子目录）——
-          否则「全都要上传」就变成了「只传被点到名的那一个」。
+          <div class="mt-2"><b>任务备注名称</b>：会成为文件清单的前缀（如
+            <code>电视剧:剧名/剧名 S01E01.mkv</code>）。改名不会导致重复同步，
+            但会让旧的异常清单条目失去对应关系，建议一次定好。</div>
+          <div class="mt-1"><b>本地源目录</b>：NAS 上的媒体目录，需在容器内可访问。</div>
+          <div class="mt-1"><b>CD2 挂载 115 目录</b>：上面对应的网盘目标目录。</div>
+          <div class="mt-1"><b>同步所有文件类型</b>：关闭时只传下方「同步的扩展名」白名单里的文件
+            （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别：
+            收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）——
+            否则「全都要上传」就变成了「只传被点到名的那一个」。</div>
+          <div class="mt-1"><b>strm 目录</b>：可选。填了才对该映射启用上传结果交叉验证 ——
+            同步成功后进入观察期，到期仍未生成对应 <code>.strm</code> 会标记为「疑似上传异常」。
+            看板可先请 STRM 助手补生成（成本低、多半直接解决），确认无效后再删旧重传。
+            观察与扫描全程纯本地，<b>零 115 API</b>。
+            <b>不依赖 P115StrmHelper</b>：任何会生成 .strm 的插件都可以，
+            甚至完全不用插件、只填一个目录也能工作。</div>
+          <div class="mt-1"><b>网盘目录</b>：可选，<b>仅「先尝试生成 strm」</b>用得到。
+            填该映射在 115 网盘里的目录（<b>不是</b> CD2 挂载路径）；本地 strm 目录与
+            网盘目录是两棵独立的树，无法自动推导，所以要单独填。
+            注意助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配会被拒绝
+            （提示路径匹配错误）。<b>依赖 P115StrmHelper</b>；留空只是该映射不能用补生成，
+            不影响同步、对账、观察与删旧重传。</div>
         </v-alert>
 
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
@@ -138,23 +158,16 @@
                 <v-text-field v-model="pair.dest" label="CD2 挂载 115 目录" variant="outlined" density="compact" placeholder="/volume2/CloudNAS/115/TV"></v-text-field>
               </v-col>
               <v-col cols="12">
-                <v-checkbox v-model="pair.all_ext" label="同步所有文件类型 (默认仅同步视频，勾选后将同步字幕与元数据等全部格式)" density="compact" hide-details color="primary"></v-checkbox>
+                <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
               </v-col>
               <v-col cols="12">
                 <v-text-field
                   v-model="pair.strm_dir"
-                  label="strm 目录（可选，用于上传结果交叉验证）"
+                  label="strm 目录（可选，启用上传结果交叉验证）"
                   variant="outlined"
                   density="compact"
                   placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"
-                  hint="若你用 strm 类插件在本地生成指针文件，且 strm 文件名与整理后文件同名，填写其根目录。同步成功后进入观察期（默认 6 小时），到期仍未生成对应 .strm 会标记为「疑似上传异常」。看板上可先请 STRM 助手补生成（成本低、多半能直接解决），确认无效后再删旧重传。观察与扫描全程纯本地，零 115 API。"
-                  persistent-hint
                 ></v-text-field>
-                <div class="dep-note dep-free mt-1">
-                  <v-icon size="13">mdi-check-circle-outline</v-icon>
-                  不依赖 P115StrmHelper：任何会生成 .strm 的插件都可以，
-                  甚至完全不用插件、只填一个目录也能工作
-                </div>
               </v-col>
               <v-col cols="12">
                 <v-text-field
@@ -163,14 +176,7 @@
                   variant="outlined"
                   density="compact"
                   placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"
-                  hint="填写该映射在 115 网盘里的目录（不是 CD2 挂载路径）。看板的「先尝试生成 strm」会据此把参数传给 P115StrmHelper。注意：助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配的话，命令会被助手拒绝（提示路径匹配错误）。本地 strm 目录与网盘目录是两棵独立的树，所以需要单独填、无法自动推导。"
-                  persistent-hint
                 ></v-text-field>
-                <div class="dep-note dep-needs-helper mt-1">
-                  <v-icon size="13">mdi-link-variant</v-icon>
-                  <b>依赖 P115StrmHelper</b>：仅「先尝试生成 strm」用得到它。
-                  留空只是该映射不能用补生成，<b>不影响同步、对账、观察与删旧重传</b>
-                </div>
               </v-col>
             </v-row>
           </div>
@@ -417,17 +423,19 @@
         <div class="settings-group-card rounded-xl overflow-hidden">
           <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
             <div>
-              <div class="font-weight-bold text-body-2">观察宽限期 (小时)</div>
+              <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
               <div class="text-caption text-medium-emphasis">
                 strm 生成并不实时（可能还在上传或刮削中），因此同步成功后先等待一段时间再判定，
-                避免把「还没生成」误判为上传异常。最小 0.5 小时。
+                避免把「还没生成」误判为上传异常。最小 1 分钟。
+                <b>单位此前是小时，已改为分钟</b> —— 老配置的值不会自动换算，
+                请按分钟重设（启动日志里会提示）。
               </div>
             </div>
             <v-text-field
-              v-model.number="config.strm_grace_hours"
+              v-model.number="config.strm_grace_minutes"
               type="number"
-              step="0.5"
-              min="0.5"
+              step="1"
+              min="1"
               variant="outlined"
               density="compact"
               style="max-width: 130px"
@@ -520,9 +528,9 @@ const config = ref({
   // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
   // 源端扫描（入库发现的主通道，2026-09-25 起取代宿主整理事件订阅）
   source_scan_enabled: true,
-  // 界面用「分钟」而接口用「秒」：两者之间在 loadConfig / saveConfig 里换算，
-  // 后端契约仍是 source_scan_interval（秒）。
-  source_scan_interval_minutes: 10,
+  // cron 表达式（与「定时检查」同一套写法）。旧版这里是「间隔秒数」，
+  // 后端会把它换算成等价的 */N 表达式并保留，见 _read_source_scan_cron。
+  source_scan_cron: '*/10 * * * *',
   notify: true,
   // 4h：源端扫描引入后，冷却期多了一层职责 —— 等文件写完（见上面的 hint）
   delay_hours: 4.0,
@@ -550,7 +558,7 @@ const config = ref({
   // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
-  strm_grace_hours: 6.0,
+  strm_grace_minutes: 5,
 })
 
 // ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
@@ -639,19 +647,15 @@ function notifySwitch() {
   emit('switch')
 }
 
-// 单位换算是这一层的唯一职责，因此必须**两个方向都做**，且只在边界处做：
-//   · 读：后端给 source_scan_interval（秒）→ 界面用分钟
-//   · 写：界面分钟 → 后端秒
-// ⚠️ 后端契约是**秒**，别为了"少一次转换"把它改成分钟 —— 那个字段的默认值与
-// 校验（最小 60）都按秒写。漏掉任一方向的换算会表现为「保存 10 分钟、回来变成 0」
-// 或「保存 600 分钟」，而两个数值看起来都"像那么回事"。
+// 注：这里曾有一段「分钟 ↔ 秒」的单位换算（源端扫描间隔）。改为 cron 表达式后
+// 不再需要 —— 前后端存的是同一个字符串，没有单位可错。
+// 教训值得留着：那次换算的边界处理错一次就会表现成「保存 10 分钟、回来变成 0」，
+// 而 0 和 10 在界面上都"像那么回事"。**能用一个自描述的类型就别用数值 + 单位换算。**
 async function loadConfig() {
   try {
     const res = await props.api.get('plugin/Rsync115Sync/config')
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data)
-      const secs = Number(config.value.source_scan_interval) || 600
-      config.value.source_scan_interval_minutes = Math.max(1, Math.round(secs / 60))
     }
   } catch (e) {
     console.error('读取配置失败:', e)
@@ -663,9 +667,6 @@ async function saveConfig() {
   error.value = null
   successMessage.value = null
   try {
-    // 分钟 → 秒（见 loadConfig 的说明）
-    const minutes = Number(config.value.source_scan_interval_minutes) || 10
-    config.value.source_scan_interval = Math.max(60, Math.round(minutes) * 60)
     const res = await props.api.post('plugin/Rsync115Sync/config', config.value)
     if (res && res.success) {
       successMessage.value = '配置已成功保存！'

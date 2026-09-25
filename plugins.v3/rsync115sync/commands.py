@@ -523,7 +523,7 @@ class CommandsMixin:
                 if self._source_scan_last:
                     ago_mins = int((now_ts - self._source_scan_last) / 60)
                     reply += (f"🔍 源端扫描: {len(self._source_cursor)} 个映射，"
-                              f"最近推进 {ago_mins} 分钟前（每 {self._source_scan_interval // 60} 分钟一轮）\n")
+                              f"最近推进 {ago_mins} 分钟前（cron {self._source_scan_cron}）\n")
                 else:
                     reply += "🔍 源端扫描: 已启用，尚未完成首轮\n"
             else:

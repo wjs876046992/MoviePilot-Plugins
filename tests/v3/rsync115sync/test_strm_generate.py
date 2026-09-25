@@ -36,7 +36,7 @@ def _plugin(root, *, conf=None):
     plugin._strm_suspects = dict(conf or {})
     plugin._strm_watch = {}
     plugin._strm_gen_requested = {}
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_check_enabled = True
     plugin._strm_last_check = 0.0        # 巡检节流：0 = 从未巡检过，不会被跳过
     plugin._strm_notified = False
@@ -432,8 +432,8 @@ def test_gen_clock_uses_fixed_window_not_configured_grace(monkeypatch, tmp_path)
 
     key = "电视剧:a.mkv"
     plugin = _plugin(str(tmp_path))
-    plugin._strm_grace_hours = 24.0                       # 宽限期故意调得很大
-    grace_secs = pure.grace_secs_of(plugin._strm_grace_hours)
+    plugin._strm_grace_minutes = 1440                       # 宽限期故意调得很大
+    grace_secs = pure.grace_secs_of(plugin._strm_grace_minutes)
     plugin._strm_watch = {key: time.time() - 7200}         # 两小时前请求的补生成
     plugin._strm_gen_requested = {key: time.time() - 7200}
     plugin._strm_expected_path = lambda k: "/nonexistent/never.strm"
@@ -442,7 +442,7 @@ def test_gen_clock_uses_fixed_window_not_configured_grace(monkeypatch, tmp_path)
     state, _ = plugin.check_one(key, time.time(), grace_secs)
 
     assert state == pure.SUSPECT, (
-        f"{pure.REGRACE_HOURS:g}h 窗口应已到期（宽限期 24h 不参与补生成的判定）")
+        f"{pure.REGRACE_HOURS:g}h 窗口应已到期（宽限期 1440 分钟不参与补生成的判定）")
 
 
 def test_scan_does_not_demote_watching_entries(monkeypatch, tmp_path):

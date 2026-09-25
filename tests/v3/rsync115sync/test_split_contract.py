@@ -93,7 +93,8 @@ def test_instantiation_smoke():
     # 注：`_MISSED_SCAN_*` 已随源端补齐扫描一起被 `_SOURCE_SCAN_*` 取代
     # （2026-09-25），别名同步更名 —— 这条断言的价值正在于它会跟着旧名字一起
     # 失败，提醒改名时要更新这处清单，而不是悄悄地少断言一项。
-    for attr in ("_SOURCE_SCAN_ENABLED_DEFAULT", "_SOURCE_SCAN_INTERVAL",
+    for attr in ("_SOURCE_SCAN_ENABLED_DEFAULT", "_SOURCE_SCAN_CRON_DEFAULT",
+                 "_SOURCE_SCAN_INTERVAL_LEGACY_DEFAULT",
                  "_SOURCE_CURSOR_OVERLAP_SECS", "_LEGACY_DEFAULTS",
                  "_LEGACY_DEFAULTS_ALL", "_TOLERATED_EXIT_CODES", "_SIDECAR_EXTS"):
         assert hasattr(plugin, attr), f"实例缺少类体别名 {attr}"

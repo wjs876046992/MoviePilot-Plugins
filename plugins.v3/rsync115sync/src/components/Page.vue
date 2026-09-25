@@ -43,12 +43,15 @@
 
       <!-- 主体内容 -->
       <v-card-text class="pa-4 flex-grow-1 overflow-y-auto body-surface">
-        <!-- 核心指标卡片 -->
-        <v-row class="mb-3 strm-stat-row">
+        <!-- 核心指标卡片（两行，共 7 个统计数字）
+             ⚠️ 第一行三个卡片有承重的布局约束（border-top 曾整条不可见），
+             见样式区 .strm-stat-row 的说明与 test_dashboard_stat_row_border.py。
+             第一行**必须保持是这一行**（它是滚动容器顶边对齐的那一行）。 -->
+        <v-row class="mb-2 strm-stat-row">
           <v-col cols="12" sm="4" class="pa-1">
             <div class="stat-card stat-info rounded-xl pa-3 text-center">
               <div class="text-h5 font-weight-black text-info">{{ statusData.cooling_count || 0 }}</div>
-              <div class="text-caption text-medium-emphasis mt-1">冷却缓冲中 (设定 {{ statusData.delay_hours || 2 }}h)</div>
+              <div class="text-caption text-medium-emphasis mt-1">冷却缓冲中 (设定 {{ statusData.delay_hours || 4 }}h)</div>
             </div>
           </v-col>
           <v-col cols="12" sm="4" class="pa-1">
@@ -63,6 +66,45 @@
                 {{ (statusData.last_status?.missing_files?.length || 0) + (statusData.last_status?.corrupt_files?.length || 0) }}
               </div>
               <div class="text-caption text-medium-emphasis mt-1">待重试缺失/残缺文件</div>
+            </div>
+          </v-col>
+        </v-row>
+
+        <!-- 第二行：把"入库发现"与"上传进度"这两件此前只能在提示条里读到的事
+             也做成数字 —— 与上面那行同一个视觉语言，扫一眼就够，不必读句子。
+             刻意选的都是**用户会拿来判断"还要不要做什么"**的量：
+               · 扫描游标是否在走 → 发现层活着没有（不流动 = 新文件不会被发现）
+               · 待观察 / 疑似 → strm 交叉验证要不要我处理
+               · 补传剩余 → 还有多少存量在排队
+               · 窗口用量 → 是不是被限流卡住了（到上限就只剩等待） -->
+        <v-row class="mb-3 stat-row-secondary">
+          <v-col cols="6" sm="3" class="pa-1">
+            <div class="stat-card stat-muted rounded-xl pa-2 text-center">
+              <div class="text-subtitle-1 font-weight-black">
+                {{ sourceScanAgoShort }}
+              </div>
+              <div class="text-caption text-medium-emphasis">上次源端扫描</div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3" class="pa-1">
+            <div class="stat-card stat-warning rounded-xl pa-2 text-center">
+              <div class="text-subtitle-1 font-weight-black text-warning">{{ statusData.strm_watching || 0 }}</div>
+              <div class="text-caption text-medium-emphasis">strm 观察中</div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3" class="pa-1">
+            <div class="stat-card stat-warning rounded-xl pa-2 text-center">
+              <div class="text-subtitle-1 font-weight-black text-warning">{{ strmSuspectCount }}</div>
+              <div class="text-caption text-medium-emphasis">strm 疑似异常</div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3" class="pa-1">
+            <div class="stat-card stat-muted rounded-xl pa-2 text-center">
+              <div class="text-subtitle-1 font-weight-black">
+                {{ statusData.backfill_remaining || 0 }}<span
+                  v-if="statusData.backfill_total" class="text-caption text-medium-emphasis">/{{ statusData.backfill_total }}</span>
+              </div>
+              <div class="text-caption text-medium-emphasis">存量补传剩余</div>
             </div>
           </v-col>
         </v-row>
@@ -98,7 +140,7 @@
           </div>
           <div v-if="statusData.strm_watching">
             📺 strm 交叉验证进行中：<strong>{{ statusData.strm_watching }}</strong> 个文件处于观察期，
-            {{ statusData.strm_grace_hours }} 小时内未生成对应 .strm 才会被标记为「疑似上传异常」，
+            {{ statusData.strm_grace_minutes }} 分钟内未生成对应 .strm 才会被标记为「疑似上传异常」，
             属正常等待，无需处理。
           </div>
         </v-alert>
@@ -478,7 +520,7 @@
               <v-icon size="18" color="warning">mdi-television-classic-off</v-icon>
               <span class="font-weight-bold text-body-2">strm 疑似上传异常 ({{ strmSuspectCount }})</span>
               <span class="text-caption text-medium-emphasis">
-                观察期 {{ statusData.strm_grace_hours }}h 内未生成对应 strm；处理前请确认 strm 生成侧本身正常。
+                观察期 {{ statusData.strm_grace_minutes }} 分钟内未生成对应 strm；处理前请确认 strm 生成侧本身正常。
                 仅视频文件参与（字幕/图片/元数据不会有 strm，不纳入监控）
               </span>
               <!-- 依赖标注：本区绝大多数能力自包含，只有「先尝试生成」要外部助手。
@@ -650,7 +692,7 @@
                         （窗口 {{ statusData.strm_regrace_hours }}h） · {{ entry.remainingText }}
                       </template>
                       <template v-else>
-                        同步成功，等待 strm 生成（宽限期 {{ statusData.strm_grace_hours }}h） · {{ entry.remainingText }}
+                        同步成功，等待 strm 生成（宽限期 {{ statusData.strm_grace_minutes }} 分钟） · {{ entry.remainingText }}
                       </template>
                     </div>
                   </div>
@@ -949,7 +991,7 @@ const statusData = ref({
   source_cursor: {},
   source_scan_last: 0,
   source_scan_enabled: true,
-  source_scan_interval: 600,
+  source_scan_cron: '*/10 * * * *',
   // 入库闸门挡下的扩展名分布（累计）：扩展名 → 次数。
   ingest_skipped_by_ext: {},
   strm_suspects: {},
@@ -959,7 +1001,7 @@ const statusData = ref({
   strm_watch_clocks: {},
   strm_regrace_hours: 1,
   strm_watching: 0,
-  strm_grace_hours: 6,
+  strm_grace_minutes: 5,
   // 已请 strm 助手补生成过的 key → 时间戳；以及助手就绪状态（含不可用原因）
   strm_gen_requested: {},
   strm_gen_dir_limit: 20,
@@ -1015,9 +1057,25 @@ const strmScanMsg = ref('')
 // （那是用户的选择，不是故障）。
 // 阈值取 3 倍间隔且至少 30 分钟：避开宿主重启后的首个周期、也避开偶发的
 // 单次调度延迟，只在真的连续几轮没跑时提示。
+// ⚠️ 阈值不能直接按"间隔 × 3"算 —— 间隔现在是 **cron 表达式**。
+//
+// 做法：**只认 `*/N * * * *` 这一种形态**（它是默认值与旧配置换算后的形态，
+// 覆盖绝大多数用户），由它推出间隔；其它任何写法（`0 * * * *`、`0 3 * * *`、
+// `*/5 2-6 * * *` …）**一律退回一个保守的固定阈值**。
+//
+// 为什么不去写一个完整的 cron 解析器：解析器要跟后端 APScheduler 的语义保持
+// 一致（步长、范围、列表、月份/星期名的别名……），一处不一致就是**假警报** ——
+// 而假警报的代价比漏报高得多：用户会被训练成无视这块提示。退回固定阈值最坏
+// 只是"发现得晚一点"，而扫描停摆本身不会造成数据丢失（游标没走，文件还在原地，
+// 恢复后下一轮就补回来）。
+const SOURCE_SCAN_FALLBACK_STALE = 6 * 3600   // 认不出表达式时的兜底：6 小时
 const sourceScanStaleSecs = computed(() => {
-  const interval = Number(statusData.value.source_scan_interval) || 600
-  return Math.max(interval * 3, 1800)
+  const cron = String(statusData.value.source_scan_cron || '').trim()
+  const simple = /^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/.exec(cron)
+  if (!simple) return SOURCE_SCAN_FALLBACK_STALE
+  const minutes = Math.max(1, parseInt(simple[1], 10) || 10)
+  // 认出来时也留出宽裕：连续 3 轮没跑才算停摆
+  return Math.max(minutes * 60 * 3, 1800)
 })
 const sourceScanProblem = computed(() => {
   if (statusData.value.source_scan_enabled === false) return false
@@ -1025,6 +1083,18 @@ const sourceScanProblem = computed(() => {
   // 从未跑过（0）不算问题：插件刚装/刚重载，等第一轮即可。
   if (!last) return false
   return Date.now() / 1000 - last > sourceScanStaleSecs.value
+})
+// 卡片里用的极短版本（"3 分钟前" → "3 分钟"）。卡片宽度有限，且标签已经
+// 写明是"上次源端扫描"，重复"前"字只会挤掉数字本身的视觉权重。
+const sourceScanAgoShort = computed(() => {
+  const last = Number(statusData.value.source_scan_last) || 0
+  if (!last) return '尚未'
+  const mins = Math.floor((Date.now() / 1000 - last) / 60)
+  if (mins < 1) return '刚刚'
+  if (mins < 60) return `${mins} 分钟`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} 小时`
+  return `${Math.floor(hours / 24)} 天`
 })
 const sourceScanAgoText = computed(() => {
   const last = Number(statusData.value.source_scan_last) || 0
@@ -1069,7 +1139,7 @@ const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspec
 const strmWatchingEntries = computed(() => {
   const detail = statusData.value.strm_watch_detail || {}
   const clocks = statusData.value.strm_watch_clocks || {}
-  const graceSync = (Number(statusData.value.strm_grace_hours) || 6) * 3600
+  const graceSync = (Number(statusData.value.strm_grace_minutes) || 5) * 60
   const graceGen = (Number(statusData.value.strm_regrace_hours) || 1) * 3600
   const now = Date.now() / 1000
   return Object.entries(detail)
@@ -1917,6 +1987,17 @@ onUnmounted(() => {
 .stat-info { background: rgba(var(--v-theme-info, 33, 150, 243), 0.06); }
 .stat-primary { background: rgba(var(--v-theme-primary, 24, 103, 192), 0.06); }
 .stat-error { background: rgba(var(--v-theme-error, 176, 0, 32), 0.06); }
+.stat-warning { background: rgba(var(--v-theme-warning, 251, 140, 0), 0.06); }
+/* 中性色卡片（"上次源端扫描""补传剩余"）。刻意不用彩色：它们不是**问题指标**，
+   而是两种"进度读数"—— 用彩色会让看板在一切正常时也显得刺眼，
+   而这类常年常驻的数字一旦刺眼，用户就会开始无视整行。 */
+.stat-muted { background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.03); }
+/* 第二行不受首行那条 border-top 约束（它不在滚动容器顶边），
+   但上边距要压掉 Vuetify 的 -12px，否则两行会贴在一起。 */
+.stat-row-secondary {
+  margin-top: 0 !important;
+  margin-bottom: 12px !important;
+}
 
 .action-strip {
   background: rgba(var(--v-theme-on-surface, 0, 0, 0), 0.025);

@@ -31,7 +31,7 @@ def _plugin(root, *, rules=None, pair_name="电视剧", all_ext=False):
     plugin._exclude_patterns = "@eaDir/\n#recycle/"
     plugin._media_extensions = "mkv,srt,ssa,ass"
     plugin._strm_check_enabled = True
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_last_check = 0.0
     plugin._strm_notified = False
     plugin._strm_gen_requested = {}
@@ -368,7 +368,7 @@ def test_prune_runs_automatically_on_plugin_load():
     plugin._strm_gen_requested = {}
     plugin._strm_watch = {}
     plugin._strm_suspects = {}
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_check_enabled = True
     plugin._strm_last_check = 0.0
     plugin._enabled = True
@@ -620,7 +620,7 @@ def test_prune_invalid_watch_runs_automatically_on_plugin_load():
     plugin._strm_gen_requested = {}
     plugin._strm_watch = {}
     plugin._strm_suspects = {}
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_check_enabled = True
     plugin._strm_last_check = 0.0
     plugin._enabled = True

@@ -164,32 +164,56 @@ def test_unmatched_key_is_cleaned_up():
 
 
 # --------------------------------------------------------------------------
-# grace_secs_of —— 下限是防误报的关键
+# grace_secs_of —— 单位是**分钟**（2026-09-25 从小时改过来），下限防误报
 # --------------------------------------------------------------------------
 
 def test_grace_secs_of_normal_value():
-    assert strm.grace_secs_of(6) == 21600.0
+    """5 分钟 → 300 秒。"""
+    assert strm.grace_secs_of(5) == 300.0
+    assert strm.grace_secs_of(60) == 3600.0
 
 
 def test_grace_secs_of_enforces_minimum():
     """0 或负数会把「还在上传中」直接判成异常，必须被抬到下限。"""
-    assert strm.grace_secs_of(0) == strm.MIN_GRACE_HOURS * 3600
-    assert strm.grace_secs_of(-5) == strm.MIN_GRACE_HOURS * 3600
-    assert strm.grace_secs_of(0.1) == strm.MIN_GRACE_HOURS * 3600
+    assert strm.grace_secs_of(0) == strm.MIN_GRACE_MINUTES * 60
+    assert strm.grace_secs_of(-5) == strm.MIN_GRACE_MINUTES * 60
+    assert strm.grace_secs_of(0.1) == strm.MIN_GRACE_MINUTES * 60
 
 
 @pytest.mark.parametrize("bad", [None, "", "abc", [], {}])
 def test_grace_secs_of_invalid_input_falls_back_to_default(bad):
     """配置里出现脏值（v-model.number 曾写回过 NaN 这类）时回退默认，不抛异常。"""
-    assert strm.grace_secs_of(bad) == strm.DEFAULT_GRACE_HOURS * 3600
+    assert strm.grace_secs_of(bad) == strm.DEFAULT_GRACE_MINUTES * 60
 
 
 def test_grace_secs_of_accepts_numeric_string():
     """前端 v-model 可能传来字符串，必须能解析。"""
-    assert strm.grace_secs_of("3") == 10800.0
+    assert strm.grace_secs_of("45") == 2700.0
 
 
-# --------------------------------------------------------------------------
+def test_grace_default_is_five_minutes():
+    """
+    默认宽限期 = 5 分钟。钉住它是为了防止"改单位时顺手改错量级" ——
+    5 秒或 5 小时都能跑，但前者会大面积误报、后者会让功能形同虚设。
+    """
+    assert strm.DEFAULT_GRACE_MINUTES == 5
+    assert strm.grace_secs_of(strm.DEFAULT_GRACE_MINUTES) == 300.0
+
+
+def test_grace_secs_of_is_minutes_not_hours():
+    """
+    ⚠️ 单位回归哨兵：6 这个值必须被解释成 **6 分钟**（360 秒），不是 6 小时。
+
+    这条用例存在的意义就是"单位改回去时它会红"。旧版 `grace_secs_of(6) == 21600`
+    测试的正是小时语义，这次改单位时它整条被替换（而不是改个数字）——
+    因为**单位本身**才是被测试的对象。
+    """
+    assert strm.grace_secs_of(6) == 360.0, (
+        "宽限期的单位是分钟；若这里又变回 21600，说明有人把单位改回了小时，"
+        "而配置页与文档都写着分钟"
+    )
+
+
 # watch_state_of —— 计时基准（双钟问题的唯一防线）
 # --------------------------------------------------------------------------
 

@@ -36,7 +36,7 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._media_extensions = "mkv"
     plugin._ignored_rules = []
     plugin._strm_check_enabled = True
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_last_check = 0.0
     plugin._strm_notified = False
     plugin._strm_gen_requested = {}
@@ -52,7 +52,7 @@ def _plugin(root, *, watch=None, suspects=None):
     # 源端扫描的间隔与状态字段：`_api_get_status` 会读它们。
     # （此处的字段清单必须跟着 /status 的返回键走 —— 漏一个就是 AttributeError，
     #  而这正是本文件标题所强调的"只有实例化才能发现"的那类缺陷。）
-    plugin._source_scan_interval = 600
+    plugin._source_scan_cron = '*/10 * * * *'
     plugin._source_scan_last = 0.0
     plugin._ingest_skip_stat = {}
     plugin._last_status = {"missing_files": [], "corrupt_files": []}

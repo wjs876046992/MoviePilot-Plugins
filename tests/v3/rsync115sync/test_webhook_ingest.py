@@ -57,7 +57,7 @@ def _plugin(src_root, *, enabled=True, listen=True,
     plugin._source_cursor = {}
     # 源端扫描状态：`_api_get_status` 的返回键必须与这里的字段清单对齐
     plugin._source_scan_enabled = True
-    plugin._source_scan_interval = 600
+    plugin._source_scan_cron = '*/10 * * * *'
     plugin._source_scan_last = 0.0
     plugin._ingest_skip_stat = {}
     plugin._ignored_rules = []
@@ -513,7 +513,7 @@ def test_status_does_not_expose_channel_list():
     plugin._strm_watch = {}
     plugin._strm_suspects = {}
     plugin._strm_gen_requested = {}
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_check_enabled = False
     plugin._rate_limit_enabled = False
     plugin._upload_window_count = 0

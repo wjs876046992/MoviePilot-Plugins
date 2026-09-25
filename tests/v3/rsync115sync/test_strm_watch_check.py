@@ -44,7 +44,7 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._media_extensions = "mkv"
     plugin._ignored_rules = []
     plugin._strm_check_enabled = True
-    plugin._strm_grace_hours = 6.0
+    plugin._strm_grace_minutes = 360
     plugin._strm_last_check = 0.0
     plugin._strm_notified = False
     plugin._strm_gen_requested = {}
