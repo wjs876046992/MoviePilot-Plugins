@@ -67,7 +67,11 @@
             <div class="text-caption text-medium-emphasis">
               在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
               <br>
-              <code>http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
+              <!-- ⚠️ 这个地址必须允许换行，否则它是**整页最长的一串不可断字符**
+                   （约 80 字符无空格），会把所在行撑出卡片宽度，而卡片是
+                   overflow-hidden —— 右侧内容（含同一模块里 cron 输入框那一列）
+                   会被整条裁掉。`word-break: break-all` 让它在任意字符处折行。 -->
+              <code class="wrap-anywhere">http://&lt;moviepilot地址&gt;:3001/api/v1/webhook/?token=&lt;API_TOKEN&gt;&amp;source=rsync115sync</code>
               <br>
               也可以改用请求头 <code>X-Webhook-Target: rsync115sync</code>。
               <b>这个值必须是 <code>rsync115sync</code></b> —— 填成别的（包括 <code>emby</code>）
@@ -755,6 +759,20 @@ onMounted(() => {
 .setting-row {
   flex-wrap: wrap;
   gap: 8px;
+  /* ⚠️ 纵容横向溢出会把控件"推到看不见的地方"。
+     卡片是 overflow-hidden，而设置行是横排 —— 只要有一样东西把内容撑宽，
+     右侧那一列（含输入框）就被裁掉，且**没有任何滚动条可救**。
+     设置行的职责是"排布"，不该有横向溢出；内容太宽就靠换行解决（见下）。 */
+  overflow: hidden;
+}
+/* 说明文字块：允许在**任意字符**处断行。
+   默认的 `overflow-wrap` 只在"整词放不下"时断，而 cron 表达式、URL、路径这类
+   不含空格的串在浏览器眼里是"一个超长的词"，放不下就直接溢出。
+   `word-break: break-word` 对中文无影响（中文本来就可断），对超长英文串有效。 */
+/* 给需要显式换行的长串（URL 等）用 */
+.wrap-anywhere {
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 /* ⚠️ 文字列的 `flex-basis` 决定**何时换行**，这里的取值是承重的。
    若写成 `flex: 1 1 auto; min-width: 0`（本文件的早期写法），文字列可以一路
@@ -764,12 +782,18 @@ onMounted(() => {
 .setting-row > div:first-child {
   flex: 1 1 20rem;
   min-width: 15rem;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .setting-row > .v-switch,
 .setting-row > .v-text-field,
 .setting-row > .v-chip,
 .setting-row > .v-btn {
   flex: 0 0 auto;
+}
+/* 控件本身也不得溢出容器（max-width 已是 190px，这里兜住极端情况） */
+.setting-row > .v-text-field {
+  max-width: 100%;
 }
 /* 「某一项的从属说明」：挂在它所属的开关下面，用左侧竖线 + 缩进表示层级。
    为什么需要这层视觉：说明块与开关**同为卡片内的块**，只靠先后顺序表达从属

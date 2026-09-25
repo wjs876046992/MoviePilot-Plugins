@@ -400,7 +400,7 @@ return (_ctx, _cache) => {
                 _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
                   _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： "),
                   _createElementVNode("br"),
-                  _createElementVNode("code", null, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync"),
+                  _createElementVNode("code", { class: "wrap-anywhere" }, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync"),
                   _createElementVNode("br"),
                   _createTextVNode(" 也可以改用请求头 "),
                   _createElementVNode("code", null, "X-Webhook-Target: rsync115sync"),
@@ -1269,6 +1269,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-865bcdd8"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ae8655a7"]]);
 
 export { Config as default };
