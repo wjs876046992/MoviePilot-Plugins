@@ -251,3 +251,55 @@ def test_dashboard_warns_when_rsync_goes_silent():
     src = _page_source()
     assert "没有收到 rsync 输出" in src
     assert "stale_seconds" in src
+
+
+# --------------------------------------------------------------------------
+# 阶段（实机发现：rsync 只 2 秒，对账 3 分半）
+# --------------------------------------------------------------------------
+
+def test_audit_phase_is_announced():
+    """
+    对账阶段必须切阶段名 —— **实机数据**：102 个文件 rsync 只跑 2 秒
+    （全部秒传），随后 rsync 退出、插件做对账用了 **3 分半**。
+
+    ⚠️ 不切阶段的话，那 3 分半就是一个停在 100% 的进度条，外加一句
+    「已 N 秒没有收到 rsync 输出」—— 用户会以为卡死了，而实际上插件
+    正在正常干活（只是那个进程已经结束了）。这类"文案与实际不符"的
+    告警比不告警更耗人：它会让人去查一个没在跑的东西。
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    src = open(os.path.join(root, "plugins.v3", "rsync115sync", "__init__.py"),
+               encoding="utf-8").read()
+    assert 'phase="对账核对"' in src, "对账阶段没有切阶段名"
+    # 而且必须在**调用对账之前**切（顺序错了等于没切）
+    assert src.index('phase="对账核对"') < src.index("m_list, c_list = self._audit_files_integrity(")
+
+
+def test_reset_seeds_phase_note():
+    """
+    `phase_note` 必须在 `_progress_reset` 里就有初值。
+
+    否则首次快照缺这个键，前端 `v-else-if="progress.phase_note"` 恒为
+    假值 —— 那一行说明在整轮开始时永远不显示。
+    """
+    p = _plugin()
+    p._progress_reset("ready", 1)
+    assert p._progress_snapshot()["phase_note"] == ""
+
+
+def test_frontend_does_not_blame_rsync_outside_transfer():
+    """
+    非传输阶段不得说「没有收到 rsync 输出」。
+
+    对账阶段 rsync 早已退出，此时再说这句会让用户去查一个根本没在跑的进程。
+    前端因此按 `phase` 分流文案。
+    """
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    src = open(os.path.join(root, "plugins.v3", "rsync115sync",
+                            "src", "components", "Page.vue"),
+               encoding="utf-8").read()
+    assert "if (p.phase !== '传输')" in src, "停滞告警没有按阶段分流"

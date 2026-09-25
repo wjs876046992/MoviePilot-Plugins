@@ -3005,6 +3005,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "rate": "",
                 "eta": "",
                 "phase": "准备",
+                # 阶段说明：用于"这一阶段在做什么、为什么进度条不动"这类解释。
+                # 实机证明它有必要 —— 对账 3.5 分钟、rsync 只 2 秒，
+                # 没有它的话那 3.5 分钟就是一个停住的 100% 进度条。
+                "phase_note": "",
             })
 
     def _progress_update(self, **fields: Any) -> None:
@@ -3122,6 +3126,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
             total_pairs = len(self._sync_pairs)
             self._progress_reset(mode, total_pairs)
+            self._progress_update(phase="准备", phase_note="正在整理待传输清单")
             logger.info("=" * 60)
             logger.info(f"[Rsync115Sync] ▶ 开始执行同步任务 (模式: {mode}，共 {total_pairs} 个映射)")
             logger.info(f"[Rsync115Sync] 触发来源: {'聊天指令' if channel_event else ('看板/API 手动' if custom_files else '定时巡检')}")
@@ -3367,8 +3372,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 进入新一组：更新阶段与组序号，并把上一组的文件/百分比清掉
                 # （否则新一组刚起步时，看板会显示上一组停在 100% 的残留数字）
                 self._progress_update(pair_index=idx + 1, pair_name=pair_name,
-                                      phase="传输", file="", percent=0, bytes=0,
-                                      rate="", eta="", files_total=len(pair_files),
+                                      phase="传输", phase_note="", file="",
+                                      percent=0, bytes=0, rate="", eta="",
+                                      files_total=len(pair_files),
                                       files_left=len(pair_files))
                 logger.info(f"[Rsync115Sync] [{pair_name}] 待传输 {len(pair_files)} 个文件:")
                 for _p in pair_files:
@@ -3613,6 +3619,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                                 self._backfill_done_keys.add(k)
                     continue
 
+                # ⚠️ 对账是**整轮里最耗时的一段**，而它不是 rsync 干的 ——
+                # 实机：102 个文件 rsync 只跑 2 秒（全秒传），随后对账用了
+                # 3 分半。不在这里切阶段的话，进度卡会一直停在 100%、
+                # 并显示「已 N 秒没有收到 rsync 输出」，用户会以为卡死了。
+                # 切了阶段至少说明"现在在做别的事"，且进度条不会再假装在传输。
+                self._progress_update(phase="对账核对", percent=100,
+                                      rate="", eta="", file="",
+                                      phase_note="正在逐个核对云端文件是否完整")
                 m_list, c_list = self._audit_files_integrity(
                     src, dest, pair_name, all_ext, rel_paths=pair_files)
                 if mode == "force":

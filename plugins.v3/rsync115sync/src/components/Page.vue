@@ -139,6 +139,13 @@
             <span v-if="progressFile" class="progress-file text-medium-emphasis">
               <v-icon size="12" class="mr-1">mdi-file-outline</v-icon>{{ progressFile }}
             </span>
+            <!-- 阶段说明：解释"现在在做什么、进度条为什么不动"。
+                 ⚠️ 它不是装饰：实机一轮里 rsync 只跑 2 秒（全秒传），
+                 而随后的**对账用了 3 分半** —— 没有这行说明，那 3 分半
+                 就是一个停住的 100% 进度条加一句"没有收到输出"。 -->
+            <span v-else-if="progress.phase_note" class="text-medium-emphasis">
+              <v-icon size="12" class="mr-1">mdi-information-outline</v-icon>{{ progress.phase_note }}
+            </span>
             <span v-if="progress.rate" class="text-medium-emphasis">⚡ {{ progress.rate }}</span>
             <span v-if="progress.eta && progress.percent < 100" class="text-medium-emphasis">
               ⏳ 约剩 {{ progress.eta }}
@@ -1193,6 +1200,10 @@ const progressStaleText = computed(() => {
   if (!p) return ''
   if (p.stale_seconds == null) return '等待 rsync 输出…'
   if (p.stale_seconds < 20) return ''
+  // ⚠️ 只有**传输阶段**才说"没有收到 rsync 输出"。
+  // 对账阶段 rsync 早就退出了，此时再说这句是错的 —— 用户会去查一个
+  // 根本没在跑的进程。这类"文案与实际不符"的告警比不告警更耗人。
+  if (p.phase !== '传输') return `⏳ ${p.phase}中，已 ${formatDuration(p.stale_seconds)}`
   return `⚠️ 已 ${formatDuration(p.stale_seconds)} 没有收到 rsync 输出`
 })
 
