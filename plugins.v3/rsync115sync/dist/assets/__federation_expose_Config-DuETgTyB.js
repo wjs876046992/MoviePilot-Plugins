@@ -15,7 +15,7 @@ const _hoisted_5 = { class: "setting-row d-flex align-center justify-space-betwe
 const _hoisted_6 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
 const _hoisted_7 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-t" };
 const _hoisted_8 = { class: "font-weight-bold text-body-2" };
-const _hoisted_9 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
+const _hoisted_9 = { class: "setting-row setting-row-stacked px-4 py-3" };
 const _hoisted_10 = { class: "px-4 pb-3" };
 const _hoisted_11 = { class: "section-header d-flex align-center justify-space-between mb-2" };
 const _hoisted_12 = { class: "font-weight-bold text-subtitle-2 d-flex align-center" };
@@ -52,7 +52,7 @@ const _hoisted_30 = { class: "dep-split rounded-lg mb-3" };
 const _hoisted_31 = { class: "dep-split-row" };
 const _hoisted_32 = { class: "dep-split-row" };
 const _hoisted_33 = { class: "settings-group-card rounded-xl overflow-hidden" };
-const _hoisted_34 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3 border-b" };
+const _hoisted_34 = { class: "setting-row setting-row-stacked px-4 py-3 border-b" };
 const _hoisted_35 = { class: "setting-row d-flex align-center justify-space-between px-4 py-3" };
 
 const {ref,computed,onMounted} = await importShared('vue');
@@ -463,7 +463,7 @@ return (_ctx, _cache) => {
                   density: "compact",
                   "hide-details": "",
                   placeholder: "*/30 * * * *",
-                  style: {"max-width":"190px"}
+                  class: "mt-2 max-field"
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_10, [
@@ -1189,7 +1189,7 @@ return (_ctx, _cache) => {
                   min: "1",
                   variant: "outlined",
                   density: "compact",
-                  style: {"max-width":"130px"},
+                  class: "mt-2 max-field",
                   "hide-details": ""
                 }, null, 8, ["modelValue"])
               ]),
@@ -1269,6 +1269,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-ae8655a7"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-3991d522"]]);
 
 export { Config as default };

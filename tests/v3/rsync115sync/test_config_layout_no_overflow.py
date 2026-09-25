@@ -106,3 +106,49 @@ def test_long_unbreakable_tokens_are_wrapped():
         f"这些不可断的长串会把布局撑宽、把控件挤出可视区：{offenders[:3]}；"
         f"请用 <code class=\"wrap-anywhere\"> 包住，或改成分多行显示"
     )
+
+
+def test_input_rows_do_not_rely_on_flex_width_math():
+    """
+    含输入框的设置行必须走**纵向排布**（`setting-row-stacked`）。
+
+    **为什么这条是必要的**（同一处被用户提了三次的收尾）：
+
+      1. 说明太长把开关挤成一条缝 → 压短说明；
+      2. cron 说明把输入框挤掉 → 加 `flex-wrap` + 文字列基准宽度；
+      3. **还是被挤压，强刷无效** → 加 `overflow:hidden` + 断词；
+      4. 仍然被挤压。
+
+    前三轮改的都是"flex 的宽度分配"（内容多宽、何时换行、能否溢出），
+    全都依赖 flexbox 的收缩/换行计算在真实宿主样式下按预期工作 —— 而那个前提
+    已被证明不可靠。与其继续调参数，不如让含输入框的行**根本不参与这套计算**：
+
+        标签在上、输入框在下 → "被旁边文字挤压"在结构上不可能发生，
+        与文字多长、窗口多宽都无关。
+
+    ⚠️ 本用例的**写法**也值得留意：第一版用正则按"下一个 setting-row 之前"
+    切分块，结果把某开关行**之后**的整片参数区算进了那一行，误报一条假红
+    （已见三次同类：grep 命中注释、绑死引号、剥标签剥掉包裹）。现在改为
+    **按标签文本定位，再回看它所在 div 的 class** —— 不依赖任何跨块的边界推断。
+    """
+    src = _config_vue()
+    body = _template(src)
+
+    # 这两个是已知含输入框、且历史上出过问题的行
+    for label in ("源端扫描 Cron 规则", "观察宽限期（分钟）"):
+        idx = body.find(label)
+        assert idx > 0, f"未找到标签「{label}」"
+        # 回看最近的 setting-row 类声明
+        head = body[:idx]
+        m = None
+        for m2 in re.finditer(r'<div class="(setting-row[^"]*)"', head):
+            m = m2
+        assert m, f"标签「{label}」之前没有 setting-row"
+        cls = m.group(1)
+        assert "setting-row-stacked" in cls, (
+            f"「{label}」所在行仍是横排（{cls}）—— 横排挤压输入框已栽过三次，"
+            f'请改为 class="setting-row setting-row-stacked"'
+        )
+        # 且该行确实含输入框（否则这条断言没有意义）
+        seg = body[m.end():body.find("<!--", m.end()) if body.find("<!--", m.end()) > 0 else m.end() + 4000]
+        assert "v-text-field" in seg, f"「{label}」行内未找到 v-text-field，用例前提不成立"

@@ -96,7 +96,12 @@
             <v-switch v-model="config.source_scan_enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3">
+          <!-- ⚠️ 这一行**刻意不用横排**（不加 justify-space-between / align-center）。
+               它是「标签在上、输入框在下」的纵向排布 —— 因为没有横排，
+               就不存在"文字把输入框挤掉"这件事，与文字多长、窗口多宽都无关。
+               前三次我都在调 flex 宽度分配（减字数、加 wrap、加 basis），
+               都没解决；改用不依赖 flex 计算的排布后，挤压在结构上不可能发生。 -->
+          <div class="setting-row setting-row-stacked px-4 py-3">
             <div>
               <div class="font-weight-bold text-body-2">源端扫描 Cron 规则</div>
               <div class="text-caption text-medium-emphasis">多久扫一轮（默认 30 分钟）</div>
@@ -107,7 +112,7 @@
               density="compact"
               hide-details
               placeholder="*/30 * * * *"
-              style="max-width: 190px"
+              class="mt-2 max-field"
             ></v-text-field>
           </div>
 
@@ -460,7 +465,7 @@
         </v-alert>
 
         <div class="settings-group-card rounded-xl overflow-hidden">
-          <div class="setting-row d-flex align-center justify-space-between px-4 py-3 border-b">
+          <div class="setting-row setting-row-stacked px-4 py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
               <div class="text-caption text-medium-emphasis">
@@ -477,7 +482,7 @@
               min="1"
               variant="outlined"
               density="compact"
-              style="max-width: 130px"
+              class="mt-2 max-field"
               hide-details
             ></v-text-field>
           </div>
@@ -791,9 +796,25 @@ onMounted(() => {
 .setting-row > .v-btn {
   flex: 0 0 auto;
 }
-/* 控件本身也不得溢出容器（max-width 已是 190px，这里兜住极端情况） */
+/* 控件本身也不得溢出容器 */
 .setting-row > .v-text-field {
   max-width: 100%;
+}
+/* 「标签在上、输入框在下」的纵向设置行。
+   为什么单独做一个类：横排本来就要依赖 flex 的收缩与换行计算，而那个计算
+   在真实宿主里出过三次意外（开关被挤成缝、输入框消失 ×2）。
+   含输入框的行干脆不参与这套计算 —— 纵排下"被旁边文字挤压"在结构上不存在。 */
+.setting-row-stacked {
+  display: block;
+}
+.setting-row-stacked > div:first-child {
+  /* 覆盖横排时给文字列设的 flex 属性 —— 纵排下它们没有意义 */
+  flex: none;
+  min-width: 0;
+}
+.max-field {
+  width: 100%;
+  max-width: 240px;
 }
 /* 「某一项的从属说明」：挂在它所属的开关下面，用左侧竖线 + 缩进表示层级。
    为什么需要这层视觉：说明块与开关**同为卡片内的块**，只靠先后顺序表达从属
