@@ -427,12 +427,23 @@ class StrmOpsMixin:
             return {"checked": 0, "ok": 0, "new_suspects": 0}
         self._strm_last_check = now_ts
 
-        if not self._strm_check_enabled or not self._strm_watch:
-            # 明确留痕：否则用户无法区分「strm 功能没工作」与「工作了但没有待观察项」，
+        # ⚠️ 早退条件**必须同时看两个清单**：巡检现在还要处理「疑似条目的 strm
+        # 后来出现了」这件事（见 `_prune_resolved_suspects`）。若仍只判
+        # `not self._strm_watch`，那么观察清单为空、疑似清单非空时整轮直接返回 ——
+        # 而那恰恰是最需要它跑的时刻（条目已全部转入疑似，就等着被确认）。
+        # The early-return must consider both lists: suspects can be non-empty while
+        # the watch list is empty, which is exactly when resolution matters.
+        if not self._strm_check_enabled or not (self._strm_watch or self._strm_suspects):
+            # 明确留痕：否则用户无法区分「strm 功能没工作」与「工作了但两个清单都是空的」，
             # 只能看到一个静默返回，排查时完全没有依据（用户实测反馈过这一点）。
             logger.debug(f"[Rsync115Sync] strm 巡检跳过："
-                         f"{'功能已关闭' if not self._strm_check_enabled else f'观察清单为空（疑似 {len(self._strm_suspects)} 个）'}")
-            return {"checked": 0, "ok": 0, "new_suspects": 0}
+                         f"{'功能已关闭' if not self._strm_check_enabled else f'观察与疑似清单均为空'}")
+            return {"checked": 0, "ok": 0, "new_suspects": 0, "resolved": 0}
+
+        # 先处理疑似清单：这一步与下面的观察期循环彼此独立（一个 key 不可能同时
+        # 在两个清单里），但放在前面有个好处 —— 它清空的条目不会在本轮被后面的
+        # 逻辑重新登记成疑似。
+        resolved = self._prune_resolved_suspects()
 
         grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
         settled_ok: List[str] = []
@@ -505,7 +516,70 @@ class StrmOpsMixin:
                 logger.debug(f"[Rsync115Sync] strm 交叉验证：{len(settled_ok)} 个文件 strm 已生成，正常")
 
         return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
-                "ok": len(settled_ok), "new_suspects": len(new_suspects)}
+                "ok": len(settled_ok), "new_suspects": len(new_suspects),
+                "resolved": len(resolved)}
+
+    def _prune_resolved_suspects(self) -> List[str]:
+        """
+        移除「.strm 已经存在」的疑似条目，返回被移除的 key。
+
+        Drop suspect entries whose .strm now exists; returns the removed keys.
+
+        ## 为什么需要它（这是一个真实存在的缺口）
+
+        巡检只遍历**观察期**，从不碰疑似清单。于是一个疑似条目一旦入列，
+        就**永远不会因为「strm 后来出现了」而自动消失**，只能在看板上手工
+        「忽略」或「删旧重传」。而这三种情况都会让它变成假警报：
+
+          1. 用户通过**别的途径**补生成了 strm（助手自己的定时任务、手动触发）；
+          2. 用户手动点了补生成，但**只勾了同目录的一部分**文件 ——
+             助手按目录遍历，没勾的那几个其实也生成了；
+          3. 用户在 115 侧手工处理好了。
+
+        用户明确提出过这一点：「在扫描缺失 strm 时，查找到有 strm 了，就可以
+        进行移除了」。原实现只在**扫描**时对观察期与疑似去重（不重复登记），
+        漏掉了「已存在却仍挂在清单里 → 移除」这一步。
+
+        ## 判据**只有一条**：`.strm` 文件是否存在
+
+        ⚠️ 绝不引入 CD2 挂载视图（大小 / 残留名）作判据 —— 那套「云端可见性」
+        判定已在 v0.3.0 整条删除，原因是它对**改名失败**这个主成因必然判错
+        （残留与正式文件字节数相同，挂载视图照样显示「可见、大小一致」，见
+        DEVELOPMENT §3.11）。判据只能是 strm，因为助手**只在视频正确上传后才
+        生成它**，这是唯一与「云端真的可用」同构的信号。
+        Only ".strm exists" — never the mount view: that verdict was removed in
+        v0.3.0 because it is wrong exactly for the rename-failure case.
+
+        纯本地检查（一次 `os.path.exists`），零 115 API，因此不需要执行锁。
+        """
+        resolved: List[str] = []
+        for key in list(self._strm_suspects.keys()):
+            # 映射没配 strm_dir 时 `_strm_expected_path` 返回 None —— 无从判断，
+            # 保持原样（这种条目的清理归 `_prune_invalid_strm_suspects` 按
+            # 「映射取消验证」处理，两处的判据不要混）。
+            expected = self._strm_expected_path(key)
+            if not expected:
+                continue
+            try:
+                exists = os.path.exists(expected)
+            except OSError:
+                # 读不到不代表没有：与 `check_one` 同一取向 —— 保守地留在清单里，
+                # 宁可多挂一轮也不要因为一次挂载抖动把它静默摘掉。
+                continue
+            if exists:
+                self._strm_suspects.pop(key, None)
+                # 补生成标记随之失效（条目已离场，留着它只会让下一个同名条目被误标）
+                self._strm_gen_requested.pop(key, None)
+                resolved.append(key)
+
+        if resolved:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.info(f"[Rsync115Sync] ✅ {len(resolved)} 个疑似条目的 strm 已存在，"
+                        f"已移出待处理清单: {_brief_paths(resolved)}")
+            # 清单可能因此清空 —— 与其它出口同口径重置通知闩锁
+            # （否则「已全部解决」这条通知永远不会发，用户会以为问题被静默遗忘）。
+            self._reset_strm_notified_if_clear()
+        return resolved
 
     def _notify_strm_suspects(self, new_suspects: List[str]) -> None:
         """
@@ -669,8 +743,16 @@ class StrmOpsMixin:
         if added:
             self._notify_strm_suspects(candidates[:added])
 
+        # 顺带清掉「strm 后来出现了」的疑似条目。放在扫描里是因为用户点这个
+        # 按钮的意图正是「全面看一遍现在到底还有哪些问题」—— 只报新增而
+        # 不清理已解决的，清单会越看越不可信（挂着的问题其实早解决了）。
+        resolved = self._prune_resolved_suspects()
+
         msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
                f"（新增 {added} 个）。")
+        if resolved:
+            msg += (f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已存在"
+                    f"（可能是助手自己生成的、或你已处理过），已移出待处理清单。")
         if skipped_watching:
             # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
             # 而是**故意**交给观察期自己判定（可能是刚请求补生成、也可能是
@@ -693,7 +775,8 @@ class StrmOpsMixin:
                          "added": added, "truncated": truncated,
                          "candidates": candidates,
                          "skipped_ignored": skipped_ignored,
-                         "skipped_watching": skipped_watching}}
+                         "skipped_watching": skipped_watching,
+                         "resolved_suspects": resolved}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
         """
@@ -1187,8 +1270,27 @@ class StrmOpsMixin:
                 "data": {"ignored": added, "already_ignored": already}}
 
     def _api_strm_check(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """看板入口：立即检查观察期条目的 strm 是否已生成。"""
-        return self._check_watch_now((body or {}).get("keys") or [])
+        """
+        看板入口：立即检查观察期条目的 strm 是否已生成。
+
+        Dashboard entry point: check the given watching entries right now.
+
+        ⚠️ 这**不是**纯 `_check_watch_now`：本插件此前只提供"检查观察期"这一条
+        通道（见 strm_ops 模块头的说法），而 **v0.3.1 起对账/主动扫描都会检查
+        疑似清单**，如果这个端点只转调观察期那一侧，就会出现内部不一致 ——
+        最典型的是「只有观察期正确更新，疑似清单纹丝不动」（用户实测反馈过）。
+        This shares the suspect check too, otherwise the endpoint would only ever
+        keep the watch side correct while the suspect list stayed stale.
+        """
+        res = self._check_watch_now((body or {}).get("keys") or [])
+        if self._strm_suspects:
+            resolved = self._prune_resolved_suspects()
+            if resolved:
+                res["message"] = (res.get("message", "")
+                                  + f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已生成，"
+                                    f"已移出待处理清单。")
+                res.setdefault("data", {})["resolved_suspects"] = resolved
+        return res
 
     def _api_strm_scan(self) -> Dict[str, Any]:
         """

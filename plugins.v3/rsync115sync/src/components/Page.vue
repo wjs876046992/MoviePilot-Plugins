@@ -596,9 +596,11 @@
               >
                 <v-icon start size="14">mdi-broom</v-icon>
                 清理无效项
-                <v-tooltip activator="parent" location="top">
+                <v-tooltip activator="parent" location="top" max-width="360">
                   移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、
-                  已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证
+                  已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证。<br><br>
+                  ⚠️ 已生成 strm 的条目**不在此列** —— 那种情况由巡检与
+                  「扫描缺 strm 的文件」自动移出，不需要你点任何按钮。
                 </v-tooltip>
               </v-btn>
               <!-- 先尝试补生成 strm：疑似有两种成因，处理成本差好几个数量级 ——

@@ -2321,10 +2321,14 @@ return (_ctx, _cache) => {
                                   _cache[95] || (_cache[95] = _createTextVNode(" 清理无效项 ", -1)),
                                   _createVNode(_component_v_tooltip, {
                                     activator: "parent",
-                                    location: "top"
+                                    location: "top",
+                                    "max-width": "360"
                                   }, {
                                     default: _withCtx(() => [...(_cache[94] || (_cache[94] = [
-                                      _createTextVNode(" 移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、 已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证 ", -1)
+                                      _createTextVNode(" 移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、 已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证。", -1),
+                                      _createElementVNode("br", null, null, -1),
+                                      _createElementVNode("br", null, null, -1),
+                                      _createTextVNode(" ⚠️ 已生成 strm 的条目**不在此列** —— 那种情况由巡检与 「扫描缺 strm 的文件」自动移出，不需要你点任何按钮。 ", -1)
                                     ]))]),
                                     _: 1
                                   })
@@ -3005,6 +3009,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-219bb265"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1f6793d8"]]);
 
 export { App as default };
