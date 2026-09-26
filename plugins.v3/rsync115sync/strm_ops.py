@@ -705,6 +705,7 @@ class StrmOpsMixin:
         added = 0
         skipped_ignored = 0
         skipped_watching = 0
+        skipped_cooling = 0
         for key in candidates:
             # 已被用户加入忽略清单的文件不产生疑似条目 —— 「忽略」的语义就是
             # 「不要再为这个文件报警」，而疑似清单是一种报警。用户在 /rsync_ignore
@@ -726,6 +727,24 @@ class StrmOpsMixin:
             if key in self._strm_watch:
                 skipped_watching += 1
                 continue
+            # ⚠️ **还在冷却队列里的文件不是异常**：它按定义**尚未上传**，
+            # 所以此刻必然没有 .strm —— 把它扫成疑似是纯粹的误报。
+            #
+            # 用户实测反馈：「还在冷却期未上传，手动扫描 strm，未检查到就放到
+            # 疑似列表里，按理应该先和冷却期的比对」。原实现只比对了忽略规则、
+            # 观察期、疑似清单三处，**唯独漏了冷却队列**，于是每次全量扫描都会
+            # 把整批正在冷却的文件报成"缺 strm"。
+            #
+            # 这与观察期那条闸门是同一个道理（都是"暂时没有 .strm 属正常"），
+            # 但冷却队列更基础：它连上传都还没开始。
+            # A file still cooling down has not been uploaded at all, so it cannot
+            # have a .strm yet. Reporting it as a suspect is a pure false positive.
+            # ⚠️ `getattr` 兜底：本方法会被 service 直接调用，而 `__new__`
+            # 构造的最小实例（单测 / 内部路径）没有 `_pending_queue` ——
+            # 缺属性不该让**整条扫描**崩掉（同一处理见 `_expand_ingest_path`）。
+            if key in (getattr(self, "_pending_queue", None) or {}):
+                skipped_cooling += 1
+                continue
             # 已在疑似清单里的不重复计数，但**不刷新时间戳**
             # （刷新会让「首次疑似时间」失去意义，用户无从判断它挂了多久）
             if key in self._strm_suspects:
@@ -738,7 +757,8 @@ class StrmOpsMixin:
         logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
                     f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
                     f"{f'，因忽略规则跳过 {skipped_ignored} 个' if skipped_ignored else ''}"
-                    f"{f'，{skipped_watching} 个仍在观察期未降级' if skipped_watching else ''}")
+                    f"{f'，{skipped_watching} 个仍在观察期未降级' if skipped_watching else ''}"
+                    f"{f'，{skipped_cooling} 个仍在冷却队列未上传' if skipped_cooling else ''}")
 
         if added:
             self._notify_strm_suspects(candidates[:added])
@@ -753,6 +773,11 @@ class StrmOpsMixin:
         if resolved:
             msg += (f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已存在"
                     f"（可能是助手自己生成的、或你已处理过），已移出待处理清单。")
+        if skipped_cooling:
+            # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
+            # 而是**还没轮到上传** —— 冷却期结束、同步跑过之后才会有 .strm。
+            msg += (f"\n🧊 另有 {skipped_cooling} 个文件仍在**冷却队列**（尚未上传），"
+                    f"未计入疑似 —— 它们此刻必然没有 strm，属正常等待。")
         if skipped_watching:
             # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
             # 而是**故意**交给观察期自己判定（可能是刚请求补生成、也可能是
@@ -776,6 +801,7 @@ class StrmOpsMixin:
                          "candidates": candidates,
                          "skipped_ignored": skipped_ignored,
                          "skipped_watching": skipped_watching,
+                         "skipped_cooling": skipped_cooling,
                          "resolved_suspects": resolved}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
@@ -826,6 +852,7 @@ class StrmOpsMixin:
         added = 0
         skipped_ignored = 0
         skipped_watching = 0
+        skipped_cooling = 0
         for key in missing:
             # 与主动扫描同口径：被忽略的文件不产生疑似条目（忽略即「不再报警」）
             if self._is_ignored(key):
@@ -836,6 +863,12 @@ class StrmOpsMixin:
             # 用它自己的文件名查一下就会把它打回疑似 —— 等于把刚做的操作撤销掉。
             if key in self._strm_watch:
                 skipped_watching += 1
+                continue
+            # 与主动扫描同口径：**还在冷却队列里的文件不是异常**（尚未上传，
+            # 按定义不可能有 .strm）。这条判据必须在"新增疑似"之前 ——
+            # 与全量扫描是同一个误报源，两处口径必须一致。
+            if key in (getattr(self, "_pending_queue", None) or {}):
+                skipped_cooling += 1
                 continue
             if key in self._strm_suspects:
                 continue
@@ -852,6 +885,8 @@ class StrmOpsMixin:
                  f"命中文件: {len(result['matched'])} 个",
                  f"✅ 已有 strm: {len(present)} 个",
                  f"❌ 缺 strm  : {len(missing)} 个（新增疑似 {added} 个）"]
+        if skipped_cooling:
+            lines.append(f"🧊 仍在冷却队列（尚未上传）: {skipped_cooling} 个 —— 未计入疑似")
         if no_strm_dir:
             lines.append(f"⏭️ 所在映射未配 strm 目录，未检查: {len(no_strm_dir)} 个")
         if non_video:

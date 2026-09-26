@@ -1442,7 +1442,7 @@ async function postStrmRetry(keys) {
 async function retryStrmSuspect(key) {
   const ok = window.confirm(
     `将对以下文件执行「删旧重传」：\n\n${key}\n\n` +
-    `1. 先删除 115 端该文件（经挂载点删除，云端状态一并纠正）\n` +
+    `1. 先删除 115 端该文件（删挂载点上的文件，由 CD2 转发 115 删除）\n` +
     `2. 立即定向重传\n` +
     `3. 传完后自动复核 strm 是否生成\n\n` +
     `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`
@@ -1534,7 +1534,7 @@ async function batchSyncSelected() {
     // 全部为 strm 项：删旧是破坏性操作，沿用单条操作的确认口径
     const ok = window.confirm(
       `将对选中的 ${keys.length} 个文件执行「删旧重传」：\n\n` +
-      `1. 先删除 115 端这些文件（经挂载点删除，云端状态一并纠正）\n` +
+      `1. 先删除 115 端这些文件（删挂载点上的文件，由 CD2 转发 115 删除）\n` +
       `2. 立即定向重传\n` +
       `3. 传完后自动复核 strm 是否生成\n\n` +
       `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`
@@ -1740,7 +1740,7 @@ async function retryAllStrmSuspects() {
   if (!keys.length || statusData.value.is_running) return
   const ok = window.confirm(
     `将对全部 ${keys.length} 个 strm 疑似异常文件执行「删旧重传」：\n\n` +
-    `1. 先删除 115 端这些文件（经挂载点删除，云端状态一并纠正）\n` +
+    `1. 先删除 115 端这些文件（删挂载点上的文件，由 CD2 转发 115 删除）\n` +
     `2. 立即定向重传（仍受批次上限与限流配额约束，可能需要多轮）\n` +
     `3. 传完后自动复核 strm 是否生成\n\n` +
     `⚠️ 若是 strm 插件自身漏生成（误报），重传也是安全的：已同步的文件不会重复上传。\n\n确定继续吗？`

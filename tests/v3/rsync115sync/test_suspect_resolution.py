@@ -29,6 +29,7 @@ Automatic retirement of suspects whose .strm has since appeared.
 
 import importlib
 import os
+import time
 
 import pytest
 
@@ -48,6 +49,9 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._strm_watch = dict(watch or {})
     plugin._strm_suspects = dict(suspects or {})
     plugin._strm_gen_requested = {}
+    # ⚠️ 冷却队列：扫描要拿它比对（"还没上传的文件不可能有 strm"）。
+    # 生产代码里对它是 `getattr` 兜底的 —— 本仓大量最小实例没有这个属性。
+    plugin._pending_queue = {}
     plugin._strm_grace_minutes = 5
     plugin._strm_check_enabled = True
     plugin._strm_last_check = 0.0
@@ -232,3 +236,99 @@ def test_unmapped_pair_is_left_alone(tmp_path):
 
     assert resolved == []
     assert KEY in plugin._strm_suspects
+
+# --------------------------------------------------------------------------
+# ⚠️ 冷却期文件不是异常：扫描必须先与冷却队列比对
+# --------------------------------------------------------------------------
+
+def test_cooling_file_is_not_reported_as_missing_strm(tmp_path):
+    """
+    **还在冷却队列里的文件不得被扫成疑似。**
+
+    它按定义**尚未上传**，所以此刻必然没有 `.strm` —— 把它报成疑似是纯粹的
+    误报，而用户看到的是"我明明还没到上传时间，怎么就说我文件有问题"。
+
+    用户实测反馈：「还在冷却期未上传，手动扫描 strm，未检查到就放到疑似列表里，
+    按理应该先和冷却期的比对」。原实现只比对了忽略规则、观察期、疑似清单三处，
+    **唯独漏了冷却队列**，于是每次全量扫描都会把整批正在冷却的文件报成缺 strm。
+    """
+    plugin, src, strm_dir = _plugin(tmp_path)
+    os.makedirs(os.path.join(src, "某剧", "S01"), exist_ok=True)
+    with open(os.path.join(src, "某剧", "S01", "E01.mkv"), "wb") as fh:
+        fh.write(b"x")
+    plugin._pending_queue["电视剧:某剧/S01/E01.mkv"] = time.time()
+
+    plugin._strm_scan()
+
+    assert "电视剧:某剧/S01/E01.mkv" not in plugin._strm_suspects, (
+        "冷却期文件被扫成了疑似 —— 它还没上传，不可能有 strm"
+    )
+
+
+def test_scan_reports_how_many_were_skipped_as_cooling(tmp_path):
+    """
+    跳过数量必须**如实回报** —— 否则用户会以为扫出来的这批漏掉了。
+
+    与 `skipped_watching` / `skipped_ignored` 同一个理由：静默跳过会让用户
+    对清单的可信度产生怀疑（"为什么只报了这几个"）。
+    """
+    plugin, src, _strm_dir = _plugin(tmp_path)
+    # 候选来自**真实存在的源端文件**（扫描是走目录的），所以先造出来
+    os.makedirs(os.path.join(src, "某剧", "S01"), exist_ok=True)
+    with open(os.path.join(src, "某剧", "S01", "E01.mkv"), "wb") as fh:
+        fh.write(b"x")
+    plugin._pending_queue["电视剧:某剧/S01/E01.mkv"] = time.time()
+
+    res = plugin._strm_scan()
+
+    assert res["data"]["skipped_cooling"] == 1, (
+        f"冷却期文件没有被计入跳过：{res['data']}"
+    )
+    assert "冷却" in res["message"]
+
+
+def test_keyword_check_also_skips_cooling_files(tmp_path):
+    """
+    关键字查询（`/rsync_strm <文件名>`）必须与全量扫描**同口径**。
+
+    两处漏一个就会出现"全量扫描不报、按文件名查却报"这种自相矛盾 ——
+    而用户恰恰会在收到疑似通知后，用文件名去查那一个。
+    """
+    plugin, src, _strm_dir = _plugin(tmp_path)
+    with open(os.path.join(src, "某剧 S01E01.mkv"), "wb") as fh:
+        fh.write(b"x")
+    key = "电视剧:某剧 S01E01.mkv"
+    plugin._pending_queue[key] = time.time()
+
+    plugin._reply_strm_keyword(None, "某剧")
+
+    assert key not in plugin._strm_suspects, (
+        "关键字查询把冷却期文件报成了疑似 —— 与全量扫描口径不一致"
+    )
+
+
+def test_cooling_check_gate_comes_before_suspect_creation():
+    """
+    结构断言：冷却判据必须在 `_strm_suspects[key] = ...` **之前**。
+
+    顺序写反就等于没写（先入清单再判断），而这类"看起来加了、实际无效"的
+    改动不会有任何报错 —— 只能靠结构断言守。
+    """
+    import ast
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    path = os.path.join(root, "plugins.v3", "rsync115sync", "strm_ops.py")
+    tree = ast.parse(open(path, encoding="utf-8").read(), path)
+
+    # 两个入口（全量扫描 / 关键字查询）都要有，且都在创建疑似之前
+    for fn_name in ("_strm_scan", "_reply_strm_keyword"):
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == fn_name), None)
+        assert fn is not None, f"{fn_name} 不见了"
+        src = ast.unparse(fn)
+        assert "_pending_queue" in src, f"{fn_name} 里没有冷却队列比对"
+        assert src.index("_pending_queue") < src.index("_strm_suspects[key]"), (
+            f"{fn_name}: 冷却判据必须排在「写入疑似清单」之前，否则等于没写"
+        )
+

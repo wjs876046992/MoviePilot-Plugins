@@ -63,7 +63,7 @@ class CommandsMixin:
             {
                 "cmd": "/rsync_retry",
                 "event": EventType.PluginAction,
-                "desc": "重试失败/缺失的 115 文件；带文件名则定向单文件重传（先删云端旧文件再传，例: /rsync_retry 繁花）",
+                "desc": "重试失败/缺失的 115 文件；带文件名则定向单文件重传（先删挂载点旧文件、经 CD2 转发 115 删除，例: /rsync_retry 繁花）",
                 "category": "工具",
                 "data": {"action": "retry"}
             },
@@ -77,7 +77,7 @@ class CommandsMixin:
             {
                 "cmd": "/rsync_force",
                 "event": EventType.PluginAction,
-                "desc": "全量只读对账：逐文件核对云端完整性，仅对发现的问题文件上传（不绕过冷却、共享限流配额、7 天冷却）",
+                "desc": "全量只读对账：逐文件比对源端与 CD2 挂载点的大小，仅对不一致的文件重传（不绕过冷却、共享限流配额、7 天冷却）",
                 "category": "工具",
                 "data": {"action": "force"}
             },
@@ -151,14 +151,15 @@ class CommandsMixin:
             f"\n"
             f"【触发同步】\n"
             f"/rsync_sync —— 同步已达冷却时间的入库媒体（冷却时长见配置页）\n"
-            f"/rsync_force —— 全量只读对账：逐文件核对云端完整性，仅对问题文件上传\n"
+            f"/rsync_force —— 全量只读对账：逐文件比对源端与 CD2 挂载点的大小，\n"
+            f"                仅对不一致的文件重传（⚠️ 它比的是挂载视图，不是云端）\n"
             f"                （不绕过冷却、共享限流配额、7 天冷却）\n"
             f"/rsync_backfill —— 补传存量媒体（源端有、本插件从未处理过的）\n"
             f"/rsync_backfill_clear —— 清空补传队列\n"
             f"\n"
             f"【处理异常】\n"
             f"/rsync_retry —— 重试缺失/残缺文件\n"
-            f"/rsync_retry <文件名> —— 定向单文件重传（先删云端旧文件再传）\n"
+            f"/rsync_retry <文件名> —— 定向单文件重传（先删挂载点旧文件 → CD2 转发 115 删除 → 重传）\n"
             f"/rsync_search <关键字> —— 在源端查文件，生成候选清单\n"
             f"/rsync_confirm <序号|all> —— 确认执行上一步查找到的文件\n"
             f"\n"
@@ -168,7 +169,7 @@ class CommandsMixin:
             f"/rsync_strm list —— 列出疑似清单（带序号）\n"
             f"/rsync_strm check —— 立即检查观察期（不等下一轮巡检）\n"
             f"/rsync_strm gen —— 请助手补生成 strm（多数问题的第一步）\n"
-            f"/rsync_strm retry <序号> —— 删旧重传（⚠️ 先删云端再传，破坏性）\n"
+            f"/rsync_strm retry <序号> —— 删旧重传（⚠️ 先删挂载点旧文件再传，破坏性）\n"
             f"/rsync_strm ignore <序号> —— 误报，不再提醒\n"
             f"/rsync_strm prune —— 清理无效项（非视频/已忽略/源端已删）\n"
             f"/rsync_strm clear —— 清空两个清单\n"
@@ -214,7 +215,7 @@ class CommandsMixin:
             f"• 先试补生成（多数情况够用）: /rsync_strm gen\n"
             f"• 确认是上传失败 → 删旧重传: /rsync_strm retry <序号>\n"
             f"• 误报，不想再提醒 → 忽略: /rsync_strm ignore <序号>\n"
-            f"※ retry 会**先删云端旧文件再重传**，是破坏性操作，请先确认。"
+            f"※ retry 会**先删挂载点上的旧文件**（经 CD2 转发 115 删除）再重传，请先确认。"
         )
         return reply
 
@@ -246,7 +247,7 @@ class CommandsMixin:
         返回 `(keys, 错误说明)`；成功时错误说明为空串。
 
         ⚠️ 关键字匹配**多个时不猜**：返回候选清单让用户把范围缩小。
-        猜一个最像的，在 `retry`（删云端）这条路上就是误删好文件。
+        猜一个最像的，在 `retry`（先删挂载点文件再传）这条路上就是误删好文件。
         Never guess among multiple keyword matches on a destructive path.
         """
         text = (text or "").strip()
@@ -492,13 +493,16 @@ class CommandsMixin:
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中。")
             elif text_arg:
                 # 带关键字 = 「目标明确」的单文件补偿：
-                # 搜源端 → 删目标端（经 CD2 挂载，强制云端状态与视图对齐）→ 定向重传。
+                # 搜源端 → 删**目标端（CD2 挂载点）上的文件** → 定向重传。
                 #
                 # 为什么必须先删：CD2 改名失败等场景下，CD2 挂载视图会显示目标文件
                 # 「存在且大小正常」，但 115 服务端实际只有改名失败的半成品
                 # （形如 影片.mkv..xrp4gj）。此时 rsync --size-only 比较源/目标大小
                 # 判定「已同步」而跳过 —— 重传永远不会发生，且插件无法从视图发现这一点。
-                # 先通过挂载点 rm，CD2 会真实调用 115 删除接口，把视图与云端一起纠正，
+                # 本插件**没有直连 115 的能力**：它只能操作 CD2 挂载点，由 CD2 决定
+                # 是否把这次 rm 转发成 115 的删除。正常情况下会转发，于是云端与视图
+                # 一起纠正；若 CD2 不转发，删除只在本地视图生效（云端残留仍在）——
+                # 这一点无法由插件验证，所以**不能**把「删了挂载点」等同于「删了云端」。
                 # 之后 rsync 发现目标端确无此文件，必然完整重传并重新走改名流程。
                 # （同 sync_115 仓库 retry_file.sh 的既有做法，此处插件化并加护栏。）
                 # Keyword mode = targeted single-file compensation. The destination

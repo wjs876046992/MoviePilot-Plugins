@@ -3672,7 +3672,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 切了阶段至少说明"现在在做别的事"，且进度条不会再假装在传输。
                 self._progress_update(phase="对账核对", percent=100,
                                       rate="", eta="", file="",
-                                      phase_note="正在逐个核对云端文件是否完整")
+                                      phase_note="正在逐文件比对源端与 CD2 挂载点的大小"
+                                      )
                 m_list, c_list = self._audit_files_integrity(
                     src, dest, pair_name, all_ext, rel_paths=pair_files)
                 if mode == "force":
