@@ -1,5 +1,12 @@
 <template>
-  <div class="plugin-page">
+  <!-- ⚠️ 根 div 的 `h-100` 是**承重的**，不是装饰。
+       `v-card` 用了 `h-100`（Vuetify 定义为 `height: 100% !important`），
+       而 `height:100%` 需要一个**有确定高度的父元素**才能解析；根 div 没有高度时
+       它退化成 `auto`，进而 `.body-surface` 的 `flex-grow-1` + `overflow-y-auto`
+       拿不到确定高度 —— 内容一旦收缩，整个 Content 区会塌成 0 高，
+       再被卡片的 `overflow-hidden` 裁掉，表现正是「**Title 还在、Content 消失**」。
+       同类页面（watchsync / courseorganizer）的根 div 都带 `h-100`，本插件漏了。 -->
+  <div class="plugin-page h-100">
     <v-card class="d-flex flex-column h-100 radius-lg overflow-hidden page-main-card" elevation="0" variant="outlined">
 
       <!-- 优雅顶栏 -->
@@ -42,6 +49,10 @@
       </v-card-item>
 
       <!-- 主体内容 -->
+      <!-- ⚠️ `min-height: 0` 是 flex 布局的**必备**项，不是可有可无：
+           弹性子项的默认 `min-height: auto` 会让它拒绝收缩到内容高度以下，
+           于是内容一多就把卡片撑高、一少就塌掉 —— 表现为滚动区行为怪异。
+           `flex: 1 1 auto` 由 flex-grow-1 提供，这里只补收缩许可。 -->
       <v-card-text class="pa-4 flex-grow-1 overflow-y-auto body-surface">
         <!-- 核心指标卡片（两行，共 7 个统计数字）
              ⚠️ 第一行三个卡片有承重的布局约束（border-top 曾整条不可见），
@@ -1932,6 +1943,18 @@ onUnmounted(() => {
 .page-main-card {
   background: rgb(var(--v-theme-surface));
   width: 100%;
+  /* 高度保底（第二道防线）：宿主容器高度异常、或百分比链断了时，
+     卡片也不会塌成 0（那会让整块 Content 被裁掉）。
+     ⚠️ 刻意用**绝对值**而不是 `60vh`：宿主弹窗在移动端可能小于半屏，
+     用视口单位会让卡片反而比容器更高 —— 又变成被裁掉，
+     等于用一个裁切换另一个裁切。240px 只保证"标题+首行统计卡"可见。 */
+  min-height: 240px;
+}
+/* ⚠️ 弹性子项默认 `min-height: auto`，会拒绝收缩到内容高度以下。
+   高度链正常时它无害；高度链异常时它会让内容区既撑不开也缩不回。
+   显式声明 `min-height: 0` 是 flex + overflow 组合的标准做法。 */
+.body-surface {
+  min-height: 0;
 }
 .header-surface {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.08) 0%, rgba(var(--v-theme-primary), 0.02) 100%);

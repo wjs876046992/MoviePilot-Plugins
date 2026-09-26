@@ -684,6 +684,63 @@ fail-open 策略 + 重传前复探」，注释里甚至写明了「分支顺序�
 
 ---
 
+### 3.12 面板 Content 区域消失（点击按钮后，Title 还在）—— 高度链断裂
+
+**用户反馈**：「点击按钮操作后，面板 Content 区域消失了，Title 还在」。
+
+#### 根因：`height:100%` 链在根 div 处断掉
+
+`v-card` 用了 Vuetify 的 `h-100`，它的定义是（`vuetify/lib/styles/main.css`）：
+
+```css
+.h-100 { height: 100% !important; }
+```
+
+**`height:100%` 需要一个有确定高度的父元素才能解析**。而根 div 是
+`<div class="plugin-page">` —— **没有高度**，于是 `h-100` 退化成 `auto`：
+
+```
+body (有高度)
+└─ div.plugin-page          ← 无高度 ⇒ auto
+   └─ v-card.h-100          ← height:100% 解析成 auto
+      ├─ v-card-item        ← Title：grid 布局，有**固有高度**，不受影响 ✅
+      └─ v-card-text.flex-grow-1.overflow-y-auto   ← 拿不到确定高度
+                                                     内容一收缩就塌成 0，
+                                                     再被 overflow-hidden 裁掉 ❌
+```
+
+**Title 为什么幸存**：`v-card-item` 是 grid 布局、高度由内容决定，不依赖这条链。
+这正好解释了「Title 还在、Content 消失」这个不对称的症状。
+
+#### 对照证据
+
+同类页面（`watchsync` / `courseorganizer`）的根 div 都是
+`class="plugin-page h-100"` —— **本插件漏了那个 `h-100`**。这不是新引入的缺陷，
+而是从一开始就少写了一个类，只是大多数时候内容够多、`flex-grow-1` 撑得起来，
+所以没暴露；内容变少（例如点完按钮后列表被清空）时才显形。
+
+#### 修法（一正两防）
+
+| 层次 | 改动 | 作用 |
+|---|---|---|
+| **正** | 根 div 补 `h-100` | 接上百分比链，让 `v-card` 真正满高 |
+| **防 1** | `.body-surface { min-height: 0 }` | 弹性子项默认 `min-height:auto` 会拒绝收缩到内容高度以下 —— 这是 flex + overflow 的标准做法 |
+| **防 2** | `.page-main-card { min-height: 240px }` | 链再次断掉时卡片也不塌成 0 |
+
+⚠️ 保底刻意用**绝对值**而不是 `60vh`：宿主弹窗在移动端可能小于半屏，
+用视口单位会让卡片反而比容器更高 —— 又变成被裁掉，等于用一个裁切换另一个裁切。
+
+#### 验证状态（诚实记录）
+
+- ✅ **静态证据**：`h-100` 的 CSS 定义已核对；对照插件的写法差异已确认；
+  症状（Title 在、Content 消失）能由"链断裂 + grid 固有高度"完整解释。
+- ⚠️ **未做渲染实测**：容器里的 playwright 缺浏览器可执行文件
+  （`chrome-headless-shell` 未安装，下载需授权）。所以这是**推断出的根因**，
+  而不是实测确认的。修复后需在真机上点按钮验证。
+- 已加结构断言（`test_dashboard_height_chain.py`）防止再漏 `h-100`：
+  根 div 带 `h-100` / 卡片保留 `h-100 + overflow-hidden` 组合 /
+  内容区有 `min-height:0` / 卡片有保底高度。
+
 ## 4. 新增能力
 
 ### 4.0f 入库发现层重构：抛弃事件订阅，改为源端游标扫描（alpha，2026-09-25）
