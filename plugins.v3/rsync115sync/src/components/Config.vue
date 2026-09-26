@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.3.1</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.4.0</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>

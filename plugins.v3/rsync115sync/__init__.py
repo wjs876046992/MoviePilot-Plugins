@@ -182,7 +182,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.3.1"
+    plugin_version = "0.4.0"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
