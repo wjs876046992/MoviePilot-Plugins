@@ -303,3 +303,88 @@ def test_frontend_does_not_blame_rsync_outside_transfer():
                             "src", "components", "Page.vue"),
                encoding="utf-8").read()
     assert "if (p.phase !== '传输')" in src, "停滞告警没有按阶段分流"
+
+# --------------------------------------------------------------------------
+# 通知措辞：候选数 ≠ 实际传输数
+# --------------------------------------------------------------------------
+
+def test_transferred_count_is_parsed_from_xfr_frames():
+    """
+    真正传输了几个文件，只能从 rsync 的 `xfr#N` 读 —— 这是**唯一**的权威来源。
+
+    ⚠️ `synced_count` 数的是**交给 rsync 的候选数**。两者在本例的差异是
+    天壤之别：候选 102 个而全部命中秒传时，`xfr#0` —— **一个字节都没传**。
+    日志里的旁证：`sent 4,656 bytes ... speedup is 18,048,967`。
+    """
+    p = _plugin()
+    p._transferred_now = 0
+
+    # 中间态帧（无括号）不得计入
+    p._consume_rsync_segment("        491,520  12%  400.36kB/s    0:00:08  ")
+    assert p._transferred_now == 0
+
+    # 完成帧才带 xfr#，且累计值就是总数
+    p._consume_rsync_segment("      2,000,000  50%  500.42kB/s    0:00:03 (xfr#1, to-chk=1/4)")
+    p._consume_rsync_segment("      3,000,000  75%  500.42kB/s    0:00:02 (xfr#2, to-chk=0/4)")
+    assert p._transferred_now == 2
+
+    # 全是"已存在"的一批：xfr#0
+    p._transferred_now = 0
+    p._consume_rsync_segment("              0   0%    0.00kB/s    0:00:00 (xfr#0, to-chk=0/1)")
+    assert p._transferred_now == 0
+
+
+def test_transferred_count_takes_the_max_not_the_last():
+    """
+    取**最大值**而不是最后一帧的值：收尾阶段 rsync 会重复打印若干条相同的
+    100% 帧，而中途某一帧若因故读数偏小，用"最后一个"会把它当成总数。
+    """
+    p = _plugin()
+    p._transferred_now = 0
+    p._consume_rsync_segment("  3,000,000 100%  500kB/s    0:00:02 (xfr#3, to-chk=0/3)")
+    p._consume_rsync_segment("  3,000,000 100%  500kB/s    0:00:02 (xfr#3, to-chk=0/3)")
+
+    assert p._transferred_now == 3
+
+
+def test_success_message_distinguishes_no_upload_from_real_transfer():
+    """
+    ⚠️ 成功通知必须区分「真的传了」与「全都已在云端」。
+
+    ## 这条是怎么来的
+
+    用户反馈「隔一段时间就收到『本次处理 102 个文件，全部完整上传到位』」。
+    而那一批文件**早已同步完成**，每轮都被 `--size-only` 跳过（日志
+    `sent 4,656 bytes ... speedup is 18,048,967`），却持续报"全部完整上传到位"
+    —— 累计 69 次。**通知在说一件没发生的事。**
+
+    判据用 `transferred_total`（由 xfr# 累加）而不是 `synced_count`（候选数）。
+    """
+    import ast
+    import inspect
+    import importlib
+    module = importlib.import_module("app.plugins.rsync115sync")
+    src = inspect.getsource(module.Rsync115Sync._execute_sync)
+
+    # 结构断言：必须按「是否真的传输过」分流
+    assert "if transferred_total:" in src, "成功通知没有按「是否真的传输过」分流"
+
+    # ⚠️ 文案断言必须取**字符串常量**，不能 grep 源码文本。
+    # 这段代码里刻意留着解释"这里曾经怎么写、为什么改"的注释，
+    # 而注释里就写着旧的那句话 —— grep 会把它当成"没改"（我第一版正是这么错的，
+    # 于是用例对着自己的注释失败）。这是本仓反复出现的假红形态。
+    # ⚠️ 用 `textwrap.dedent` 而不是 `inspect.cleandoc`：后者会把文档字符串
+    # 也一起处理，且对本函数首行的缩进处理不同 —— 实测 `cleandoc` 后再 parse
+    # 会报 `File "<unknown>", line 2`（我第一版就是这么错的）。
+    import textwrap
+    tree = ast.parse(textwrap.dedent(src))
+    literals = "".join(c.value for c in ast.walk(tree)
+                       if isinstance(c, ast.Constant) and isinstance(c.value, str))
+
+    assert "实际传输" in literals, "成功通知没有如实报出真正传输的数量"
+    assert "无需上传" in literals, "没有区分「全都已在云端、本次无需上传」"
+    assert "全部完整上传到位" not in literals, (
+        "文案里又出现「全部完整上传到位」—— 那就是用户反复收到的那条，"
+        "它把一个字节都没传的一轮说成了完整上传"
+    )
+

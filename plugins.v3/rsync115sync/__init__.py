@@ -515,14 +515,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         saved_queue = self.get_data("pending_queue") or {}
         if isinstance(saved_queue, dict):
             self._seed_ledger_from_saved(self._pending_queue, saved_queue, "enqueued_at")
-        # 补生成标记同样只在「台账里还没有这一列的值」时由旧数据补上。
-        # ⚠️ 列视图的 `_load()` 只读 **IS NOT NULL** 的行，所以这里要按
-        # 「该 key 在台账里没有标记」判断，而不是"台账里没有这一行" ——
-        # 一个文件完全可能已经在台账里（status=suspect）却还没被补生成过。
-        saved_gen = self.get_data("strm_gen_requested") or {}
-        if isinstance(saved_gen, dict):
-            self._seed_ledger_from_saved(self._strm_gen_requested, saved_gen,
-                                         "gen_requested_at")
         self._last_status["missing_files"] = self.get_data("missing_files") or []
         self._last_status["corrupt_files"] = self.get_data("corrupt_files") or []
         saved_ignored = self.get_data("ignored_files") or []
@@ -565,6 +557,43 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._seed_ledger_from_saved(
                 self._strm_suspects, self._migrate_strm_suspects(saved_suspects),
                 "verified_at")
+
+        # ---- 补生成标记**必须最后 seeding** ----
+        #
+        # ⚠️ 顺序是**承重的**，不是风格问题：`_strm_gen_requested` 是
+        # `LedgerFieldMap`（**按列**的视图），而它刻意**不做插入** ——
+        # 标记必须挂在一个已存在的 `files` 行上。若在 `strm_watch` /
+        # `strm_suspects` 的 seeding **之前**写它，那些行还不存在，
+        # 写入会被静默丢弃 ⇒ 升级用户的「已补生成过」标记全部丢失
+        # （表现：看板不再标记「补生成后仍无」，用户可能对同一批文件
+        #   反复发起补生成，每次都让助手遍历一遍云端目录）。
+        #
+        # 这条顺序陷阱是实测踩出来的：单测里若只放 `strm_gen_requested`
+        # 而不放 watch/suspects，它反而会通过 —— 因为没有任何行可挂，
+        # 也就没有可观察的差异。有用例同时覆盖三者来锁住这个顺序。
+        saved_gen = self.get_data("strm_gen_requested") or {}
+        if isinstance(saved_gen, dict):
+            self._seed_ledger_from_saved(self._strm_gen_requested, saved_gen,
+                                         "gen_requested_at")
+
+        # ---- 陈旧快照到此为止（必须在**所有** seeding 之后）----
+        #
+        # ⚠️ 必须放在**所有 seeding 调用之后**（我第一版放进了迁移函数里，
+        # 而迁移发生在 seeding 之前 —— 于是首启时先把待迁数据删光，
+        # seeding 再来读就只能读到空，升级用户的队列直接丢失）。
+        #
+        # 为什么必须删：台账接管后这几个键再也不会被更新（写进去的是替身，
+        # 被 `save_data` 覆盖点跳过），留着就是一份**永不刷新的陈旧快照**。
+        # 而 `_seed_ledger_from_saved` 曾经每次加载都拿它回填 ——
+        # 那正是「每 2 小时复活 102 个已同步文件并推一条成功通知」的成因
+        # （完整链条见 `_seed_ledger_from_saved` 的说明）。
+        # 删掉之后，即使将来有人误把回填逻辑接回来，也没有可利用的旧数据了。
+        if self._ledger is not None:
+            for _stale in self._LEDGER_OWNED_DATA_KEYS:
+                try:
+                    self.del_data(_stale)
+                except Exception:
+                    pass
             # 载入即清洗历史脏数据（非视频 / 已忽略 / 源端已删 / 映射取消验证）。
             # 放在这里而不是只在写入时过滤：写入过滤拦不住升级前已落盘的坏条目，
             # 用户会看到一堆永远处理不掉的东西，只能手工改数据文件。
@@ -2131,6 +2160,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             logger.error(f"[Rsync115Sync] 文件台账打开失败（相关功能降级）: {e}")
             self._ledger = None
             return
+        # ⚠️ 必须在迁移**之前**捕获这个判断。迁移函数自己会把
+        # `legacy_migrated` 置为 "1"，而 seeding 发生在迁移之后 ——
+        # 若那时才去读标记，首启（标记刚被写上的那一次）会被判成"已迁移过"
+        # 而**完全跳过 seeding**，升级时 `pending_queue` / `strm_watch` /
+        # `strm_gen_requested` 三份数据直接丢失（我第一版就写错了这个顺序）。
+        # 捕获一次、存到实例上，seeding 只认这一个值。
+        self._allow_legacy_seed = (self._ledger.get_meta("legacy_migrated") != "1")
         try:
             self._migrate_legacy_state_once()
         except Exception as e:
@@ -2207,6 +2243,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             getattr(self, "_strm_gen_requested", None),
             _store_mod.LedgerFieldMap(self._ledger, "gen_requested_at"))
 
+    # 与文件状态有关、已迁到台账的那几个 `save_data` 键。
+    # ⚠️ 它们必须在下一次加载前**清掉**，理由见 `_seed_ledger_from_saved` 的说明。
+    _LEDGER_OWNED_DATA_KEYS = (
+        "pending_queue", "strm_watch", "strm_suspects", "strm_gen_requested",
+    )
+
     def _seed_ledger_from_saved(self, mapping, saved: Dict[str, Any],
                                 ts_field: str) -> None:
         """
@@ -2228,6 +2270,27 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
         正确做法是**逐键判断**：台账有的以台账为准，台账没有的用旧值补上。
         """
+        # ⚠️ **只在一次性迁移时回填**，之后绝不再碰旧键。
+        #
+        # 这里曾经是一个自我延续的死循环（实测：每 2 小时把 102 个早已同步完成
+        # 的文件整批重新入队，并反复推送「全部完整上传到位」通知，累计 69 次）：
+        #
+        #   1. 台账接管后，`save_data("pending_queue", self._pending_queue)` 的
+        #      值是**替身**，被 `save_data` 覆盖点静默跳过（见那里的说明）；
+        #   2. 于是 `save_data` 里那份快照**永远停在首次迁移时的样子**，再也不会更新；
+        #   3. 而本函数每次 `init_plugin` 都把那份快照"按缺失键回填" ——
+        #      同步成功后已经从台账里删掉的条目，在**下一次重载时被原样复活**；
+        #   4. 复活 ⇒ 重新冷却 ⇒ 再跑一轮 ⇒ 全部命中秒传跳过 ⇒ 对账通过 ⇒ 出队
+        #      ⇒ 下一次重载又复活 …… 无限循环，且每轮都推一条成功通知。
+        #
+        # 判据是 `_allow_legacy_seed`（在 `_open_store` 里**迁移之前**捕获的
+        # 一次性开关）：只有首启那一次为真，之后这份旧快照没有任何权威性
+        # （台账才是真相源），必须彻底停止使用它。
+        # The snapshot in save_data stops updating once the ledger takes over
+        # (the mapping is skipped by the save_data guard), so re-seeding from it on
+        # every load resurrects entries that were already settled — forever.
+        if not getattr(self, "_allow_legacy_seed", False):
+            return
         if not isinstance(saved, dict) or not saved:
             return
         existing_keys = set(mapping.keys())
@@ -2332,7 +2395,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._ledger.set_meta("legacy_migrated", "1")
         logger.info(f"[Rsync115Sync] 📒 文件台账已建立，旧数据迁移完成："
                     f"忽略条目 {migrated['ignored']} / 疑似 {migrated['suspects']}"
-                    f"（旧 save_data 键保留未删，便于对照）")
+                    f"（旧 save_data 键已清除，避免陈旧快照被反复回填）")
 
     def _api_get_status(self):
         now_ts = time.time()
@@ -3030,6 +3093,18 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         parsed = _progress.parse_progress_line(text)
         if parsed is not None:
             self._progress_update(**parsed)
+            # ⚠️ `xfr#N` 是 rsync 自己给的「本次真正传输了几个文件」，**只有
+            # 最后一帧的值是总数**（中间态没有括号，值为 None）。
+            # 它与"交给 rsync 的候选数"是两回事：候选 102 个而全部命中秒传时
+            # `xfr#0` —— 一个字节都没传。用候选数去写通知就会出现
+            # 「本次处理 102 个文件，全部完整上传到位」这种与实际不符的说法
+            # （实测：同一批 102 个文件每 2 小时报一次，累计 69 次）。
+            if parsed.get("xfr") is not None:
+                try:
+                    self._transferred_now = max(
+                        int(getattr(self, "_transferred_now", 0)), int(parsed["xfr"]))
+                except (TypeError, ValueError):
+                    pass
             return None
         # 不是进度行：再看看是不是"某个文件开始传了"的 `-v` 文件名行
         name = _progress.current_file_of(text)
@@ -3123,6 +3198,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             total_missing = []
             total_corrupt = []
             synced_count = 0
+            # 本轮**真正发生传输**的文件数（由 rsync 的 xfr# 累加，见
+            # `_consume_rsync_segment`）。它与 synced_count 的区别是本轮通知
+            # 措辞的关键：候选 102 个而全部秒传跳过时，这个数是 0。
+            transferred_total = 0
             # 本轮实际核对过的文件 key 集合（增量模式下用于与历史结果合并，避免误清空）
             audited_keys = set()
             # 本轮开始前的异常集合快照，用于判断是否发生变化、抑制重复告警
@@ -3361,6 +3440,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 if self._current_batch_size:
                     self._consume_upload_quota(f"（{pair_name} 预留）")
 
+                # 本组真正传输的文件数由 rsync 的 `xfr#N` 给出（见 _consume_rsync_segment），
+                # 这里先归零；组内解析时取最大值。
+                self._transferred_now = 0
                 logger.info(f"[Rsync115Sync] [{pair_name}] ▶ 启动 rsync (模式 {mode}，{len(pair_files)} 个文件)")
                 logger.debug(f"[Rsync115Sync] [{pair_name}] 完整命令: {' '.join(shlex.quote(c) for c in cmd)}")
 
@@ -3607,6 +3689,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     total_missing.extend(m_list)
                     total_corrupt.extend(c_list)
 
+                # 把本组真正传输的个数累加进本轮总数
+                transferred_total += int(getattr(self, "_transferred_now", 0) or 0)
+
                 logger.info(f"[Rsync115Sync] [{pair_name}] 🔍 对账结果: 本次核对 {len(pair_files)} 个，"
                             f"缺失 {len(m_list)} 个，残缺 {len(c_list)} 个")
                 for k in m_list:
@@ -3722,7 +3807,23 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                     msg = f"✅ 本轮无需同步（暂无冷却就绪或待重试文件）\n耗时: {duration} 秒\n冷却队列与异常清单均为空。"
                     should_notify = False
                 else:
-                    msg = f"🎉 115网盘同步与对账完成！\n耗时: {duration} 秒\n本次处理 {synced_count} 个文件，全部完整上传到位。"
+                    # ⚠️ 措辞必须区分「真的传了」与「全都已在云端（秒传/已存在）」。
+                    #
+                    # 这里曾经一律写「本次处理 {synced_count} 个文件，全部完整上传到位」，
+                    # 而 `synced_count` 是**交给 rsync 的候选数**：实测同一批 102 个
+                    # 文件早已同步完成、每轮全被 `--size-only` 跳过（日志里
+                    # `sent 4,656 bytes ... speedup is 18,048,967`），却每 2 小时
+                    # 报一次「全部完整上传到位」，累计 69 次 —— 用户会以为插件
+                    # 一直在做无用功，而我们确实在说一件没发生的事。
+                    # Now the wording distinguishes "actually transferred" from
+                    # "everything was already there", because synced_count counts
+                    # candidates, not transfers.
+                    if transferred_total:
+                        msg = (f"🎉 115网盘同步与对账完成！\n耗时: {duration} 秒\n"
+                               f"📤 实际传输 {transferred_total} 个 · 核对 {synced_count} 个，云端均已完整。")
+                    else:
+                        msg = (f"✅ 115网盘同步与对账完成（无需上传）\n耗时: {duration} 秒\n"
+                               f"🔍 核对 {synced_count} 个，云端文件均已存在且大小一致，本次没有需要上传的内容。")
                     should_notify = True
             else:
                 self._last_status["state"] = "failed"
@@ -3737,7 +3838,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                         f"⚠️ 115同步存在未完成项！\n"
                         f"耗时: {duration} 秒\n"
                         f"{code_hint}"
-                        f"📤 本次传输: {synced_count} 个\n"
+                        # 同上：候选数与实际传输数是两回事，分开写
+                        f"📤 实际传输: {transferred_total} 个（核对 {synced_count} 个）\n"
                         f"🔍 缺失未同步: {len(total_missing)} 个\n"
                         f"🔍 大小残缺: {len(total_corrupt)} 个\n"
                         f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"

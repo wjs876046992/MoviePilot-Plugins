@@ -389,8 +389,28 @@ def test_prune_runs_automatically_on_plugin_load():
     plugin._backfill_queue = []
     plugin._source_cursor = {}
     plugin._last_status = {}
+    # ⚠️ `get_data_path` 必须指向**本用例自己的临时目录**：桩宿主默认返回
+    # 一个共享路径（读 MP_DATA_PATH 环境变量），于是第一个用 `init_plugin`
+    # 的用例在那里建好台账、写上 `legacy_migrated=1`，后面每个用例都会复用它
+    # ⇒ seeding 被正确跳过 ⇒ 用例看到"数据丢了"。
+    # 这是**测试隔离**问题：单独跑必过、整文件跑必挂。旧桩因为无条件把值回写
+    # `stored` 而恰好掩盖了它。
+    import pathlib as _pathlib
+    plugin.get_data_path = lambda: _pathlib.Path(root)
     plugin.get_data = lambda k: stored.get(k)
-    plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]
+    # ⚠️ 桩必须**忠实模拟真实宿主**：真实 `save_data` 收到台账替身时会把它
+    # 存进 JSON 列，而插件的 `save_data` 覆盖点会静默跳过那些调用
+    # （见 `Rsync115Sync.save_data`）。所以替身**不会被写回** `stored`。
+    #
+    # 这里原先写成无条件 `stored[k] = v`，等于让"陈旧快照"永远存在 ——
+    # 而真实宿主上它不会。正是这个差异掩盖了「每 2 小时复活 102 个已同步
+    # 文件」那个死循环。桩的宽容度就是测试的盲区（本仓已栽过多次）。
+    def _save(k, v):
+        saved[k] = v
+        if not isinstance(v, (module.store.LedgerMapping, module.store.LedgerFieldMap)):
+            stored[k] = v
+        return True
+    plugin.save_data = _save
     plugin.update_config = lambda c: True
 
     plugin.init_plugin({"enabled": True, "sync_pairs": plugin._sync_pairs})
@@ -640,8 +660,26 @@ def test_prune_invalid_watch_runs_automatically_on_plugin_load():
     plugin._backfill_queue = []
     plugin._source_cursor = {}
     plugin._last_status = {}
+    # ⚠️ `get_data_path` 必须指向**本用例自己的临时目录**：桩宿主默认返回
+    # 一个共享路径（读 MP_DATA_PATH 环境变量），于是第一个用 `init_plugin`
+    # 的用例在那里建好台账、写上 `legacy_migrated=1`，后面每个用例都会复用它
+    # ⇒ seeding 被正确跳过 ⇒ 用例看到"数据丢了"。
+    # 这是**测试隔离**问题：单独跑必过、整文件跑必挂。旧桩因为无条件把值回写
+    # `stored` 而恰好掩盖了它。
+    import pathlib as _pathlib
+    plugin.get_data_path = lambda: _pathlib.Path(root)
     plugin.get_data = lambda k: stored.get(k)
-    plugin.save_data = lambda k, v: (saved.__setitem__(k, v), stored.__setitem__(k, v))[0]
+    # ⚠️ 桩必须**忠实模拟真实宿主**：真实 `save_data` 收到台账替身时会被插件的
+    # 覆盖点静默跳过（见 `Rsync115Sync.save_data`），替身**不会**被写回 `stored`。
+    # 这里原先写成无条件 `stored[k] = v`，等于让"陈旧快照"永远存在 —— 而真实
+    # 宿主上它不会。正是这个差异掩盖了「每 2 小时复活 102 个已同步文件」那个
+    # 死循环。桩的宽容度就是测试的盲区（本仓已栽过多次）。
+    def _save(k, v):
+        saved[k] = v
+        if not isinstance(v, (module.store.LedgerMapping, module.store.LedgerFieldMap)):
+            stored[k] = v
+        return True
+    plugin.save_data = _save
     plugin.update_config = lambda c: True
 
     plugin.init_plugin({"enabled": True, "sync_pairs": plugin._sync_pairs})
