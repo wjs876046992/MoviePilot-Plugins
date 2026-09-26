@@ -27,16 +27,39 @@ File ledger: the plugin's SQLite persistence layer.
 5. 所有写操作走 `_write()`，统一 `commit` 与异常兜底 —— 台账写失败绝不能让
    同步流程崩掉（宁可丢一条记录，也不能中断正在进行的传输）。
 
+## 数据落在哪三处（2026-09-26 在真机上逐处核实过）
+
+| 数据 | 位置 | 内容 |
+|---|---|---|
+| **文件台账** | `<插件数据目录>/ledger.sqlite3`（**本插件自己的文件**） | 一行一个文件的全生命周期（本模块） |
+| **用户配置** | 宿主 DB 的 `plugininstance.config_data` 列 | 开关 / cron / `sync_pairs` / 扩展名… |
+| **运行态小状态** | 宿主 DB 的 `plugindata` 表（`save_data` 的落点） | 见下表 |
+
+⚠️ **宿主 DB 不一定是 SQLite**：实测那台 NAS 上 `DB_TYPE=postgresql`
+（`mp_postgres:5432/moviepilot`）。容器里那个 `/config/user.db` 是**空壳**
+（只有 3 个无关插件的行）—— 排查配置问题时别被它误导。
+`plugininstance` / `plugindata` 这两张表在两种 DB 里同名。
+
+⚠️ **配置的落点也不唯一**：多数插件在 `systemconfig` 的 `plugin.<名字>` 键里，
+而本插件在 `plugininstance.config_data`。宿主有两条保存路径
+（见 `_refresh_scheduler_after_config_save` 的说明），排查时两处都要看。
+
 ## 与 `save_data` 的分工（不要混）
 
 台账只放**与文件有关**的状态。以下仍是 `save_data`，因为它们不是"某个文件的状态"：
 
     upload_window_count / upload_blocked_until / last_force_ts   —— 限流窗口
     source_cursor / source_scan_last                            —— 扫描游标
-    webhook_stat / ingest_skip_stat                             —— 运行态计数
+    webhook_stat                                                —— 运行态计数
     strm_notified                                               —— 通知闩锁
 
 判据：如果一个值的变化**必然伴随某个文件的处理**，它属于台账；否则留在 `save_data`。
+
+⚠️ `source_cursor` 是**记账**（"我看到哪里了"），不是查询条件。已明确**不做成
+可编辑字段**：实测往回拨游标会让已同步完成的文件**重新入队**
+（队列幂等只在条目仍在队列时生效，而同步成功后台账行已被删除），
+代价是重传或每轮空转 + 重复通知。要"捞一批老文件"请用「存量补传」——
+它按**状态**（从未处理过）筛，而不是按时间猜。
 """
 
 from __future__ import annotations

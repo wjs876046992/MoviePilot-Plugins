@@ -201,3 +201,63 @@ def test_seed_guard_blocks_resurrection_even_with_snapshot_present(tmp_path):
         "`_seed_ledger_from_saved` 必须只认一次性迁移开关 `_allow_legacy_seed`。"
     )
 
+# --------------------------------------------------------------------------
+# 存储边界：台账在插件自己的 SQLite 文件，配置与小状态在宿主 DB
+# --------------------------------------------------------------------------
+
+def test_ledger_lives_in_the_plugin_data_dir():
+    """
+    台账必须是 `<插件数据目录>/ledger.sqlite3` —— **不**进宿主数据库。
+
+    这不是风格问题：台账是一行一个文件的全生命周期状态，写频高、量随库增长；
+    塞进宿主的 JSON 列既会撞上「不可序列化」（已被 ea6107f 那次事故证明），
+    也会把插件自己的状态混进平台配置里。用户问「台账在 sqlite、配置在 MP 数据库吧」
+    时确认的正是这条边界。
+    """
+    import importlib
+    module = importlib.import_module("app.plugins.rsync115sync")
+    import inspect
+    src = inspect.getsource(module.Rsync115Sync._open_store)
+    assert "ledger.sqlite3" in src, "台账文件名变了"
+    assert "get_data_path()" in src, (
+        "台账没有落在插件数据目录 —— 它不该写进宿主数据库"
+    )
+
+
+def test_user_config_is_not_written_by_the_ledger():
+    """
+    配置（开关 / cron / sync_pairs）走 `update_config`，**不**进台账。
+
+    判据来自 store.py 顶部那张表：「与文件有关」的进台账，其余留在宿主侧。
+    若哪天有人把配置也塞进 `files` 表，这张表就不再是"一行一个文件"了。
+    """
+    import importlib
+    module = importlib.import_module("app.plugins.rsync115sync")
+    import inspect
+    src = inspect.getsource(module.Rsync115Sync._api_save_config)
+    assert "update_config" in src, "保存配置没有走宿主接口"
+
+
+def test_cursor_stays_in_save_data_not_the_ledger():
+    """
+    `source_cursor` 必须留在 `save_data`（宿主侧），不进台账。
+
+    ⚠️ 它**不是**某个文件的状态，而是"我看到哪里了"的记账 —— 台账的 key 是
+    `映射名:相对路径`，装不下"某个映射的扫描位置"。混进去会造出一批虚构路径。
+
+    这条也顺带守住"游标不做成可编辑字段"那个决定的前提：它一旦进了台账，
+    就很容易被当成普通行去改，而实测往回拨游标会让已同步文件重新入队。
+    """
+    import importlib
+    module = importlib.import_module("app.plugins.rsync115sync")
+    import inspect
+    # 载入路径：游标从 get_data 恢复
+    src = inspect.getsource(module.Rsync115Sync.init_plugin)
+    assert 'get_data("source_cursor")' in src, (
+        "游标不再从 save_data 恢复 —— 若已迁进台账，需同步更新存储边界文档"
+    )
+    # 台账 schema 里不得出现游标字段
+    from app.plugins.rsync115sync import store as store_mod
+    schema_src = inspect.getsource(store_mod.Store._init_schema)
+    assert "cursor" not in schema_src.lower(), "台账 schema 里出现了游标字段"
+
