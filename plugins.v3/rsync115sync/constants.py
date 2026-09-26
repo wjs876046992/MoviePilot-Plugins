@@ -256,6 +256,14 @@ P115_PAN_MAPPING_FIELD = "full_sync_strm_paths"
 # that entire cloud subtree, so the directory count drives the real cost.
 STRM_GEN_DIR_LIMIT = 20
 
+# 命令侧回报疑似清单时最多列出多少条。
+#
+# ⚠️ 截断只影响**显示**：被截掉的条目仍可用关键字指定（见
+# `CommandsMixin._resolve_suspect_target`），所以这个数字不构成能力上限，
+# 只影响消息长度 —— 聊天渠道对超长消息的处理不一致（有的截断、有的分段），
+# 宁可在插件侧主动截断并说明还有多少条。
+STRM_CMD_LIST_LIMIT = 30
+
 # 补生成期间该条目的去向：从疑似清单移回「待观察」并重新计时。
 # strm 助手是异步长任务，插件侧拿不到完成回调；重新计时可以复用已有的巡检状态机
 # （strm 出现 ⇒ 自动解除；窗口到仍无 ⇒ 回到疑似清单，且此时判定更硬 ——

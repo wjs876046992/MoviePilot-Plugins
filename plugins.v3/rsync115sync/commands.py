@@ -9,7 +9,7 @@ self.* 状态（_waiting_confirm_retries 等）全部留在插件实例上，本
 import os
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.event import Event, EventType, eventmanager
 from app.sdk.logging import logger
@@ -17,6 +17,7 @@ from app.sdk.logging import logger
 from .constants import (
     STRM_SCAN_LIMIT,
     MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
+    STRM_CMD_LIST_LIMIT as _STRM_CMD_LIST_LIMIT,
     RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
 )
 from .paths import (
@@ -62,21 +63,21 @@ class CommandsMixin:
             {
                 "cmd": "/rsync_retry",
                 "event": EventType.PluginAction,
-                "desc": "重试失败/缺失的115文件(自动重传)",
+                "desc": "重试失败/缺失的 115 文件；带文件名则定向单文件重传（先删云端旧文件再传，例: /rsync_retry 繁花）",
                 "category": "工具",
                 "data": {"action": "retry"}
             },
             {
                 "cmd": "/rsync_sync",
                 "event": EventType.PluginAction,
-                "desc": "同步已达到冷却时间(如2h)的入库媒体",
+                "desc": "同步已达冷却时间的入库媒体（冷却时长见配置页，默认 4h）",
                 "category": "工具",
                 "data": {"action": "sync"}
             },
             {
                 "cmd": "/rsync_force",
                 "event": EventType.PluginAction,
-                "desc": "忽略冷却限制，对全部目录执行增量传输",
+                "desc": "全量只读对账：逐文件核对云端完整性，仅对发现的问题文件上传（不绕过冷却、共享限流配额、7 天冷却）",
                 "category": "工具",
                 "data": {"action": "force"}
             },
@@ -104,7 +105,7 @@ class CommandsMixin:
             {
                 "cmd": "/rsync_strm",
                 "event": EventType.PluginAction,
-                "desc": "strm 相关操作（无参=扫描缺 strm / <文件名> 只查该文件 / check 立即检查观察期 / gen 请助手补生成 / prune 清理无效项 / clear 清空）",
+                "desc": "strm 相关操作（无参=扫描缺 strm / <文件名> 只查该文件 / list 列疑似清单 / check 立即检查观察期 / gen 请助手补生成 / retry <序号> 删旧重传 / ignore <序号> 忽略 / prune 清理无效项 / clear 清空）",
                 "category": "工具",
                 "data": {"action": "strm"}
             },
@@ -114,8 +115,199 @@ class CommandsMixin:
                 "desc": "清空存量补传队列",
                 "category": "工具",
                 "data": {"action": "backfill_clear"}
+            },
+            {
+                "cmd": "/rsync_help",
+                "event": EventType.PluginAction,
+                # 说明保持短：聊天渠道的指令列表不换行，写长了会被截断
+                "desc": "列出全部指令与用法（忘了怎么用就发这条）",
+                "category": "工具",
+                "data": {"action": "help"}
             }
         ]
+
+    # ---- 指令帮助 / command reference ------------------------------------
+
+    def _help_text(self) -> str:
+        """
+        全部指令与用法（`/rsync_help`）。
+
+        The command reference. 内容按**用户要做的事**分组，而不是按代码里的
+        action 顺序 —— 手机上要能一眼找到"我现在想干什么"。
+
+        ⚠️ 维护要求：**新增/修改命令时必须同步改这里**。它列的是用户唯一的
+        自述入口，写错等于教用户用不存在的功能（本仓已有过「说明停留在旧版本」
+        的实例：`/rsync_force` 的注册说明写着"忽略冷却限制"，而 v0.2.1 起冷却
+        照常生效 —— 用户照着用会以为能强制上传，实际不会）。
+        Keep in sync with get_command(); a stale reference teaches users to call
+        things that do not exist.
+        """
+        return (
+            f"📖 115 网盘同步助手 · 指令一览\n"
+            f"===============================\n"
+            f"【查看状态】\n"
+            f"/rsync_status —— 同步状态报告：冷却队列、异常清单、扫描健康度\n"
+            f"/rsync_help —— 这条帮助\n"
+            f"\n"
+            f"【触发同步】\n"
+            f"/rsync_sync —— 同步已达冷却时间的入库媒体（冷却时长见配置页）\n"
+            f"/rsync_force —— 全量只读对账：逐文件核对云端完整性，仅对问题文件上传\n"
+            f"                （不绕过冷却、共享限流配额、7 天冷却）\n"
+            f"/rsync_backfill —— 补传存量媒体（源端有、本插件从未处理过的）\n"
+            f"/rsync_backfill_clear —— 清空补传队列\n"
+            f"\n"
+            f"【处理异常】\n"
+            f"/rsync_retry —— 重试缺失/残缺文件\n"
+            f"/rsync_retry <文件名> —— 定向单文件重传（先删云端旧文件再传）\n"
+            f"/rsync_search <关键字> —— 在源端查文件，生成候选清单\n"
+            f"/rsync_confirm <序号|all> —— 确认执行上一步查找到的文件\n"
+            f"\n"
+            f"【strm 交叉验证】\n"
+            f"/rsync_strm —— 全量扫描缺 strm 的文件\n"
+            f"/rsync_strm <文件名> —— 只查这一个（不遍历整库，秒回）\n"
+            f"/rsync_strm list —— 列出疑似清单（带序号）\n"
+            f"/rsync_strm check —— 立即检查观察期（不等下一轮巡检）\n"
+            f"/rsync_strm gen —— 请助手补生成 strm（多数问题的第一步）\n"
+            f"/rsync_strm retry <序号> —— 删旧重传（⚠️ 先删云端再传，破坏性）\n"
+            f"/rsync_strm ignore <序号> —— 误报，不再提醒\n"
+            f"/rsync_strm prune —— 清理无效项（非视频/已忽略/源端已删）\n"
+            f"/rsync_strm clear —— 清空两个清单\n"
+            f"\n"
+            f"【忽略清单】\n"
+            f"/rsync_ignore <剧名> —— 不再为它报警\n"
+            f"/rsync_ignore list —— 查看全部规则\n"
+            f"/rsync_ignore remove <序号> —— 移除某条\n"
+            f"/rsync_ignore clear —— 清空全部\n"
+            f"\n"
+            f"===============================\n"
+            f"💡 看板「配置 → 插件页面」有同样的全部功能，且能看到文件清单。\n"
+            f"💡 疑似清单的处理顺序：先 /rsync_strm gen，仍无 strm 再 retry。"
+        )
+
+    # ---- 疑似清单的命令侧处理 / suspect handling over chat ---------------
+
+    def _strm_suspect_list_text(self) -> str:
+        """
+        用**带序号的列表**回报疑似清单（`retry` / `ignore` 的指定依据）。
+
+        Render the suspect list with stable indices.
+
+        ⚠️ 序号必须基于**确定顺序**：`Store.by_status` 按 `updated_at` 排序，
+        因此同一个时刻生成的列表在同一条消息里可复现。序号还会**截断显示**
+        （清单可能有上百条），但截断只影响显示 —— 超出的条目仍可用关键字指定。
+        Indices come from a deterministic ordering; truncation is display-only.
+        """
+        keys = list(self._strm_suspects.keys())
+        if not keys:
+            return "✅ 当前没有 strm 疑似异常。\n💡 /rsync_strm 可全量扫描一次。"
+
+        shown = keys[:_STRM_CMD_LIST_LIMIT]
+        lines = [f"{i+1}. {k}" for i, k in enumerate(shown)]
+        reply = (f"📺 strm 疑似异常（共 {len(keys)} 个）：\n"
+                 f"--------------------------------\n"
+                 + "\n".join(lines))
+        if len(keys) > len(shown):
+            reply += (f"\n… 其余 {len(keys) - len(shown)} 个未列出"
+                      f"（可用关键字直接指定，不必看全清单）")
+        reply += (
+            f"\n--------------------------------\n"
+            f"• 先试补生成（多数情况够用）: /rsync_strm gen\n"
+            f"• 确认是上传失败 → 删旧重传: /rsync_strm retry <序号>\n"
+            f"• 误报，不想再提醒 → 忽略: /rsync_strm ignore <序号>\n"
+            f"※ retry 会**先删云端旧文件再重传**，是破坏性操作，请先确认。"
+        )
+        return reply
+
+    @staticmethod
+    def _strip_subcmd_prefix(text: str, prefixes: Tuple[str, ...]) -> str:
+        """
+        从参数里剥掉子命令前缀，只留目标（序号或关键字）。
+
+        Strip the subcommand prefix, leaving only the target.
+
+        ⚠️ 用**原文**剥而不是小写副本：文件名的大小写要原样保留（回显时可读），
+        而匹配本身在 `_resolve_suspect_target` 里已做大小写不敏感处理。
+        中文前缀（重传/忽略）同样需要剥 —— 用户两种写法都会用。
+        Strip from the original text so the filename keeps its case.
+        """
+        raw = (text or "").strip()
+        low = raw.lower()
+        for pref in prefixes:
+            if low.startswith(pref.lower()):
+                return raw[len(pref):].strip()
+        return raw
+
+    def _resolve_suspect_target(self, text: str) -> Tuple[List[str], str]:
+        """
+        把用户的指定（序号 / 关键字）解析成疑似清单里的 key 列表。
+
+        Resolve a user-specified target (index or keyword) to suspect keys.
+
+        返回 `(keys, 错误说明)`；成功时错误说明为空串。
+
+        ⚠️ 关键字匹配**多个时不猜**：返回候选清单让用户把范围缩小。
+        猜一个最像的，在 `retry`（删云端）这条路上就是误删好文件。
+        Never guess among multiple keyword matches on a destructive path.
+        """
+        text = (text or "").strip()
+        if not text:
+            return [], "未指定目标。请用序号或关键字，例如：/rsync_strm retry 2"
+
+        keys = list(self._strm_suspects.keys())
+        if not keys:
+            return [], "当前没有 strm 疑似异常。"
+
+        # ① 纯数字 = 序号（1 起，按清单显示顺序）
+        if text.isdigit():
+            idx = int(text)
+            if not 1 <= idx <= len(keys):
+                return [], (f"序号 {idx} 超出范围（当前 1~{len(keys)}）。"
+                            f"\n用 /rsync_strm list 查看清单。")
+            return [keys[idx - 1]], ""
+
+        # ② 别名形式 "retry 2" / "ignore 2" —— 从各子命令分支里透传时可能带前缀
+        parts = text.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            return self._resolve_suspect_target(parts[1])
+
+        # ③ 关键字：**只搜疑似清单**（不遍历源端）——
+        #    这个入口的语义是"处理清单里这一条"，不是通用查找器。
+        kw = text.lower()
+        matched = [k for k in keys if kw in k.lower()]
+        if not matched:
+            return [], (f"疑似清单里没有匹配「{text}」的条目。"
+                        f"\n用 /rsync_strm list 查看全部，或 /rsync_strm {text} 扫描源端。")
+        if len(matched) > 1:
+            shown = "\n".join(f"• {k}" for k in matched[:_STRM_CMD_LIST_LIMIT])
+            return [], (f"「{text}」匹配到 {len(matched)} 条，请把关键字写得更具体：\n{shown}")
+        return matched, ""
+
+    def _strm_suspect_action(self, event, arg: str, action: str) -> str:
+        """
+        对疑似清单里的**一个**目标执行 retry 或 ignore，返回给用户的话。
+
+        Run retry/ignore on one resolved target and return the reply text.
+
+        复用看板的 `_api_strm_retry` / `_api_strm_ignore` —— 那两条路径里各有
+        越权护栏（只接受疑似清单内的 key）与副作用（补生成标记失效、通知闩锁
+        重置），**在命令侧重写一遍必然漂移**。这里只做"序号/关键字 → key"的
+        解析，把结果原样交给同一个实现。
+        """
+        keys, err = self._resolve_suspect_target(arg)
+        if err:
+            return err
+        key = keys[0]
+
+        if action == "retry":
+            # ⚠️ 不做二次确认：手机端确认弹窗体验差，而**破坏性操作的门槛
+            # 已经用"必须显式指定目标 + 不提供 all"表达了**。回执里明确写出
+            # 删了什么、正在重传什么，让误操作可追溯。
+            res = self._api_strm_retry({"keys": [key]})
+            head = "🔁 " if res.get("success") else "⚠️ "
+            return f"{head}{res.get('message', '操作失败')}\n\n目标：{key}"
+        res = self._api_strm_ignore({"keys": [key]})
+        head = "🚫 " if res.get("success") else "⚠️ "
+        return f"{head}{res.get('message', '操作失败')}\n\n目标：{key}"
 
     @staticmethod
     def _parse_confirm_indices(arg_str: str, total_count: int) -> List[int]:
@@ -171,6 +363,9 @@ class CommandsMixin:
             or ""
         ).strip()
 
+        if action == "help":
+            self._post_reply(event, self._help_text())
+            return
         if action == "search":
             # 根据关键字从本地源目录查找匹配的文件，供确认后定向重传
             if not text_arg:
@@ -373,6 +568,35 @@ class CommandsMixin:
                                     channel_event=event)
 
         elif action == "strm":
+            # 先算好小写参数，并处理**不扫描源端**的三条（list/retry/ignore）。
+            # ⚠️ 它们必须排在下面那道「必须配置了 strm 目录才能扫描」的守卫**之前**：
+            # 那三条的语义是“处理已有清单里的条目”，不扫描、也不需要 strm_dir。
+            # 曾经写反过 —— 没配 strm_dir 的实例上它们全被挡下。
+            # `retry`/`ignore` 还**必须显式指定目标**（序号或关键字），
+            # 不提供 all：删旧重传是破坏性操作，命令侧不该比看板更宽松。
+            arg_lower = (text_arg or "").lower()
+            # ⚠️ 这三条必须排在**下面那道守卫之前** —— 它们是"处理已有清单"，
+            # 不扫描源端、也不需要 strm 目录配置。
+            #
+            # 这个顺序曾经写反：`list/retry/ignore` 放在了「没有映射配置 strm 目录
+            # → 无法扫描」的守卫之后，于是**没配 strm_dir 的实例上这三条全部被
+            # 挡下**，提示还是"无法扫描"这种与操作无关的话。而它们的实际前提只是
+            # "清单里有没有条目" —— 清单可能是迁移进来的历史数据，压根不需要扫描。
+            if arg_lower in ("list", "ls", "列表", "清单"):
+                self._post_reply(event, self._strm_suspect_list_text())
+                return
+            if arg_lower.startswith(("retry", "重传")) or arg_lower in ("删旧重传",):
+                # ⚠️ 要把子命令前缀从参数里**剥掉**再交给解析器。
+                # 之前直接传 `text_arg`（原样含 "retry E0"），于是关键字变成
+                # "retry e0"、永远匹配不到条目，还回一句误导的"没有匹配"。
+                self._post_reply(event, self._strm_suspect_action(
+                    event, self._strip_subcmd_prefix(text_arg, ("retry", "重传")), "retry"))
+                return
+            if arg_lower.startswith(("ignore", "忽略")) and text_arg.strip():
+                self._post_reply(event, self._strm_suspect_action(
+                    event, self._strip_subcmd_prefix(text_arg, ("ignore", "忽略")), "ignore"))
+                return
+
             # /rsync_strm         → 全量主动扫描
             # /rsync_strm <关键字> → 只查指定文件（不遍历整库）
             # /rsync_strm clear   → 清空疑似与待观察清单
@@ -381,6 +605,10 @@ class CommandsMixin:
             # 两种模式并存的原因：全量扫描是「我不知道哪些文件有问题」的答案，
             # 但当用户**已经明确知道**是哪个文件时（例如在 115 云端看到残留），
             # 遍历整库纯属浪费 —— 关键字模式直接定位那一个，秒回。
+
+            # ⚠️ 这道守卫只针对**下面这些会扫描源端的操作**（无参全量扫描 /
+            # 关键字查询 / check / gen / prune / clear）。
+            # `list` / `retry` / `ignore` 已在上面提前返回，不受它约束。
             if not self._strm_check_enabled:
                 self._post_reply(event, "⚠️ strm 交叉验证已在配置页关闭，无法扫描。")
                 return
@@ -393,7 +621,7 @@ class CommandsMixin:
                 )
                 return
 
-            arg_lower = (text_arg or "").lower()
+
             if arg_lower in ("clear", "清空", "reset"):
                 result = self._api_strm_clear()
                 self._post_reply(event, "🧹 " + result["message"])
@@ -510,13 +738,16 @@ class CommandsMixin:
                     reply += "🔍 源端扫描: 已启用，尚未完成首轮\n"
             else:
                 reply += "🔍 源端扫描: ⚠️ 已关闭 —— 入库只能靠 Webhook 通知发现\n"
-            # 被扩展名白名单挡下的文件（累计）：这是此前完全不可见的一维
-            if self._ingest_skip_stat:
-                top = sorted(self._ingest_skip_stat.items(), key=lambda x: -x[1])[:5]
-                shown = "、".join(
-                    f".{e}" if e and e != "(无扩展名)" else "无扩展名" for e, _ in top)
-                reply += (f"⏭ 因扩展名被跳过（累计）: {shown}"
-                          f"（如需同步请加入「同步的扩展名」）\n")
+            # ⚠️ 这里曾有一行「因扩展名被跳过（累计）」的统计 —— 用户要求移除
+            # 看板提示时，连同 `_ingest_skip_stat` 属性与它的写入逻辑一起删了，
+            # **但漏了这个读取点**，于是 `/rsync_status` 直接抛 AttributeError：
+            #
+            #     'Rsync115Sync' object has no attribute '_ingest_skip_stat'
+            #
+            # 这是「删数据源时漏查消费方」的典型形态：属性、写入、看板三处都改了，
+            # 而读取处散在另一个文件里。**删任何状态前先 grep 全仓**。
+            # （日志里那条 info 仍在：每个扩展名首次被挡下时会打一条，
+            #   要排查"某类文件全被丢弃"看日志即可。）
             if len(st.get('missing_files', [])) + len(st.get('corrupt_files', [])) > 0:
                 reply += "💡 发送 /rsync_retry 即可立即定向补传异常文件！\n"
             reply += "💡 支持发送 /rsync_search <剧名/电影名> 查找并确认重传指定媒体。"
