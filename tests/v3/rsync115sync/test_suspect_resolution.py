@@ -332,3 +332,131 @@ def test_cooling_check_gate_comes_before_suspect_creation():
             f"{fn_name}: 冷却判据必须排在「写入疑似清单」之前，否则等于没写"
         )
 
+# --------------------------------------------------------------------------
+# ⚠️ 清理「还在冷却队列」的疑似条目
+# --------------------------------------------------------------------------
+
+def test_cooling_suspect_is_removed_from_suspect_list(tmp_path):
+    """
+    **仍在冷却队列的疑似条目必须被移出**（用户实测反馈的修正）。
+
+    冷却队列里的文件**尚未上传**，所以必然没有 `.strm`。把它挂在疑似清单里的
+    后果不是"多一条记录"，而是**它会把人引向错误的处置**：疑似清单上唯一的
+    修复动作是「删旧重传」，而这个文件根本不是"上传失败"，是"**还没轮到上传**"，
+    手动删了反而打断正常的冷却流程。
+
+    用户原话：「应该优先保留冷却列表里的相同数据，应该还没同步，肯定不会有
+    strm。现在直接保留 strm 异常列表，后面还得手动删就重传吧？」
+    """
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._pending_queue[key] = time.time()
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}
+
+    removed = plugin._prune_cooling_suspects()
+
+    assert removed == [key]
+    assert key not in plugin._strm_suspects, (
+        "冷却期条目仍挂在疑似清单里 —— 用户会被引向「删旧重传」这个错误处置"
+    )
+
+
+def test_真疑似_is_kept(tmp_path):
+    """
+    ⚠️ 反向：**不在冷却队列**的疑似条目必须保留。
+
+    少了这条，一个"清空整个清单"的实现也能让上面那条通过。
+    这条守的是：冷却结束、同步跑完之后若仍失败，它就该作为真疑似留下。
+    """
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}   # 不在队列
+
+    removed = plugin._prune_cooling_suspects()
+
+    assert removed == []
+    assert key in plugin._strm_suspects
+
+
+def test_cooling_criterion_wins_over_resolved(tmp_path):
+    """
+    同时满足两个判据时（在队列 + strm 已存在）**冷却判据优先**。
+
+    顺序是承重的：`_prune_cooling_suspects` 只看内存状态、是**已经确定的误报**；
+    `_prune_resolved_suspects` 要读文件系统。先清确定的，日志里"为什么被移出"
+    才说得清（用户排查时需要能一眼分辨是哪种）。
+    """
+    plugin, _src, strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._pending_queue[key] = time.time()
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}
+    # 造出 .strm，让它同时满足另一个判据
+    path = os.path.join(strm_dir, "某剧", "S01", "E01.strm")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(b"x")
+
+    cooling = plugin._prune_cooling_suspects()
+
+    assert key in cooling, "冷却判据没有优先命中"
+    assert key not in plugin._strm_suspects
+
+
+def test_sweep_also_prunes_cooling_suspects(tmp_path):
+    """
+    巡检也要清（用户要求「都加上」）—— 这样即使不手动点扫描，
+    30 分钟内也会自动把误报清掉。
+    """
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._pending_queue[key] = time.time()
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}
+
+    result = plugin._strm_check()
+
+    assert result["cooling_pruned"] == 1
+    assert key not in plugin._strm_suspects
+
+
+def test_scan_prunes_cooling_suspects(tmp_path):
+    """
+    扫描时也要清（用户要求「都加上」）—— 用户点这个按钮的意图正是
+    「全面看一遍现在到底还有哪些问题」，只报新增不清理失效的，清单会越看越不可信。
+    """
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._pending_queue[key] = time.time()
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}
+
+    res = plugin._strm_scan()
+
+    assert res["data"]["cooling_pruned_suspects"] == [key]
+    assert key not in plugin._strm_suspects
+    assert "冷却" in res["message"]
+
+
+def test_cooling_prune_clears_stale_gen_marker(tmp_path):
+    """
+    移出时补生成标记也要失效。
+
+    留着它会让下一次同名条目被误标成「补生成后仍无」—— 而那次补生成针对的是
+    "还没上传的文件"，结论毫无意义。
+    """
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    key = "电视剧:某剧/S01/E01.mkv"
+    plugin._pending_queue[key] = time.time()
+    plugin._strm_suspects[key] = {"ts": 1.0, "origin": "scan"}
+    plugin._strm_gen_requested[key] = 1.0
+
+    plugin._prune_cooling_suspects()
+
+    assert plugin._strm_gen_requested.get(key) is None
+
+
+def test_cooling_prune_needs_no_ledger(tmp_path):
+    """台账不可用（`_pending_queue` 缺失）时不得抛异常 —— 与其它出口同口径。"""
+    plugin, _src, _strm_dir = _plugin(tmp_path)
+    del plugin.__dict__["_pending_queue"]
+
+    assert plugin._prune_cooling_suspects() == []
+

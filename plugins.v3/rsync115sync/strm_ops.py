@@ -443,6 +443,11 @@ class StrmOpsMixin:
         # 先处理疑似清单：这一步与下面的观察期循环彼此独立（一个 key 不可能同时
         # 在两个清单里），但放在前面有个好处 —— 它清空的条目不会在本轮被后面的
         # 逻辑重新登记成疑似。
+        #
+        # 两个判据都要跑：`_prune_cooling_suspects` 处理"还没上传"的误报，
+        # `_prune_resolved_suspects` 处理"其实已经成功"的。顺序上先清冷却期的 ——
+        # 它是**已经确定的误报**，而另一个要读文件系统。
+        cooling_pruned = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects()
 
         grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
@@ -517,7 +522,64 @@ class StrmOpsMixin:
 
         return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
                 "ok": len(settled_ok), "new_suspects": len(new_suspects),
-                "resolved": len(resolved)}
+                "resolved": len(resolved),
+                "cooling_pruned": len(cooling_pruned)}
+
+    def _prune_cooling_suspects(self) -> List[str]:
+        """
+        移除「此刻仍在冷却队列」的疑似条目，返回被移除的 key。
+
+        Drop suspect entries whose file is *currently* still in the cool-down queue.
+
+        ## 为什么它们是误报（用户实测反馈）
+
+        用户原话：「还在冷却期未上传，手动扫描 strm，未检查到就放到疑似列表里，
+        按理应该先和冷却期的比对」，并进一步指出 ——
+        **「冷却结束会自动同步，按理应该移除了」**。
+
+        冷却队列里的文件**尚未上传**，所以必然没有 `.strm`。把它挂在疑似清单里
+        的后果不是"多一条记录"，而是**它会把人引向错误的处置**：
+        疑似清单上唯一的修复动作是「删旧重传」，而这个文件根本不是"上传失败"，
+        是"**还没轮到上传**"。手动删了反而打断正常的冷却流程。
+
+        ## 与 `_prune_resolved_suspects` 的分工
+
+        | 方法 | 判据 | 覆盖的场景 |
+        |---|---|---|
+        | `_prune_resolved_suspects` | `.strm` 已存在 | 上传其实成功了（助手补生成 / 用户手动处理过） |
+        | `_prune_cooling_suspects`（本方法） | 仍在冷却队列 | 上传**还没开始**，被扫描误报进来 |
+
+        两个判据互斥（一个要求"已上传成功"，一个要求"尚未上传"），合并反而会让
+        "它到底为什么被移出"变得说不清 —— 而这一条在排查时需要能一眼分辨。
+
+        ⚠️ **判据是「此刻仍在队列」，不是「曾经在过」**：文件冷却结束、同步跑完后
+        会出队；若那次同步失败，它才会作为**真疑似**留下来。所以不能用历史痕迹判断，
+        只能看当前状态。
+        The criterion is *currently* queued: after cooling elapses the file is synced
+        and dequeued, and a genuine failure is then correctly a suspect again.
+
+        ⚠️ 观察期**不在**本方法的判据里（用户明确要求）：观察期条目已同步成功、
+        只是还没等到 `.strm`，那是另一件事，由 `check_one` 的窗口机制处理。
+        """
+        pending = getattr(self, "_pending_queue", None) or {}
+        if not pending:
+            return []
+        cooling = [k for k in list(self._strm_suspects.keys()) if k in pending]
+        for key in cooling:
+            self._strm_suspects.pop(key, None)
+            # 补生成标记一并失效：条目已离场，留着只会让下一次同名条目被误标成
+            # 「补生成后仍无」—— 而那次补生成针对的是"还没上传的文件"，
+            # 结论毫无意义。与其它出口同口径。
+            self._strm_gen_requested.pop(key, None)
+        if cooling:
+            self.save_data("strm_suspects", self._strm_suspects)
+            logger.info(f"[Rsync115Sync] 🧊 {len(cooling)} 个疑似条目其实**还在冷却队列**"
+                        f"（尚未上传，按定义不可能有 strm），已移出待处理清单: "
+                        f"{_brief_paths(cooling)}")
+            # 清单可能因此清空 —— 与其它出口同口径重置通知闩锁，
+            # 否则「已全部解决」那条通知永远发不出去。
+            self._reset_strm_notified_if_clear()
+        return cooling
 
     def _prune_resolved_suspects(self) -> List[str]:
         """
@@ -763,13 +825,20 @@ class StrmOpsMixin:
         if added:
             self._notify_strm_suspects(candidates[:added])
 
-        # 顺带清掉「strm 后来出现了」的疑似条目。放在扫描里是因为用户点这个
-        # 按钮的意图正是「全面看一遍现在到底还有哪些问题」—— 只报新增而
-        # 不清理已解决的，清单会越看越不可信（挂着的问题其实早解决了）。
+        # 顺带清掉两类**确定的误报**。放在扫描里是因为用户点这个按钮的意图
+        # 正是「全面看一遍现在到底还有哪些问题」—— 只报新增而不清理失效的，
+        # 清单会越看越不可信（挂着的问题其实早解决了 / 压根还没轮到）。
+        #
+        # ① 仍在冷却队列的（尚未上传 ⇒ 不可能有 strm）—— 用户实测反馈的这一类；
+        # ② `.strm` 已经出现的（上传其实成功了）。
+        cooling_pruned = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects()
 
         msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
                f"（新增 {added} 个）。")
+        if cooling_pruned:
+            msg += (f"\n🧊 另有 {len(cooling_pruned)} 个疑似条目其实**还在冷却队列**"
+                    f"（尚未上传，按定义不可能有 strm），已移出待处理清单。")
         if resolved:
             msg += (f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已存在"
                     f"（可能是助手自己生成的、或你已处理过），已移出待处理清单。")
@@ -802,7 +871,8 @@ class StrmOpsMixin:
                          "skipped_ignored": skipped_ignored,
                          "skipped_watching": skipped_watching,
                          "skipped_cooling": skipped_cooling,
-                         "resolved_suspects": resolved}}
+                         "resolved_suspects": resolved,
+                         "cooling_pruned_suspects": cooling_pruned}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
         """
@@ -1319,6 +1389,7 @@ class StrmOpsMixin:
         """
         res = self._check_watch_now((body or {}).get("keys") or [])
         if self._strm_suspects:
+            self._prune_cooling_suspects()
             resolved = self._prune_resolved_suspects()
             if resolved:
                 res["message"] = (res.get("message", "")
