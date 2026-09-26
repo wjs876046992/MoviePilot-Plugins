@@ -183,3 +183,79 @@ def test_ledger_overview_counts_what_the_user_asked_to_distinguish():
     src = open(os.path.join(_PKG, "__init__.py"), encoding="utf-8").read()
     assert "synced_at IS NOT NULL" in src, "台账概览丢了「已成功」的判据"
     assert '"ledger": self._ledger_overview()' in src, "台账概览未接入 /status"
+
+# --------------------------------------------------------------------------
+# 已删功能的文案不得残留（用户会照着提示去操作）
+# --------------------------------------------------------------------------
+
+def test_generate_hint_does_not_promise_the_removed_verdict():
+    """
+    `_api_strm_generate` 的提示**不得**再提「云端可见性」探测。
+
+    ## 这条是怎么被发现的
+
+    用户反馈看板上还有「删了也白删」的提示、还要「确认失败」才能删。
+    界面本身确实已经删干净（那是浏览器缓存），**但顺着查发现后端返回的
+    提示文案里还留着**：
+
+        「看板会在条目回到清单时给出『云端可见性』探测结论帮你区分；
+          若探测显示『可见且大小一致』，请先查生成侧，别急着删。」
+
+    这段话有三重问题：① 承诺一个**不存在**的功能；② 给的建议正是 v0.3.0
+    论证过"会把人引向错误动作"的那条 —— CD2 挂载视图对**改名失败**必然
+    显示「可见且大小一致」（残留与正式文件字节数相同），照它做就会**删不掉
+    真正坏掉的文件**；③ 用户会照着提示操作，然后发现提示说的东西没有。
+
+    ⚠️ 判据用**AST 取字符串常量**而不是 grep 源码：`strm_ops.py` 里刻意留着
+    解释"这里曾经有过什么、为什么删"的中文注释，grep 会把它们当成残留
+    （这正是本仓反复出现的假红形态）。
+    """
+    import ast
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    path = os.path.join(root, "plugins.v3", "rsync115sync", "strm_ops.py")
+    tree = ast.parse(open(path, encoding="utf-8").read(), path)
+
+    node = next((n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "_api_strm_generate"),
+                None)
+    assert node is not None, "_api_strm_generate 不见了"
+
+    # 只取**字符串常量**（即真正会发给用户的文案），注释天然不在其中
+    text = "".join(c.value for c in ast.walk(node)
+                   if isinstance(c, ast.Constant) and isinstance(c.value, str))
+
+    for banned in ("云端可见性", "白删（rsync", "别急着删", "可见且大小一致"):
+        assert banned not in text, (
+            f"提示文案里仍有已删功能的说法 {banned!r} —— 用户会照着它去操作，"
+            f"而它指向的判定在 v0.3.0 已整条删除（对改名失败必然判错）"
+        )
+    # 正向：必须说清唯一成立的判据
+    assert ".strm" in text, "提示里没有说明判据是 .strm"
+
+
+def test_retry_path_has_no_second_confirmation_prompt():
+    """
+    `_api_strm_retry` 返回给用户的文案不得再要求"确认" —— 已无二次确认。
+
+    那条守卫（复探挂载后判「可见且大小一致」→ 拦下 → 要用户再点一次）随
+    「云端可见性」整套删除。若文案还在要求确认，用户会去找一个不存在的按钮。
+    """
+    import ast
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    path = os.path.join(root, "plugins.v3", "rsync115sync", "strm_ops.py")
+    tree = ast.parse(open(path, encoding="utf-8").read(), path)
+
+    node = next((n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "_api_strm_retry"),
+                None)
+    assert node is not None
+    text = "".join(c.value for c in ast.walk(node)
+                   if isinstance(c, ast.Constant) and isinstance(c.value, str))
+
+    assert "needs_force" not in text
+    assert "再点一次" not in text, "文案要求用户再点一次 —— 二次确认已不存在"
+
