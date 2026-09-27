@@ -517,15 +517,15 @@
                   color="primary"
                   radius-sm
                   class="px-2"
-                  :loading="itemLoading === file"
-                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== file)"
-                  @click="syncSingle(file)"
+                  :loading="itemLoading === entry.file"
+                  :disabled="statusData.is_running || (!!itemLoading && itemLoading !== entry.file)"
+                  @click="syncSingle(entry.file)"
                 >
                   <v-icon start size="14">mdi-refresh</v-icon>
                   重试
                   <v-tooltip activator="parent" location="top">立即定向重传此文件</v-tooltip>
                 </v-btn>
-                <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(file, 'exact')">
+                <v-btn icon size="x-small" variant="text" color="primary" @click="ignoreFile(entry.file, 'exact')">
                   <v-icon size="16">mdi-eye-off-outline</v-icon>
                   <v-tooltip activator="parent" location="top">忽略此项（不再报警）</v-tooltip>
                 </v-btn>
@@ -1443,9 +1443,29 @@ async function clearBackfill() {
 // 判成「文件是好的」，于是把唯一能修复的动作挡在门外（详见后端 _api_strm_retry）。
 // 现在请求一次即执行，判据是「待处理清单里没有对应 strm」。
 //
-// ⚠️ 保留 plainText：后端的文案同时面向聊天渠道（渲染 Markdown）与看板
-// （纯文本区块，不渲染）。显示在前者之外的地方都要先规整掉 `**` 与行内代码
-// 标记，否则用户看到的就是一堆星号。
+// 把后端文案规整成**纯文本**再显示。
+//
+// ⚠️ 这个函数被 fde36bb「砍掉云端可见性」时误删了，而模板里的两处调用
+// （{{ plainText(actionMsg) }} / {{ plainText(strmScanMsg) }}）**留了下来** ——
+// 于是 `plainText` 成了一个未定义的模板引用。这类错误的后果不是"显示错乱"，
+// 而是**渲染直接抛错**：Vue 在渲染函数里抛异常时整棵子树的更新被打断，
+// 卡片只剩静态的标题，Content 区整块消失。症状与"高度链断裂"完全一致，
+// 因此被误诊成了 CSS 问题（见 docs/DEVELOPMENT.md §3.12）。
+//
+// 教训：模板调用的 helper 一旦被删，构建**不会**报错（模板编译成
+// `_ctx.plainText(...)`，运行时才炸）。删函数前必须先确认模板里没有调用点。
+// The template compiles undefined helpers to `_ctx.helper(...)`, so a deleted
+// function only fails at render time — never at build time.
+//
+// 后端文案同时面向聊天渠道（渲染 Markdown）与看板（纯文本区块，不渲染）；
+// 显示在后者时要先规整掉 `**` 与行内代码标记，否则用户看到的就是一堆星号。
+function plainText(text) {
+  return String(text ?? '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')   // 去掉加粗标记，保留内容
+    .replace(/`([^`]+)`/g, '$1')       // 去掉行内代码标记
+    .replace(/[ \t]+\n/g, '\n')        // 行尾空格（含拼接留下的）
+}
+
 async function postStrmRetry(keys) {
   return props.api.post('plugin/Rsync115Sync/strm_retry', { keys })
 }

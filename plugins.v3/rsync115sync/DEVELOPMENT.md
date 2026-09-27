@@ -684,20 +684,113 @@ fail-open 策略 + 重传前复探」，注释里甚至写明了「分支顺序�
 
 ---
 
-### 3.12 面板 Content 区域消失（点击按钮后，Title 还在）—— 高度链断裂
+### 3.12 面板 Content 区域消失（点击按钮后，Title 还在）
 
-**用户反馈**：「点击按钮操作后，面板 Content 区域消失了，Title 还在」。
+**用户反馈**：「点击按钮操作后，面板 Content 区域消失了，Title 还在」，
+后续补充：「**操作任何按钮后**，下面内容直接隐藏，得关掉重新打开才显示」。
 
-#### 根因：`height:100%` 链在根 div 处断掉
+> ⚠️ **本节先前的结论（高度链断裂）是误诊，已在 3.12.1 更正。**
+> `af7f098` 补的 `h-100` 系列改动**不是**本缺陷的修复 —— 部署后症状依旧。
+> 那些改动本身无害（确实让高度链与对照插件一致），保留即可，但要知道
+> 它们没有解决用户报告的问题。
 
-`v-card` 用了 Vuetify 的 `h-100`，它的定义是（`vuetify/lib/styles/main.css`）：
+#### 3.12.1 真正的根因：模板调用了一个已被删除的函数（2026-09-27 定位）
 
-```css
-.h-100 { height: 100% !important; }
+`Page.vue` 的模板里有两处 `{{ plainText(...) }}` 调用：
+
+```vue
+>{{ plainText(actionMsg) }}</div>        <!-- 操作反馈条 -->
+{{ plainText(strmScanMsg) }}             <!-- strm 扫描提示 -->
 ```
 
-**`height:100%` 需要一个有确定高度的父元素才能解析**。而根 div 是
-`<div class="plugin-page">` —— **没有高度**，于是 `h-100` 退化成 `auto`：
+而 **`function plainText()` 在 `fde36bb`「砍掉云端可见性」那次重构中被误删了** ——
+那次提交删掉了 `postStrmRetry` 的 `needs_force` 二次确认逻辑，顺带把紧邻的
+`plainText` 定义一起删掉，但它**没有删调用点**。于是模板引用了一个不存在的标识符。
+
+**为什么构建期完全静默**：模板编译器无法静态判定 `plainText` 是不是 script 里的
+绑定，于是把它编译成 `_ctx.plainText(...)` —— 一个**合法的运行时属性访问**。
+
+```js
+// dist/assets/__federation_expose_Page-42rfJuEa.js（缺陷版本）
+_toDisplayString(_ctx.plainText(actionMsg.value))   // ← _ctx 上没有这个属性
+```
+
+`vite build` 只做打包，不做模板↔script 的标识符一致性检查，因此不会报错。
+
+**为什么症状是「Title 还在、Content 整块消失」**：看 Vue 3.5.42 的
+`renderComponentRoot`（`@vue/runtime-core`）：
+
+```js
+} catch (err) {
+  blockStack.length = 0;
+  handleError(err, instance, 1);
+  result = createVNode(Comment);      // ← 整棵子树塌成一个空注释节点
+}
+```
+
+渲染函数抛错时，Vue **不保留上一次成功的 DOM**，而是让组件渲染成一个
+Comment 占位节点 —— 于是整块 Content 消失。`v-card-item`（Title）不受影响，
+因为抛错的模板段属于另一棵子树。
+
+把它与三个症状特征对上：
+
+| 症状 | 解释 |
+|---|---|
+| **只在操作之后**出现 | `actionMsg` 初值是空串，`v-if="actionMsg"` 为假，那行**根本不渲染**；点按钮把它变成非空，才第一次走到抛错的行 |
+| Title 不受影响 | 抛错的是主体子树，`v-card-item` 是另一棵 |
+| **关掉重开就好** | 重新打开时 `actionMsg` 又是空串，走不到那个分支 |
+
+⚠️ 这条也被用户的原话直接印证：「操作**任何**按钮」都会触发 ——
+因为所有按钮都会写 `actionMsg`，与具体是哪个按钮无关。这一点高度链假说
+解释不了（它只能解释"内容变少"的按钮）。
+
+#### 3.12.2 同一提交族里的第二处同类缺陷
+
+`c288a33` 给列表加分页时，把
+
+```vue
+v-for="(file, idx) in statusData.last_status?.missing_files || []"
+```
+
+改成了
+
+```vue
+v-for="entry in failedPaged.slice"
+```
+
+但**内层 4 处 `file` 没跟着改名**：`:loading="itemLoading === file"`、
+`:disabled="... !== file"`、`@click="syncSingle(file)"`、
+`@click="ignoreFile(file, 'exact')"`。
+
+后果：「对账异常清单」标签里的**重试 / 忽略按钮点击即抛错**（同一个
+`_ctx.file` 未定义 → 同一条 Content 消失路径）。
+
+#### 3.12.3 修法
+
+| 缺陷 | 修法 |
+|---|---|
+| `plainText` 被删、调用留下 | 补回函数定义（含注释说明它为何必须存在） |
+| `file` 别名残留 | 4 处改为 `entry.file` |
+
+#### 3.12.4 防回归：`test_dashboard_template_refs.py`
+
+这类缺陷**只能靠测试或真机**发现（构建期静默）。新增的测试做两件事：
+
+1. **主闸门**：把模板里所有「调用目标」与 `<script setup>` 的顶层绑定对照，
+   任何未定义的都是失败。对 `Page.vue` / `Config.vue` / `CollapsibleNote.vue`
+   三个组件都跑。
+2. **反向用例**：变异测试（删掉 `plainText` 定义后探针必须报红）+
+   针对 `file` 别名的专项断言 —— `file` 是**变量引用**而非调用，
+   上面的调用探针抓不到它，需要单独钉。
+
+⚠️ 探针的假阴性风险已处理：`_script_bindings` 只认**行首**（允许缩进）的声明，
+否则函数体内的局部变量会被误当成顶层绑定，让测试变成空转。
+
+验证：修复前跑该文件 → **4 failed**；修复后 → **6 passed**。
+
+#### 3.12.5 附：被误诊的那次改动（`af7f098`，保留但非本缺陷的修复）
+
+`af7f098` 认为根因是 `height:100%` 链在根 div 处断掉并据此改了 CSS：
 
 ```
 body (有高度)
@@ -709,37 +802,22 @@ body (有高度)
                                                      再被 overflow-hidden 裁掉 ❌
 ```
 
-**Title 为什么幸存**：`v-card-item` 是 grid 布局、高度由内容决定，不依赖这条链。
-这正好解释了「Title 还在、Content 消失」这个不对称的症状。
-
-#### 对照证据
-
-同类页面（`watchsync` / `courseorganizer`）的根 div 都是
-`class="plugin-page h-100"` —— **本插件漏了那个 `h-100`**。这不是新引入的缺陷，
-而是从一开始就少写了一个类，只是大多数时候内容够多、`flex-grow-1` 撑得起来，
-所以没暴露；内容变少（例如点完按钮后列表被清空）时才显形。
-
-#### 修法（一正两防）
+同类页面（`watchsync` / `courseorganizer`）的根 div 确实是
+`class="plugin-page h-100"`，本插件当时漏了那个类 —— 差异属实，改动也合理
+（一处 CSS 差异不该留着）。**但它只是"顺带对齐"，不是用户报告问题的解**：
+部署后症状照旧，因为真正的开关是 `actionMsg` 是否非空。
 
 | 层次 | 改动 | 作用 |
 |---|---|---|
-| **正** | 根 div 补 `h-100` | 接上百分比链，让 `v-card` 真正满高 |
-| **防 1** | `.body-surface { min-height: 0 }` | 弹性子项默认 `min-height:auto` 会拒绝收缩到内容高度以下 —— 这是 flex + overflow 的标准做法 |
-| **防 2** | `.page-main-card { min-height: 240px }` | 链再次断掉时卡片也不塌成 0 |
+| **正** | 根 div 补 `h-100` | 与对照插件对齐（无害） |
+| **防 1** | `.body-surface { min-height: 0 }` | flex + overflow 的标准做法 |
+| **防 2** | `.page-main-card { min-height: 240px }` | 卡片不塌成 0 |
+
+相关结构断言保留在 `test_dashboard_height_chain.py`（防止再漏 `h-100`）。
 
 ⚠️ 保底刻意用**绝对值**而不是 `60vh`：宿主弹窗在移动端可能小于半屏，
 用视口单位会让卡片反而比容器更高 —— 又变成被裁掉，等于用一个裁切换另一个裁切。
 
-#### 验证状态（诚实记录）
-
-- ✅ **静态证据**：`h-100` 的 CSS 定义已核对；对照插件的写法差异已确认；
-  症状（Title 在、Content 消失）能由"链断裂 + grid 固有高度"完整解释。
-- ⚠️ **未做渲染实测**：容器里的 playwright 缺浏览器可执行文件
-  （`chrome-headless-shell` 未安装，下载需授权）。所以这是**推断出的根因**，
-  而不是实测确认的。修复后需在真机上点按钮验证。
-- 已加结构断言（`test_dashboard_height_chain.py`）防止再漏 `h-100`：
-  根 div 带 `h-100` / 卡片保留 `h-100 + overflow-hidden` 组合 /
-  内容区有 `min-height:0` / 卡片有保底高度。
 
 ## 4. 新增能力
 
