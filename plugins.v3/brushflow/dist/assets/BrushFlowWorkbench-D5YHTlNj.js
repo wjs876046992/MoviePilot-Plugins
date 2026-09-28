@@ -542,6 +542,8 @@ return (_ctx, _cache) => {
                                           label: "免费剩余时间下限（小时）",
                                           type: "number",
                                           min: "0",
+                                          step: "any",
+                                          hint: "支持小数，如 6 天 23 小时 50 分 = 167.83",
                                           "hide-details": "auto",
                                           "persistent-placeholder": "",
                                           placeholder: "留空不限制"
@@ -561,6 +563,8 @@ return (_ctx, _cache) => {
                                           label: "免费剩余时间上限（小时）",
                                           type: "number",
                                           min: "0",
+                                          step: "any",
+                                          hint: "支持小数，如 6 天 23 小时 50 分 = 167.83",
                                           "hide-details": "auto",
                                           "persistent-placeholder": "",
                                           placeholder: "留空不限制"
@@ -1134,7 +1138,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-f7b15a3e"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-1d7b6e43"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,mergeProps:_mergeProps,createElementBlock:_createElementBlock,unref:_unref,renderList:_renderList,Fragment:_Fragment,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle} = await importShared('vue');
 

@@ -240,7 +240,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.2.0"
+    plugin_version = "6.2.1"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -1494,6 +1494,37 @@ class BrushFlow(_PluginBase):
         report["filtered_count"] = max(report["candidate_count"] - report["added_count"], 0)
         report["result"] = "completed"
 
+    @staticmethod
+    def _site_base_url(site: Any) -> str:
+        """返回站点根地址（带协议头、末尾无斜杠），用于拼接站点内路径
+
+        ⚠️ 站点管理里填的 ``url`` 是**带协议头的完整地址**，``domain`` 只是裸主机名。
+        直接拿 ``domain`` 拼 URL 会请求到 ``ptchdbits.co/…`` 这种无法解析的地址
+        （实测报错即为此），故此处优先取 ``url``。
+
+        用户填的 ``url`` 也可能带页面路径（如 ``.../browse.php``）。若原样拼接，
+        ``renewtorrents.php`` 会被挂到该页面之下而 404，因此末段是文件名时予以丢弃，
+        仅保留目录路径（兼容站点挂在子目录下的情况）。
+        """
+        candidate = (
+            str(getattr(site, "url", "") or "").strip()
+            or str(getattr(site, "domain", "") or "").strip()
+        )
+        if not candidate:
+            return ""
+        if not candidate.startswith(("http://", "https://")):
+            candidate = f"https://{candidate}"
+        parsed = urlparse(candidate)
+        if not parsed.netloc:
+            return ""
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
+        if path:
+            head, _, last = path.rpartition("/")
+            # 末段含点视为文件名（index.php、browse.php 等），丢弃后保留其所在目录
+            path = head if "." in last else path
+        return f"{base}{path}"
+
     def __fetch_custom_source_torrents(
         self,
         site: Any,
@@ -1504,10 +1535,11 @@ class BrushFlow(_PluginBase):
 
         只取首页：这类定制入口的有效种子集中在最前几行，不做翻页。
         """
-        url = urljoin(
-            f"{str(getattr(site, 'domain', '') or '').rstrip('/')}/",
-            str(source.get("renew_path") or "").lstrip("/"),
-        )
+        base = self._site_base_url(site)
+        if not base:
+            logger.error(f"刷流任务 [{task.name}] 站点缺少可用地址，无法抓取自定义来源")
+            return []
+        url = urljoin(f"{base}/", str(source.get("renew_path") or "").lstrip("/"))
         proxies = settings.PROXY if getattr(site, "proxy", False) else None
         response = RequestUtils(
             cookies=getattr(site, "cookie", None),
@@ -1534,7 +1566,8 @@ class BrushFlow(_PluginBase):
         tree = etree.HTML(html or "")
         if tree is None:
             return []
-        base = str(getattr(site, "domain", "") or "").rstrip("/")
+        # 必须是带协议头的根地址：domain 是裸域名，拼出来的种子链接无法下载
+        base = BrushFlow._site_base_url(site)
         results: List[TorrentInfo] = []
         for row in tree.xpath('//table[@class="torrentname"]/ancestor::tr[1]'):
             anchors = row.xpath('.//a[@title][contains(@href,"details.php?id=")]')

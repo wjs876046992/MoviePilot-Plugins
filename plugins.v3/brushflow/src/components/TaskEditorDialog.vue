@@ -248,6 +248,8 @@ async function saveTask() {
                       label="免费剩余时间下限（小时）"
                       type="number"
                       min="0"
+                      step="any"
+                      hint="支持小数，如 6 天 23 小时 50 分 = 167.83"
                       hide-details="auto"
                       persistent-placeholder
                       placeholder="留空不限制"
@@ -259,6 +261,8 @@ async function saveTask() {
                       label="免费剩余时间上限（小时）"
                       type="number"
                       min="0"
+                      step="any"
+                      hint="支持小数，如 6 天 23 小时 50 分 = 167.83"
                       hide-details="auto"
                       persistent-placeholder
                       placeholder="留空不限制"
