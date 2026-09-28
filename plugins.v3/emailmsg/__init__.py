@@ -29,7 +29,7 @@ class EmailMsg(_PluginBase):
     # 插件图标
     plugin_icon = "Email_A.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.1"
     # 插件作者
     plugin_author = "LLL001a"
     # 作者主页
@@ -522,6 +522,9 @@ class EmailMsg(_PluginBase):
                     template: Optional[str] = None) -> str:
         """生成美化后的 HTML 邮件正文。
 
+        媒体类通知（有海报）使用配置的媒体模板；非媒体类通知（无海报）
+        自动降级为通用文本模板，避免无海报时仍套用媒体模板。
+
         :param title: 邮件标题
         :param text: 邮件正文
         :param image: 海报图片地址
@@ -534,6 +537,14 @@ class EmailMsg(_PluginBase):
         template = template or self._template or "dark_card"
         safe_title = html_lib.escape(title or "MoviePilot 通知")
         safe_type = html_lib.escape(msg_type or "通知")
+
+        # 非媒体类通知（无海报）自动降级为通用文本模板：
+        # 正文按行保留原始格式，不强制解析「字段名：值」，避免错误分段。
+        if not image:
+            return self._build_html_text_card(
+                safe_title, text, link, safe_type
+            )
+
         # 解析正文字段
         fields = self._parse_text_fields(text)
         # 转义字段
@@ -552,6 +563,66 @@ class EmailMsg(_PluginBase):
             )
         return self._build_html_dark_card(
             safe_title, safe_fields, image, link, safe_type
+        )
+
+    def _build_html_text_card(self, safe_title: str, text: str,
+                              link: Optional[str], safe_type: str) -> str:
+        """通用文本模板：非媒体类通知（无海报）使用的简洁文本卡片。
+
+        正文按行保留原始格式展示，不强制解析「字段名：值」，
+        避免动作描述、路径、Markdown 等文本被错误分段。
+        """
+        import html as html_lib
+        # 按行拆分正文，保留每行原始内容（含冒号、emoji、Markdown 等）
+        line_rows = ""
+        for raw_line in (text or "").split("\n"):
+            line = raw_line.rstrip("\r")
+            if not line.strip():
+                # 空行渲染为间距
+                line_rows += '<div style="height:8px;"></div>'
+                continue
+            safe_line = html_lib.escape(line)
+            line_rows += (
+                f'<div style="margin-bottom:6px;color:#374151;'
+                f'word-break:break-word;">{safe_line}</div>'
+            )
+        fields_html = ""
+        if line_rows:
+            fields_html = (
+                '<div style="font-size:14px;color:#374151;line-height:1.9;'
+                f'text-align:left;margin-bottom:20px;">{line_rows}</div>'
+            )
+        # 按钮
+        button_html = ""
+        if link:
+            button_html = (
+                '<div style="text-align:center;margin:0;">'
+                f'<a href="{html_lib.escape(link)}" '
+                'style="display:inline-block;padding:12px 32px;background:#3f51b5;'
+                'color:#ffffff;text-decoration:none;border-radius:24px;'
+                'font-size:14px;font-weight:600;">查看详情</a>'
+                '</div>'
+            )
+        return (
+            '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head>'
+            '<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:'
+            '\'Helvetica Neue\',Helvetica,Arial,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;">'
+            '<div style="max-width:600px;margin:24px auto;background-color:#ffffff;'
+            'border-radius:16px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">'
+            '<div style="height:6px;background:linear-gradient(90deg,#3f51b5,#7c4dff);"></div>'
+            '<div style="padding:32px 32px 28px 32px;">'
+            f'<div style="margin-bottom:16px;"><span style="display:inline-block;'
+            'padding:4px 12px;background:#eef0fb;color:#3f51b5;border-radius:12px;'
+            f'font-size:12px;font-weight:600;">{safe_type}</span></div>'
+            f'<h1 style="margin:0 0 18px 0;font-size:20px;color:#1a1a1a;'
+            f'line-height:1.4;font-weight:700;">{safe_title}</h1>'
+            f'{fields_html}'
+            f'{button_html}'
+            '</div>'
+            '<div style="padding:16px 32px;background-color:#fafafa;'
+            'border-top:1px solid #eeeeee;text-align:center;font-size:12px;'
+            'color:#999999;">此邮件由 MoviePilot 邮箱通知插件自动发送</div>'
+            '</div></body></html>'
         )
 
     def _build_html_dark_card(self, safe_title: str, fields: List[tuple],

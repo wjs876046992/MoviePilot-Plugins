@@ -14,7 +14,7 @@ def test_plugin_metadata() -> None:
     """插件元数据应与市场索引保持一致。"""
     plugin = _make_plugin()
     assert plugin.plugin_name == "邮箱通知"
-    assert plugin.plugin_version == "1.2.0"
+    assert plugin.plugin_version == "1.3.1"
     assert plugin.plugin_config_prefix == "emailmsg_"
 
 
@@ -326,6 +326,76 @@ def test_build_html_without_poster_and_link() -> None:
     html = plugin._build_html("标题", "正文", msg_type="通知")
     assert "查看详情" not in html
     assert "<img" not in html
+
+
+def test_build_html_non_media_falls_back_to_text_card() -> None:
+    """非媒体类通知（无海报）应自动降级为通用文本模板。"""
+    plugin = _make_plugin()
+    # 即使配置了媒体模板，无海报时也应降级
+    plugin._template = "poster_full"
+    html = plugin._build_html(
+        "站点签到成功",
+        "站点：憨憨\n状态：签到成功",
+        image=None,
+        link="https://mp.example.com/#/site",
+        msg_type="站点",
+    )
+    # 通用文本模板特征：浅色背景
+    assert "background-color:#f4f5f7" in html
+    # 不应包含媒体模板特征
+    assert "min-height:520px" not in html
+    assert "object-fit:cover" not in html
+    # 标题、字段与按钮应正常展示
+    assert "站点签到成功" in html
+    assert "憨憨" in html
+    assert "查看详情" in html
+
+
+def test_build_html_non_media_preserves_lines() -> None:
+    """非媒体类通知正文应按行保留原始格式，不被错误分段。"""
+    plugin = _make_plugin()
+    text = (
+        "⏰ 延迟删除完成\n\n"
+        "🗂️ 源文件：/downloads/电影/外语电影/诺曼底72小时 (2026)/诺曼底72小时 (2026) - 1080p.mkv\n"
+        "📝 已清理转移记录\n"
+        "🌱 已联动删除种子"
+    )
+    html = plugin._build_html("🧹 媒体文件清理", text, image=None, msg_type="站点")
+    # 含冒号的动作描述行应完整保留，不拆成「字段名：值」
+    assert "🗂️ 源文件：/downloads/电影/外语电影/诺曼底72小时 (2026)/诺曼底72小时 (2026) - 1080p.mkv" in html
+    # 无冒号的行应作为独立行保留，不被并入上一行
+    assert "📝 已清理转移记录" in html
+    assert "🌱 已联动删除种子" in html
+
+
+def test_build_html_non_media_preserves_markdown() -> None:
+    """非媒体类通知的 Markdown 与链接文本应完整保留。"""
+    plugin = _make_plugin()
+    text = (
+        "v3.0.7\n\n### ✨ 新功能\n\n"
+        "- add GitHub Token device authorization by @jxxghp\n\n"
+        "**完整更新记录**: https://github.com/jxxghp/MoviePilot/compare/v3.0.6...v3.0.7"
+    )
+    html = plugin._build_html("【MoviePilot后端更新通知】", text, image=None, msg_type="站点")
+    assert "### ✨ 新功能" in html
+    assert "**完整更新记录**: https://github.com/jxxghp/MoviePilot/compare/v3.0.6...v3.0.7" in html
+
+
+def test_build_html_media_uses_configured_template() -> None:
+    """媒体类通知（有海报）应使用配置的媒体模板。"""
+    plugin = _make_plugin()
+    plugin._template = "poster_full"
+    html = plugin._build_html(
+        "3体 (2024) 已入库",
+        "类型：电视剧，大小：18.89G",
+        image="https://tmdb.example.com/t/p/w500/poster.jpg",
+        link="https://mp.example.com/#/history",
+        msg_type="整理入库",
+    )
+    # 媒体模板特征
+    assert "min-height:520px" in html
+    assert "https://tmdb.example.com/t/p/w500/poster.jpg" in html
+    assert "3体" in html
 
 
 def test_build_html_dark_card_template() -> None:
