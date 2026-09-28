@@ -240,7 +240,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.2.1"
+    plugin_version = "6.2.2"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -1431,6 +1431,8 @@ class BrushFlow(_PluginBase):
         task = self._get_task_config()
         logger.info(f"刷流任务 [{task.name}] 开始获取站点 {site.name} 的新种子")
         custom_source = self._custom_source_for_site(site) if task.renew_support else None
+        source_label = "复活区" if custom_source else ("RSS" if task.rss_support else "站点列表页")
+        logger.info(f"刷流任务 [{task.name}] 候选来源：{source_label}")
         if custom_source:
             torrents = self.__fetch_custom_source_torrents(site, task, custom_source)
         elif task.rss_support:
@@ -1439,8 +1441,13 @@ class BrushFlow(_PluginBase):
             torrents = TorrentsChain().browse(domain=site.domain)
         if not torrents:
             report["result"] = "no_candidates"
+            # 静默 return 会让「页面抓不到 / 选择器不匹配 / 全部被解析丢弃」看起来一模一样
+            logger.warning(
+                f"刷流任务 [{task.name}] 来源【{source_label}】未取得任何候选种子，本轮无操作"
+            )
             return
         report["source_count"] = len(torrents)
+        logger.info(f"刷流任务 [{task.name}] 来源【{source_label}】解析到 {len(torrents)} 个候选种子")
         if task.except_subscribe:
             before_count = len(torrents)
             torrents = self.__filter_torrents_contains_subscribe(torrents, subscribe_titles)
@@ -1450,11 +1457,26 @@ class BrushFlow(_PluginBase):
         report["candidate_count"] = len(torrents)
         torrents.sort(key=lambda item: item.pubdate or "", reverse=True)
         seeding_size = self.__calculate_seeding_torrents_size(torrent_tasks)
+        # 逐条记录排除原因：reason_counts 只汇总在看板上，日志里看不出是哪个种子被哪条规则挡下。
+        # 刷流任务每隔几分钟就跑一轮，故按轮次限制明细条数，避免日志刷屏。
+        log_budget = 10
+        logged_skips = 0
+        logger.info(f"刷流任务 [{task.name}] 候选种子 {len(torrents)} 个，开始逐条判定")
+
+        def _log_skip(message: str) -> None:
+            """按轮次预算输出跳过明细，超出后只计数不刷屏"""
+            nonlocal log_budget, logged_skips
+            if log_budget > 0:
+                log_budget -= 1
+                logged_skips += 1
+                logger.info(f"刷流任务 [{task.name}] {message}")
+
         for torrent in torrents:
             passed, reason = self.__evaluate_pre_conditions_for_brush(include_network_conditions=False)
             if not passed:
                 report["reason_counts"][reason] += 1
                 report["result"] = "precondition_blocked"
+                logger.info(f"刷流任务 [{task.name}] 整体条件未通过，停止本轮：{reason}")
                 break
             passed, reason = self.__evaluate_size_condition_for_brush(
                 seeding_size,
@@ -1463,14 +1485,28 @@ class BrushFlow(_PluginBase):
             )
             if not passed:
                 report["reason_counts"][reason] += 1
+                _log_skip(
+                    f"跳过（{reason}）：{torrent.title} | 体积 {BrushFlow.__bytes_to_gb(torrent.size):.2f} GB，"
+                    f"当前做种 {seeding_size / 1024 ** 3:.2f} GB"
+                )
                 continue
             passed, reason = self.__evaluate_conditions_for_brush(torrent, all_torrent_tasks)
             if not passed:
                 report["reason_counts"][reason] += 1
+                _log_skip(f"跳过（{reason}）：{torrent.title}")
+                if reason in {"无免费期限信息", "免费剩余时间不足", "免费剩余时间过长"}:
+                    # 促销时间相关的排除最容易误判，补上原始时间戳与换算结果
+                    remain = self.__free_remain_hours(torrent.freedate, task.timezone_offset)
+                    _log_skip(
+                        f"  促销时间详情：freedate={torrent.freedate!r} 时区偏移={task.timezone_offset}h "
+                        f"剩余={remain if remain is None else round(remain, 2)}h "
+                        f"要求范围=[{task.free_remain_min}, {task.free_remain_max}]h"
+                    )
                 continue
             hash_string = self.__download(torrent)
             if not hash_string:
                 report["reason_counts"]["下载器添加失败"] += 1
+                _log_skip(f"下载器添加失败：{torrent.title}")
                 continue
             torrent_task = self._torrent_to_task_record(torrent, site, task)
             torrent_tasks[hash_string] = torrent_task
@@ -1493,6 +1529,16 @@ class BrushFlow(_PluginBase):
             self.__send_add_message(torrent)
         report["filtered_count"] = max(report["candidate_count"] - report["added_count"], 0)
         report["result"] = "completed"
+        skipped = sum(count for key, count in report["reason_counts"].items() if count)
+        if skipped and logged_skips < skipped:
+            logger.info(
+                f"刷流任务 [{task.name}] 本轮跳过 {skipped} 个候选，已省略 {skipped - logged_skips} 条明细日志；"
+                f"完整汇总见工作台运行诊断"
+            )
+        logger.info(
+            f"刷流任务 [{task.name}] 本轮结束：候选 {report['candidate_count']} 个，"
+            f"新增 {report['added_count']} 个，跳过 {skipped} 个"
+        )
 
     @staticmethod
     def _site_base_url(site: Any) -> str:

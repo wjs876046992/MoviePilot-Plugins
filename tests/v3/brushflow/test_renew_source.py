@@ -293,6 +293,16 @@ class TestFreeRemainFilter:
         assert BrushFlow._BrushFlow__free_remain_hours("", 0) is None
         assert BrushFlow._BrushFlow__free_remain_hours("not-a-date", 0) is None
 
+    def test_page_freedate_is_convertible_for_logging(self):
+        """排除日志会打印原始时间戳与换算结果，故页面时间必须可被换算
+
+        若此处返回 None，日志就只能显示 freedate 而看不出「还差多少小时」，
+        排查「免费剩余时间不足」时会失去最关键的依据。
+        """
+        torrent = _parse()[0]
+        assert torrent.freedate == "2026-10-05 14:42:17"
+        assert BrushFlow._BrushFlow__free_remain_hours(torrent.freedate, 0) is not None
+
 
 class TestTaskConfigCarriesRenewFields:
     """任务配置：新增字段可读写，且默认关闭"""
