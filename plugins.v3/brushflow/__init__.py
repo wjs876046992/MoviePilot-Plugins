@@ -38,6 +38,11 @@ from app.sdk.utilities import StringUtils
 
 from .models import BrushFlowSettingsPayload, BrushTaskPayload, BrushTaskStatePayload
 
+try:
+    from lxml import etree
+except ImportError:  # lxml 用于解析站点定制来源列表页；缺失时该来源不可用，其余功能不受影响
+    etree = None
+
 
 TASK_CONFIG_FIELDS = (
     "enabled",
@@ -82,6 +87,9 @@ TASK_CONFIG_FIELDS = (
     "site_hr_active",
     "site_skip_tips",
     "rss_support",
+    "renew_support",
+    "free_remain_min",
+    "free_remain_max",
     "tag",
 )
 
@@ -108,6 +116,9 @@ LEGACY_SITE_OVERRIDE_FIELDS = {
     "site_skip_tips",
     "del_no_free",
     "rss_support",
+    "renew_support",
+    "free_remain_min",
+    "free_remain_max",
 }
 
 GLOBAL_LIMIT_FIELDS = (
@@ -121,6 +132,14 @@ GLOBAL_DYNAMIC_DELETE_FIELDS = (
     "global_proxy_delete",
     "global_delete_size_range",
 )
+
+# 按站点定制的候选来源：域名 -> 站点专属配置。
+# 只登记确实需要特殊入口的站点；未登记站点的任务一律回落到常规列表页/RSS，
+# 因此旧的 renew_support 配置不会在没有对应站点的任务上产生任何行为。
+SITE_CUSTOM_SOURCES = {
+    "chdbits.xyz": {"name": "彩虹岛", "renew_path": "renewtorrents.php"},
+    "ptchdbits.co": {"name": "彩虹岛", "renew_path": "renewtorrents.php"},
+}
 
 
 class BrushTaskConfig:
@@ -174,6 +193,9 @@ class BrushTaskConfig:
         self.site_hr_active = bool(config.get("site_hr_active", False))
         self.site_skip_tips = bool(config.get("site_skip_tips", False))
         self.rss_support = bool(config.get("rss_support", False))
+        self.renew_support = bool(config.get("renew_support", False))
+        self.free_remain_min = self._parse_number(config.get("free_remain_min"))
+        self.free_remain_max = self._parse_number(config.get("free_remain_max"))
         self.tag = self._clean_text(config.get("tag"))
 
     @property
@@ -218,7 +240,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.1.2"
+    plugin_version = "6.2.0"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -911,6 +933,32 @@ class BrushFlow(_PluginBase):
         site = SiteOper().get(site_id)
         return site.name if site else None
 
+    @staticmethod
+    def _custom_source_for_domain(domain: Any) -> Optional[dict]:
+        """按域名返回站点专属候选来源配置；未登记站点返回 None
+
+        以**域名**而非站点名判断：站点名是用户可改的展示名，域名才与站点身份绑定，
+        与仓库既有 tracker 域名映射（``chdbits.xyz -> ptchdbits.co``）保持同一口径。
+        """
+        return SITE_CUSTOM_SOURCES.get(StringUtils.get_url_domain(domain))
+
+    @staticmethod
+    def _custom_source_for_site(site: Any) -> Optional[dict]:
+        """按站点记录返回专属候选来源配置；未登记站点返回 None"""
+        return BrushFlow._custom_source_for_domain(getattr(site, "domain", None))
+
+    @staticmethod
+    def _site_ua(site_id: int) -> Optional[str]:
+        """按站点 ID 读取索引器定义中的 User-Agent
+
+        UA 属于索引器定义（``SitesHelper().get_indexers()`` 的 ``ua`` 字段），
+        不在 SiteOper 的站点记录里，因此必须回索引器定义中查找。
+        """
+        return next(
+            (item.get("ua") for item in SitesHelper().get_indexers() if item.get("id") == site_id),
+            None,
+        )
+
     @contextmanager
     def _task_scope(self, task_id: str) -> Iterator[BrushTaskConfig]:
         """在当前线程中绑定任务上下文，供深层核心逻辑读取"""
@@ -1063,7 +1111,12 @@ class BrushFlow(_PluginBase):
             "seeding_size": sum(row.get("seeding_size", 0) for row in task_rows),
         }
         site_options = [
-            {"title": site.get("name"), "value": site.get("id")}
+            {
+                "title": site.get("name"),
+                "value": site.get("id"),
+                # 前端据此决定是否显示「刷复活区种子」等站点定制选项
+                "renew": self._custom_source_for_domain(site.get("domain")) is not None,
+            }
             for site in SitesHelper().get_indexers()
             if not site.get("public")
         ]
@@ -1377,7 +1430,13 @@ class BrushFlow(_PluginBase):
         """获取当前任务站点候选并逐项执行保留的选种规则"""
         task = self._get_task_config()
         logger.info(f"刷流任务 [{task.name}] 开始获取站点 {site.name} 的新种子")
-        torrents = TorrentsChain().rss(domain=site.domain) if task.rss_support else TorrentsChain().browse(domain=site.domain)
+        custom_source = self._custom_source_for_site(site) if task.renew_support else None
+        if custom_source:
+            torrents = self.__fetch_custom_source_torrents(site, task, custom_source)
+        elif task.rss_support:
+            torrents = TorrentsChain().rss(domain=site.domain)
+        else:
+            torrents = TorrentsChain().browse(domain=site.domain)
         if not torrents:
             report["result"] = "no_candidates"
             return
@@ -1434,6 +1493,149 @@ class BrushFlow(_PluginBase):
             self.__send_add_message(torrent)
         report["filtered_count"] = max(report["candidate_count"] - report["added_count"], 0)
         report["result"] = "completed"
+
+    def __fetch_custom_source_torrents(
+        self,
+        site: Any,
+        task: BrushTaskConfig,
+        source: dict,
+    ) -> List[TorrentInfo]:
+        """抓取站点专属候选来源（如复活区）的列表页首页并解析为候选种子
+
+        只取首页：这类定制入口的有效种子集中在最前几行，不做翻页。
+        """
+        url = urljoin(
+            f"{str(getattr(site, 'domain', '') or '').rstrip('/')}/",
+            str(source.get("renew_path") or "").lstrip("/"),
+        )
+        proxies = settings.PROXY if getattr(site, "proxy", False) else None
+        response = RequestUtils(
+            cookies=getattr(site, "cookie", None),
+            proxies=proxies,
+            ua=self._site_ua(site.id),
+            timeout=getattr(site, "timeout", None),
+        ).get_res(url=url)
+        if not response or not response.ok:
+            logger.error(f"刷流任务 [{task.name}] 自定义来源抓取失败：{url}")
+            return []
+        return self.__parse_nexus_list_rows(response.text, site)
+
+    @staticmethod
+    def __parse_nexus_list_rows(html: str, site: Any) -> List[TorrentInfo]:
+        """把 NexusPHP 种子列表页解析为候选种子
+
+        针对 NexusPHP 通用结构：``table.torrentname`` 所在的整行，促销由 ``img.pro_*``
+        类名决定，促销截止时间取「限时」后的 ``span@title``。解析结果必须自带
+        ``site_name`` / ``site_cookie`` / ``site_ua``，否则去重与下载环节都会失效。
+        """
+        if etree is None:
+            logger.error("缺少 lxml 依赖，无法解析站点定制来源列表页")
+            return []
+        tree = etree.HTML(html or "")
+        if tree is None:
+            return []
+        base = str(getattr(site, "domain", "") or "").rstrip("/")
+        results: List[TorrentInfo] = []
+        for row in tree.xpath('//table[@class="torrentname"]/ancestor::tr[1]'):
+            anchors = row.xpath('.//a[@title][contains(@href,"details.php?id=")]')
+            if not anchors:
+                continue
+            title = str(anchors[0].get("title") or "").strip()
+            matched = re.search(r"details\.php\?id=(\d+)", anchors[0].get("href") or "")
+            if not title or not matched:
+                continue
+            torrent_id = matched.group(1)
+            download = row.xpath('.//a[contains(@href,"download.php?id=")]/@href')
+            # 促销系数与宿主索引器的 img.pro_* case 规则同源
+            classes = " ".join(row.xpath('.//img/@class'))
+            if any(mark in classes for mark in ("pro_free2up", "pro_50pctdown2up", "pro_2up")):
+                upload_factor: float = 2.0
+            else:
+                upload_factor = 1.0
+            if any(mark in classes for mark in ("pro_free", "pro_free2up")):
+                download_factor: float = 0.0
+            elif "pro_50pctdown" in classes:
+                download_factor = 0.5
+            else:
+                download_factor = 1.0
+            results.append(
+                TorrentInfo(
+                    title=title,
+                    enclosure=urljoin(f"{base}/", str(download[0]).lstrip("/")) if download else None,
+                    page_url=f"{base}/details.php?id={torrent_id}",
+                    size=BrushFlow.__parse_nexus_size(row.xpath("./td[5]//text()")),
+                    pubdate=BrushFlow.__first_text(row.xpath("./td[4]//span/@title")),
+                    description=BrushFlow.__subtitle_text(row),
+                    seeders=BrushFlow.__to_int(row.xpath("./td[6]//a/text()")),
+                    leechers=BrushFlow.__to_int(row.xpath("./td[7]//a/text()")),
+                    downloadvolumefactor=download_factor,
+                    uploadvolumefactor=upload_factor,
+                    freedate=BrushFlow.__parse_promotion_expiry(row),
+                    # 彩虹岛复活区无 H&R 标记，统一按无 H&R 处理，由全站 H&R 开关兜底
+                    hit_and_run=False,
+                    site_name=getattr(site, "name", None),
+                    site_cookie=getattr(site, "cookie", None),
+                    site_ua=BrushFlow._site_ua(site.id),
+                    site_proxy=bool(getattr(site, "proxy", False)),
+                )
+            )
+        return results
+
+    @staticmethod
+    def __parse_promotion_expiry(row: Any) -> Optional[str]:
+        """读取「限时 <span title="截止时间">」中的促销截止时间
+
+        只看该 span **紧邻之前**的文本：同一行里「发布时间」也是一个 ``span@title``，
+        取整行文本会把两者混淆，故必须按相邻关系区分。
+        """
+        for span in row.xpath('.//span[@title]'):
+            previous = span.getprevious()
+            parent = span.getparent()
+            preceding = previous.tail if previous is not None else (
+                parent.text if parent is not None else None
+            )
+            if preceding and "限时" in preceding:
+                return str(span.get("title") or "").strip() or None
+        return None
+
+    @staticmethod
+    def __parse_nexus_size(texts: List[str]) -> float:
+        """把列表页的「63.28 / GB」这类文本解析为字节数"""
+        joined = "".join(str(item) for item in texts)
+        value = StringUtils.num_filesize(joined) if joined else 0
+        return float(value or 0)
+
+    @staticmethod
+    def __subtitle_text(row: Any) -> Optional[str]:
+        """读取副标题中的描述句，跳过「官方」「中字」这类内联标签
+
+        同一容器里标签词也是文本节点，按长度取最长的一段可稳定命中真正的描述；
+        这些描述会参与「包含/排除规则」和订阅排除匹配。
+        """
+        candidates = [
+            str(item).strip()
+            for item in row.xpath('.//font[@class="subtitle"]//text()')
+            if str(item).strip()
+        ]
+        return max(candidates, key=len) if candidates else None
+
+    @staticmethod
+    def __first_text(values: Any) -> Optional[str]:
+        """取第一个非空文本，兼容缺失节点"""
+        for value in values or []:
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    @staticmethod
+    def __to_int(values: Any) -> Optional[int]:
+        """把文本节点转为整数，缺失或非数字返回 None"""
+        text = BrushFlow.__first_text(values)
+        if text is None:
+            return None
+        matched = re.search(r"\d+", text)
+        return int(matched.group()) if matched else None
 
     @staticmethod
     def _torrent_to_task_record(torrent: TorrentInfo, site: Any, task: BrushTaskConfig) -> dict:
@@ -1616,7 +1818,28 @@ class BrushFlow(_PluginBase):
                 return False, "发布时间超过上限"
             if len(pubtime_range) > 1 and not pubtime_range[0] <= pubdate_minutes <= pubtime_range[1]:
                 return False, "发布时间不在范围内"
+        if task.free_remain_min is not None or task.free_remain_max is not None:
+            # 严格匹配：无促销期限信息的种子一律排除，宁可少选不可误选
+            remain_hours = self.__free_remain_hours(torrent.freedate, task.timezone_offset)
+            if remain_hours is None:
+                return False, "无免费期限信息"
+            if task.free_remain_min is not None and remain_hours < task.free_remain_min:
+                return False, "免费剩余时间不足"
+            if task.free_remain_max is not None and remain_hours > task.free_remain_max:
+                return False, "免费剩余时间过长"
         return True, None
+
+    @staticmethod
+    def __free_remain_hours(freedate: Any, timezone_offset: float) -> Optional[float]:
+        """把促销截止时间换算为距当前的小时数；无期限或解析失败返回 None
+
+        与 ``_promotion_expiry_at`` 同源：页面上的时间戳是站点本地时间，需先按
+        ``timezone_offset`` 归一到宿主时区，再与宿主当前时间相减，期间修正过零点。
+        """
+        expiry = BrushFlow._promotion_expiry_at(freedate, timezone_offset)
+        if not expiry:
+            return None
+        return (expiry - datetime.now(ZoneInfo(settings.TZ))).total_seconds() / 3600
 
     def check(self, task_id: Optional[str] = None, wait_for_lock: bool = False) -> None:
         """执行状态同步、删种和归档，到期检查可等待同任务的当前操作"""

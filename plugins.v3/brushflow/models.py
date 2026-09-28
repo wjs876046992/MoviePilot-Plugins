@@ -66,6 +66,9 @@ class BrushTaskPayload(BaseModel):
     site_hr_active: bool = False
     site_skip_tips: bool = False
     rss_support: bool = False
+    renew_support: bool = False
+    free_remain_min: Optional[float] = Field(None, ge=0)
+    free_remain_max: Optional[float] = Field(None, ge=0)
     tag: Optional[str] = None
 
     @field_validator(
@@ -84,6 +87,8 @@ class BrushTaskPayload(BaseModel):
         "up_speed",
         "dl_speed",
         "auto_archive_days",
+        "free_remain_min",
+        "free_remain_max",
         mode="before",
     )
     @classmethod

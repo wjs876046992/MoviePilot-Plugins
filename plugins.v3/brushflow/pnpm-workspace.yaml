@@ -1,0 +1,17 @@
+# pnpm 的依赖构建白名单。
+#
+# 为什么必须有这个文件：pnpm 10+ 默认**不执行**依赖包的 postinstall 脚本。
+# esbuild 依靠 postinstall 安装平台专用二进制（@esbuild/linux-x64 等），
+# 不批准它的构建，`pnpm install` 会以 ERR_PNPM_IGNORED_BUILDS 结束，
+# 每次 `pnpm build` 都得临时改写才能构建。
+#
+# 允许 esbuild 执行构建是安全的：它是 vite 的底层打包器与 dev server 依赖，
+# 由本插件直接依赖（devDependencies → vite → esbuild），只会执行其官方
+# postinstall 安装二进制，不涉及其它脚本。
+#
+# Dependency build allowlist. pnpm 10+ does not run a dependency's postinstall
+# scripts by default; esbuild needs its postinstall to install the platform
+# binary, so without this approval `pnpm install` fails with
+# ERR_PNPM_IGNORED_BUILDS.
+allowBuilds:
+  esbuild: true

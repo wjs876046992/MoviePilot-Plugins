@@ -43,6 +43,9 @@ const taskDefaults = {
   site_hr_active: false,
   site_skip_tips: false,
   rss_support: false,
+  renew_support: false,
+  free_remain_min: null,
+  free_remain_max: null,
   tag: null,
 };
 
@@ -79,6 +82,8 @@ function normalizeTask(task) {
     'up_speed',
     'dl_speed',
     'auto_archive_days',
+    'free_remain_min',
+    'free_remain_max',
   ];
   const optionalText = [
     'cron',

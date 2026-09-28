@@ -62,6 +62,10 @@ const tasks = computed(() => status.value.tasks || [])
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const selectedState = computed(() => taskStateMeta(selectedTask.value?.state))
 const taskConfig = computed(() => taskDetail.value?.task || {})
+const sourceLabel = computed(() => {
+  if (taskConfig.value.renew_support) return '复活区'
+  return taskConfig.value.rss_support ? 'RSS' : '站点列表页'
+})
 const taskRuns = computed(() => taskDetail.value?.runs || [])
 const latestBrushRun = computed(() => taskRuns.value.find(item => item.kind === 'brush') || null)
 const torrentData = computed(() => taskDetail.value?.torrents || { items: [], total: 0, page: 1, page_size: 50 })
@@ -84,7 +88,7 @@ const pipelineStages = computed(() => {
   const candidateCount = Number(run.candidate_count || 0)
   const addedCount = Number(run.added_count || 0)
   return [
-    { title: '获取站点种子', detail: taskConfig.value.rss_support ? 'RSS' : '站点列表页', count: sourceCount },
+    { title: '获取站点种子', detail: sourceLabel.value, count: sourceCount },
     { title: '排除订阅内容', detail: `排除 ${Number(run.subscription_excluded || 0)} 个`, count: candidateCount },
     { title: '选种条件过滤', detail: `过滤 ${Number(run.filtered_count || 0)} 个`, count: addedCount },
     { title: '添加下载任务', detail: run.success === false ? '执行失败' : '下载器已确认', count: addedCount },
@@ -603,7 +607,7 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                     <div><dt>检查周期</dt><dd>每 {{ selectedTask.check_interval }} 分钟</dd></div>
                     <div><dt>开启时段</dt><dd>{{ taskConfig.active_time_range || '全天' }}</dd></div>
                     <div v-if="taskConfig.site_ratio_control"><dt>站点分享率</dt><dd>{{ formatSiteRatio(selectedTask.site_ratio) }} / {{ Number(taskConfig.site_ratio_target || 0).toFixed(2) }}</dd></div>
-                    <div><dt>选种来源</dt><dd>{{ taskConfig.rss_support ? 'RSS' : '站点列表页' }}</dd></div>
+                    <div><dt>选种来源</dt><dd>{{ sourceLabel }}</dd></div>
                     <div><dt>促销要求</dt><dd>{{ taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部' }}</dd></div>
                     <div><dt>删种策略</dt><dd>{{ taskConfig.proxy_delete ? `动态 ${taskConfig.delete_size_range || '-' } GB` : '满足任一条件' }}</dd></div>
                   </dl>

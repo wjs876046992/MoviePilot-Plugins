@@ -20,6 +20,10 @@ const localTask = ref(cloneTask())
 
 const dialogTitle = computed(() => (localTask.value.id ? '编辑刷流任务' : '新建刷流任务'))
 const siteName = computed(() => props.sites.find(item => item.value === Number(localTask.value.site_id))?.title || '未选择')
+// 仅登记过的站点（如彩虹岛）支持复活区来源，未登记站点不显示相关选项
+const renewCapable = computed(
+  () => props.sites.find(item => item.value === Number(localTask.value.site_id))?.renew === true
+)
 const scheduleText = computed(() => localTask.value.cron || `每 ${localTask.value.brush_interval || 10} 分钟`)
 
 // 每次打开弹窗都从服务端任务快照重新创建本地草稿。
@@ -226,9 +230,41 @@ async function saveTask() {
                 </VRow>
                 <div class="editor-switches">
                   <VSwitch v-model="localTask.rss_support" label="使用 RSS" color="primary" hide-details inset />
+                  <VSwitch
+                    v-if="renewCapable"
+                    v-model="localTask.renew_support"
+                    label="刷复活区种子"
+                    color="primary"
+                    hide-details
+                    inset
+                  />
                   <VSwitch v-model="localTask.except_subscribe" label="排除订阅" color="primary" hide-details inset />
                   <VSwitch v-model="localTask.site_hr_active" label="全站 H&R" color="primary" hide-details inset />
                 </div>
+                <VRow v-if="renewCapable && localTask.renew_support">
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.free_remain_min"
+                      label="免费剩余时间下限（小时）"
+                      type="number"
+                      min="0"
+                      hide-details="auto"
+                      persistent-placeholder
+                      placeholder="留空不限制"
+                    />
+                  </VCol>
+                  <VCol cols="12" md="6">
+                    <VTextField
+                      v-model.number="localTask.free_remain_max"
+                      label="免费剩余时间上限（小时）"
+                      type="number"
+                      min="0"
+                      hide-details="auto"
+                      persistent-placeholder
+                      placeholder="留空不限制"
+                    />
+                  </VCol>
+                </VRow>
               </section>
 
               <section class="editor-section">
