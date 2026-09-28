@@ -42,3 +42,46 @@ done
 CHECK_STRICT_PLUGINS="$strict_plugins" \
     python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 python3 .github/scripts/check_federation_css.py
+
+# ── 上游同步提醒 ──────────────────────────────────────────────
+# 原作者（jxxghp）更新较勤。基于陈旧基线改同一批文件，正是 package.v2.json 与
+# traktcleaner 反复冲突的成因；push 时提醒落后多少提交，比事后解冲突便宜得多。
+#
+# 这里**只做只读检查、不自动合并**。原因是实测过的：pre-push 运行前，本次要推送的
+# ref 已经确定，钩子内新建的合并提交不会进入这次 push（只会留在本地，还得再推一次），
+# 所以「钩子里自动 merge 上游」不成立。合并交给每日定时的 Sync Upstream workflow，
+# 或在此提醒后手动 `git merge upstream/main`。
+#
+# 拉取失败（离线、无 upstream 远端、网络超时）一律静默跳过，绝不因此阻断推送。
+# Reminder only, never blocking: commits created inside pre-push do not join the
+# push that triggered the hook, so auto-merge must not live here.
+_has_upstream_remote() {
+    git remote get-url upstream >/dev/null 2>&1
+}
+
+# 压掉 git 自身在离线/不可达时的报错，避免污染推送输出。
+_fetch_upstream() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 20 git fetch --quiet upstream main 2>/dev/null
+    else
+        git fetch --quiet upstream main 2>/dev/null
+    fi
+}
+
+# 拿得到上游引用就比对：优先现取，取不到则退回已有的 upstream/main 引用
+# （本仓库的 upstream 引用由 Sync Upstream workflow 留下，未必配置了远端）。
+if _has_upstream_remote; then
+    _fetch_upstream || true
+fi
+
+if git rev-parse --verify -q refs/remotes/upstream/main >/dev/null 2>&1; then
+    behind="$(git rev-list --count HEAD..refs/remotes/upstream/main 2>/dev/null || echo 0)"
+    case "$behind" in
+        ''|0) ;;
+        *)
+            printf '\n\033[33m⚠️  上游 jxxghp/MoviePilot-Plugins 有 %s 个提交尚未合并\033[0m\n' "$behind" >&2
+            printf '   基线可能已陈旧，建议先合并再推进：git merge upstream/main\n' >&2
+            printf '   （每日定时同步见 .github/workflows/sync-upstream.yml）\n\n' >&2
+            ;;
+    esac
+fi

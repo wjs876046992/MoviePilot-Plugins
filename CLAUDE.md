@@ -14,6 +14,28 @@ pages, dashboards, and Vue federated component rendering.
 Because plugins share the host process, treat third-party dependencies, background threads, module
 globals, and import-time side effects as process-wide concerns.
 
+## Fork and Upstream Sync
+
+This working copy is a **fork** of upstream `jxxghp/MoviePilot-Plugins` (`origin` = the personal
+fork; `upstream` = jxxghp). `.github/workflows/sync-upstream.yml` merges `upstream/main` into `main`
+on a daily schedule (and on `workflow_dispatch`): a clean merge auto-pushes to `main`; a conflicted
+merge aborts, force-pushes a `sync-upstream` branch, and opens/refreshes a PR for manual resolution
+(needs the `SYNC_TOKEN` secret — without it the run errors and prints a compare link instead).
+
+Implications when editing:
+
+- Upstream merges are performed by that workflow, not by hand. Keep fork-local changes tidy so they
+  do not fight the merge. The workflow's own comment names `package.v2.json` and the `traktcleaner`
+  plugin as frequent conflict points (files both sides have edited).
+- **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
+  V2 `WatchSync`). The overwhelming majority of this fork's own non-merge commits are on
+  `Rsync115Sync`. Develop them freely, but never assume upstream shares them — an upstream merge
+  will not supply their index entries, and upstream edits to the shared index files can conflict
+  with their entries.
+- `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
+  host/IP), and `.testhost/` is a gitignored partial stub — it has stub `app/` modules but **no**
+  `app.testing`, so pytest cannot bootstrap against it. Neither is part of the repo.
+
 ## Generations and Directory Layout
 
 Three plugin generations coexist; **V3 is the only target for new work**:
@@ -33,11 +55,14 @@ Naming/identity rules (all three must agree):
 - `plugin_version` (in the class), the index `version`, and the newest `history` entry must match
 - `history` is newest-first, semantic-version descending
 
-A Vue-mode plugin has **two more** version fields the gate does *not* read: its own
-`package.json` `version` and the version chip hardcoded in `Config.vue`. Bump all five or the UI
-and the plugin's own manifest drift while the version gate still reports success — a false green
-(v0.2.2 shipped a fix for exactly this drift). `check_plugin_versions.py` only compares
-`plugin_version` against the index `version`.
+A Vue-mode plugin has **two more** version fields, and they are checked far more weakly than the
+three above: its own `package.json` `version` and the version chip hardcoded in `Config.vue`. Bump
+all five. `check_plugin_versions.py` *does* inspect these two, but only as a **warning** by default —
+the repo carries several pre-existing drifts (`FullScreenPosterWall`, `BrushFlow`, `WatchSync`, …).
+It becomes a hard **failure only for plugin IDs in `CHECK_STRICT_PLUGINS`**, which
+`.githooks/pre-push` fills with the plugins your push touches. Net effect: the hook is strictly
+stricter than the PR gate, so a drift you introduce in your own plugin fails locally but would slip
+past CI — a false green (v0.2.2 shipped a fix for exactly this drift).
 
 Plugin source directories are copied wholesale into release zips — `release.yml` excludes only
 `__pycache__` and `*.pyc` — so sibling modules, `dist/`, frontend sources, and any `*.md` inside
@@ -124,6 +149,10 @@ python3 -m compileall plugins.v3/<plugin_id>
 #  package.v3.json checks every entry + V3 history/major-bump contract)
 python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 
+# Same gate in the strict form the pre-push hook uses: only the listed plugin IDs
+# are checked for the package.json/Config.vue drift that is otherwise a warning.
+CHECK_STRICT_PLUGINS=myplugin python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
+
 # Federated component CSS gate (required after building Vue frontend artifacts)
 python3 .github/scripts/check_federation_css.py
 
@@ -208,6 +237,21 @@ a dependency-gate platform subset with:
 platforms = ["linux-x64"]
 ```
 
+**Free-threaded (`v3t`) opt-out.** Besides the standard gate, CI runs a second dependency install
+gate in a toolchain-less `python:3.14-slim` container against the **free-threaded** interpreter
+(`--abi cp314t`, Linux x64/arm64 only). A dependency that has no `cp314t` wheel or pure-Python sdist
+cannot install there. A plugin known to be incompatible declares it in the index, not in code:
+
+```json
+"AnimeUpscale": { "v3t": false }
+```
+
+Only a literal boolean `false` opts out — a missing field or any other value means "compatible".
+The opt-out is read by `scripts/check_v3_dependency_install.py` (`FREE_THREADED_FIELD`), which
+**errors if a manifest cannot be matched to exactly one `package.v3.json` ID** (case-folded
+directory-name collisions, or a `pyproject.toml` with no index entry) rather than silently passing.
+Current opt-outs: `AutoSubv2`, `AgentResourceOfficer`, `AnimeUpscale`.
+
 Federated CSS is a hard constraint: never bundle global Vuetify/MDI styles into a remote component.
 Share `vuetify` and `vuetify/styles` with `generate: false`, strip `node_modules/vuetify` and
 `node_modules/@mdi` CSS in PostCSS, and never commit `__federation_shared_vuetify/styles-*.css` —
@@ -236,7 +280,12 @@ key equals `version` and history is semver-descending.
 - Federation CSS gate
 - Plugin test gate — `tests/run.py` against the MoviePilot V3 backend
 - Dependency install gate — isolated install + `uv pip check` on Linux x64/arm64, Windows x64,
-  macOS Intel/ARM (only runs when `plugins.v3/*/pyproject.toml` or the gate itself changes)
+  macOS Intel/ARM
+- Dependency install gate, free-threaded (`cp314t`) — in a toolchain-less `python:3.14-slim`
+  container on Linux x64/arm64; honours the `v3t` index opt-out (see above)
+
+Both dependency gates only run when a `plugins.v3/*/pyproject.toml`, `package.v3.json`, the gate
+script, its test, or `plugin-gate.yml` changes.
 
 ## Release
 
