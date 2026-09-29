@@ -395,9 +395,11 @@ async function saveTask() {
                     </div>
                   </div>
                 </header>
-                <!-- 窄屏放下四个分段按钮会溢出，改用下拉；宽屏保持原生分段控件观感 -->
+                <!-- 窄屏放下四个分段按钮会溢出，改用下拉；宽屏保持原生分段控件观感。
+                     断点取 lg 而非 sm：手机浏览器开「桌面版网站」时视口约 980px，
+                     smAndDown（<960）不成立，仍会走分段控件被裁掉第 4 项。 -->
                 <VSelect
-                  v-if="display.smAndDown.value"
+                  v-if="!display.lgAndUp.value"
                   v-model="deleteMode"
                   label="删除方式"
                   :items="deleteModeOptions"

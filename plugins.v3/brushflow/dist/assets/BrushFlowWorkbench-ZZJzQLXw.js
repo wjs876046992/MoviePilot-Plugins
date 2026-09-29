@@ -869,7 +869,7 @@ return (_ctx, _cache) => {
                                 _createElementVNode$1("div", { class: "text-body-2 text-medium-emphasis" }, " 在已开启的阈值来源中选一个；全局未启用时该选项不可选，下载器未单独配置阈值时同理。 ")
                               ])
                             ], -1)),
-                            (_unref$1(display).smAndDown.value)
+                            (!_unref$1(display).lgAndUp.value)
                               ? (_openBlock$1(), _createBlock$1(_component_VSelect, {
                                   key: 0,
                                   modelValue: deleteMode.value,
@@ -1260,7 +1260,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-738e84b4"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-3f69f50a"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,mergeProps:_mergeProps,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,unref:_unref,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle} = await importShared('vue');
 
