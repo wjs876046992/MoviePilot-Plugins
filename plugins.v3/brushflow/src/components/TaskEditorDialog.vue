@@ -9,6 +9,9 @@ const props = defineProps({
   sites: { type: Array, default: () => [] },
   downloaders: { type: Array, default: () => [] },
   globalDynamicDelete: { type: Boolean, default: false },
+  // 全局阈值文本与当前下载器是否单独配了删种阈值，用于「跟随」模式下的提示
+  globalDeleteRange: { type: String, default: '' },
+  scopedDownloaderDeleteRange: { type: String, default: '' },
   saving: { type: Boolean, default: false },
 })
 
@@ -25,6 +28,30 @@ const renewCapable = computed(
   () => props.sites.find(item => item.value === Number(localTask.value.site_id))?.renew === true
 )
 const scheduleText = computed(() => localTask.value.cron || `每 ${localTask.value.brush_interval || 10} 分钟`)
+// 删除方式在「按条件删除」与三个阈值来源之间切换，映射到后端的两个字段
+const deleteMode = computed({
+  get() {
+    if (!localTask.value.proxy_delete) return 'none'
+    const scope = localTask.value.dynamic_delete_scope
+    return ['task', 'global', 'downloader'].includes(scope) ? scope : 'task'
+  },
+  set(mode) {
+    localTask.value.proxy_delete = mode !== 'none'
+    if (mode !== 'none') localTask.value.dynamic_delete_scope = mode
+  },
+})
+// 所选来源是否仍然可用；全局或下载器配置被关停时任务会静默回落，需要显式提示
+const scopeUnavailable = computed(() => {
+  if (deleteMode.value === 'task') return !localTask.value.delete_size_range
+  if (deleteMode.value === 'global') return !props.globalDynamicDelete
+  if (deleteMode.value === 'downloader') return !props.scopedDownloaderDeleteRange
+  return false
+})
+const scopeUnavailableHint = computed(() => {
+  if (deleteMode.value === 'task') return '未填写阈值，本任务实际仍按条件删除。'
+  if (deleteMode.value === 'global') return '全局动态删种已关闭或未设阈值，本任务实际仍按条件删除。'
+  return '该下载器未单独设置动态删种阈值，本任务实际仍按条件删除。'
+})
 
 // 每次打开弹窗都从服务端任务快照重新创建本地草稿。
 watch(
@@ -348,36 +375,39 @@ async function saveTask() {
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">删除方式</div>
                     <div class="text-body-2 text-medium-emphasis">
-                      参与体积删种后，本任务种子会参加全局或下载器阈值托管；填写了自己的阈值，还可独立触发删种。
+                      在已开启的阈值来源中选一个；全局未启用时该选项不可选，下载器未单独配置阈值时同理。
                     </div>
                   </div>
                 </header>
-                <VBtnToggle v-model="localTask.proxy_delete" mandatory color="primary" divided>
-                  <VBtn :value="false">不参与体积删种</VBtn>
-                  <VBtn :value="true">参与体积删种</VBtn>
+                <VBtnToggle v-model="deleteMode" mandatory color="primary" divided>
+                  <VBtn :value="'none'">按条件删除</VBtn>
+                  <VBtn :value="'global'" :disabled="!globalDynamicDelete">跟随全局</VBtn>
+                  <VBtn :value="'downloader'" :disabled="!scopedDownloaderDeleteRange">跟随下载器</VBtn>
+                  <VBtn :value="'task'">自己配置</VBtn>
                 </VBtnToggle>
-                <VRow v-if="localTask.proxy_delete">
+                <VRow v-if="deleteMode === 'task'">
                   <VCol cols="12">
                     <VTextField
                       v-model="localTask.delete_size_range"
-                      :label="globalDynamicDelete ? '本任务自有阈值（可选）' : '动态删种阈值（GB）'"
+                      label="本任务动态删种阈值（GB）"
                       placeholder="如 350-500"
-                      :hint="
-                        globalDynamicDelete
-                          ? '留空表示只参加全局/下载器阈值托管；填写后本任务还会按该阈值额外删种'
-                          : '必填：达到上限后删到下限，如 350-500；单值表示原地反复删到该值'
-                      "
+                      hint="达到上限后删到下限；单值表示原地反复删到该值。留空则本任务按条件删除"
                       persistent-hint
                     />
                   </VCol>
                 </VRow>
-                <VAlert
-                  v-if="localTask.proxy_delete && !localTask.delete_size_range && !globalDynamicDelete"
-                  type="warning"
-                  variant="tonal"
-                  density="compact"
-                >
-                  未填写阈值，且当前未启用全局或下载器级体积删种，本任务实际仍按条件删除。
+                <div v-else-if="deleteMode === 'global'" class="text-body-2 text-medium-emphasis">
+                  使用全局动态删种阈值 <strong>{{ globalDeleteRange }}</strong> GB 统一判定。
+                </div>
+                <div v-else-if="deleteMode === 'downloader'" class="text-body-2 text-medium-emphasis">
+                  使用下载器「{{ localTask.downloader || '未选择' }}」的阈值
+                  <strong>{{ scopedDownloaderDeleteRange }}</strong> GB 独立判定。
+                </div>
+                <div v-else class="text-body-2 text-medium-emphasis">
+                  不参与体积删种，只按下方触发条件删除。
+                </div>
+                <VAlert v-if="scopeUnavailable" type="warning" variant="tonal" density="compact">
+                  {{ scopeUnavailableHint }}
                 </VAlert>
               </section>
               <section class="editor-section">
@@ -468,10 +498,12 @@ async function saveTask() {
               <div><dt>保种上限</dt><dd>{{ localTask.disksize ? `${localTask.disksize} GB` : '不限' }}</dd></div>
               <div>
                 <dt>删除</dt>
-                <dd v-if="localTask.proxy_delete && localTask.delete_size_range">
-                  动态删种 {{ localTask.delete_size_range }} GB
+                <dd v-if="deleteMode === 'task' && localTask.delete_size_range">
+                  本任务阈值 {{ localTask.delete_size_range }} GB
                 </dd>
-                <dd v-else-if="localTask.proxy_delete">参与体积托管</dd>
+                <dd v-else-if="deleteMode === 'task'">本任务阈值（未填）</dd>
+                <dd v-else-if="deleteMode === 'global'">跟随全局阈值</dd>
+                <dd v-else-if="deleteMode === 'downloader'">跟随下载器阈值</dd>
                 <dd v-else>按条件删除</dd>
               </div>
             </dl>

@@ -87,6 +87,7 @@ TASK_CONFIG_FIELDS = (
     "delete_except_tags",
     "except_subscribe",
     "proxy_delete",
+    "dynamic_delete_scope",
     "del_no_free",
     "qb_category",
     "site_hr_active",
@@ -137,6 +138,10 @@ GLOBAL_DYNAMIC_DELETE_FIELDS = (
     "global_proxy_delete",
     "global_delete_size_range",
 )
+
+# 任务可选的删除方式作用域：任务级阈值 / 全局阈值 / 下载器级阈值。
+# 与全局设置里同名层级的阈值配合，三者互斥，任务不再自动叠加多层删种。
+DYNAMIC_DELETE_SCOPES = ("task", "global", "downloader")
 
 # 按下载器维度的限额字段：下载器名 -> 该下载器的保种上限与动态删种阈值。
 # 多台下载器分布在不同机器、磁盘容量各异，总量阈值表达不了这种差异。
@@ -201,6 +206,11 @@ class BrushTaskConfig:
         self.delete_except_tags = self._clean_text(config.get("delete_except_tags"))
         self.except_subscribe = bool(config.get("except_subscribe", True))
         self.proxy_delete = bool(config.get("proxy_delete", False))
+        scope = str(config.get("dynamic_delete_scope") or "").strip()
+        if scope not in DYNAMIC_DELETE_SCOPES:
+            # 迁移旧配置：启用动态删种但没填阈值，说明当时是「参加全局兜底」的语义
+            scope = "global" if self.proxy_delete and not self.delete_size_range else "task"
+        self.dynamic_delete_scope = scope
         self.del_no_free = bool(config.get("del_no_free", False)) if self.freeleech in {"free", "2xfree"} else False
         self.qb_category = self._clean_text(config.get("qb_category"))
         self.site_hr_active = bool(config.get("site_hr_active", False))
@@ -253,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.3.2"
+    plugin_version = "6.4.0"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -547,7 +557,6 @@ class BrushFlow(_PluginBase):
 
     def update_settings(self, payload: BrushFlowSettingsPayload) -> schemas.Response:
         """更新插件全局开关并刷新宿主任务调度"""
-        global_dynamic_delete_was_enabled = self._global_dynamic_delete_enabled()
         self._enabled = payload.enabled
         self._show_sidebar_nav = payload.show_sidebar_nav
         for field in GLOBAL_LIMIT_FIELDS:
@@ -557,10 +566,6 @@ class BrushFlow(_PluginBase):
         self._downloader_limits = self._normalize_downloader_limits(
             {name: limit.model_dump() for name, limit in payload.downloader_limits.items()}
         )
-        if global_dynamic_delete_was_enabled and not self._global_dynamic_delete_enabled():
-            for task in self._task_configs.values():
-                if task.proxy_delete and not task.delete_size_range:
-                    task.proxy_delete = False
         self._save_config()
         self._refresh_scheduler()
         return schemas.Response(success=True, data=self._build_status_data())
@@ -716,6 +721,35 @@ class BrushFlow(_PluginBase):
     def _dynamic_delete_enabled(self) -> bool:
         """返回任一动态删种作用域是否可用：全局总量或下载器级阈值"""
         return self._global_dynamic_delete_enabled() or self._has_downloader_delete_limit()
+
+    def _task_delete_scope(self, task: Any) -> str:
+        """返回任务选择的删除方式作用域：``task`` / ``global`` / ``downloader`` / ``none``
+
+        作用域互斥：选了全局就只按全局总量兜底，选了下载器就只按该下载器的阈值，
+        选任务则用本任务的阈值。对应的阈值未配置时回落为 ``none``（按条件删除），
+        避免出现「选了但什么都不做」的静默状态。
+        """
+        if not getattr(task, "proxy_delete", False):
+            return "none"
+        scope = str(getattr(task, "dynamic_delete_scope", "") or "").strip()
+        if scope not in DYNAMIC_DELETE_SCOPES:
+            return "none"
+        if scope == "task":
+            return "task" if getattr(task, "delete_size_range", None) else "none"
+        if scope == "global":
+            return "global" if self._global_dynamic_delete_enabled() else "none"
+        downloader_limit = self._downloader_limit(getattr(task, "downloader", None)) or {}
+        if downloader_limit.get("proxy_delete") and downloader_limit.get("delete_size_range"):
+            return "downloader"
+        return "none"
+
+    def _downloaders_with_task_scope(self) -> Set[str]:
+        """返回被任务选中「下载器」作用域的下载器名，供全局分组时排除"""
+        scoped: Set[str] = set()
+        for task in self._task_configs.values():
+            if self._task_delete_scope(task) == "downloader":
+                scoped.add(str(task.downloader))
+        return scoped
 
     @staticmethod
     def _validate_global_dynamic_delete_config(enabled: Any, size_range: Any) -> Tuple[bool, Optional[str]]:
@@ -1259,7 +1293,6 @@ class BrushFlow(_PluginBase):
             # 全局删种是否真的会执行：下载器级阈值已能独立触发，全局开关关掉时
             # 未单独配置的下载器就不再参与动态删种，前端据此分开展示两套配置
             "global_dynamic_delete": self._global_dynamic_delete_enabled(),
-            "downloader_delete_enabled": self._has_downloader_delete_limit(),
             "summary": aggregate,
             "tasks": task_rows,
             "options": {"sites": site_options, "downloaders": downloader_options},
@@ -1878,6 +1911,7 @@ class BrushFlow(_PluginBase):
             "global_dynamic_delete": False,
             "global_deleted_count": 0,
             "delete_scopes": [],
+            "delete_scope": "none",
             "reason_counts": Counter(),
             "added_titles": [],
         }
@@ -2103,18 +2137,18 @@ class BrushFlow(_PluginBase):
         self.__update_torrent_tasks_state(check_torrents, torrent_tasks)
         self.__update_undeleted_torrents_missing_in_downloader(torrent_tasks, check_hashes, seeding_torrents)
         filtered_torrents = self.__filter_torrents_by_tag(check_torrents, task.delete_except_tags)
-        # 任务级动态删种阈值只对本任务生效，与全局/下载器级体积删种互相独立，
-        # 故两者同时启用时都要执行；都未启用才回落到按条件删除。
-        delegated_hashes: List[str] = []
-        if task.proxy_delete and task.delete_size_range:
-            delegated_hashes = self.__delete_torrent_for_proxy(filtered_torrents, torrent_tasks)
-        if self._dynamic_delete_enabled():
-            need_delete_hashes = delegated_hashes
-        else:
-            task_hashes = self.__delete_torrent_for_evaluate_conditions(
+        # 删除方式由任务选择，三者互斥：任务级阈值在此就地执行；全局与下载器级
+        # 交给本轮结束后的体积删种统一处理，本任务不参与兜底；未参与才按条件删除。
+        delete_scope = self._task_delete_scope(task)
+        report["delete_scope"] = delete_scope
+        if delete_scope == "task":
+            need_delete_hashes = self.__delete_torrent_for_proxy(filtered_torrents, torrent_tasks)
+        elif delete_scope == "none":
+            need_delete_hashes = self.__delete_torrent_for_evaluate_conditions(
                 filtered_torrents, torrent_tasks
             )
-            need_delete_hashes = list(dict.fromkeys([*delegated_hashes, *task_hashes]))
+        else:
+            need_delete_hashes = []
         need_delete_hashes = list(dict.fromkeys(need_delete_hashes or []))
         deleted_from_downloader = False
         if need_delete_hashes:
@@ -2387,34 +2421,23 @@ class BrushFlow(_PluginBase):
         if not threshold_triggered:
             return selected, remaining_size, False
 
+        # 组内候选都由选了该作用域的任务产生，逐条按任务自身的删除条件清理
         for candidate in candidates:
             if remaining_size <= min_size:
                 break
-            if not candidate.get("proxy_delete") and candidate.get("conditional_reason"):
+            if candidate.get("conditional_reason"):
                 select(
                     candidate,
-                    candidate["conditional_reason"],
+                    f"触发全局动态删除阈值，{candidate['conditional_reason']}",
                     reason_field="conditional_reason",
+                    dynamic_reason=True,
                 )
-
-        if remaining_size > min_size:
-            for candidate in candidates:
-                if remaining_size <= min_size:
-                    break
-                if candidate.get("proxy_delete") and candidate.get("conditional_reason"):
-                    select(
-                        candidate,
-                        f"触发全局动态删除阈值，{candidate['conditional_reason']}",
-                        reason_field="conditional_reason",
-                        dynamic_reason=True,
-                    )
 
         fallback_candidates = sorted(
             (
                 candidate
                 for candidate in candidates
-                if candidate.get("proxy_delete")
-                and candidate.get("completed")
+                if candidate.get("completed")
                 and not candidate.get("hit_and_run")
             ),
             key=lambda item: item.get("seeding_time", 0),
@@ -2535,6 +2558,7 @@ class BrushFlow(_PluginBase):
                             "pre_delete_reason": pre_delete_reason,
                             "conditional_reason": conditional_reason if should_delete else "",
                             "proxy_delete": task.proxy_delete,
+                            "delete_scope": self._task_delete_scope(task),
                             "completed": bool(
                                 torrent_size > 0 and torrent_info.get("downloaded", 0) >= torrent_size
                             ),
@@ -2553,6 +2577,12 @@ class BrushFlow(_PluginBase):
                 {
                     "associated_records": associations,
                     "proxy_delete": all(row["proxy_delete"] for row in rows),
+                    # 共享种子只有所有关联任务选同一作用域时才按该作用域处理
+                    "delete_scope": (
+                        rows[0]["delete_scope"]
+                        if all(row["delete_scope"] == rows[0]["delete_scope"] for row in rows)
+                        else "none"
+                    ),
                     "completed": all(row["completed"] for row in rows),
                     "hit_and_run": any(row["hit_and_run"] for row in rows),
                     "pre_delete_reason": (
@@ -2611,11 +2641,10 @@ class BrushFlow(_PluginBase):
         candidates: List[dict],
         total_size: float,
     ) -> Dict[str, dict]:
-        """把删种候选按限额作用域分组，各自带一组阈值
+        """把删种候选按任务选定的作用域分组，各自带一组阈值
 
-        配置了下载器级删种阈值的下载器单独成组（只统计并清理自己的种子）；
-        未配置的下载器合并为 ``__global__`` 组，沿用全局阈值与跨下载器总量，
-        从而不影响既有配置的行为。
+        任务选了「跟随全局」就按全局阈值合并统计，选了「跟随下载器」则按该下载器
+        的阈值独立统计。作用域互斥，一颗种子只会进入一个分组。
         """
         groups: Dict[str, dict] = {}
         global_group = {
@@ -2635,26 +2664,37 @@ class BrushFlow(_PluginBase):
 
         for entry in candidates:
             downloader_name = entry.get("downloader_name")
+            # 删除方式由任务选择，全局候选只收「选了全局」的任务，避免同一批种子
+            # 被多层阈值重复清理（旧行为是任务未单独设阈值就自动并入全局）
+            if entry.get("delete_scope") != "global":
+                continue
+            if not global_limits:
+                continue
+            group = global_group
+            group["candidates"].append(entry)
+
+        # 选了「下载器」作用域的任务单独成组，只按该下载器的阈值统计与清理
+        for entry in candidates:
+            if entry.get("delete_scope") != "downloader":
+                continue
+            downloader_name = entry.get("downloader_name")
             limit = self._downloader_limit(downloader_name) or {}
-            if limit.get("proxy_delete") and limit.get("delete_size_range"):
-                limits = self._parse_size_range_limits(limit["delete_size_range"])
-                if not limits:
-                    continue
-                group = groups.setdefault(
-                    str(downloader_name),
-                    {
-                        "candidates": [],
-                        "total_size": 0.0,
-                        "min_size": limits[0],
-                        "max_size": limits[1],
-                        "is_range": limits[0] != limits[1],
-                        "label": f"下载器 [{downloader_name}]",
-                    },
-                )
-            else:
-                if not global_limits:
-                    continue
-                group = global_group
+            if not (limit.get("proxy_delete") and limit.get("delete_size_range")):
+                continue
+            limits = self._parse_size_range_limits(limit["delete_size_range"])
+            if not limits:
+                continue
+            group = groups.setdefault(
+                str(downloader_name),
+                {
+                    "candidates": [],
+                    "total_size": 0.0,
+                    "min_size": limits[0],
+                    "max_size": limits[1],
+                    "is_range": limits[0] != limits[1],
+                    "label": f"下载器 [{downloader_name}]",
+                },
+            )
             group["candidates"].append(entry)
 
         if global_group["candidates"]:

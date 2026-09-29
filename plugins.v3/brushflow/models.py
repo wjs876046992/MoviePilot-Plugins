@@ -61,6 +61,9 @@ class BrushTaskPayload(BaseModel):
     delete_except_tags: Optional[str] = None
     except_subscribe: bool = True
     proxy_delete: bool = False
+    # 删除方式的作用域：任务级 / 全局 / 下载器级。三者互斥，与全局设置里
+    # 对应层级的阈值配合使用；选「任务」时才使用本任务的 delete_size_range。
+    dynamic_delete_scope: Literal["task", "global", "downloader"] = "task"
     del_no_free: bool = False
     qb_category: Optional[str] = None
     site_hr_active: bool = False

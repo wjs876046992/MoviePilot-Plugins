@@ -38,6 +38,8 @@ const taskDefaults = {
   delete_except_tags: null,
   except_subscribe: true,
   proxy_delete: false,
+  // 删除方式作用域：task=本任务阈值 / global=全局阈值 / downloader=下载器阈值
+  dynamic_delete_scope: 'task',
   del_no_free: false,
   qb_category: null,
   site_hr_active: false,
@@ -106,6 +108,10 @@ function normalizeTask(task) {
   optionalText.forEach(key => {
     result[key] = String(result[key] || '').trim() || null;
   });
+  const scopes = ['task', 'global', 'downloader'];
+  result.dynamic_delete_scope = scopes.includes(result.dynamic_delete_scope)
+    ? result.dynamic_delete_scope
+    : 'task';
   result.site_id = Number(result.site_id);
   result.brush_interval = Number(result.brush_interval || 10);
   result.check_interval = Number(result.check_interval || 5);
