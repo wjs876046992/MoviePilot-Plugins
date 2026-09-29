@@ -346,29 +346,39 @@ async function saveTask() {
               <section class="editor-section">
                 <header class="editor-section__head">
                   <div>
-                    <div class="text-subtitle-1 font-weight-medium">
-                      {{ globalDynamicDelete ? '体积删种托管' : '删除模式' }}
-                    </div>
+                    <div class="text-subtitle-1 font-weight-medium">删除方式</div>
                     <div class="text-body-2 text-medium-emphasis">
-                      {{ globalDynamicDelete ? '选择此任务是否参加全局/下载器阈值兜底淘汰' : '动态模式会在超过体积阈值后按现有算法托管删种' }}
+                      参与体积删种后，本任务种子会参加全局或下载器阈值托管；填写了自己的阈值，还可独立触发删种。
                     </div>
                   </div>
                 </header>
                 <VBtnToggle v-model="localTask.proxy_delete" mandatory color="primary" divided>
-                  <VBtn :value="false">{{ globalDynamicDelete ? '不参与托管' : '按条件删除' }}</VBtn>
-                  <VBtn :value="true">{{ globalDynamicDelete ? '参与托管' : '动态删种' }}</VBtn>
+                  <VBtn :value="false">不参与体积删种</VBtn>
+                  <VBtn :value="true">参与体积删种</VBtn>
                 </VBtnToggle>
                 <VRow v-if="localTask.proxy_delete">
                   <VCol cols="12">
                     <VTextField
                       v-model="localTask.delete_size_range"
-                      label="本任务动态删种阈值（GB）"
+                      :label="globalDynamicDelete ? '本任务自有阈值（可选）' : '动态删种阈值（GB）'"
                       placeholder="如 350-500"
-                      hint="本任务独立生效，与全局及下载器级阈值互不影响；留空则只按上方选择的托管方式处理"
+                      :hint="
+                        globalDynamicDelete
+                          ? '留空表示只参加全局/下载器阈值托管；填写后本任务还会按该阈值额外删种'
+                          : '必填：达到上限后删到下限，如 350-500；单值表示原地反复删到该值'
+                      "
                       persistent-hint
                     />
                   </VCol>
                 </VRow>
+                <VAlert
+                  v-if="localTask.proxy_delete && !localTask.delete_size_range && !globalDynamicDelete"
+                  type="warning"
+                  variant="tonal"
+                  density="compact"
+                >
+                  未填写阈值，且当前未启用全局或下载器级体积删种，本任务实际仍按条件删除。
+                </VAlert>
               </section>
               <section class="editor-section">
                 <header class="editor-section__head">
