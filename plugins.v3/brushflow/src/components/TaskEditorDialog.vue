@@ -40,6 +40,22 @@ const deleteMode = computed({
     if (mode !== 'none') localTask.value.dynamic_delete_scope = mode
   },
 })
+// 窄屏下拉用：只列出当前可用的来源，并带上各自阈值，避免选到会静默回落成
+// 「按条件删除」的选项。宽屏的分段控件则保留置灰，便于看出选项为何不可用。
+const deleteModeOptions = computed(() => {
+  const options = [{ title: '按条件删除', value: 'none' }]
+  if (props.globalDynamicDelete) {
+    options.push({ title: `跟随全局（${props.globalDeleteRange} GB）`, value: 'global' })
+  }
+  if (props.scopedDownloaderDeleteRange) {
+    options.push({
+      title: `跟随下载器「${localTask.value.downloader || '未选择'}」（${props.scopedDownloaderDeleteRange} GB）`,
+      value: 'downloader',
+    })
+  }
+  options.push({ title: '自定义本任务阈值', value: 'task' })
+  return options
+})
 // 所选来源是否仍然可用；全局或下载器配置被关停时任务会静默回落，需要显式提示
 const scopeUnavailable = computed(() => {
   if (deleteMode.value === 'task') return !localTask.value.delete_size_range
@@ -379,7 +395,16 @@ async function saveTask() {
                     </div>
                   </div>
                 </header>
-                <VBtnToggle v-model="deleteMode" mandatory color="primary" divided>
+                <!-- 窄屏放下四个分段按钮会溢出，改用下拉；宽屏保持原生分段控件观感 -->
+                <VSelect
+                  v-if="display.smAndDown.value"
+                  v-model="deleteMode"
+                  label="删除方式"
+                  :items="deleteModeOptions"
+                  item-title="title"
+                  item-value="value"
+                />
+                <VBtnToggle v-else v-model="deleteMode" mandatory color="primary" divided>
                   <VBtn :value="'none'">按条件删除</VBtn>
                   <VBtn :value="'global'" :disabled="!globalDynamicDelete">跟随全局</VBtn>
                   <VBtn :value="'downloader'" :disabled="!scopedDownloaderDeleteRange">跟随下载器</VBtn>
