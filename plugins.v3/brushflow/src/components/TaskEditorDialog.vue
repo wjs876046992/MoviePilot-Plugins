@@ -379,11 +379,15 @@ async function saveTask() {
                     </div>
                   </div>
                 </header>
-                <VBtnToggle v-model="deleteMode" mandatory color="primary" divided>
-                  <VBtn :value="'none'">按条件删除</VBtn>
-                  <VBtn :value="'global'" :disabled="!globalDynamicDelete">跟随全局</VBtn>
-                  <VBtn :value="'downloader'" :disabled="!scopedDownloaderDeleteRange">跟随下载器</VBtn>
-                  <VBtn :value="'task'">自己配置</VBtn>
+                <VBtnToggle v-model="deleteMode" mandatory color="primary" divided class="delete-mode">
+                  <VBtn :value="'none'" class="delete-mode__btn">按条件删除</VBtn>
+                  <VBtn :value="'global'" :disabled="!globalDynamicDelete" class="delete-mode__btn">
+                    跟随全局
+                  </VBtn>
+                  <VBtn :value="'downloader'" :disabled="!scopedDownloaderDeleteRange" class="delete-mode__btn">
+                    跟随下载器
+                  </VBtn>
+                  <VBtn :value="'task'" class="delete-mode__btn">自己配置</VBtn>
                 </VBtnToggle>
                 <VRow v-if="deleteMode === 'task'">
                   <VCol cols="12">
@@ -569,6 +573,29 @@ async function saveTask() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
+}
+
+/* 删除方式的四个按钮：窄屏下换行等分，避免标签被挤成一团 */
+.delete-mode {
+  display: flex;
+  flex-wrap: wrap;
+  inline-size: 100%;
+  block-size: auto;
+}
+
+/* ⚠️ 不能用 :deep(.v-btn)：vite.config.js 的 vuetify-filter 会删掉所有
+   选择器含 .v- 的规则，包括 :deep() 展开后的产物。故按钮自带自有类名。 */
+.delete-mode__btn {
+  flex: 1 1 6.5rem;
+  min-inline-size: 0;
+  padding-inline: 10px;
+  letter-spacing: 0;
+}
+
+@media (max-width: 600px) {
+  .delete-mode__btn {
+    flex: 1 1 46%;
+  }
 }
 
 .brushflow-editor__summary {

@@ -1,5 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { B as BrushFlowWorkbench } from './BrushFlowWorkbench-C7HM5itS.js';
+import { B as BrushFlowWorkbench } from './BrushFlowWorkbench-D2Cq-GPS.js';
 
 const {openBlock:_openBlock,createBlock:_createBlock} = await importShared('vue');
 

@@ -858,10 +858,14 @@ return (_ctx, _cache) => {
                               "onUpdate:modelValue": _cache[33] || (_cache[33] = $event => ((deleteMode).value = $event)),
                               mandatory: "",
                               color: "primary",
-                              divided: ""
+                              divided: "",
+                              class: "delete-mode"
                             }, {
                               default: _withCtx$1(() => [
-                                _createVNode$1(_component_VBtn, { value: 'none' }, {
+                                _createVNode$1(_component_VBtn, {
+                                  value: 'none',
+                                  class: "delete-mode__btn"
+                                }, {
                                   default: _withCtx$1(() => [...(_cache[64] || (_cache[64] = [
                                     _createTextVNode$1("按条件删除", -1)
                                   ]))]),
@@ -869,23 +873,28 @@ return (_ctx, _cache) => {
                                 }),
                                 _createVNode$1(_component_VBtn, {
                                   value: 'global',
-                                  disabled: !__props.globalDynamicDelete
+                                  disabled: !__props.globalDynamicDelete,
+                                  class: "delete-mode__btn"
                                 }, {
                                   default: _withCtx$1(() => [...(_cache[65] || (_cache[65] = [
-                                    _createTextVNode$1("跟随全局", -1)
+                                    _createTextVNode$1(" 跟随全局 ", -1)
                                   ]))]),
                                   _: 1
                                 }, 8, ["disabled"]),
                                 _createVNode$1(_component_VBtn, {
                                   value: 'downloader',
-                                  disabled: !__props.scopedDownloaderDeleteRange
+                                  disabled: !__props.scopedDownloaderDeleteRange,
+                                  class: "delete-mode__btn"
                                 }, {
                                   default: _withCtx$1(() => [...(_cache[66] || (_cache[66] = [
-                                    _createTextVNode$1("跟随下载器", -1)
+                                    _createTextVNode$1(" 跟随下载器 ", -1)
                                   ]))]),
                                   _: 1
                                 }, 8, ["disabled"]),
-                                _createVNode$1(_component_VBtn, { value: 'task' }, {
+                                _createVNode$1(_component_VBtn, {
+                                  value: 'task',
+                                  class: "delete-mode__btn"
+                                }, {
                                   default: _withCtx$1(() => [...(_cache[67] || (_cache[67] = [
                                     _createTextVNode$1("自己配置", -1)
                                   ]))]),
@@ -1233,7 +1242,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-5011732d"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-bbdda4c3"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,mergeProps:_mergeProps,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,unref:_unref,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle} = await importShared('vue');
 
@@ -2453,22 +2462,33 @@ return (_ctx, _cache) => {
                                     mandatory: "",
                                     color: "primary",
                                     density: "compact",
+                                    divided: "",
+                                    class: "torrent-state",
                                     "onUpdate:modelValue": changeTorrentState
                                   }, {
                                     default: _withCtx(() => [
-                                      _createVNode(_component_VBtn, { value: "active" }, {
+                                      _createVNode(_component_VBtn, {
+                                        value: "active",
+                                        class: "torrent-state__btn"
+                                      }, {
                                         default: _withCtx(() => [...(_cache[59] || (_cache[59] = [
                                           _createTextVNode("活跃", -1)
                                         ]))]),
                                         _: 1
                                       }),
-                                      _createVNode(_component_VBtn, { value: "deleted" }, {
+                                      _createVNode(_component_VBtn, {
+                                        value: "deleted",
+                                        class: "torrent-state__btn"
+                                      }, {
                                         default: _withCtx(() => [...(_cache[60] || (_cache[60] = [
                                           _createTextVNode("已删除", -1)
                                         ]))]),
                                         _: 1
                                       }),
-                                      _createVNode(_component_VBtn, { value: "all" }, {
+                                      _createVNode(_component_VBtn, {
+                                        value: "all",
+                                        class: "torrent-state__btn"
+                                      }, {
                                         default: _withCtx(() => [...(_cache[61] || (_cache[61] = [
                                           _createTextVNode("全部", -1)
                                         ]))]),
@@ -2946,6 +2966,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-f7ce6e4d"]]);
+const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4f4fc439"]]);
 
 export { BrushFlowWorkbench as B };
