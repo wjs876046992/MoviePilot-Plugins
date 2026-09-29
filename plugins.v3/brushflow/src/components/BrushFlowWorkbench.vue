@@ -73,6 +73,41 @@ const downloaderLimitRows = computed(() => {
     return { name }
   })
 })
+// 已单独设过任何限额的下载器：用于提示哪些下载器不再走全局限额
+const downloaderLimitNames = computed(() =>
+  (status.value.options?.downloaders || [])
+    .map(item => item.value ?? item.title)
+    .filter(name => {
+      const limit = settingsDraft.value.downloader_limits[name] || {}
+      return Boolean(Number(limit.disksize)) || limit.proxy_delete || Boolean(limit.delete_size_range)
+    })
+    .join('、'),
+)
+// 折叠面板的副标题：不展开也能看出每台下载器当前配了什么
+function downloaderLimitSummary(name) {
+  const limit = settingsDraft.value.downloader_limits[name] || {}
+  const parts = []
+  parts.push(Number(limit.disksize) ? `上限 ${limit.disksize} GB` : '上限不限')
+  if (limit.proxy_delete && limit.delete_size_range) {
+    parts.push(`动态删种 ${limit.delete_size_range} GB`)
+  } else if (limit.proxy_delete) {
+    parts.push('动态删种（缺阈值）')
+  } else {
+    parts.push('沿用全局删种')
+  }
+  return parts.join(' · ')
+}
+// 检查事件的摘要：区分任务自身的条件删除与体积托管删种，避免两个数字混在一起
+function runEventCheckText(run) {
+  const taskDeleted = Number(run.deleted_count || 0) - Number(run.global_deleted_count || 0)
+  const segments = [`活跃 ${run.active_count || 0}`]
+  if (run.global_dynamic_delete) {
+    segments.push(`任务自身删除 ${Math.max(taskDeleted, 0)}`, `体积托管删除 ${run.global_deleted_count || 0}`)
+  } else {
+    segments.push(`删除 ${run.deleted_count || 0}`)
+  }
+  return segments.join('，')
+}
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const selectedState = computed(() => taskStateMeta(selectedTask.value?.state))
 const taskConfig = computed(() => taskDetail.value?.task || {})
@@ -394,6 +429,11 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                 inset
               />
               <VDivider />
+              <!-- 全局兜底：只作用于没有单独设置删种阈值的下载器 -->
+              <div class="text-subtitle-2">全局兜底限额</div>
+              <div class="text-body-2 text-medium-emphasis">
+                作用于没有单独设置删种阈值的下载器；已设置的下载器按自己的阈值独立判定。
+              </div>
               <VSwitch
                 v-model="settingsDraft.global_proxy_delete"
                 label="全局动态删种"
@@ -409,7 +449,6 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                 clearable
                 hide-details
               />
-              <VDivider />
               <VTextField
                 v-model.number="settingsDraft.global_disksize"
                 type="number"
@@ -418,49 +457,63 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                 clearable
                 hide-details
               />
+              <div v-if="downloaderLimitNames" class="text-body-2 text-medium-emphasis">
+                已单独设置的下载器：{{ downloaderLimitNames }}，这些下载器不参与全局总量统计。
+              </div>
+
               <VDivider />
               <!-- 下载器级限额：多台下载器在不同机器、磁盘容量各异，各自独立判定 -->
-              <div class="text-subtitle-2">按下载器限额</div>
+              <div class="text-subtitle-2">按下载器独立限额</div>
               <div class="text-body-2 text-medium-emphasis">
-                为每个下载器单独设置保种上限与动态删种阈值；未设置的下载器沿用上面的全局值。
+                为每台下载器单独设置保种上限与动态删种阈值，体积统计与删种互不影响；
+                留空则该下载器沿用上面的全局值。
               </div>
-              <div
-                v-for="downloader in downloaderLimitRows"
-                :key="downloader.name"
-                class="editor-section"
-              >
-                <div class="text-body-2 font-weight-medium">{{ downloader.name }}</div>
-                <VRow dense>
-                  <VCol cols="12" md="4">
-                    <VTextField
-                      v-model.number="settingsDraft.downloader_limits[downloader.name].disksize"
-                      type="number"
-                      min="0"
-                      label="保种体积（GB）"
-                      clearable
-                      hide-details
-                    />
-                  </VCol>
-                  <VCol cols="12" md="8">
-                    <VSwitch
-                      v-model="settingsDraft.downloader_limits[downloader.name].proxy_delete"
-                      label="动态删种"
-                      color="primary"
-                      hide-details
-                      inset
-                    />
-                    <VTextField
-                      v-if="settingsDraft.downloader_limits[downloader.name].proxy_delete"
-                      v-model="settingsDraft.downloader_limits[downloader.name].delete_size_range"
-                      label="动态删种阈值（GB）"
-                      placeholder="40-50"
-                      clearable
-                      hide-details
-                    />
-                  </VCol>
-                </VRow>
-              </div>
+              <VExpansionPanels v-if="downloaderLimitRows.length" variant="accordion" flat>
+                <VExpansionPanel
+                  v-for="downloader in downloaderLimitRows"
+                  :key="downloader.name"
+                  :title="downloader.name"
+                  :subtitle="downloaderLimitSummary(downloader.name)"
+                >
+                  <VExpansionPanelText>
+                    <VRow dense>
+                      <VCol cols="12">
+                        <VTextField
+                          v-model.number="settingsDraft.downloader_limits[downloader.name].disksize"
+                          type="number"
+                          min="0"
+                          label="保种体积上限（GB）"
+                          clearable
+                          hide-details
+                        />
+                      </VCol>
+                      <VCol cols="12">
+                        <VSwitch
+                          v-model="settingsDraft.downloader_limits[downloader.name].proxy_delete"
+                          label="动态删种"
+                          color="primary"
+                          hide-details
+                          inset
+                        />
+                      </VCol>
+                      <VCol v-if="settingsDraft.downloader_limits[downloader.name].proxy_delete" cols="12">
+                        <VTextField
+                          v-model="settingsDraft.downloader_limits[downloader.name].delete_size_range"
+                          label="动态删种阈值（GB）"
+                          placeholder="40-50"
+                          hint="达到 50 GB 后删到 40 GB；单值表示原地反复删到该值"
+                          persistent-hint
+                        />
+                      </VCol>
+                    </VRow>
+                  </VExpansionPanelText>
+                </VExpansionPanel>
+              </VExpansionPanels>
+              <div v-else class="text-body-2 text-medium-emphasis">暂无可用下载器</div>
+
               <VDivider />
+              <div class="text-subtitle-2">全局运行限额</div>
+              <div class="text-body-2 text-medium-emphasis">与磁盘容量无关，用于限制整机的并发与带宽。</div>
               <VTextField
                 v-model.number="settingsDraft.global_maxdlcount"
                 type="number"
@@ -833,8 +886,14 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                       <strong>{{ run.kind === 'brush' ? '刷流刷新' : '种子检查' }}</strong>
                       <span>
                         {{ formatDateTime(run.started_at) }} · {{ formatDuration(run.started_at, run.finished_at) }} ·
-                        {{ run.kind === 'brush' ? `新增 ${run.added_count || 0}，过滤 ${run.filtered_count || 0}` : `活跃 ${run.active_count || 0}，删除 ${run.deleted_count || 0}` }}
+                        {{ run.kind === 'brush' ? `新增 ${run.added_count || 0}，过滤 ${run.filtered_count || 0}` : runEventCheckText(run) }}
                       </span>
+                      <div v-if="run.kind !== 'brush' && run.delete_scopes?.length" class="brushflow-scopes">
+                        <span v-for="scope in run.delete_scopes" :key="scope.key">
+                          {{ scope.label }} 做种 {{ formatBytes(scope.size) }} / 阈值 {{ formatBytes(scope.max_size) }}
+                          · {{ scope.triggered ? `已触发，删除 ${scope.deleted_count}` : '未触发' }}
+                        </span>
+                      </div>
                       <span v-if="run.error" class="text-error">{{ run.error }}</span>
                     </div>
                   </article>
@@ -902,7 +961,7 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
       :task="editorTask"
       :sites="status.options.sites"
       :downloaders="status.options.downloaders"
-      :global-dynamic-delete="Boolean(status.global_proxy_delete)"
+      :global-dynamic-delete="Boolean(status.global_dynamic_delete || status.downloader_delete_enabled)"
       :saving="saving"
       @save="saveTask"
     />
@@ -1377,6 +1436,20 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
   block-size: 100%;
   border-radius: inherit;
   background: rgb(var(--v-theme-warning));
+}
+
+/* 体积删种的各作用域判定明细，逐行列出便于区分是全局还是某台下载器触发 */
+.brushflow-scopes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-block-start: 2px;
+}
+
+.brushflow-scopes span {
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .brushflow-events {

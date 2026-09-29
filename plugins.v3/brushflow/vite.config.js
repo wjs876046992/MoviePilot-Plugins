@@ -25,11 +25,10 @@ export default defineConfig({
           generate: false,
           singleton: true,
         },
-        'vuetify/styles': {
-          requiredVersion: false,
-          generate: false,
-          singleton: true,
-        },
+        // ⚠️ 不要把 'vuetify/styles' 加进共享列表：源码并未显式 import 它，
+        // 它只会让构建额外产出 dist/assets/__federation_shared_vuetify/styles-*.css。
+        // 该文件既不被 remoteEntry 引用，又会被 .github/scripts/check_federation_css.py
+        // 判为「不得发布 Vuetify 共享基础样式」，卡住发布门禁。
       },
       format: 'esm',
     }),

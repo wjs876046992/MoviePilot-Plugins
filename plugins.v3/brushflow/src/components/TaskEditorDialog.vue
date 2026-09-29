@@ -347,23 +347,25 @@ async function saveTask() {
                 <header class="editor-section__head">
                   <div>
                     <div class="text-subtitle-1 font-weight-medium">
-                      {{ globalDynamicDelete ? '全局删种托管' : '删除模式' }}
+                      {{ globalDynamicDelete ? '体积删种托管' : '删除模式' }}
                     </div>
                     <div class="text-body-2 text-medium-emphasis">
-                      {{ globalDynamicDelete ? '选择此任务是否参加全局阈值兜底淘汰' : '动态模式会在超过体积阈值后按现有算法托管删种' }}
+                      {{ globalDynamicDelete ? '选择此任务是否参加全局/下载器阈值兜底淘汰' : '动态模式会在超过体积阈值后按现有算法托管删种' }}
                     </div>
                   </div>
                 </header>
                 <VBtnToggle v-model="localTask.proxy_delete" mandatory color="primary" divided>
                   <VBtn :value="false">{{ globalDynamicDelete ? '不参与托管' : '按条件删除' }}</VBtn>
-                  <VBtn :value="true">{{ globalDynamicDelete ? '参与全局托管' : '动态删种' }}</VBtn>
+                  <VBtn :value="true">{{ globalDynamicDelete ? '参与托管' : '动态删种' }}</VBtn>
                 </VBtnToggle>
-                <VRow v-if="localTask.proxy_delete && !globalDynamicDelete">
+                <VRow v-if="localTask.proxy_delete">
                   <VCol cols="12">
                     <VTextField
                       v-model="localTask.delete_size_range"
-                      label="动态删种阈值（GB）"
+                      label="本任务动态删种阈值（GB）"
                       placeholder="如 350-500"
+                      hint="本任务独立生效，与全局及下载器级阈值互不影响；留空则只按上方选择的托管方式处理"
+                      persistent-hint
                     />
                   </VCol>
                 </VRow>
@@ -454,7 +456,14 @@ async function saveTask() {
               <div><dt>目标分享率</dt><dd>{{ localTask.site_ratio_control ? localTask.site_ratio_target || '未设置' : '关闭' }}</dd></div>
               <div><dt>促销</dt><dd>{{ localTask.freeleech === '2xfree' ? '2X 免费' : localTask.freeleech === 'free' ? '免费' : '全部' }}</dd></div>
               <div><dt>保种上限</dt><dd>{{ localTask.disksize ? `${localTask.disksize} GB` : '不限' }}</dd></div>
-              <div><dt>删除</dt><dd>{{ localTask.proxy_delete ? '动态删种' : '按条件删除' }}</dd></div>
+              <div>
+                <dt>删除</dt>
+                <dd v-if="localTask.proxy_delete && localTask.delete_size_range">
+                  动态删种 {{ localTask.delete_size_range }} GB
+                </dd>
+                <dd v-else-if="localTask.proxy_delete">参与体积托管</dd>
+                <dd v-else>按条件删除</dd>
+              </div>
             </dl>
           </VSheet>
         </VForm>

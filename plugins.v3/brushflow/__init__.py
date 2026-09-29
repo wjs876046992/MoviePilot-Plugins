@@ -253,7 +253,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.3.0"
+    plugin_version = "6.3.1"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -702,6 +702,20 @@ class BrushFlow(_PluginBase):
             getattr(self, "_global_proxy_delete", False)
             and getattr(self, "_global_delete_size_range", None)
         )
+
+    def _has_downloader_delete_limit(self) -> bool:
+        """判断是否存在能独立触发删种的下载器级阈值
+
+        下载器级阈值不需要全局开关即可生效，故删除流程的启动条件不能只看全局开关。
+        """
+        for limit in getattr(self, "_downloader_limits", {}).values():
+            if limit.get("proxy_delete") and limit.get("delete_size_range"):
+                return True
+        return False
+
+    def _dynamic_delete_enabled(self) -> bool:
+        """返回任一动态删种作用域是否可用：全局总量或下载器级阈值"""
+        return self._global_dynamic_delete_enabled() or self._has_downloader_delete_limit()
 
     @staticmethod
     def _validate_global_dynamic_delete_config(enabled: Any, size_range: Any) -> Tuple[bool, Optional[str]]:
@@ -1242,6 +1256,10 @@ class BrushFlow(_PluginBase):
                 name: dict(limit)
                 for name, limit in getattr(self, "_downloader_limits", {}).items()
             },
+            # 全局删种是否真的会执行：下载器级阈值已能独立触发，全局开关关掉时
+            # 未单独配置的下载器就不再参与动态删种，前端据此分开展示两套配置
+            "global_dynamic_delete": self._global_dynamic_delete_enabled(),
+            "downloader_delete_enabled": self._has_downloader_delete_limit(),
             "summary": aggregate,
             "tasks": task_rows,
             "options": {"sites": site_options, "downloaders": downloader_options},
@@ -1856,6 +1874,10 @@ class BrushFlow(_PluginBase):
             "added_count": 0,
             "deleted_count": 0,
             "active_count": 0,
+            # 是否启用了全局/下载器级体积删种，以及本次各作用域的判定明细
+            "global_dynamic_delete": False,
+            "global_deleted_count": 0,
+            "delete_scopes": [],
             "reason_counts": Counter(),
             "added_titles": [],
         }
@@ -2029,6 +2051,9 @@ class BrushFlow(_PluginBase):
             logger.info(f"刷流任务 [{task.name}] 已有操作执行中，本轮检查跳过")
             return
         report = self._new_run_report("check")
+        dynamic_delete_enabled = self._dynamic_delete_enabled()
+        # 运行诊断需要区分「任务自身托管删种」与「全局/下载器体积删种」两类删除
+        report["global_dynamic_delete"] = dynamic_delete_enabled
         self._set_runtime(task.id, state="running", operation="check", last_error=None)
         try:
             with self._task_scope(task.id):
@@ -2040,15 +2065,16 @@ class BrushFlow(_PluginBase):
             logger.error(f"刷流任务 [{task.name}] 检查失败：{str(err)}")
         finally:
             task_lock.release()
-        if self._global_dynamic_delete_enabled():
+        if dynamic_delete_enabled:
             try:
-                global_deleted_count = self._run_global_dynamic_delete()
+                global_deleted_count, scopes = self._run_global_dynamic_delete()
                 report["global_deleted_count"] = global_deleted_count
+                report["delete_scopes"] = scopes
                 report["deleted_count"] = report.get("deleted_count", 0) + global_deleted_count
             except Exception as err:
                 report.update({"success": False, "error": str(err)})
                 self._set_runtime(task.id, last_error=str(err))
-                logger.error(f"全局动态删种失败：{str(err)}")
+                logger.error(f"动态删种失败：{str(err)}")
         report["finished_at"] = self._now_iso()
         self._append_run(task.id, report)
         self._set_runtime(task.id, state="idle", operation=None)
@@ -2077,12 +2103,18 @@ class BrushFlow(_PluginBase):
         self.__update_torrent_tasks_state(check_torrents, torrent_tasks)
         self.__update_undeleted_torrents_missing_in_downloader(torrent_tasks, check_hashes, seeding_torrents)
         filtered_torrents = self.__filter_torrents_by_tag(check_torrents, task.delete_except_tags)
-        if self._global_dynamic_delete_enabled():
-            need_delete_hashes = []
-        elif task.proxy_delete and task.delete_size_range:
-            need_delete_hashes = self.__delete_torrent_for_proxy(filtered_torrents, torrent_tasks)
+        # 任务级动态删种阈值只对本任务生效，与全局/下载器级体积删种互相独立，
+        # 故两者同时启用时都要执行；都未启用才回落到按条件删除。
+        delegated_hashes: List[str] = []
+        if task.proxy_delete and task.delete_size_range:
+            delegated_hashes = self.__delete_torrent_for_proxy(filtered_torrents, torrent_tasks)
+        if self._dynamic_delete_enabled():
+            need_delete_hashes = delegated_hashes
         else:
-            need_delete_hashes = self.__delete_torrent_for_evaluate_conditions(filtered_torrents, torrent_tasks)
+            task_hashes = self.__delete_torrent_for_evaluate_conditions(
+                filtered_torrents, torrent_tasks
+            )
+            need_delete_hashes = list(dict.fromkeys([*delegated_hashes, *task_hashes]))
         need_delete_hashes = list(dict.fromkeys(need_delete_hashes or []))
         deleted_from_downloader = False
         if need_delete_hashes:
@@ -2672,17 +2704,20 @@ class BrushFlow(_PluginBase):
             return None
         return values[0], values[1]
 
-    def _run_global_dynamic_delete(self) -> int:
-        """串行执行跨任务、跨下载器的全局动态删种并返回成功删除数"""
-        if not self._global_dynamic_delete_enabled():
-            return 0
+    def _run_global_dynamic_delete(self) -> Tuple[int, List[dict]]:
+        """串行执行跨任务的动态删种，返回 ``(成功删除数, 各作用域统计)``
+
+        作用域包含全局总量与各下载器独立阈值，逐一判定，互不牵连。
+        """
+        if not self._dynamic_delete_enabled():
+            return 0, []
         global_lock = getattr(self, "_global_delete_lock", None)
         if global_lock is None:
             self._global_delete_lock = threading.Lock()
             global_lock = self._global_delete_lock
         if not global_lock.acquire(blocking=False):
-            logger.info("已有全局动态删种正在执行，本轮跳过")
-            return 0
+            logger.info("已有动态删种正在执行，本轮跳过")
+            return 0, []
 
         try:
             with self._all_task_locks_scope():
@@ -2694,6 +2729,8 @@ class BrushFlow(_PluginBase):
                 threshold_triggered = False
                 # 只要任一作用域用的是区间阈值，就值得发「删到下限」的汇总通知
                 has_range_limit = False
+                # 各作用域的判定结果回传给运行诊断，便于看清是哪台机器触发了删种
+                scopes: List[dict] = []
                 for scope_key, group in downloader_groups.items():
                     scope_min, scope_max, scope_label = group["min_size"], group["max_size"], group["label"]
                     if group["is_range"]:
@@ -2707,6 +2744,17 @@ class BrushFlow(_PluginBase):
                     if group_plan:
                         delete_plan.extend(group_plan)
                     threshold_triggered = threshold_triggered or group_triggered
+                    scopes.append(
+                        {
+                            "key": scope_key,
+                            "label": scope_label,
+                            "size": group["total_size"],
+                            "min_size": scope_min,
+                            "max_size": scope_max,
+                            "triggered": group_triggered,
+                            "deleted_count": len(group_plan),
+                        }
+                    )
                     if not group_plan:
                         if group_triggered:
                             logger.info(
@@ -2719,7 +2767,7 @@ class BrushFlow(_PluginBase):
                                 f"未达到动态删种上限 {self.__bytes_to_gb(scope_max):.1f} GB"
                             )
                 if not delete_plan:
-                    return 0
+                    return 0, scopes
 
                 plan_by_downloader: Dict[str, List[dict]] = {}
                 for entry in delete_plan:
@@ -2799,8 +2847,8 @@ class BrushFlow(_PluginBase):
                     try:
                         self._send_global_dynamic_delete_summary(recorded_entries, remaining_size)
                     except Exception as err:
-                        logger.warning(f"全局动态删种发送汇总通知失败：{str(err)}")
-                return len(recorded_entries)
+                        logger.warning(f"动态删种发送汇总通知失败：{str(err)}")
+                return len(recorded_entries), scopes
         finally:
             global_lock.release()
 
