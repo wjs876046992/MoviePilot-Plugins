@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -181,6 +181,64 @@ class BrushTaskStatePayload(BaseModel):
     enabled: bool
 
 
+class DownloaderLimitPayload(BaseModel):
+    """
+    单个下载器的保种与动态删种限额
+
+    多台下载器位于不同机器、磁盘容量各异，统一的总量阈值无法表达
+    「A 盘 50G、B 盘 100G」这类差异，故按下载器分别配置。
+    """
+
+    disksize: Optional[float] = Field(None, gt=0)
+    proxy_delete: bool = False
+    delete_size_range: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def clear_delete_size_range_when_disabled(cls, data):
+        """关闭动态删种时忽略隐藏阈值，确保无效草稿不会阻止保存。"""
+        if not isinstance(data, dict):
+            return data
+        enabled = data.get("proxy_delete", False)
+        if enabled not in (False, None, 0, "", "0", "false", "False"):
+            return data
+        normalized = dict(data)
+        normalized["delete_size_range"] = None
+        return normalized
+
+    @field_validator("disksize", mode="before")
+    @classmethod
+    def normalize_optional_positive_number(cls, value):
+        """兼容用空值和 0 表示不限额的写法。"""
+        return _normalize_optional_positive_number(value)
+
+    @field_validator("delete_size_range", mode="before")
+    @classmethod
+    def normalize_delete_size_range(cls, value):
+        """清理阈值中的空白值。"""
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned or None
+
+    @field_validator("delete_size_range")
+    @classmethod
+    def validate_delete_size_range(cls, value: Optional[str]) -> Optional[str]:
+        """校验单值或区间阈值；区间必须下限小于上限
+
+        任务级历史实现漏了这条检查，写反的区间（如 50-40）不会报错，
+        运行时下限大于上限会退化成「一直删」，故这里显式拦截。
+        """
+        if not value:
+            return None
+        if not re.fullmatch(r"\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?", value):
+            raise ValueError("请输入数字或数字范围，例如 100 或 50-100")
+        limits = [float(item) for item in value.split("-")]
+        if any(item <= 0 for item in limits) or (len(limits) > 1 and limits[0] >= limits[1]):
+            raise ValueError("动态删种区间下限必须小于上限")
+        return value
+
+
 class BrushFlowSettingsPayload(BaseModel):
     """
     刷流插件全局设置请求模型
@@ -194,6 +252,7 @@ class BrushFlowSettingsPayload(BaseModel):
     global_maxdlspeed: Optional[float] = Field(None, gt=0)
     global_proxy_delete: bool = False
     global_delete_size_range: Optional[str] = None
+    downloader_limits: Dict[str, DownloaderLimitPayload] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod

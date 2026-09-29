@@ -2,7 +2,9 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import TaskEditorDialog from './TaskEditorDialog.vue'
 import {
+  cloneDownloaderLimits,
   cloneTask,
+  emptyDownloaderLimit,
   formatBytes,
   formatDateTime,
   formatDuration,
@@ -53,12 +55,24 @@ const settingsDraft = ref({
   global_maxdlspeed: null,
   global_proxy_delete: false,
   global_delete_size_range: null,
+  downloader_limits: {},
 })
 const hostToast = inject('moviepilot:toast', null)
 let refreshTimer
 
 const pluginBase = computed(() => `plugin/${props.pluginId || 'BrushFlow'}`)
 const tasks = computed(() => status.value.tasks || [])
+// 按已配置的下载器渲染限额行；每行都确保 draft 里有对应对象再绑定
+const downloaderLimitRows = computed(() => {
+  const options = status.value.options?.downloaders || []
+  return options.map(item => {
+    const name = item.value ?? item.title
+    if (!settingsDraft.value.downloader_limits[name]) {
+      settingsDraft.value.downloader_limits[name] = emptyDownloaderLimit()
+    }
+    return { name }
+  })
+})
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const selectedState = computed(() => taskStateMeta(selectedTask.value?.state))
 const taskConfig = computed(() => taskDetail.value?.task || {})
@@ -131,6 +145,7 @@ async function loadStatus({ preserveSelection = true, loadDetail = true } = {}) 
       global_maxdlspeed: status.value.global_maxdlspeed ?? null,
       global_proxy_delete: Boolean(status.value.global_proxy_delete),
       global_delete_size_range: status.value.global_delete_size_range ?? null,
+      downloader_limits: cloneDownloaderLimits(status.value.downloader_limits),
     }
     const selectedStillExists = tasks.value.some(item => item.id === selectedTaskId.value)
     if (!preserveSelection || !selectedStillExists) selectedTaskId.value = tasks.value[0]?.id || ''
@@ -403,6 +418,49 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                 clearable
                 hide-details
               />
+              <VDivider />
+              <!-- 下载器级限额：多台下载器在不同机器、磁盘容量各异，各自独立判定 -->
+              <div class="text-subtitle-2">按下载器限额</div>
+              <div class="text-body-2 text-medium-emphasis">
+                为每个下载器单独设置保种上限与动态删种阈值；未设置的下载器沿用上面的全局值。
+              </div>
+              <div
+                v-for="downloader in downloaderLimitRows"
+                :key="downloader.name"
+                class="editor-section"
+              >
+                <div class="text-body-2 font-weight-medium">{{ downloader.name }}</div>
+                <VRow dense>
+                  <VCol cols="12" md="4">
+                    <VTextField
+                      v-model.number="settingsDraft.downloader_limits[downloader.name].disksize"
+                      type="number"
+                      min="0"
+                      label="保种体积（GB）"
+                      clearable
+                      hide-details
+                    />
+                  </VCol>
+                  <VCol cols="12" md="8">
+                    <VSwitch
+                      v-model="settingsDraft.downloader_limits[downloader.name].proxy_delete"
+                      label="动态删种"
+                      color="primary"
+                      hide-details
+                      inset
+                    />
+                    <VTextField
+                      v-if="settingsDraft.downloader_limits[downloader.name].proxy_delete"
+                      v-model="settingsDraft.downloader_limits[downloader.name].delete_size_range"
+                      label="动态删种阈值（GB）"
+                      placeholder="40-50"
+                      clearable
+                      hide-details
+                    />
+                  </VCol>
+                </VRow>
+              </div>
+              <VDivider />
               <VTextField
                 v-model.number="settingsDraft.global_maxdlcount"
                 type="number"

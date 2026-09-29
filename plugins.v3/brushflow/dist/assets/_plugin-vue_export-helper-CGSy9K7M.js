@@ -114,6 +114,21 @@ function normalizeTask(task) {
 }
 
 /** 把全局设置中的空值、零值和正数标准化为后端请求类型。 */
+/** 单个下载器的空限额草稿。 */
+function emptyDownloaderLimit() {
+  return { disksize: null, proxy_delete: false, delete_size_range: null }
+}
+
+/** 深拷贝下载器限额，避免直接改到 status 里的原始对象。 */
+function cloneDownloaderLimits(limits = {}) {
+  const source = limits && typeof limits === 'object' ? limits : {};
+  const result = {};
+  Object.entries(source).forEach(([name, value]) => {
+    result[name] = { ...emptyDownloaderLimit(), ...(value || {}) };
+  });
+  return result
+}
+
 function normalizeSettings(settings = {}) {
   const result = { ...(settings || {}) };
   const limitFields = ['global_disksize', 'global_maxdlcount', 'global_maxupspeed', 'global_maxdlspeed'];
@@ -125,6 +140,20 @@ function normalizeSettings(settings = {}) {
   result.global_delete_size_range = result.global_proxy_delete
     ? String(result.global_delete_size_range || '').trim() || null
     : null;
+  // 下载器级限额：空项不下发，避免后端存下无意义的空壳；关闭动态删种时清掉阈值
+  const limits = {};
+  Object.entries(cloneDownloaderLimits(result.downloader_limits)).forEach(([name, item]) => {
+    const disksize = Number(item.disksize || 0);
+    const proxyDelete = Boolean(item.proxy_delete);
+    const sizeRange = proxyDelete ? String(item.delete_size_range || '').trim() || null : null;
+    if (!(disksize > 0) && !proxyDelete && !sizeRange) return
+    limits[name] = {
+      disksize: disksize > 0 ? disksize : null,
+      proxy_delete: proxyDelete,
+      delete_size_range: sizeRange,
+    };
+  });
+  result.downloader_limits = limits;
   return result
 }
 
@@ -189,4 +218,4 @@ const _export_sfc = (sfc, props) => {
   return target;
 };
 
-export { _export_sfc as _, formatDateTime as a, formatDuration as b, cloneTask as c, torrentProgress as d, normalizeSettings as e, formatBytes as f, normalizeTask as n, taskStateMeta as t, unwrapResponse as u };
+export { _export_sfc as _, formatDateTime as a, formatDuration as b, cloneTask as c, torrentProgress as d, emptyDownloaderLimit as e, formatBytes as f, cloneDownloaderLimits as g, normalizeSettings as h, normalizeTask as n, taskStateMeta as t, unwrapResponse as u };

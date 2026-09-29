@@ -36,7 +36,12 @@ from app.schemas.types import EventType
 from app.sdk.network import RequestUtils
 from app.sdk.utilities import StringUtils
 
-from .models import BrushFlowSettingsPayload, BrushTaskPayload, BrushTaskStatePayload
+from .models import (
+    BrushFlowSettingsPayload,
+    BrushTaskPayload,
+    BrushTaskStatePayload,
+    DownloaderLimitPayload,
+)
 
 try:
     from lxml import etree
@@ -131,6 +136,14 @@ GLOBAL_LIMIT_FIELDS = (
 GLOBAL_DYNAMIC_DELETE_FIELDS = (
     "global_proxy_delete",
     "global_delete_size_range",
+)
+
+# 按下载器维度的限额字段：下载器名 -> 该下载器的保种上限与动态删种阈值。
+# 多台下载器分布在不同机器、磁盘容量各异，总量阈值表达不了这种差异。
+DOWNLOADER_LIMIT_FIELDS = (
+    "disksize",
+    "proxy_delete",
+    "delete_size_range",
 )
 
 # 按站点定制的候选来源：域名 -> 站点专属配置。
@@ -240,7 +253,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.2.4"
+    plugin_version = "6.3.0"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -280,6 +293,9 @@ class BrushFlow(_PluginBase):
         self._global_proxy_delete, self._global_delete_size_range = self._validate_global_dynamic_delete_config(
             global_proxy_delete,
             raw_config.get("global_delete_size_range", legacy_delete_range),
+        )
+        self._downloader_limits = self._normalize_downloader_limits(
+            raw_config.get("downloader_limits")
         )
 
         task_rows = raw_config.get("tasks") if isinstance(raw_config.get("tasks"), list) else None
@@ -538,6 +554,9 @@ class BrushFlow(_PluginBase):
             setattr(self, f"_{field}", getattr(payload, field))
         for field in GLOBAL_DYNAMIC_DELETE_FIELDS:
             setattr(self, f"_{field}", getattr(payload, field))
+        self._downloader_limits = self._normalize_downloader_limits(
+            {name: limit.model_dump() for name, limit in payload.downloader_limits.items()}
+        )
         if global_dynamic_delete_was_enabled and not self._global_dynamic_delete_enabled():
             for task in self._task_configs.values():
                 if task.proxy_delete and not task.delete_size_range:
@@ -661,6 +680,9 @@ class BrushFlow(_PluginBase):
         }
         config.update({field: getattr(self, f"_{field}", None) for field in GLOBAL_LIMIT_FIELDS})
         config.update({field: getattr(self, f"_{field}", None) for field in GLOBAL_DYNAMIC_DELETE_FIELDS})
+        config["downloader_limits"] = {
+            name: dict(limit) for name, limit in getattr(self, "_downloader_limits", {}).items()
+        }
         return config
 
     def _save_config(self) -> None:
@@ -695,6 +717,93 @@ class BrushFlow(_PluginBase):
             logger.warning(f"全局动态删种配置无效，已自动关闭：{str(err)}")
             return False, None
         return payload.global_proxy_delete, payload.global_delete_size_range
+
+    @staticmethod
+    def _normalize_downloader_limits(raw_limits: Any) -> Dict[str, dict]:
+        """规范化按下载器维度的限额配置，丢弃无效项而不是整体失败
+
+        单项配置写错（例如区间上下限写反）只影响该下载器，不应连带
+        让整份全局设置无法加载，故逐项校验并跳过坏项。
+        """
+        if not isinstance(raw_limits, dict):
+            return {}
+        normalized: Dict[str, dict] = {}
+        for name, raw in raw_limits.items():
+            downloader = str(name or "").strip()
+            if not downloader:
+                continue
+            try:
+                payload = DownloaderLimitPayload.model_validate(raw or {})
+            except ValueError as err:
+                logger.warning(f"下载器 [{downloader}] 限额配置无效，已忽略：{str(err)}")
+                continue
+            if not (payload.disksize or payload.proxy_delete or payload.delete_size_range):
+                # 全空的条目视为未配置，不落盘，避免配置里堆积空壳
+                continue
+            normalized[downloader] = {
+                "disksize": payload.disksize,
+                "proxy_delete": payload.proxy_delete,
+                "delete_size_range": payload.delete_size_range,
+            }
+        return normalized
+
+    def _seeding_scope(self, task: Any) -> Tuple[Optional[float], str, str]:
+        """解析该任务适用的保种上限及其统计口径
+
+        返回 ``(上限GB, 作用域标识, 说明文案)``。下载器级限额优先于全局总量：
+        多台下载器在不同机器上、磁盘容量各异，用总量约束会让先满的一台拖住其它台。
+        """
+        downloader_limit = self._downloader_limit(getattr(task, "downloader", None)) or {}
+        if downloader_limit.get("disksize"):
+            return float(downloader_limit["disksize"]), "downloader", f"下载器 [{task.downloader}]"
+        global_disksize = getattr(self, "_global_disksize", None)
+        if global_disksize:
+            return float(global_disksize), "global", "全局"
+        return None, "none", "全局"
+
+    def _downloader_limit(self, downloader: Any) -> Optional[dict]:
+        """返回指定下载器的限额配置；未单独配置时返回 None"""
+        if not downloader:
+            return None
+        return getattr(self, "_downloader_limits", {}).get(str(downloader))
+
+    def _calculate_downloader_seeding_size(
+        self,
+        downloader: Any,
+        current_task_id: Optional[str] = None,
+        current_torrent_tasks: Optional[Dict[str, dict]] = None,
+    ) -> float:
+        """汇总某个下载器下所有任务未删除种子的体积
+
+        与 ``_calculate_global_seeding_size`` 的区别：只统计绑定到该下载器的任务，
+        这样多台机器各自按自己的磁盘容量独立判定。
+        """
+        total_size = 0.0
+        for task_id, task in self._task_configs.items():
+            if task.downloader != downloader:
+                continue
+            if task_id == current_task_id and current_torrent_tasks is not None:
+                task_rows = current_torrent_tasks
+            else:
+                task_rows = self._get_task_data(task_id, "torrents") or {}
+            total_size += self.__calculate_seeding_torrents_size(task_rows)
+        return total_size
+
+    def _calculate_scope_seeding_size(
+        self,
+        scope: str,
+        task: Any,
+        current_task_id: Optional[str] = None,
+        current_torrent_tasks: Optional[Dict[str, dict]] = None,
+    ) -> float:
+        """按作用域统计做种体积：下载器级只算本下载器，全局级算所有任务"""
+        if scope == "downloader":
+            return self._calculate_downloader_seeding_size(
+                getattr(task, "downloader", None),
+                current_task_id,
+                current_torrent_tasks,
+            )
+        return self._calculate_global_seeding_size(current_task_id, current_torrent_tasks)
 
     @staticmethod
     def _promotion_expiry_at(freedate_origin: Any, timezone_offset: float) -> Optional[datetime]:
@@ -1129,6 +1238,10 @@ class BrushFlow(_PluginBase):
             "show_sidebar_nav": self._show_sidebar_nav,
             **{field: getattr(self, f"_{field}", None) for field in GLOBAL_LIMIT_FIELDS},
             **{field: getattr(self, f"_{field}", None) for field in GLOBAL_DYNAMIC_DELETE_FIELDS},
+            "downloader_limits": {
+                name: dict(limit)
+                for name, limit in getattr(self, "_downloader_limits", {}).items()
+            },
             "summary": aggregate,
             "tasks": task_rows,
             "options": {"sites": site_options, "downloaders": downloader_options},
@@ -1368,7 +1481,11 @@ class BrushFlow(_PluginBase):
             return
         torrent_tasks: Dict[str, dict] = self._current_task_data("torrents", {})
         seeding_size = self.__calculate_seeding_torrents_size(torrent_tasks)
-        global_seeding_size = self._calculate_global_seeding_size(task.id, torrent_tasks)
+        # 作用域取决于该任务适用下载器级还是全局限额：前者只统计本下载器
+        limit_scope = self._seeding_scope(task)[1]
+        global_seeding_size = self._calculate_scope_seeding_size(
+            limit_scope, task, task.id, torrent_tasks
+        )
         passed, reason = self.__evaluate_size_condition_for_brush(
             seeding_size,
             global_torrents_size=global_seeding_size,
@@ -1754,7 +1871,11 @@ class BrushFlow(_PluginBase):
         add_torrent_size: float = 0.0,
         global_torrents_size: Optional[float] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """校验当前任务及所有任务新增种子后是否超过保种体积。"""
+        """校验当前任务及所属限额作用域内新增种子后是否超过保种体积
+
+        ``global_torrents_size`` 由调用方按 ``_seeding_scope`` 解析后传入：
+        下载器级限额时它是**该下载器**的体积，全局限额时才是所有任务的总量。
+        """
         task = self._get_task_config()
         if not task:
             return False, "任务配置不存在"
@@ -1767,17 +1888,18 @@ class BrushFlow(_PluginBase):
                     f"超过任务保种上限 {task.disksize} GB"
                 )
                 return False, reason
-        global_disksize = getattr(self, "_global_disksize", None)
-        if global_disksize:
-            if global_torrents_size is None:
-                global_torrents_size = self._calculate_global_seeding_size()
-            estimated_global_size = global_torrents_size + (add_torrent_size or 0)
-            if estimated_global_size > float(global_disksize) * 1024 ** 3:
-                reason = (
-                    f"预计全局做种体积 {self.__bytes_to_gb(estimated_global_size):.1f} GB，"
-                    f"超过全局保种上限 {global_disksize} GB"
-                )
-                return False, reason
+        limit_value, scope, scope_label = self._seeding_scope(task)
+        if not limit_value:
+            return True, None
+        if global_torrents_size is None:
+            global_torrents_size = self._calculate_scope_seeding_size(scope, task)
+        estimated_scope_size = global_torrents_size + (add_torrent_size or 0)
+        if estimated_scope_size > limit_value * 1024 ** 3:
+            reason = (
+                f"预计{scope_label}做种体积 {self.__bytes_to_gb(estimated_scope_size):.1f} GB，"
+                f"超过{scope_label}保种上限 {limit_value:g} GB"
+            )
+            return False, reason
         return True, None
 
     def __evaluate_pre_conditions_for_brush(
@@ -2452,6 +2574,104 @@ class BrushFlow(_PluginBase):
             ),
         )
 
+    def _group_candidates_by_scope(
+        self,
+        candidates: List[dict],
+        total_size: float,
+    ) -> Dict[str, dict]:
+        """把删种候选按限额作用域分组，各自带一组阈值
+
+        配置了下载器级删种阈值的下载器单独成组（只统计并清理自己的种子）；
+        未配置的下载器合并为 ``__global__`` 组，沿用全局阈值与跨下载器总量，
+        从而不影响既有配置的行为。
+        """
+        groups: Dict[str, dict] = {}
+        global_group = {
+            "candidates": [],
+            "total_size": 0.0,
+            "min_size": 0.0,
+            "max_size": 0.0,
+            "is_range": False,
+            "label": "全局",
+        }
+        global_limits = self._parse_size_range_limits(
+            str(self._global_delete_size_range) if self._global_delete_size_range else None
+        )
+        if global_limits:
+            global_group["min_size"], global_group["max_size"] = global_limits
+            global_group["is_range"] = global_limits[0] != global_limits[1]
+
+        for entry in candidates:
+            downloader_name = entry.get("downloader_name")
+            limit = self._downloader_limit(downloader_name) or {}
+            if limit.get("proxy_delete") and limit.get("delete_size_range"):
+                limits = self._parse_size_range_limits(limit["delete_size_range"])
+                if not limits:
+                    continue
+                group = groups.setdefault(
+                    str(downloader_name),
+                    {
+                        "candidates": [],
+                        "total_size": 0.0,
+                        "min_size": limits[0],
+                        "max_size": limits[1],
+                        "is_range": limits[0] != limits[1],
+                        "label": f"下载器 [{downloader_name}]",
+                    },
+                )
+            else:
+                if not global_limits:
+                    continue
+                group = global_group
+            group["candidates"].append(entry)
+
+        if global_group["candidates"]:
+            keys = {
+                (entry.get("downloader_name"), entry.get("torrent_hash"))
+                for entry in global_group["candidates"]
+            }
+            global_group["total_size"] = self._sum_scope_candidate_size(
+                keys, global_group["candidates"]
+            )
+            groups["__global__"] = global_group
+
+        for key, group in groups.items():
+            if key == "__global__":
+                continue
+            keys = {
+                (entry.get("downloader_name"), entry.get("torrent_hash"))
+                for entry in group["candidates"]
+            }
+            group["total_size"] = self._sum_scope_candidate_size(keys, group["candidates"])
+        return groups
+
+    @staticmethod
+    def _sum_scope_candidate_size(keys: Set[Tuple[str, str]], entries: List[dict]) -> float:
+        """按去重后的种子键汇总体积，避免共享种子被重复计入"""
+        sizes: Dict[Tuple[str, str], float] = {}
+        for entry in entries:
+            key = (entry.get("downloader_name"), entry.get("torrent_hash"))
+            if key in keys and key not in sizes:
+                sizes[key] = float(entry.get("size") or 0)
+        return sum(sizes.values())
+
+    @staticmethod
+    def _parse_size_range_limits(size_range: Optional[str]) -> Optional[Tuple[float, float]]:
+        """把 ``40-50`` / ``50`` 解析为 (下限字节, 上限字节)；不合法返回 None"""
+        if not size_range:
+            return None
+        try:
+            values = [float(value) * 1024 ** 3 for value in str(size_range).split("-")]
+        except (TypeError, ValueError):
+            return None
+        if not values or any(value <= 0 for value in values):
+            return None
+        if len(values) == 1:
+            return values[0], values[0]
+        if values[0] >= values[1]:
+            return None
+        return values[0], values[1]
+
     def _run_global_dynamic_delete(self) -> int:
         """串行执行跨任务、跨下载器的全局动态删种并返回成功删除数"""
         if not self._global_dynamic_delete_enabled():
@@ -2467,29 +2687,38 @@ class BrushFlow(_PluginBase):
         try:
             with self._all_task_locks_scope():
                 candidates, total_size, task_records, services = self._collect_global_dynamic_delete_candidates()
-                limits = [
-                    float(value) * 1024 ** 3
-                    for value in str(self._global_delete_size_range).split("-")
-                ]
-                min_size = limits[0]
-                max_size = limits[1] if len(limits) > 1 else limits[0]
-                delete_plan, _, threshold_triggered = self._select_global_dynamic_deletions(
-                    candidates,
-                    total_size,
-                    min_size,
-                    max_size,
-                )
+                # 配置了下载器级阈值的下载器，各自按自己的体积独立判定；
+                # 其余下载器合并后沿用全局阈值（保持既有行为）。
+                downloader_groups = self._group_candidates_by_scope(candidates, total_size)
+                delete_plan: List[dict] = []
+                threshold_triggered = False
+                # 只要任一作用域用的是区间阈值，就值得发「删到下限」的汇总通知
+                has_range_limit = False
+                for scope_key, group in downloader_groups.items():
+                    scope_min, scope_max, scope_label = group["min_size"], group["max_size"], group["label"]
+                    if group["is_range"]:
+                        has_range_limit = True
+                    group_plan, _, group_triggered = self._select_global_dynamic_deletions(
+                        group["candidates"],
+                        group["total_size"],
+                        scope_min,
+                        scope_max,
+                    )
+                    if group_plan:
+                        delete_plan.extend(group_plan)
+                    threshold_triggered = threshold_triggered or group_triggered
+                    if not group_plan:
+                        if group_triggered:
+                            logger.info(
+                                f"{scope_label}做种体积 {self.__bytes_to_gb(group['total_size']):.1f} GB "
+                                "已达到动态删种上限，但没有符合任务策略的可删除种子"
+                            )
+                        else:
+                            logger.info(
+                                f"{scope_label}做种体积 {self.__bytes_to_gb(group['total_size']):.1f} GB，"
+                                f"未达到动态删种上限 {self.__bytes_to_gb(scope_max):.1f} GB"
+                            )
                 if not delete_plan:
-                    if threshold_triggered:
-                        logger.info(
-                            f"全局做种体积 {self.__bytes_to_gb(total_size):.1f} GB 已达到动态删种上限，"
-                            "但没有符合任务策略的可删除种子"
-                        )
-                    else:
-                        logger.info(
-                            f"全局做种体积 {self.__bytes_to_gb(total_size):.1f} GB，"
-                            f"未达到动态删种上限 {self.__bytes_to_gb(max_size):.1f} GB"
-                        )
                     return 0
 
                 plan_by_downloader: Dict[str, List[dict]] = {}
@@ -2565,7 +2794,8 @@ class BrushFlow(_PluginBase):
                     total_size - sum(float(entry.get("size") or 0) for entry in deleted_entries),
                     0,
                 )
-                if threshold_triggered and len(limits) > 1 and recorded_entries:
+                # 只用区间阈值时才发汇总：单值阈值没有「删到下限」的目标，通知意义不大
+                if threshold_triggered and has_range_limit and recorded_entries:
                     try:
                         self._send_global_dynamic_delete_summary(recorded_entries, remaining_size)
                     except Exception as err:

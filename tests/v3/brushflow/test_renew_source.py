@@ -457,3 +457,97 @@ class TestRoundSummaryCounting:
         assert report["result"] == "no_candidates"
         assert any("未取得任何候选种子" in item for item in messages)
         assert not [item for item in messages if "本轮结束" in item]
+
+
+class TestDownloaderScopedLimits:
+    """按下载器维度的限额：体积统计与删除分组必须严格隔离
+
+    回归背景：多台下载器位于不同机器、磁盘容量各异。早期只有一个跨下载器的
+    总量阈值，先满的一台会牵连其余台，删除时也可能从还有空间的机器上删种。
+    """
+
+    GB = 1024 ** 3
+
+    def _plugin(self, limits=None, global_disksize=None, global_range=None):
+        plugin = object.__new__(BrushFlow)
+        plugin._downloader_limits = limits or {}
+        plugin._global_disksize = global_disksize
+        plugin._global_delete_size_range = global_range
+        return plugin
+
+    def test_downloader_limit_takes_priority_over_global(self):
+        plugin = self._plugin(
+            limits={"qb-a": {"disksize": 50, "proxy_delete": True, "delete_size_range": "40-50"}},
+            global_disksize=999,
+        )
+        site_task = _make_task({"downloader": "qb-a"})
+        limit, scope, _label = plugin._seeding_scope(site_task)
+        assert limit == 50
+        assert scope == "downloader"
+
+    def test_unconfigured_downloader_falls_back_to_global(self):
+        plugin = self._plugin(limits={}, global_disksize=999)
+        limit, scope, _label = plugin._seeding_scope(_make_task({"downloader": "qb-b"}))
+        assert limit == 999
+        assert scope == "global"
+
+    def test_no_limit_configured_means_unlimited(self):
+        plugin = self._plugin(limits={})
+        limit, scope, _label = plugin._seeding_scope(_make_task({"downloader": "qb-c"}))
+        assert limit is None
+        assert scope == "none"
+
+    def test_seeding_size_counts_only_own_downloader(self):
+        """qb-a 的体积不得包含 qb-b 的种子"""
+        plugin = object.__new__(BrushFlow)
+        plugin._task_configs = {
+            "t1": _make_task({"downloader": "qb-a"}),
+            "t3": _make_task({"downloader": "qb-b"}),
+        }
+        plugin._BrushFlow__calculate_seeding_torrents_size = staticmethod(
+            lambda rows: sum(row.get("size", 0) for row in rows.values())
+        )
+        sizes = {"t1": {"a": {"size": 10 * self.GB}}, "t3": {"c": {"size": 99 * self.GB}}}
+        plugin._get_task_data = lambda task_id, _name: sizes[task_id]
+        assert plugin._calculate_downloader_seeding_size("qb-a") == 10 * self.GB
+        assert plugin._calculate_downloader_seeding_size("qb-b") == 99 * self.GB
+
+    def test_size_range_rejects_inverted_bounds(self):
+        """区间写反必须拒绝：早期任务级缺这条校验，会退化成「一直删」"""
+        assert BrushFlow._parse_size_range_limits("40-50") == (40 * self.GB, 50 * self.GB)
+        assert BrushFlow._parse_size_range_limits("50-40") is None
+        assert BrushFlow._parse_size_range_limits("50") == (50 * self.GB, 50 * self.GB)
+
+    def test_candidates_grouped_by_downloader(self):
+        """配了阈值的下载器独立成组，其余合并进全局组"""
+        plugin = self._plugin(
+            limits={"qb-a": {"disksize": 50, "proxy_delete": True, "delete_size_range": "40-50"}},
+            global_range="80-100",
+        )
+        candidates = [
+            {"downloader_name": "qb-a", "torrent_hash": "a1", "size": 10 * self.GB},
+            {"downloader_name": "qb-a", "torrent_hash": "a2", "size": 20 * self.GB},
+            {"downloader_name": "qb-b", "torrent_hash": "b1", "size": 30 * self.GB},
+            {"downloader_name": "qb-c", "torrent_hash": "c1", "size": 40 * self.GB},
+        ]
+        groups = plugin._group_candidates_by_scope(candidates, 100 * self.GB)
+        assert set(groups) == {"qb-a", "__global__"}
+        assert groups["qb-a"]["total_size"] == 30 * self.GB
+        assert groups["qb-a"]["max_size"] == 50 * self.GB
+        assert groups["__global__"]["total_size"] == 70 * self.GB
+        assert groups["__global__"]["max_size"] == 100 * self.GB
+
+    def test_normalize_limits_drops_empty_and_invalid_entries(self):
+        """空条目与非法区间被丢弃，不应连带整份设置加载失败"""
+        normalized = BrushFlow._normalize_downloader_limits(
+            {
+                "qb-a": {"disksize": 50, "proxy_delete": True, "delete_size_range": "40-50"},
+                "qb-empty": {"disksize": None, "proxy_delete": False, "delete_size_range": None},
+                "qb-bad": {"disksize": 10, "proxy_delete": True, "delete_size_range": "50-40"},
+                "": {"disksize": 5},
+            }
+        )
+        assert "qb-a" in normalized
+        assert "qb-empty" not in normalized
+        assert "qb-bad" not in normalized, "区间写反应被丢弃"
+        assert "" not in normalized
