@@ -1708,13 +1708,33 @@ async function changeTorrentPage(value) {
   await loadTaskDetail();
 }
 
+// 任务选定的阈值来源对应的实际阈值文本，跟随下载器时从全局设置里取该下载器的值
+const selectedDeleteRange = computed(() => {
+  const task = taskConfig.value;
+  if (task.dynamic_delete_scope === 'global') return status.value.global_delete_size_range || ''
+  if (task.dynamic_delete_scope === 'downloader') {
+    const limit = (status.value.downloader_limits || {})[task.downloader] || {};
+    return limit.delete_size_range || ''
+  }
+  return task.delete_size_range || ''
+});
+// 运行状态里的删种策略：四选一的作用域各有说法，不能只看 proxy_delete
+const deleteStrategyLabel = computed(() => {
+  const task = taskConfig.value;
+  if (!task.proxy_delete) return '满足任一条件'
+  const scope = task.dynamic_delete_scope;
+  if (scope === 'global') return `跟随全局 ${selectedDeleteRange.value || '-'} GB`
+  if (scope === 'downloader') return `跟随下载器 ${selectedDeleteRange.value || '-'} GB`
+  return `动态 ${selectedDeleteRange.value || '-'} GB`
+});
+
 // 根据配置生成当前种子的下一项处理条件摘要。
 function torrentPolicy(item) {
   if (item.deleted) return '已删除'
   if (item.hit_and_run && taskConfig.value.hr_seed_time) return `H&R ${taskConfig.value.hr_seed_time} 小时`
   if (taskConfig.value.seed_time) return `${taskConfig.value.seed_time} 小时后检查`
   if (taskConfig.value.seed_ratio) return `分享率 ${taskConfig.value.seed_ratio}`
-  return taskConfig.value.proxy_delete ? '动态删种托管' : '等待删除条件'
+  return taskConfig.value.proxy_delete ? deleteStrategyLabel.value : '等待删除条件'
 }
 
 // 返回种子当前下载或做种状态文本。
@@ -2382,7 +2402,7 @@ return (_ctx, _cache) => {
                                     ]),
                                     _createElementVNode("div", null, [
                                       _cache[51] || (_cache[51] = _createElementVNode("dt", null, "删种策略", -1)),
-                                      _createElementVNode("dd", null, _toDisplayString(taskConfig.value.proxy_delete ? `动态 ${taskConfig.value.delete_size_range || '-' } GB` : '满足任一条件'), 1)
+                                      _createElementVNode("dd", null, _toDisplayString(deleteStrategyLabel.value), 1)
                                     ])
                                   ])
                                 ]),
@@ -2974,6 +2994,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-43371bf3"]]);
+const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-be78005d"]]);
 
 export { BrushFlowWorkbench as B };

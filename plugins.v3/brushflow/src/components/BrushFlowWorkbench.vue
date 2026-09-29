@@ -362,13 +362,33 @@ async function changeTorrentPage(value) {
   await loadTaskDetail()
 }
 
+// 任务选定的阈值来源对应的实际阈值文本，跟随下载器时从全局设置里取该下载器的值
+const selectedDeleteRange = computed(() => {
+  const task = taskConfig.value
+  if (task.dynamic_delete_scope === 'global') return status.value.global_delete_size_range || ''
+  if (task.dynamic_delete_scope === 'downloader') {
+    const limit = (status.value.downloader_limits || {})[task.downloader] || {}
+    return limit.delete_size_range || ''
+  }
+  return task.delete_size_range || ''
+})
+// 运行状态里的删种策略：四选一的作用域各有说法，不能只看 proxy_delete
+const deleteStrategyLabel = computed(() => {
+  const task = taskConfig.value
+  if (!task.proxy_delete) return '满足任一条件'
+  const scope = task.dynamic_delete_scope
+  if (scope === 'global') return `跟随全局 ${selectedDeleteRange.value || '-'} GB`
+  if (scope === 'downloader') return `跟随下载器 ${selectedDeleteRange.value || '-'} GB`
+  return `动态 ${selectedDeleteRange.value || '-'} GB`
+})
+
 // 根据配置生成当前种子的下一项处理条件摘要。
 function torrentPolicy(item) {
   if (item.deleted) return '已删除'
   if (item.hit_and_run && taskConfig.value.hr_seed_time) return `H&R ${taskConfig.value.hr_seed_time} 小时`
   if (taskConfig.value.seed_time) return `${taskConfig.value.seed_time} 小时后检查`
   if (taskConfig.value.seed_ratio) return `分享率 ${taskConfig.value.seed_ratio}`
-  return taskConfig.value.proxy_delete ? '动态删种托管' : '等待删除条件'
+  return taskConfig.value.proxy_delete ? deleteStrategyLabel.value : '等待删除条件'
 }
 
 // 返回种子当前下载或做种状态文本。
@@ -726,7 +746,7 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                     <div v-if="taskConfig.site_ratio_control"><dt>站点分享率</dt><dd>{{ formatSiteRatio(selectedTask.site_ratio) }} / {{ Number(taskConfig.site_ratio_target || 0).toFixed(2) }}</dd></div>
                     <div><dt>选种来源</dt><dd>{{ sourceLabel }}</dd></div>
                     <div><dt>促销要求</dt><dd>{{ taskConfig.freeleech === '2xfree' ? '2X 免费' : taskConfig.freeleech === 'free' ? '免费' : '全部' }}</dd></div>
-                    <div><dt>删种策略</dt><dd>{{ taskConfig.proxy_delete ? `动态 ${taskConfig.delete_size_range || '-' } GB` : '满足任一条件' }}</dd></div>
+                    <div><dt>删种策略</dt><dd>{{ deleteStrategyLabel }}</dd></div>
                   </dl>
                 </VSheet>
 
