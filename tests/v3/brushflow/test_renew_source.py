@@ -6,6 +6,8 @@
 - 「免费剩余时间」严格匹配：无期限信息的种子一律排除；
 - 任务配置能携带新增的三个字段。
 """
+import logging
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -324,3 +326,134 @@ class TestTaskConfigCarriesRenewFields:
         data = task.to_dict()
         assert data["renew_support"] is True
         assert data["free_remain_min"] == 6
+
+
+class _Seed:
+    """最小候选种子：计数测试只依赖 title，其余字段给默认值"""
+
+    def __init__(self, title: str, size: float = 0.0, pubdate: str = "2026-01-01 00:00:00"):
+        self.title = title
+        self.size = size
+        self.pubdate = pubdate
+        self.description = ""
+        self.freedate = None
+
+
+class _CountingPlugin:
+    """把真实的 __brush_site_torrents 跑在受控桩上，用于校验计数口径"""
+
+    def __init__(self, torrents, *, conditions=None, downloads=None, subscription_hits=None,
+                 task=None, source_available=True):
+        self.torrents = torrents
+        self.conditions = conditions or {}
+        self.downloads = downloads or {}
+        self.subscription_hits = set(subscription_hits or ())
+        self.source_available = source_available
+        self._task = task or _make_task()
+        self.plugin = object.__new__(BrushFlow)
+        self.plugin.eventmanager = MagicMock()
+        self.plugin.service_info = MagicMock(name="qb")
+        # 逐个注入私有方法桩：这些方法各自有独立单测，此处只关心计数与汇总
+        self.plugin._BrushFlow__fetch_custom_source_torrents = self._fetch
+        self.plugin._BrushFlow__filter_torrents_contains_subscribe = self._filter_subscribe
+        self.plugin._BrushFlow__calculate_seeding_torrents_size = lambda _tasks: 0.0
+        self.plugin._BrushFlow__evaluate_pre_conditions_for_brush = lambda include_network_conditions=True: (True, None)
+        self.plugin._BrushFlow__evaluate_size_condition_for_brush = lambda seeding, size, global_torrents_size=0: (True, None)
+        self.plugin._BrushFlow__evaluate_conditions_for_brush = (
+            lambda torrent, _tasks: self.conditions.get(torrent.title, (True, None))
+        )
+        self.plugin._BrushFlow__download = lambda torrent: self.downloads.get(torrent.title)
+        self.plugin._BrushFlow__send_add_message = lambda _torrent: None
+        self.plugin._torrent_to_task_record = lambda torrent, _site, _task: {"title": torrent.title}
+        self.plugin._custom_source_for_site = lambda _site: {"renew_path": "renewtorrents.php"}
+        self.plugin._get_task_config = lambda _task_id=None: self._task
+
+    def _fetch(self, _site, _task, _source):
+        return list(self.torrents) if self.source_available else []
+
+    def _filter_subscribe(self, torrents, _titles):
+        return [item for item in torrents if item.title not in self.subscription_hits]
+
+    def run(self):
+        report = {"reason_counts": Counter(), "added_count": 0, "added_titles": []}
+        BrushFlow._BrushFlow__brush_site_torrents(
+            self.plugin, FakeSite(), {}, {}, set(), report, 0.0
+        )
+        return report
+
+
+class TestRoundSummaryCounting:
+    """轮末汇总的计数口径
+
+    回归背景：订阅排除的种子从未进入候选，但早期实现把它也写进 reason_counts，
+    导致汇总出现「跳过 100 个 > 候选 95 个」这类自相矛盾的数字。
+    """
+
+    def test_subscription_exclusion_is_not_counted_as_skipped(self, caplog):
+        torrents = [_Seed(f"T{i}") for i in range(10)]
+        plugin = _CountingPlugin(
+            torrents,
+            subscription_hits={"T0", "T1", "T2"},
+            conditions={f"T{i}": (False, "重复种子") for i in range(3, 10)},
+        )
+        with caplog.at_level(logging.INFO):
+            report = plugin.run()
+
+        assert report["subscription_excluded"] == 3
+        assert report["candidate_count"] == 7
+        # 订阅排除不得混进跳过原因
+        assert "命中订阅内容" not in report["reason_counts"]
+        skipped = sum(report["reason_counts"].values())
+        assert skipped == 7
+        assert skipped <= report["candidate_count"]
+
+    def test_summary_reports_subscription_separately(self, caplog):
+        torrents = [_Seed(f"T{i}") for i in range(5)]
+        plugin = _CountingPlugin(
+            torrents,
+            subscription_hits={"T0"},
+            conditions={f"T{i}": (False, "重复种子") for i in range(1, 5)},
+        )
+        with caplog.at_level(logging.INFO):
+            plugin.run()
+        summary = [record.getMessage() for record in caplog.records if "本轮结束" in record.getMessage()]
+        assert summary, "应输出轮末汇总"
+        assert "候选 4 个" in summary[0]
+        assert "订阅已排除 1 个" in summary[0]
+        assert "跳过 4 个" in summary[0]
+
+    def test_skips_are_not_logged_individually(self, caplog):
+        """逐条跳过明细已移除，只保留一条汇总，避免刷屏"""
+        torrents = [_Seed(f"T{i}") for i in range(30)]
+        plugin = _CountingPlugin(
+            torrents, conditions={f"T{i}": (False, "重复种子") for i in range(30)}
+        )
+        with caplog.at_level(logging.INFO):
+            plugin.run()
+        messages = [record.getMessage() for record in caplog.records]
+        assert not [item for item in messages if "跳过（" in item]
+        assert not [item for item in messages if "促销时间详情" in item]
+        assert len([item for item in messages if "本轮结束" in item]) == 1
+
+    def test_counts_are_self_consistent_without_subscription(self, caplog):
+        """无订阅时「新增 + 跳过」应等于候选数"""
+        torrents = [_Seed(f"T{i}") for i in range(12)]
+        plugin = _CountingPlugin(
+            torrents,
+            conditions={f"T{i}": (False, "重复种子") for i in range(2, 12)},
+            downloads={"T0": "hash-0"},
+        )
+        plugin._task = _make_task({"except_subscribe": False})
+        with caplog.at_level(logging.INFO):
+            report = plugin.run()
+        skipped = sum(report["reason_counts"].values())
+        assert report["added_count"] + skipped == report["candidate_count"]
+
+    def test_empty_source_warns_and_returns(self, caplog):
+        plugin = _CountingPlugin([], source_available=False)
+        with caplog.at_level(logging.INFO):
+            report = plugin.run()
+        messages = [record.getMessage() for record in caplog.records]
+        assert report["result"] == "no_candidates"
+        assert any("未取得任何候选种子" in item for item in messages)
+        assert not [item for item in messages if "本轮结束" in item]
