@@ -771,12 +771,11 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                     color="primary"
                     density="compact"
                     divided
-                    class="torrent-state"
                     @update:model-value="changeTorrentState"
                   >
-                    <VBtn value="active" class="torrent-state__btn">活跃</VBtn>
-                    <VBtn value="deleted" class="torrent-state__btn">已删除</VBtn>
-                    <VBtn value="all" class="torrent-state__btn">全部</VBtn>
+                    <VBtn value="active">活跃</VBtn>
+                    <VBtn value="deleted">已删除</VBtn>
+                    <VBtn value="all">全部</VBtn>
                   </VBtnToggle>
                 </header>
 
@@ -1455,28 +1454,6 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
 }
 
 /* 体积删种的各作用域判定明细，逐行列出便于区分是全局还是某台下载器触发 */
-/* 托管种子状态切换：窄屏下等分换行，避免三个标签被挤在一起 */
-.torrent-state {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  block-size: auto;
-}
-
-/* 同 .delete-mode__btn：不能依赖 :deep(.v-btn)，会被 vuetify-filter 删除 */
-.torrent-state__btn {
-  flex: 1 1 4.5rem;
-  min-inline-size: 0;
-  padding-inline: 10px;
-  letter-spacing: 0;
-}
-
-@media (max-width: 600px) {
-  .torrent-state {
-    inline-size: 100%;
-  }
-}
-
 .brushflow-scopes {
   display: flex;
   flex-direction: column;
