@@ -1902,12 +1902,45 @@ return (_ctx, _cache) => {
                       clearable: "",
                       "hide-details": ""
                     }, null, 8, ["modelValue"]),
+                    _createVNode(_component_VDivider),
+                    _cache[26] || (_cache[26] = _createElementVNode("div", { class: "text-subtitle-2" }, "全局运行限额", -1)),
+                    _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "与磁盘容量无关，用于限制整机的并发与带宽。", -1)),
+                    _createVNode(_component_VTextField, {
+                      modelValue: settingsDraft.value.global_maxdlcount,
+                      "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((settingsDraft.value.global_maxdlcount) = $event)),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "0",
+                      label: "全局同时下载任务数",
+                      clearable: "",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"]),
+                    _createVNode(_component_VTextField, {
+                      modelValue: settingsDraft.value.global_maxupspeed,
+                      "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((settingsDraft.value.global_maxupspeed) = $event)),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "0",
+                      label: "全局总上传带宽（KB/s）",
+                      clearable: "",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"]),
+                    _createVNode(_component_VTextField, {
+                      modelValue: settingsDraft.value.global_maxdlspeed,
+                      "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((settingsDraft.value.global_maxdlspeed) = $event)),
+                      modelModifiers: { number: true },
+                      type: "number",
+                      min: "0",
+                      label: "全局总下载带宽（KB/s）",
+                      clearable: "",
+                      "hide-details": ""
+                    }, null, 8, ["modelValue"]),
+                    _createVNode(_component_VDivider),
+                    _cache[28] || (_cache[28] = _createElementVNode("div", { class: "text-subtitle-2" }, "按下载器独立限额", -1)),
+                    _cache[29] || (_cache[29] = _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 为每台下载器单独设置保种上限与动态删种阈值，体积统计与删种互不影响； 留空则该下载器沿用上面的全局值。 ", -1)),
                     (downloaderLimitNames.value)
                       ? (_openBlock(), _createElementBlock("div", _hoisted_4, " 已单独设置的下载器：" + _toDisplayString(downloaderLimitNames.value) + "，这些下载器不参与全局总量统计。 ", 1))
                       : _createCommentVNode("", true),
-                    _createVNode(_component_VDivider),
-                    _cache[26] || (_cache[26] = _createElementVNode("div", { class: "text-subtitle-2" }, "按下载器独立限额", -1)),
-                    _cache[27] || (_cache[27] = _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, " 为每台下载器单独设置保种上限与动态删种阈值，体积统计与删种互不影响； 留空则该下载器沿用上面的全局值。 ", -1)),
                     (downloaderLimitRows.value.length)
                       ? (_openBlock(), _createBlock(_component_VExpansionPanels, {
                           key: 2,
@@ -1985,40 +2018,7 @@ return (_ctx, _cache) => {
                           ]),
                           _: 1
                         }))
-                      : (_openBlock(), _createElementBlock("div", _hoisted_5, "暂无可用下载器")),
-                    _createVNode(_component_VDivider),
-                    _cache[28] || (_cache[28] = _createElementVNode("div", { class: "text-subtitle-2" }, "全局运行限额", -1)),
-                    _cache[29] || (_cache[29] = _createElementVNode("div", { class: "text-body-2 text-medium-emphasis" }, "与磁盘容量无关，用于限制整机的并发与带宽。", -1)),
-                    _createVNode(_component_VTextField, {
-                      modelValue: settingsDraft.value.global_maxdlcount,
-                      "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((settingsDraft.value.global_maxdlcount) = $event)),
-                      modelModifiers: { number: true },
-                      type: "number",
-                      min: "0",
-                      label: "全局同时下载任务数",
-                      clearable: "",
-                      "hide-details": ""
-                    }, null, 8, ["modelValue"]),
-                    _createVNode(_component_VTextField, {
-                      modelValue: settingsDraft.value.global_maxupspeed,
-                      "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((settingsDraft.value.global_maxupspeed) = $event)),
-                      modelModifiers: { number: true },
-                      type: "number",
-                      min: "0",
-                      label: "全局总上传带宽（KB/s）",
-                      clearable: "",
-                      "hide-details": ""
-                    }, null, 8, ["modelValue"]),
-                    _createVNode(_component_VTextField, {
-                      modelValue: settingsDraft.value.global_maxdlspeed,
-                      "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((settingsDraft.value.global_maxdlspeed) = $event)),
-                      modelModifiers: { number: true },
-                      type: "number",
-                      min: "0",
-                      label: "全局总下载带宽（KB/s）",
-                      clearable: "",
-                      "hide-details": ""
-                    }, null, 8, ["modelValue"])
+                      : (_openBlock(), _createElementBlock("div", _hoisted_5, "暂无可用下载器"))
                   ]),
                   _: 1
                 }),
@@ -2994,6 +2994,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-be78005d"]]);
+const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-da3e5822"]]);
 
 export { BrushFlowWorkbench as B };
