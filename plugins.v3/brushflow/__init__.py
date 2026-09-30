@@ -263,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.4.6"
+    plugin_version = "6.4.7"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -1795,8 +1795,9 @@ class BrushFlow(_PluginBase):
                     downloadvolumefactor=download_factor,
                     uploadvolumefactor=upload_factor,
                     freedate=BrushFlow.__parse_promotion_expiry(row),
-                    # 彩虹岛复活区无 H&R 标记，统一按无 H&R 处理，由全站 H&R 开关兜底
-                    hit_and_run=False,
+                    # 复活区同样带 H&R 标记（div.circle-text 里的 h3/h5），
+                    # 之前写死 False 会让任务的「排除 H&R」形同虚设
+                    hit_and_run=BrushFlow.__parse_hr_marker(row),
                     site_name=getattr(site, "name", None),
                     site_cookie=getattr(site, "cookie", None),
                     site_ua=BrushFlow._site_ua(site.id),
@@ -1842,6 +1843,22 @@ class BrushFlow(_PluginBase):
             if str(item).strip()
         ]
         return max(candidates, key=len) if candidates else None
+
+    @staticmethod
+    def __parse_hr_marker(row: Any) -> bool:
+        """从列表行的 ``div.circle-text`` 读取 H&R 标记
+
+        彩虹岛用盒级标记区分考核强度：``h3`` / ``h5`` 为 H&R 考核，需排除；
+        ``n`` / ``N`` 前缀是纯达量考核，不算 H&R。标记写在 ``div.circle-text`` 里，
+        与同容器内的「官方」「中字」等内联标签共用一个 font 容器。
+        """
+        markers = [
+            str(item).strip().lower()
+            for item in row.xpath('.//div[contains(@class,"circle-text")]//text()')
+            if str(item).strip()
+        ]
+        # h3 / h5 均为 H&R；n / N 前缀是纯达量考核，不算 H&R
+        return any(re.fullmatch(r"h\d+", marker) for marker in markers)
 
     @staticmethod
     def __first_text(values: Any) -> Optional[str]:
