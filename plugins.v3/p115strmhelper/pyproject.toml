@@ -1,0 +1,56 @@
+[project]
+name = "moviepilot-plugin-p115strmhelper"
+dynamic = ["version"]
+requires-python = ">=3.14"
+dependencies = [
+    "p115client==0.0.9.6.5.1",
+    # ⚠️ 必须与 p115client 一同锁定。
+    # p115client 0.0.9.6.5.1 在 tool/upload.py 里 `from concurrenttools import
+    # threadpool_map, taskgroup_map`，而它只声明 `python-concurrenttools>=0.1.8`
+    # （无上界）。python-concurrenttools 0.1.9 已把这两个名字改名为
+    # thread_conmap / async_conmap，因此不锁定时解析出的 0.1.9 会让 p115client
+    # 导入即失败，插件以 load_failed 结束。锁定到 0.1.8 即恢复。
+    # 升级 p115client 到使用 thread_conmap/async_conmap 的版本（>=0.0.9.7.2）后，
+    # 可改为 python-concurrenttools>=0.1.9 并删除本行。
+    "python-concurrenttools==0.1.8",
+    "sentry-sdk~=2.68.0",
+    "aligo~=6.2.8",
+    "qrcode_terminal~=0.8",
+    "pyahocorasick~=2.3.0",
+    "diskcache~=5.6.3",
+    "zstandard~=0.25.0",
+    "mfusepy~=3.1.0",
+    "p115center-sdk==0.0.17",
+    "slippers-proxy~=0.3.0",
+    "orjson",
+    "numpy",
+    "httpx[http2]",
+    "full_strm_sync==0.1.6",
+    "txt_tree_storage==0.2.1",
+    "share_strm_scan==0.2.2",
+    "cachedict==0.0.7",
+    "errno2==0.0.5",
+]
+
+# full_strm_sync / share_strm_scan / txt_tree_storage 未发布到 PyPI，只在插件目录内
+# 随包分发预编译 wheel。这里按平台声明本地来源，使 uv 固定用同目录下的 wheel 解析，
+# 而不是去索引上寻找并不存在的发行版。
+[tool.uv.sources]
+full_strm_sync = [
+    { path = "wheels/full_strm_sync-0.1.6-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { path = "wheels/full_strm_sync-0.1.6-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { path = "wheels/full_strm_sync-0.1.6-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },
+    { path = "wheels/full_strm_sync-0.1.6-cp314-cp314-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", marker = "sys_platform == 'darwin'" },
+]
+share_strm_scan = [
+    { path = "wheels/share_strm_scan-0.2.2-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { path = "wheels/share_strm_scan-0.2.2-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { path = "wheels/share_strm_scan-0.2.2-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },
+    { path = "wheels/share_strm_scan-0.2.2-cp314-cp314-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", marker = "sys_platform == 'darwin'" },
+]
+txt_tree_storage = [
+    { path = "wheels/txt_tree_storage-0.2.1-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { path = "wheels/txt_tree_storage-0.2.1-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { path = "wheels/txt_tree_storage-0.2.1-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },
+    { path = "wheels/txt_tree_storage-0.2.1-cp314-cp314-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", marker = "sys_platform == 'darwin'" },
+]
