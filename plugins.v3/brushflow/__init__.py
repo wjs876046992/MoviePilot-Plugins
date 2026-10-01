@@ -263,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.4.7"
+    plugin_version = "6.4.8"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -729,19 +729,42 @@ class BrushFlow(_PluginBase):
         选任务则用本任务的阈值。对应的阈值未配置时回落为 ``none``（按条件删除），
         避免出现「选了但什么都不做」的静默状态。
         """
+        return self._task_delete_scope_detail(task)[0]
+
+    def _task_delete_scope_detail(self, task: Any) -> Tuple[str, str]:
+        """返回 ``(生效作用域, 判定原因)``，原因用于诊断日志
+
+        与 ``_task_delete_scope`` 同源，只是额外给出「为什么落到这个作用域」。
+        回落为 ``none`` 时原因是关键排查信息：用户以为自己选了下载器级阈值，
+        实际却按条件删除，不打印原因就无从发现。
+        """
         if not getattr(task, "proxy_delete", False):
-            return "none"
+            return "none", "任务未启用动态删种（按条件删除）"
         scope = str(getattr(task, "dynamic_delete_scope", "") or "").strip()
         if scope not in DYNAMIC_DELETE_SCOPES:
-            return "none"
+            return "none", f"删除方式取值非法：{scope or '<空>'}"
         if scope == "task":
-            return "task" if getattr(task, "delete_size_range", None) else "none"
+            if getattr(task, "delete_size_range", None):
+                return "task", f"本任务阈值 {task.delete_size_range} GB"
+            return "none", "选了「自定义本任务阈值」但未填写阈值"
         if scope == "global":
-            return "global" if self._global_dynamic_delete_enabled() else "none"
-        downloader_limit = self._downloader_limit(getattr(task, "downloader", None)) or {}
+            if self._global_dynamic_delete_enabled():
+                return "global", f"全局阈值 {self._global_delete_size_range} GB"
+            return "none", "选了「跟随全局」但全局动态删种未开启或未设阈值"
+        downloader = getattr(task, "downloader", None)
+        configured = sorted(getattr(self, "_downloader_limits", {}) or {})
+        downloader_limit = self._downloader_limit(downloader) or {}
         if downloader_limit.get("proxy_delete") and downloader_limit.get("delete_size_range"):
-            return "downloader"
-        return "none"
+            return (
+                "downloader",
+                f"下载器 [{downloader}] 阈值 {downloader_limit['delete_size_range']} GB",
+            )
+        # 下载器名不一致是这一层最常见的静默失效：任务绑的名字在全局设置里查不到
+        return (
+            "none",
+            f"下载器 [{downloader}] 未单独配置动态删种阈值（已配置的下载器："
+            f"{'、'.join(configured) or '无'}）",
+        )
 
     def _downloaders_with_task_scope(self) -> Set[str]:
         """返回被任务选中「下载器」作用域的下载器名，供全局分组时排除"""
@@ -1896,6 +1919,13 @@ class BrushFlow(_PluginBase):
             "uploadvolumefactor": torrent.uploadvolumefactor,
             "downloadvolumefactor": torrent.downloadvolumefactor,
             "hit_and_run": torrent.hit_and_run or task.site_hr_active,
+            # 记录 H&R 判定的来源，便于核对「为什么这颗被当成 H&R」。
+            # 站点标记来自索引器的 hr 选择器；全站开关是任务里手动勾的，
+            # 二者语义不同（后者会把该站所有种子都算作 H&R），故分开留存。
+            "hr_source": (
+                "site" if torrent.hit_and_run
+                else ("task_site_hr" if task.site_hr_active else "")
+            ),
             "volume_factor": torrent.volume_factor,
             "freedate_diff": torrent.freedate_diff,
             "ratio": 0,
@@ -2469,13 +2499,19 @@ class BrushFlow(_PluginBase):
 
     def _collect_global_dynamic_delete_candidates(
         self,
-    ) -> Tuple[List[dict], float, Dict[str, Dict[str, dict]], Dict[str, ServiceInfo]]:
-        """汇总启用任务的最新下载器状态、做种体积和全局删种候选"""
+    ) -> Tuple[List[dict], float, Dict[str, Dict[str, dict]], Dict[str, ServiceInfo], Dict[str, float]]:
+        """汇总启用任务的最新下载器状态、做种体积和全局删种候选
+
+        额外返回各下载器**全部**种子的体积，供诊断对照——插件统计的做种体积只含
+        自己纳管的种子，磁盘占用却是下载器里全部种子，二者一旦不等，体积永远到不了
+        阈值。这里顺手把全量口径带出来，避免诊断时再取一次下载器（大种子集下很贵）。
+        """
         candidate_rows: Dict[Tuple[str, str], List[dict]] = {}
         total_size = 0.0
         task_records: Dict[str, Dict[str, dict]] = {}
         services: Dict[str, ServiceInfo] = {}
         downloader_cache: Dict[str, Tuple[ServiceInfo, List[Any]]] = {}
+        downloader_totals: Dict[str, float] = {}
         counted_torrents: Set[Tuple[str, str]] = set()
         associated_records: Dict[Tuple[str, str], List[Tuple[BrushTaskConfig, dict]]] = {}
         downloader_helper = DownloaderHelper()
@@ -2514,6 +2550,18 @@ class BrushFlow(_PluginBase):
                     torrent_hash = self.__get_hash(torrent)
                     if torrent_hash:
                         downloader_torrent_map[torrent_hash] = torrent
+                # 全量体积只在首次拿到该下载器种子时统计一次。这里直接读体积字段而非
+                # 走 __get_torrent_info：后者每个种子都要解析一次下载器类型，大种子集
+                # 下代价明显，而诊断只需要一个数值。
+                if task.downloader not in downloader_totals:
+                    is_qb = downloader_helper.is_downloader("qbittorrent", service=service)
+                    downloader_totals[task.downloader] = sum(
+                        float(
+                            (torrent.get("total_size") if is_qb else getattr(torrent, "total_size", 0))
+                            or 0
+                        )
+                        for torrent in downloader_torrents
+                    )
                 check_hashes = list(torrent_tasks)
                 check_torrents = [
                     downloader_torrent_map[torrent_hash]
@@ -2623,7 +2671,7 @@ class BrushFlow(_PluginBase):
                 }
             )
             candidates.append(candidate)
-        return candidates, total_size, task_records, services
+        return candidates, total_size, task_records, services, downloader_totals
 
     def _send_global_dynamic_delete_summary(
         self,
@@ -2761,6 +2809,77 @@ class BrushFlow(_PluginBase):
             return None
         return values[0], values[1]
 
+    def _log_dynamic_delete_diagnostics(
+        self,
+        candidates: List[dict],
+        total_size: float,
+        groups: Dict[str, dict],
+        task_records: Dict[str, Dict[str, dict]],
+        downloader_totals: Dict[str, float],
+    ) -> None:
+        """每轮动态删种前打印判定快照，用于排查「磁盘满了却不删」
+
+        排查这类问题最费劲的是「数字对不上」：插件统计的做种体积只包含**自己纳管**
+        的种子（带任务标签），而磁盘占用是下载器里全部种子。二者不等时，体积永远
+        到不了阈值，但从日志上看不出差在哪。因此这里显式打印三项口径：
+
+        1. 每个启用任务的生效删除作用域与原因（暴露静默回落成「按条件删除」）；
+        2. 插件统计体积 vs 各下载器全部种子体积（暴露未纳管的占用）；
+        3. 候选总数与各项过滤后的剩余量（暴露「达标但无可删」）。
+        """
+        if not candidates and not any(task_records.values()):
+            logger.info("【动态删种诊断】未收集到任何纳管种子，体积按 0 计")
+            return
+
+        # 1) 各任务的生效作用域：用户以为选了下载器级，实际可能已回落
+        scope_segments = []
+        for task in self._task_configs.values():
+            if not task.enabled:
+                continue
+            scope, reason = self._task_delete_scope_detail(task)
+            scope_segments.append(f"{task.name}={scope}（{reason}）")
+        if scope_segments:
+            logger.info("【动态删种诊断】任务作用域：" + "；".join(scope_segments))
+
+        # 2) 体积口径：插件只统计纳管种子，这里把下载器全量体积一并列出便于对照
+        records_by_downloader: Dict[str, Dict[str, dict]] = {}
+        for task in self._task_configs.values():
+            merged = records_by_downloader.setdefault(str(task.downloader), {})
+            merged.update(task_records.get(task.id) or {})
+        size_segments = []
+        for downloader, torrent_tasks in records_by_downloader.items():
+            managed = self.__calculate_seeding_torrents_size(torrent_tasks)
+            actual = downloader_totals.get(downloader)
+            if actual is None:
+                size_segments.append(
+                    f"{downloader} 纳管 {self.__bytes_to_gb(managed):.1f} GB"
+                    f"（全量体积获取失败）"
+                )
+                continue
+            unmanaged = max(actual - managed, 0.0)
+            size_segments.append(
+                f"{downloader} 纳管 {self.__bytes_to_gb(managed):.1f} GB"
+                f" / 全量 {self.__bytes_to_gb(actual):.1f} GB"
+                f" / 未纳管 {self.__bytes_to_gb(unmanaged):.1f} GB"
+            )
+        if size_segments:
+            logger.info("【动态删种诊断】做种体积：" + "；".join(size_segments))
+
+        # 3) 候选与各门槛的剩余量
+        completed = sum(1 for item in candidates if item.get("completed"))
+        hit_and_run = sum(1 for item in candidates if item.get("hit_and_run"))
+        fallback = sum(
+            1
+            for item in candidates
+            if item.get("completed") and not item.get("hit_and_run")
+        )
+        logger.info(
+            f"【动态删种诊断】候选 {len(candidates)} 个"
+            f"（已完成 {completed}，H&R {hit_and_run}，可兜底 {fallback}）；"
+            f"统计体积 {self.__bytes_to_gb(total_size):.1f} GB；"
+            f"作用域分组 {len(groups)} 个"
+        )
+
     def _run_global_dynamic_delete(self) -> Tuple[int, List[dict]]:
         """串行执行跨任务的动态删种，返回 ``(成功删除数, 各作用域统计)``
 
@@ -2778,10 +2897,19 @@ class BrushFlow(_PluginBase):
 
         try:
             with self._all_task_locks_scope():
-                candidates, total_size, task_records, services = self._collect_global_dynamic_delete_candidates()
+                (
+                    candidates,
+                    total_size,
+                    task_records,
+                    services,
+                    downloader_totals,
+                ) = self._collect_global_dynamic_delete_candidates()
                 # 配置了下载器级阈值的下载器，各自按自己的体积独立判定；
                 # 其余下载器合并后沿用全局阈值（保持既有行为）。
                 downloader_groups = self._group_candidates_by_scope(candidates, total_size)
+                self._log_dynamic_delete_diagnostics(
+                    candidates, total_size, downloader_groups, task_records, downloader_totals
+                )
                 delete_plan: List[dict] = []
                 threshold_triggered = False
                 # 只要任一作用域用的是区间阈值，就值得发「删到下限」的汇总通知
@@ -3010,7 +3138,9 @@ class BrushFlow(_PluginBase):
             "freedate": None,
             "uploadvolumefactor": None,
             "downloadvolumefactor": None,
+            # 种子已在下载器中、没有站点页面可查，H&R 属性无从判定，保持未知
             "hit_and_run": False,
+            "hr_source": "",
             "volume_factor": None,
             "freedate_diff": None,
             "ratio": torrent_info.get("ratio", 0),

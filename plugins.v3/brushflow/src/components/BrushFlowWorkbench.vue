@@ -153,6 +153,7 @@ const pipelineStages = computed(() => {
 const torrentHeaders = [
   { title: '种子', key: 'title', sortable: false },
   { title: '状态', key: 'status', sortable: false },
+  { title: 'H&R', key: 'hr', width: 90, sortable: false },
   { title: '大小', key: 'size', align: 'end', sortable: false },
   { title: '上传', key: 'uploaded', align: 'end', sortable: false },
   { title: '分享率', key: 'ratio', align: 'end', sortable: false },
@@ -385,9 +386,16 @@ const deleteStrategyLabel = computed(() => {
 // 根据配置生成当前种子的下一项处理条件摘要。
 function torrentPolicy(item) {
   if (item.deleted) return '已删除'
-  if (item.hit_and_run && taskConfig.value.hr_seed_time) return `H&R ${taskConfig.value.hr_seed_time} 小时`
-  if (taskConfig.value.seed_time) return `${taskConfig.value.seed_time} 小时后检查`
-  if (taskConfig.value.seed_ratio) return `分享率 ${taskConfig.value.seed_ratio}`
+  // 与后端 __evaluate_conditions_for_delete 一致：H&R 种子只有在配了 H&R 阈值
+  // （或分享率）时才走专用分支；两者都没配时会落回普通条件——这一点必须如实显示，
+  // 否则用户以为 H&R 种子受保护，实际却按普通规则被删掉了。
+  if (item.hit_and_run && (taskConfig.value.hr_seed_time || taskConfig.value.seed_ratio)) {
+    if (taskConfig.value.hr_seed_time) return `H&R 做种 ${taskConfig.value.hr_seed_time} 小时`
+    return `H&R 分享率 ${taskConfig.value.seed_ratio}`
+  }
+  const prefix = item.hit_and_run ? 'H&R 未设阈值，按普通条件：' : ''
+  if (taskConfig.value.seed_time) return `${prefix}${taskConfig.value.seed_time} 小时后检查`
+  if (taskConfig.value.seed_ratio) return `${prefix}分享率 ${taskConfig.value.seed_ratio}`
   return taskConfig.value.proxy_delete ? deleteStrategyLabel.value : '等待删除条件'
 }
 
@@ -820,6 +828,13 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                       {{ torrentStateText(item) }}
                     </VChip>
                   </template>
+                  <template #item.hr="{ item }">
+                    <VChip v-if="item.hit_and_run" size="small" color="error" variant="tonal"
+                      :title="item.hr_source === 'task_site_hr' ? '任务勾选了「全站 H&R」，该站全部种子按 H&R 处理' : '站点声明该种子带 H&R 考核'">
+                      H&R
+                    </VChip>
+                    <span v-else class="text-medium-emphasis">—</span>
+                  </template>
                   <template #item.size="{ item }">{{ formatBytes(item.size) }}</template>
                   <template #item.uploaded="{ item }">{{ formatBytes(item.uploaded) }}</template>
                   <template #item.ratio="{ item }">{{ Number(item.ratio || 0).toFixed(2) }}</template>
@@ -833,6 +848,7 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                   <article v-for="item in torrentData.items" :key="`${item.task_id}-${item.title}-${item.time}`" class="brushflow-mobile-torrent">
                     <div class="brushflow-mobile-torrent__head">
                       <strong>{{ item.title || '未知种子' }}</strong>
+                      <VChip v-if="item.hit_and_run" size="x-small" color="error" variant="tonal">H&R</VChip>
                       <VChip size="x-small" variant="tonal">{{ torrentStateText(item) }}</VChip>
                     </div>
                     <div class="brushflow-mobile-torrent__meta">
