@@ -1594,6 +1594,39 @@ class BrushFlow(_PluginBase):
             rows.update(task_rows)
         return rows
 
+    def _seeding_size_breakdown(self) -> List[dict]:
+        """按下载器汇总各任务的做种体积，供运行诊断核对
+
+        体积统计是全量累加，只看到一个总数无法判断是哪份记录在涨；这里逐任务
+        列出未删除种子数与体积,顺带给出各下载器小计。
+        """
+        by_task: Dict[str, dict] = {}
+        by_downloader: Dict[str, float] = {}
+        for task_id, task in self._task_configs.items():
+            rows = self._get_task_data(task_id, "torrents") or {}
+            active = [item for item in rows.values() if not item.get("deleted")]
+            size = self.__calculate_seeding_torrents_size(rows)
+            by_task[task_id] = {
+                "task_name": task.name,
+                "downloader": task.downloader,
+                "count": len(active),
+                "size": size,
+            }
+            by_downloader[str(task.downloader)] = by_downloader.get(str(task.downloader), 0.0) + size
+        return [
+            {
+                "task_id": task_id,
+                "task_name": item["task_name"],
+                "downloader": item["downloader"],
+                "count": item["count"],
+                "size": item["size"],
+                "downloader_total": by_downloader.get(str(item["downloader"]), 0.0),
+            }
+            for task_id, item in sorted(
+                by_task.items(), key=lambda pair: pair[1]["size"], reverse=True
+            )
+        ]
+
     def _calculate_global_seeding_size(
         self,
         current_task_id: Optional[str] = None,
@@ -1959,6 +1992,7 @@ class BrushFlow(_PluginBase):
             "global_deleted_count": 0,
             "delete_scopes": [],
             "delete_scope": "none",
+            "seeding_breakdown": [],
             "reason_counts": Counter(),
             "added_titles": [],
         }
@@ -2135,6 +2169,9 @@ class BrushFlow(_PluginBase):
         dynamic_delete_enabled = self._dynamic_delete_enabled()
         # 运行诊断需要区分「任务自身托管删种」与「全局/下载器体积删种」两类删除
         report["global_dynamic_delete"] = dynamic_delete_enabled
+        report["delete_scope"] = self._task_delete_scope(task)
+        # 体积统计按所有任务的记录累加，出问题时需要逐项核对是哪一份在涨
+        report["seeding_breakdown"] = self._seeding_size_breakdown()
         self._set_runtime(task.id, state="running", operation="check", last_error=None)
         try:
             with self._task_scope(task.id):
@@ -2267,6 +2304,10 @@ class BrushFlow(_PluginBase):
                 if not existing:
                     torrent_task = unmanaged_tasks.pop(torrent_hash, None) or self.__convert_torrent_info_to_task(torrent)
                     torrent_task.update({"task_id": task.id, "task_name": task.name})
+                    # 体积统计长期按记录里的 size 累加，而记录可能来自历史版本或
+                    # 未完成时写入，与下载器中的真实体积不一致。每次重新纳管都
+                    # 以实时数据校准，否则体积会一路虚高、动态删种阈值永不触发。
+                    self.__refresh_torrent_task_size(torrent, torrent_task)
                     torrent_tasks[torrent_hash] = torrent_task
                     added_tasks.append(torrent_task)
                 elif torrent_tasks[torrent_hash].get("deleted"):
@@ -3118,6 +3159,17 @@ class BrushFlow(_PluginBase):
             self.__log_and_send_torrent_task_update_message(
                 "【刷流任务状态更新】", "更新为已删除", "下载器中找不到对应种子", deleted_tasks
             )
+
+    def __refresh_torrent_task_size(self, torrent: Any, torrent_task: dict) -> None:
+        """用下载器中的实时体积校准托管记录
+
+        体积统计（保种上限、动态删种阈值）长期按记录里的 ``size`` 累加，记录一旦
+        偏大就会一路虚高、阈值永不触发，表现为「做种体积只增不减」。只在下载器
+        给出有效体积时覆盖，避免单个下载器异常把记录清零。
+        """
+        real_size = self.__get_torrent_info(torrent).get("total_size") or 0
+        if real_size > 0 and float(torrent_task.get("size") or 0) != float(real_size):
+            torrent_task["size"] = real_size
 
     def __convert_torrent_info_to_task(self, torrent: Any) -> dict:
         """把下载器种子转换为当前任务的托管记录"""

@@ -114,6 +114,11 @@ function runEventCheckText(run) {
   }
   return segments.join('，')
 }
+// 折叠标题直接给出总量，不展开也能与概览里的数字对照
+function seedingBreakdownSummary(run) {
+  const total = (run.seeding_breakdown || []).reduce((sum, row) => sum + Number(row.size || 0), 0)
+  return `合计 ${formatBytes(total)}`
+}
 const selectedTask = computed(() => tasks.value.find(item => item.id === selectedTaskId.value) || null)
 const selectedState = computed(() => taskStateMeta(selectedTask.value?.state))
 const taskConfig = computed(() => taskDetail.value?.task || {})
@@ -944,6 +949,26 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
                           · {{ scope.triggered ? `已触发，删除 ${scope.deleted_count}` : '未触发' }}
                         </span>
                       </div>
+                      <VExpansionPanels
+                        v-if="run.kind !== 'brush' && run.seeding_breakdown?.length"
+                        variant="accordion"
+                        flat
+                        class="brushflow-breakdown"
+                      >
+                        <VExpansionPanel title="做种体积构成" :subtitle="seedingBreakdownSummary(run)">
+                          <VExpansionPanelText>
+                            <div v-for="row in run.seeding_breakdown" :key="row.task_id" class="brushflow-scopes">
+                              <span>
+                                {{ row.task_name }}（{{ row.downloader }}）：{{ row.count }} 个 ·
+                                {{ formatBytes(row.size) }}，该下载器合计 {{ formatBytes(row.downloader_total) }}
+                              </span>
+                            </div>
+                            <div class="text-body-2 text-medium-emphasis">
+                              体积按托管记录累加，不含手动添加或其他插件管理的种子。
+                            </div>
+                          </VExpansionPanelText>
+                        </VExpansionPanel>
+                      </VExpansionPanels>
                       <span v-if="run.error" class="text-error">{{ run.error }}</span>
                     </div>
                   </article>
@@ -1488,6 +1513,11 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
   block-size: 100%;
   border-radius: inherit;
   background: rgb(var(--v-theme-warning));
+}
+
+/* 做种体积构成明细：折叠面板内逐任务列出，供核对体积为何持续上涨 */
+.brushflow-breakdown {
+  margin-block-start: 6px;
 }
 
 /* 体积删种的各作用域判定明细，逐行列出便于区分是全局还是某台下载器触发 */
