@@ -263,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.4.10"
+    plugin_version = "6.4.11"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -2219,6 +2219,11 @@ class BrushFlow(_PluginBase):
             return
         check_torrents = [seeding_torrents_dict[item] for item in check_hashes if item in seeding_torrents_dict]
         self.__update_torrent_tasks_state(check_torrents, torrent_tasks)
+        # 体积统计按记录的 size 累加，历史记录可能偏大且只在首次纳管时校准过；
+        # 这里逐颗核对一次，让存量虚高记录在下一轮就回到真实体积。
+        corrected = self.__reconcile_torrent_task_sizes(check_torrents, torrent_tasks)
+        if corrected:
+            logger.info(f"刷流任务 [{task.name}] 校准了 {corrected} 个种子的体积记录")
         self.__update_undeleted_torrents_missing_in_downloader(torrent_tasks, check_hashes, seeding_torrents)
         filtered_torrents = self.__filter_torrents_by_tag(check_torrents, task.delete_except_tags)
         # 删除方式由任务选择，三者互斥：任务级阈值在此就地执行；全局与下载器级
@@ -2275,6 +2280,31 @@ class BrushFlow(_PluginBase):
                     "seeding_time": torrent_info.get("seeding_time"),
                 }
             )
+
+    def __reconcile_torrent_task_sizes(
+        self,
+        torrents: List[Any],
+        torrent_tasks: Dict[str, dict],
+    ) -> int:
+        """逐颗把托管记录的体积校准为下载器中的真实体积，返回被修正的条数
+
+        记录的 size 决定保种上限与动态删种阈值是否触发：一旦偏大，体积只会越算越高、
+        阈值永远够不着，而记录本身不会自己回落。``__update_torrent_tasks_state``
+        每轮都会刷新上下传与做种时间，体积也应一并刷新。
+
+        复用已解析的 ``torrent_info``，不额外调用下载器。
+        """
+        corrected = 0
+        for torrent in torrents:
+            torrent_hash = self.__get_hash(torrent)
+            torrent_task = torrent_tasks.get(torrent_hash)
+            if not torrent_task:
+                continue
+            real_size = self.__get_torrent_info(torrent).get("total_size") or 0
+            if real_size > 0 and float(torrent_task.get("size") or 0) != float(real_size):
+                torrent_task["size"] = real_size
+                corrected += 1
+        return corrected
 
     def __update_seeding_tasks_based_on_tags(
         self,
