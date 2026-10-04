@@ -263,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.4.9"
+    plugin_version = "6.4.10"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -2718,8 +2718,14 @@ class BrushFlow(_PluginBase):
         self,
         deleted_entries: List[dict],
         remaining_size: float,
+        scope_label: str = "全局",
     ) -> None:
-        """按受影响任务通知开关发送全局区间删种汇总"""
+        """按受影响任务通知开关发送动态删种汇总
+
+        ``remaining_size`` 是**整个作用域**的剩余体积（全局口径跨任务、跨下载器），
+        不是通知里那几个任务的体积。故文案必须写明口径并带上影响任务，
+        否则「任务：观众 / 当前做种 1113 GB」会被读成「观众这一个任务就占了 1113 GB」。
+        """
         notified_tasks = {
             task.id: task
             for entry in deleted_entries
@@ -2734,11 +2740,13 @@ class BrushFlow(_PluginBase):
         task_names = "、".join(task.name for task in notified_tasks.values())
         self.post_message(
             mtype=NotificationType.SiteMessage,
-            title="【刷流任务全局动态删除】",
+            title="【刷流任务动态删除】",
             text=(
-                f"任务：{task_names}\n"
+                f"触发：{scope_label}阈值\n"
+                f"涉及任务：{task_names}\n"
                 f"删除：{len(deleted_entries)} 个种子\n"
-                f"当前做种：{self.__bytes_to_gb(remaining_size):.1f} GB"
+                f"该作用域剩余做种：{self.__bytes_to_gb(remaining_size):.1f} GB\n"
+                f"（为插件纳管种子的累计体积，非磁盘实际占用）"
             ),
         )
 
@@ -2955,12 +2963,16 @@ class BrushFlow(_PluginBase):
                 threshold_triggered = False
                 # 只要任一作用域用的是区间阈值，就值得发「删到下限」的汇总通知
                 has_range_limit = False
+                summary_scope_label = ""
                 # 各作用域的判定结果回传给运行诊断，便于看清是哪台机器触发了删种
                 scopes: List[dict] = []
                 for scope_key, group in downloader_groups.items():
                     scope_min, scope_max, scope_label = group["min_size"], group["max_size"], group["label"]
                     if group["is_range"]:
                         has_range_limit = True
+                        # 汇总通知要写明触发的是哪个作用域，否则跨任务总数会被
+                        # 当成通知里那几个任务的体积
+                        summary_scope_label = scope_label
                     group_plan, _, group_triggered = self._select_global_dynamic_deletions(
                         group["candidates"],
                         group["total_size"],
@@ -3071,7 +3083,9 @@ class BrushFlow(_PluginBase):
                 # 只用区间阈值时才发汇总：单值阈值没有「删到下限」的目标，通知意义不大
                 if threshold_triggered and has_range_limit and recorded_entries:
                     try:
-                        self._send_global_dynamic_delete_summary(recorded_entries, remaining_size)
+                        self._send_global_dynamic_delete_summary(
+                            recorded_entries, remaining_size, summary_scope_label
+                        )
                     except Exception as err:
                         logger.warning(f"动态删种发送汇总通知失败：{str(err)}")
                 return len(recorded_entries), scopes
