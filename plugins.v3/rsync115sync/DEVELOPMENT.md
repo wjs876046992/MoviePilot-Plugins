@@ -1254,18 +1254,73 @@ state 名 —— 那是**实现语言**，用户看到的是"刚传完在等 str
 真机验证：正常时删掉目标端并启动重传 ✅；挂载掉线时预检拦下、
 「未删除任何文件」且不启动 ✅。
 
-#### 3.17.4 ② 的剩余部分（未做）
+#### 3.17.4 ② 已做：看板切到统一取数（2026-09-28）
 
-界面层还在用五个清单。要做的：
+看板的**全部清单与计数**改为只从 `/items` 派生：
+
+```
+以前                          现在
+/queue      → queueList       itemsByState('cooling','ready')
+/status.missing_files ┐       itemsByState('broken')
+/status.corrupt_files ┘
+/status.strm_suspects → ...   itemsByState('suspect')
+/status.strm_watch_detail ┐   itemsByState('watching')
+/status.strm_watch_clocks ┘
+/status.strm_gen_requested    suspect 条目的 gen_requested 字段
+```
+
+**这不是"少调一个接口"**：每一对「计数走 A、列表走 B」都是**同一件事的两份真相**，
+判据一旦漂移就会出现自相矛盾的界面（角标写 3、列表只列出 2 条；或计数说还剩
+5 小时、巡检已判到期）。这类问题本项目反复吃过（双钟问题见 §3.11）。
+
+具体修掉的几处：
+
+- **勾选存活集合**原先是**手工拼四份来源**（冷却队列 + 两个对账数组 + strm 疑似）。
+  漏加任何一处，用户勾选后一刷新（30 秒轮询）就被静默清除 —— 现在直接来自统一列表；
+- **观察期的计数与明细**原本是两条取数路径，现在同源；
+- `genRequested` 原本读 `/status` 的独立字段，现在读 suspect 条目自己的字段。
+
+兼容处理：`/items` 同时给出 `is_ready` 与 `state`（冗余，但 `is_ready` 是旧
+`/queue` 的字段名，看板与外部调用仍在读）；`/queue` 端点保留未删；
+`statusData` 里那几个默认字段保留（`/status` 仍会返回），只是不再被读。
+
+⚠️ **这是许久以来第一次重建 `dist/`** —— 本插件前端产物就是运行代码，
+不重建等于没改。
+
+#### 3.17.5 ⛔ 端点签名不能出现宿主事件类型（同轮踩到）
+
+给 `_api_strm_retry` 加 `channel_event: Optional[Event]` 之后，宿主**用方法签名
+构造 FastAPI 响应的 Pydantic 模型**，而 `Event` 不是合法字段类型：
+
+```
+Error adding plugin route /api/v1/plugin/Rsync115Sync/strm_retry:
+Invalid args for response field! ... app.runtime.events.Event | None
+```
+
+**整条路由注册不上** —— 看板上的「删旧重传」直接消失。而插件侧一行日志都没有，
+只有宿主 `routes.py` 的 ERROR（实测刷了 10 条才注意到）。
+
+修法：注解改为 `Any`。
+
+⚠️ **"给端点方法加个参数"看起来完全无害**，这是最容易再犯的一类。因此加了
+`test_endpoint_signatures.py`：静态扫**全部已注册端点**的签名，参数注解里
+不得出现 `Event` / `EventType` / `ChainEventType`。
+
+用静态检查而不是真机验证是刻意的 —— 这类问题应当在改代码时就拦住；
+等真机上发现"按钮不见了"再回头找注解，中间隔着好几个不相关的现象。
+变异验证：改回 `Optional[Event]` → 探针精确报出
+`strm_ops.py:1634 _api_strm_retry(channel_event: Optional[Event])`。
+
+#### 3.17.6 ② 的剩余部分（未做）
 
 - 看板四个标签 → 三个（`strm 疑似异常` 并进 `对账异常清单`，用 state 列区分）；
 - `/rsync_strm` 的九个**子命令** → 只剩 `scan`（list/check/gen/retry/ignore/
   prune/clear 由通用入口按 state 接管）；
-- `Page.vue` 里 213 处 strm 引用随之减少。
+- `strm_ops.py` 里那些"清单专属"的辅助方法随之上移/合并。
 
-⚠️ **必须分步做，不能一把梭**：前端切换错了会让看板整块空白，
-而它同时是排查问题的唯一界面。本轮的策略是「后端入口先上、前端后切」，
-出问题时可以二分定位。
+⚠️ 前两项都还**没做**。本轮做的是"数据来源统一"，标签结构与命令结构保持原样
+—— 界面上看不出变化，但底下的第二份真相已经消除。这样分步的理由：界面结构
+一变就会影响用户操作习惯，而那属于产品决策，不宜混在结构重构里一起做。
 
 
 ## 4. 新增能力
