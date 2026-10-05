@@ -184,6 +184,20 @@ def test_probe_detects_a_deleted_helper():
     assert "plainText" not in known, "变异未生效 —— 探针会误判为通过"
 
 
+def _failed_tab_slice() -> str:
+    """
+    取出「异常清单」标签的模板片段。
+
+    ⚠️ 边界不能用 `currentTab === 'strm'` —— strm 疑似**已并进本标签**
+    （原来它自己占一个标签），那个字符串不再存在。现在用下一个标签 `ignored`
+    作上界。切片边界跟着标签结构走，标签一合并这里就必须跟着改，
+    否则用例会以 ValueError 的形式失败（而不是静默漏检，这点是好的）。
+    """
+    template, _ = _split(_read_component("Page.vue"))
+    seg = template[template.index("currentTab === 'failed'"):]
+    return seg[:seg.index("currentTab === 'ignored'")]
+
+
 def test_probe_would_have_caught_the_file_alias_bug():
     """
     探针必须能发现 `v-for` 改别名后残留的裸标识符。
@@ -192,20 +206,20 @@ def test_probe_would_have_caught_the_file_alias_bug():
     所以上面的调用探针抓不到它。这里为它单独钉一条：`v-for` 把
     `(file, idx)` 改成 `entry` 之后，片段内不得再出现裸 `file`。
     """
-    template, _ = _split(_read_component("Page.vue"))
-    failed_tab = template[template.index("currentTab === 'failed'"):]
-    failed_tab = failed_tab[:failed_tab.index("currentTab === 'strm'")]
-    bare = re.findall(r"(?<![\w.$])file(?![\w$])", failed_tab)
+    failed_tab = _failed_tab_slice()
+    # ⚠️ 要排除 `mdi-file-refresh-outline` 这类**图标名**：它里面含 `file`，
+    # 但那是一个连字符串成的名字，不是标识符。合并标签后 strm 区块也进了这个
+    # 切片，而它带着 mdi-file-refresh 图标 —— 不排除就会误报两个"裸 file"。
+    cleaned = re.sub(r"mdi-[a-z0-9-]+", "MDI_ICON", failed_tab)
+    bare = re.findall(r"(?<![\w.$-])file(?![\w$-])", cleaned)
     assert not bare, (
-        "「对账异常清单」标签里仍引用了裸 `file` —— 该标签的 v-for 别名是 "
+        "「异常清单」标签里仍引用了裸 `file` —— 该标签的 v-for 别名是 "
         "`entry`，`file` 未定义（重试/忽略按钮点击即抛错）"
     )
 
 
 def test_failed_tab_buttons_use_entry_alias():
     """正向断言：对账异常清单的重试/忽略必须绑定 `entry.file`。"""
-    template, _ = _split(_read_component("Page.vue"))
-    failed_tab = template[template.index("currentTab === 'failed'"):]
-    failed_tab = failed_tab[:failed_tab.index("currentTab === 'strm'")]
+    failed_tab = _failed_tab_slice()
     assert "syncSingle(entry.file)" in failed_tab
     assert "ignoreFile(entry.file, 'exact')" in failed_tab
