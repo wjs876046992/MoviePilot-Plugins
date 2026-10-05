@@ -388,11 +388,7 @@
           </v-tab>
           <v-tab value="failed">
             <v-icon start size="16">mdi-alert-circle-outline</v-icon>
-            对账异常清单 ({{ failedCount }})
-          </v-tab>
-          <v-tab value="strm">
-            <v-icon start size="16">mdi-television-classic-off</v-icon>
-            strm 疑似异常 ({{ strmSuspectCount }})
+            异常清单 ({{ failedCount + strmSuspectCount }})
           </v-tab>
           <v-tab value="ignored">
             <v-icon start size="16">mdi-eye-off-outline</v-icon>
@@ -560,9 +556,11 @@
 
         </div>
 
-        <!-- 标签 3：strm 疑似上传异常（判据与对账完全不同：来源是 strm 插件的视角，
-             处理方式也不同 —— 前者走普通重传，这里必须删旧重传） -->
-        <div v-if="currentTab === 'strm'">
+        <!-- strm 疑似：并进「异常清单」标签（原来它自己占一个标签）。
+             判据与对账不同（前者走普通重传，这里必须删旧重传），因此区块内
+             保留独立标题与说明；但**不再单开一个标签** —— 同一件事分两处看，
+             正是用户说"边界不清晰、容易混淆"的来源之一。 -->
+        <div v-if="currentTab === 'failed'">
 <!-- 有配置 strm 目录就渲染本区（即使清单为空）—— 否则用户找不到「主动扫描」
                入口，而扫描正是清单为空时最需要的功能（发现从未被观察过的坏文件） -->
           <div v-if="strmConfigured" class="mt-4">
@@ -1354,11 +1352,13 @@ const strmPaged = computed(() => paginate(strmSuspectKeys.value, pageStrm))
 // 观察中列表的分页（嵌在 strm 标签内，与 strmPaged 是两个独立列表）
 const watchingPaged = computed(() => paginate(strmWatchingEntries.value, pageWatching))
 
-// 当前标签页的分页结果，供模板统一渲染底部页码条
+// 当前标签页的分页结果，供模板统一渲染底部页码条。
+// ⚠️ 合并标签后，本页的「主列表」是**对账项**（strm 疑似有自己独立的分页条，
+// 见模板里 strmPaged 那一段）—— 因此这里仍返回 failedPaged，不是两者拼接：
+// 拼接后页码条会同时驱动两个列表，翻页时用户看不到自己以为在翻的那一批。
 const paged = computed(() => {
   if (currentTab.value === 'queue') return queuePaged.value
   if (currentTab.value === 'failed') return failedPaged.value
-  if (currentTab.value === 'strm') return strmPaged.value
   return ignoredPaged.value
 })
 
@@ -1370,13 +1370,12 @@ const selectableItems = computed(() => {
     return queuePaged.value.slice.map((it) => it.key)
   }
   if (currentTab.value === 'failed') {
-    return failedPaged.value.slice.map((it) => it.file)
-  }
-  if (currentTab.value === 'strm') {
-    // strm 独立成标签后，本页可勾选集合只含 strm 条目。
-    // 勾选状态仍跨标签保留 —— 用户可以在 strm 标签勾选后切到别处，
-    // 因此批量按钮的分流逻辑（按选中项成分）保持不变。
-    return strmPaged.value.slice
+    // ⚠️ 本页可勾选集合 = 对账项 + strm 疑似项 —— 两者**现在同一个标签**，
+    // 因此必须合在一起。早先 strm 独立成标签时这里只返回 failedPaged，
+    // 合并后若不改，「全选本页」会漏掉页面上明明看得见的 strm 条目。
+    // 批量按钮的分流逻辑（按选中项成分）不受影响：它看的是 selectedKeys，
+    // 与"哪些可勾选"是两件事。
+    return [...failedPaged.value.slice.map((it) => it.file), ...strmPaged.value.slice]
   }
   return []
 })
