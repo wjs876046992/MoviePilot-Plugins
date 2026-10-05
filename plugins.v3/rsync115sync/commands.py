@@ -921,9 +921,16 @@ class CommandsMixin:
             # 清空忽略清单
             if arg_lower in ("clear", "清空", "reset"):
                 count = len(self._ignored_rules)
+                # ⚠️ 逐条清台账，不能只置空 `_ignored_rules` —— 忽略有**两份存储**
+                # （用户规则 + 台账 status='ignored' 的行），只清前者会让台账
+                # 永久留着那些行。`/items` 把它们透给看板后，表现就是
+                # 「清空了忽略，文件却还在清单里」。见 `_remove_ignore_rule` 的说明。
+                dropped = sum(self._drop_ledger_ignored(r) for r in list(self._ignored_rules))
                 self._ignored_rules = []
                 self.save_data("ignored_files", self._ignored_rules)
-                self._post_reply(event, f"✅ 已清空全部 {count} 条忽略规则，相关文件将重新纳入对账。")
+                tail = f"（并清理了台账中 {dropped} 个条目）" if dropped else ""
+                self._post_reply(event, f"✅ 已清空全部 {count} 条忽略规则{tail}，"
+                                        f"相关文件将重新纳入对账。")
                 return
 
             # 移除指定规则

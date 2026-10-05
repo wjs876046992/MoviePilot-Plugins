@@ -717,11 +717,93 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         return True
 
     def _remove_ignore_rule(self, index_or_rule: Any) -> bool:
-        """移除指定忽略规则（按序号或规则文本）。"""
+        """
+        移除指定忽略规则（按序号或规则文本），**并同步删掉台账里的对应行**。
+
+        Remove an ignore rule and drop its ledger row.
+
+        ## 为什么必须同时清台账（2026-09-28 发现）
+
+        忽略有**两份存储**，而移除只清了其中一份：
+
+            _ignored_rules（save_data）  用户写的**规则**，支持 contains 模糊匹配
+            台账 status='ignored' 的行   具体**文件**的忽略状态
+
+        添加时两处都写（`_add_ignore_rule` 里 `upsert(..., STATUS_IGNORED)`），
+        移除时却只删前者 —— 于是台账里永远留着 `status='ignored'` 的行。
+
+        这个残留此前**看不见**（旧看板「已忽略」读的是 `_ignored_rules`，
+        台账只做计数），因此潜伏了很久；`/items` 把台账行直接透出来之后，
+        它立刻变成用户可见的错误：**取消忽略后，那个文件仍显示在「已忽略」里**。
+
+        ⚠️ 这里**按规则文本匹配**而不是按 key 精确匹配：规则可能是 `contains`
+        （如「繁花」），一条规则对应多个文件行。先取出规则原文，再删所有匹配的行。
+        `_ignore_remove_rule` 会就地修改列表，因此要**先**把原文读出来。
+        """
+        # 先取原文：_ignore_remove_rule 成功后会把它从列表里删掉
+        target = self._ignore_rule_at(index_or_rule)
         if not _ignore_remove_rule(self._ignored_rules, index_or_rule):
             return False
         self.save_data("ignored_files", self._ignored_rules)
+        if target:
+            self._drop_ledger_ignored(target)
         return True
+
+    def _ignore_rule_at(self, index_or_rule: Any) -> Optional[Dict[str, Any]]:
+        """
+        按序号（1 起）或规则文本取出一条规则；取不到返回 None。
+
+        ⚠️ 序号口径必须与 `_ignore_remove_rule` **一致**（1 起、列表顺序），
+        否则这里取到的是 A、那边删掉的是 B，结果删错了台账行而规则还在。
+        """
+        rules = self._ignored_rules or []
+        # 纯数字（或数字字符串）按序号；否则按规则文本
+        idx = None
+        if isinstance(index_or_rule, int):
+            idx = index_or_rule
+        elif isinstance(index_or_rule, str):
+            stripped = index_or_rule.strip()
+            if stripped.isdigit():
+                idx = int(stripped)
+        if idx is not None:
+            if 1 <= idx <= len(rules):
+                return rules[idx - 1]
+            return None
+        for r in rules:
+            if r.get("rule") == index_or_rule:
+                return r
+        return None
+
+    def _drop_ledger_ignored(self, rule: Dict[str, Any]) -> int:
+        """
+        删掉台账里由这条规则覆盖的 `ignored` 行，返回删除行数。
+
+        ⚠️ `match` 语义必须与 `ignore.py` 的判据一致：`exact` 只删 key 完全相同的，
+        `contains` 删所有**包含**该文本的行。口径不一致会造成两种错误之一：
+        漏删（取消忽略后文件还在清单里）或**误删**（把同名的别的文件也解除了忽略）。
+        """
+        ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            return 0
+        text = (rule or {}).get("rule") or ""
+        if not text:
+            return 0
+        exact = ((rule or {}).get("match") or "contains") == "exact"
+        try:
+            rows = ledger.by_status(_store_mod.STATUS_IGNORED)
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 读取台账忽略行失败（跳过清理）: {e}")
+            return 0
+        removed = 0
+        for row in rows:
+            key = str(row.get("key") or "")
+            hit = (key == text) if exact else (text in key)
+            if hit and ledger.delete(key):
+                removed += 1
+        if removed:
+            logger.info(f"[Rsync115Sync] 🚫 已从台账移除 {removed} 个忽略条目"
+                        f"（规则 {rule.get('match')}: {text}）")
+        return removed
 
     # ================= 入库入口一览（改动前必读） =================
     #
