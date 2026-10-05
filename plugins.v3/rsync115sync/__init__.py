@@ -751,27 +751,37 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
 
     def _ignore_rule_at(self, index_or_rule: Any) -> Optional[Dict[str, Any]]:
         """
-        按序号（1 起）或规则文本取出一条规则；取不到返回 None。
+        取出 `_ignore_remove_rule` **将要删掉**的那条规则原文；取不到返回 None。
 
-        ⚠️ 序号口径必须与 `_ignore_remove_rule` **一致**（1 起、列表顺序），
-        否则这里取到的是 A、那边删掉的是 B，结果删错了台账行而规则还在。
+        Peek the rule that `ignore.remove_rule` is about to remove.
+
+        ⚠️ 判据必须与 `ignore.remove_rule` **逐条对齐**，否则会出现
+        「这里取到 A、那边删掉 B」—— 台账删的是 A 的行，而规则删的是 B，
+        两边都不报错，状态悄悄错位。`ignore.remove_rule` 的实际口径是：
+
+            int        → 按序号，**从 0 起**
+            str        → 按**规则文本**（大小写不敏感），**不看数字**
+
+        注意第二行：字符串 `"1"` 在那个函数里是**规则文本**，不是序号
+        （只有真的 `int` 才当序号）。我起初想当然按"1 起的数字字符串"实现，
+        真机一测就错了 —— 这类"两个函数对同一个参数的解释不同"正是
+        最该逐字核对的一类。命令侧传进来的是 `text_arg`（**字符串**），
+        因此实际生效的是「按规则文本」那一支。
         """
         rules = self._ignored_rules or []
-        # 纯数字（或数字字符串）按序号；否则按规则文本
-        idx = None
         if isinstance(index_or_rule, int):
-            idx = index_or_rule
-        elif isinstance(index_or_rule, str):
-            stripped = index_or_rule.strip()
-            if stripped.isdigit():
-                idx = int(stripped)
-        if idx is not None:
-            if 1 <= idx <= len(rules):
-                return rules[idx - 1]
+            # 与 ignore.remove_rule 一致：int 才是序号，且从 0 起
+            if 0 <= index_or_rule < len(rules):
+                return rules[index_or_rule]
             return None
-        for r in rules:
-            if r.get("rule") == index_or_rule:
-                return r
+        if isinstance(index_or_rule, str):
+            target = index_or_rule.strip().lower()
+            for r in rules:
+                if (r.get("rule") or "").lower() == target:
+                    return r
+            # 与那边不同的一处：它对未命中的 str 返回 False（不删任何东西），
+            # 所以这里返回 None 即可 —— 两边都不会有副作用。
+            return None
         return None
 
     def _drop_ledger_ignored(self, rule: Dict[str, Any]) -> int:
