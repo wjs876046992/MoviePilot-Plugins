@@ -1880,6 +1880,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         """
         return [
             {"path": "/status", "endpoint": self._api_get_status, "methods": ["GET"], "auth": "bear"},
+            # 统一条目列表：一行一个文件 + state 字段（存储层早就统一了，
+            # 这里把真相直接透给界面，见 `_api_get_items` 的说明）。
+            {"path": "/items", "endpoint": self._api_get_items, "methods": ["GET"], "auth": "bear"},
+            # ⚠️ `/queue` 保留：旧版看板与外部调用还在用它，删掉会让它们空白。
+            # 它返回的是「冷却队列」这一种 state 的明细，等价于 /items 过滤
+            # state ∈ {cooling, ready}。等界面全部切到 /items 后再考虑移除。
             {"path": "/queue", "endpoint": self._api_get_queue, "methods": ["GET"], "auth": "bear"},
             {"path": "/config", "endpoint": self._api_get_config, "methods": ["GET"], "auth": "bear"},
             {"path": "/config", "endpoint": self._api_save_config, "methods": ["POST"], "auth": "bear"},
@@ -2574,6 +2580,124 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         except Exception as e:
             logger.debug(f"[Rsync115Sync] 台账概览读取失败（已忽略）: {e}")
             return {}
+
+    def _api_get_items(self):
+        """
+        看板的**唯一**取数入口：一张表、一行一个文件、一个 `state` 字段。
+
+        The dashboard's single data source: one row per file, one `state` field.
+
+        ## 为什么要这么改（② 的结构简化）
+
+        这个插件此前有**五个并列的清单**，各有一套 API、命令、看板标签：
+
+            cooling（冷却队列）/ failed（对账异常）/ suspect（strm 疑似）
+            / watching（观察期）/ ignored（忽略）
+
+        但它们在**存储层早就统一了** —— 全部是 `files` 表里 `status` 的不同取值
+        （见 `store.py` 的状态定义）。看板却仍然按"五个清单"组织，于是同一份数据
+        在界面上被切成五块、各有各的判据，用户看到的是"五个地方要分别理解"。
+
+        这里把**存储层已有的真相**直接透出来：一个列表 + `state` 字段，
+        看板与命令面按 `state` 过滤/分组即可，不再需要五套并行的取数逻辑。
+
+        ## state 取值与它们的"下一步"
+
+        | state | 用户看到 | 该做什么 |
+        |---|---|---|
+        | `cooling` | 等冷却 | 等（或 `sync` 提前传） |
+        | `ready` | 可传 | 会自动传；可 `sync` 立即传 |
+        | `watching` | 刚传完，等 strm | 等（或 `strm scan` 立即判定） |
+        | `suspect` | strm 没出来 | `strm gen` → 仍无再 `retry` |
+        | `broken` | 对账发现缺失/残缺 | `retry` |
+        | `ignored` | 已忽略 | 不用管 |
+
+        ⚠️ `cooling` / `ready` 是**同一个 status（candidate）按冷却时间拆的**
+        —— 存储层不存"是否就绪"，那是时间的函数，每次读取时算（与
+        `_count_queue` 的判据逐字相同，两处不能漂移）。
+        ⚠️ `broken` 来自**对账结果**（`_last_status`），不是台账 status：
+        它是"这一轮对账发现的问题"，与文件在生命周期里的位置正交。
+        """
+        now_ts = time.time()
+        threshold = self._delay_hours * 3600
+        items: List[Dict[str, Any]] = []
+
+        # ---- 台账驱动的状态（candidate / pending_verify / suspect / ignored）----
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None:
+            try:
+                for row in ledger._query("SELECT * FROM files ORDER BY updated_at"):
+                    items.append(self._ledger_row_to_item(row, now_ts, threshold))
+            except Exception as e:
+                # 台账读取失败降级为空列表（不炸整个看板）—— 与 _ledger_overview 同取向
+                logger.debug(f"[Rsync115Sync] 台账条目读取失败（已忽略）: {e}")
+
+        # ---- 对账结果（broken）：与台账状态**正交**，因此单独叠加 ----
+        seen = {it["key"] for it in items}
+        for kind, label in (("missing_files", "缺失"), ("corrupt_files", "残缺")):
+            for key in (self._last_status.get(kind) or []):
+                if key in seen:
+                    # 已在台账里（例如同时是 suspect）→ 只补一个"对账也发现问题"的注记，
+                    # 不另起一行：同一个文件在界面上出现两次是混淆的主要来源之一。
+                    for it in items:
+                        if it["key"] == key:
+                            it.setdefault("notes", []).append(f"对账{label}")
+                    continue
+                items.append({"key": key, "state": "broken", "detail": label,
+                              "pair": "", "rel_path": "", "notes": []})
+
+        return {"success": True,
+                "data": {"items": items,
+                         "states": self._state_counts(items),
+                         "delay_hours": self._delay_hours}}
+
+    @staticmethod
+    def _state_counts(items: List[Dict[str, Any]]) -> Dict[str, int]:
+        """按 state 计数 —— 看板的角标直接读它，不再各算各的。"""
+        out: Dict[str, int] = {}
+        for it in items:
+            out[it["state"]] = out.get(it["state"], 0) + 1
+        return out
+
+    def _ledger_row_to_item(self, row: Any, now_ts: float,
+                            threshold: float) -> Dict[str, Any]:
+        """
+        把台账一行折成看板条目（status → state，并按冷却时间细分 ready）。
+
+        ⚠️ `candidate` 按冷却时间细分 `cooling`/`ready`：存储层**不存**这个区分
+        （它是时间的函数），因此每次读取时算。判据与 `_count_queue` /
+        `_execute_sync` **逐字相同**（`now - 基准 >= 冷却时长`）—— 三处一旦分叉，
+        看板就会出现「显示可传、点同步却什么都不传」这类无从解释的状态。
+        """
+        status = str(row["status"])
+        # 台账行是 sqlite3.Row，get 不存在；统一转 dict 后再取，避免两套写法
+        r = dict(row)
+        state = status
+        extra: Dict[str, Any] = {}
+        if status == _store_mod.STATUS_CANDIDATE:
+            basis = r.get("enqueued_at") or 0.0
+            elapsed = now_ts - float(basis)
+            state = "ready" if elapsed >= threshold else "cooling"
+            extra["remaining_seconds"] = int(max(0, threshold - elapsed))
+        elif status == _store_mod.STATUS_PENDING_VERIFY:
+            extra["since"] = r.get("enqueued_at")
+        elif status == _store_mod.STATUS_SUSPECT:
+            extra["origin"] = r.get("origin") or ""
+            # 补生成标记与 status 正交（列视图），但界面上要显示"已经请过助手"
+            extra["gen_requested"] = bool(r.get("gen_requested_at"))
+        return {
+            "key": r.get("key", ""),
+            "state": state,
+            "status": status,          # 原始 status 一并给出，便于排查与前端细化
+            "pair": r.get("pair") or "",
+            "rel_path": r.get("rel_path") or "",
+            "source": r.get("ingest_source") or "",
+            "retry_count": r.get("retry_count") or 0,
+            "last_error": r.get("last_error") or "",
+            "synced_at": r.get("synced_at"),
+            "notes": [],
+            **extra,
+        }
 
     def _api_get_queue(self):
         now_ts = time.time()
