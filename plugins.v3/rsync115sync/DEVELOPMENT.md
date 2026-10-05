@@ -950,6 +950,65 @@ body (有高度)
 - **不静默丢弃**：超限时写明「另有 N 条未附命令」；
 - **消息长度**：满额命令块 < 2048 字符（宿主按 4096 拆分，留一半余量）。
 
+### 3.14 `/rsync_strm check` 不同步疑似清单（2026-09-28）
+
+**用户提问**：「gen 和 check 有没有排除冷却期的？」—— 查下来 **gen 有、check 没有**，
+而且两个入口行为还不一样。
+
+#### 3.14.1 三个入口的清理能力（修复前）
+
+| 入口 | 冷却误报清理 | 已解决清理 | 观察期判定 |
+|---|---|---|---|
+| `_strm_check`（巡检） | ✅ | ✅ | ✅ |
+| `_api_strm_check`（看板） | ✅（自己补跑） | ✅（自己补跑） | ✅ |
+| `/rsync_strm check`（命令） | ❌ | ❌ | ✅ |
+
+根因：清理逻辑被写在**看板端点**这一层，而不是写在**唯一实现**
+`_check_watch_now` 里。命令侧直接调 `_check_watch_now`，于是只做观察期判定，
+疑似清单一个条目都不动。
+
+后果：3.13 刚把 `/rsync_strm check` 写成补生成之后的标准动作，用户照抄敲一遍
+却看不到任何变化 —— 会以为命令没生效。
+
+#### 3.14.2 第二个缺口：观察期为空时直接 return
+
+```python
+targets = [k for k in (keys or []) if k in self._strm_watch]
+if not targets:
+    return {...}        # ← 此处 return，"清疑似"永远不会发生
+```
+
+命令侧 `check` 是**无参**的（传 watch 的全部 key），watch 为空就走这条路。
+而用户点 check 的动机常常正是「疑似清单里有条不该在的」—— 缺口恰好落在
+最需要它的场景上。
+
+#### 3.14.3 修法
+
+清理搬进 `_check_watch_now`（两个出口都执行，早退分支也不例外），
+`_api_strm_check` 只负责措辞，命令侧改调 `_api_strm_check`。
+分工写进注释：**本函数负责"清"，调用方负责"说"**。
+
+⚠️ 首版把清理结果同时写进了早退分支的 `message` 和 `data`，而
+`_api_strm_check` 又按 `data` 追加一次 —— 同一条清理在回执里出现两遍
+（真机实测到的）。结果只放 `data`。
+
+`gen` 一侧**无需改动**：`_api_strm_generate` 在更早的版本里已修过同类问题
+（那次的现象是「点了按钮，条目消失了，然后什么都没发生」，见其 docstring）。
+
+#### 3.14.4 测试
+
+`test_strm_watch_check.py` 新增 4 条：
+
+- 冷却误报被清出；
+- **反向**：真疑似（不在冷却队列）不被误清；
+- 观察期为空时也照清（钉住 3.14.2 那个早退分支）；
+- 命令侧与看板共用同一实现（读 `handle_command` 源码，钉住调用的是
+  `_api_strm_check` 而不是 `_check_watch_now`）。
+
+⚠️ 该文件需要 MoviePilot 后端，本机跑不了（`tests/_bootstrap.py` 找不到 `app/`）。
+验证走真机：在容器内以 `moviepilot` 用户跑等价的最小实例脚本，
+断言「被清出」「只报一遍」「真疑似不误清」「观察期非空时同样清理」。
+
 
 ## 4. 新增能力
 
@@ -3067,6 +3126,48 @@ Mixin 保持无状态（模块级/类体赋值即失败）、组合面完整 + �
 `_build_pair_plan` → `_run_rsync` → `_apply_outcome` → `_finalize_run`。
 关键约束：`total_missing` / `audited_keys` / `synced_count` / `fatal_exit_codes` /
 `has_error` 这些累积变量必须**留在编排层**，阶段函数只收参数、返回结果。
+
+### 8.8 ⚠️ 在容器里跑诊断脚本会**弄坏插件的自动重载**
+
+本机没有 MoviePilot 后端（`tests/_bootstrap.py` 找不到 `app/`），
+所以验证只能去 NAS 容器里跑。**坑在这里**：
+
+```bash
+# ❌ 这样跑，python 以 root 身份运行，会在插件目录留下 root 属主的 .pyc
+docker exec mp3 python /tmp/mycheck.py
+
+# ✅ 加 -u moviepilot：与宿主进程同用户，不会污染
+docker exec -u moviepilot mp3 python /tmp/mycheck.py
+```
+
+容器默认用户是 **root**，而插件目录 `/app/app/plugins/rsync115sync/` 属主是
+`moviepilot`。root 跑 `import app.plugins.rsync115sync` 会往 `__pycache__/`
+写 root 属主的 `.pyc`（实测文件权限是 `-rw-------`）。**下一次宿主的
+monitor 检测到源码变化、准备热重载时**：
+
+```
+【ERROR】sync.py - 同步本地插件 Rsync115Sync 失败：创建插件安装快照失败：
+[('.../__pycache__/ignore.cpython-314.pyc', ...,
+  "[Errno 13] Permission denied: '.../__pycache__/ignore.cpython-314.pyc'")]
+```
+
+重载**失败**，而容器里 `/app/app/plugins/` 下的副本**停在上一版**——
+表现为「明明 push 并 pull 了，改动的行为却没生效」，且日志里只有一行 ERROR。
+
+**修复**：删掉那批 root 属主的 `.pyc`，再 `touch` 一次源码触发重载。
+
+```bash
+docker exec mp3 rm -rf /app/app/plugins/rsync115sync/__pycache__
+touch /volume2/docker/moviepilot/config/local_plugins/plugins.v3/rsync115sync/strm_ops.py
+# 等 monitor 轮询（约 1~3 分钟），日志应出现「加载插件：Rsync115Sync 版本：0.4.0」
+```
+
+⚠️ NAS 侧 `local_plugins/.../__pycache__/` 同样会沾上 root 属主的
+`cpython-314.pyc`（那是我从容器里 `grep` 过 NAS 路径时留下的），一并删掉。
+`__pycache__/` 已在 `.gitignore` 里，所以 `git status` 是干净的、看不出异常。
+
+**验证时的规矩**：诊断脚本一律 `docker exec -u moviepilot -i mp3 python`；
+跑完 `rm -f /tmp/xxx.py`。若忘了加 `-u`，按上面的步骤清一次 `.pyc`。
 
 ---
 
