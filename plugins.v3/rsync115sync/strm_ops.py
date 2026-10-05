@@ -670,9 +670,9 @@ class StrmOpsMixin:
                     f"{listed}{more}\n\n"
                     f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。\n"
                     f"💡 请先确认 strm 插件本身是否正常（媒体是否识别、功能是否开启），\n"
-                    f"   再前往看板「strm 疑似异常」标签处理：\n"
-                    f"   ① 先点「先尝试生成 strm」——若只是漏生成，这一步就能解决，无需重传；\n"
-                    f"   ② 补生成后仍无，再对该条目使用「删旧重传」。"
+                    f"   再按下面顺序处理（命令可直接点按复制）：\n"
+                    f"{self._strm_suspect_commands_text(new_suspects)}\n\n"
+                    f"❗ ② 是破坏性操作（先删云端旧文件再重传），只在①之后仍缺 strm 时用。"
                 ),
             )
             self._strm_notified = True
@@ -681,6 +681,17 @@ class StrmOpsMixin:
                         f"清单共 {total} 个）")
         except Exception as e:
             logger.error(f"[Rsync115Sync] strm 疑似异常通知发送失败: {e}")
+
+    def _strm_suspect_commands_text(self, new_suspects: List[str]) -> str:
+        """
+        疑似通知里那段处理命令的**薄包装**；拼装逻辑在 `strm.suspect_commands_text`。
+
+        Thin wrapper over the pure renderer in `strm`: this plugin keeps the
+        copy-ready command text next to the rest of the strm logic so it stays
+        unit-testable without a MoviePilot backend (the whole point of `strm.py`
+        being I/O- and host-free).
+        """
+        return _strm.suspect_commands_text(new_suspects, self._sync_pairs)
 
     def _reset_strm_notified_if_clear(self) -> None:
         """

@@ -67,6 +67,137 @@ DEFAULT_GRACE_MINUTES = 5
 REGRACE_HOURS = 1.0
 
 
+def brief_target_of(key: str, pairs: List[Dict[str, Any]],
+                    owner_keys: List[str]) -> Optional[str]:
+    """
+    为 key 猜一个**尽量短、且在这批 key 里唯一**的检索关键字；猜不出返回 None。
+
+    Best-effort short keyword that still selects exactly one entry of `owner_keys`.
+
+    ## 为什么需要它（而不是用序号）
+
+    通知里要附可直接复制的命令，而 `retry` / `ignore` 的指定方式只有两种：
+    **序号**与**关键字**。序号在通知里是**不能用**的 —— 序号是"清单当前排序"
+    的函数，而通知常被用户在几小时后才打开，那时的清单早已不同（本轮条目
+    退场、看板处理过、插件重载后重新载入）。照着一个过期序号发命令，最好的
+    结果是「提示没有匹配」，最坏的结果是**删掉另一个文件再重传**。
+    关键字则与时间无关：它由 key 自身推导，只要那个文件还在清单里就一直有效。
+
+    ## 选取规则：信息量从多到少逐级退让，第一个唯一命中的就返回
+
+    整段相对路径最可靠，但长路径会把 Telegram 的消息长度吃光（实测一条
+    电视剧 key 可达 100+ 字符）。因此逐级试探：文件名 stem → 末两级 →
+    … → 整段相对路径。判据是「在 `owner_keys` 里只命中这一个」；命中多个
+    就继续退让（更笼统只会更差，退到整段仍多命中就放弃，返回 None）。
+    唯一命中即返回。
+
+    ⚠️ 匹配必须在**整条 key** 上做子串比较（不是只比文件名部分），
+    因为 `_resolve_suspect_target` 用的就是 `kw in k.lower()`。两处判据
+    必须一致，否则通知里给出的"唯一"关键字到了命令侧会变成多命中。
+
+    ⚠️ `owner_keys` 必须是**判唯一性时真正要面对的那个清单**。通知侧可以
+    只传本轮新增的若干 key（这样更容易给出短关键字），代价是用户打开通知时
+    全量清单里可能出现同名条目。此时命令侧不会猜错 —— 它用同一条规则当场
+    复核并回「匹配到 N 条，请写得更具体」。这正是不用序号的关键区别：
+    序号会**静默**指错对象，关键字只会被拒绝。
+    """
+    from .paths import rel_path_of_key as _rel_path_of_key  # 同本模块其它处：延迟导入避免循环
+    rel = _rel_path_of_key(key, pairs)
+    if rel is None:
+        return None
+    flat = rel.replace("\\", "/")
+    stem = posixpath.splitext(flat)[0]
+    parts = [p for p in stem.split("/") if p]
+    candidates: List[str] = []
+    if parts:
+        candidates.append(parts[-1])                      # 只给文件名
+        for take in range(2, len(parts) + 1):
+            candidates.append("/".join(parts[-take:]))    # 逐步吞前面的目录
+    if flat not in candidates:
+        candidates.append(flat)                           # 兜底：整段相对路径
+    for candidate in candidates:
+        if candidate and sum(1 for k in owner_keys if candidate.lower() in k.lower()) == 1:
+            return candidate
+    return None
+
+
+def suspect_commands_text(new_suspects: List[str], pairs: List[Dict[str, Any]],
+                          limit: Optional[int] = None) -> str:
+    """
+    生成疑似通知里那段**可直接点按复制**的处理命令；纯字符串拼装，无副作用。
+
+    Build the copy-ready command block appended to the suspect notification.
+
+    ## 为什么不用序号
+
+    看板与 `/rsync_strm list` 用序号，但**通知里不能用** —— 序号是"清单当前
+    排序"的函数，而通知常在几小时后才被打开，那时本轮条目可能已退场、或清单
+    整体重排（插件重载、看板处理过别的条目）。照过期序号执行可能删错对象。
+    关键字由 key 自身推导，与时间无关；即使清单变了，命令侧也用同一条规则
+    当场复核，多命中就拒绝而不是猜（见 `_resolve_suspect_target`）。
+
+    ## 为什么用围栏代码块
+
+    宿主 Telegram 渠道的 `standardize()` 会把普通文本里的 `/` `.` `-` 等
+    MarkdownV2 特殊字符转义（`/rsync\\_strm gen`）。Telegram 客户端**显示**时
+    会去掉转义符，肉眼看到的是对的，但长按选择时把反斜杠一起带走的风险真实
+    存在。放进 ``` 围栏里则整段原样保留（实测 `standardize` 对围栏内内容
+    零转义），且 Telegram 对代码块提供点按复制 —— 这才是"可点击复制"在
+    Bot API 层面真能拿到的形态。`copy_text` 按钮是更理想的载体，但宿主
+    `_create_inline_keyboard` 只认 `url` 与 `callback_data` 两种键。
+
+    ## 覆盖范围与上限
+
+    每条疑似的命令块约 300 字符（两条命令 + 路径），因此与正文的路径展示用
+    **同一个上限** `MAX_LOGGED_PATHS`：一次几十条疑似（strm 助手整体失灵时的
+    常见形态）若逐条附命令，消息会长到无法阅读，且超出 Telegram 单条文本上限
+    （宿主 `_split_plain_text` 按 4096 字符拆分，拆开后的续条恰好会丢掉那行
+    「② 是破坏性操作」的警告）。被截断时明确写出「其余 N 条」，
+    用户可照 `/rsync_strm list` 自行处理 —— 与正文的 `more` 提示同口径。
+
+    ⚠️ 断在 `limit` 上而不是"能塞多少塞多少"：上限**可预期**比"这次能塞 7 条、
+    下次能塞 6 条"重要 —— 后者会让用户以为清单长度变了。
+    """
+    from .constants import MAX_LOGGED_PATHS as _default_limit   # 延迟导入，同本文件其它处
+    cap = _default_limit if limit is None else limit
+    shown = list(new_suspects[:max(0, cap)])
+    hidden = len(new_suspects) - len(shown)
+    blocks: List[str] = [
+        "① 先试补生成（对清单内全部条目，多数情况这一步就够了）：",
+        "```",
+        "/rsync_strm gen",
+        "```",
+        "   等 1~2 分钟让助手跑完，再确认哪些真的没生成：",
+        "```",
+        "/rsync_strm check",
+        "```",
+    ]
+    for key in shown:
+        target = brief_target_of(key, pairs, shown)
+        blocks.append("")
+        if not target:
+            # 关键字无法唯一确定（同名文件过多，或 key 本身重复）——
+            # **绝不退回序号**：那正是本功能要消灭的"看起来能用、实际会指错对象"。
+            blocks.append(f"• {key}")
+            blocks.append("⚠️ 无法自动生成唯一命令（同名条目过多）。请到看板"
+                          "「strm 疑似异常」标签内处理，或 /rsync_strm list 后手动指定。")
+            continue
+        blocks.append(f"• 补生成后仍无 strm 的：{key}")
+        blocks.append("② 删旧重传（⚠️ 会先删云端旧文件）：")
+        blocks.append("```")
+        blocks.append(f"/rsync_strm retry {target}")
+        blocks.append("```")
+        blocks.append("③ 确认是误报（这个文件本就不该有 strm），不再提醒：")
+        blocks.append("```")
+        blocks.append(f"/rsync_strm ignore {target}")
+        blocks.append("```")
+    if hidden > 0:
+        blocks.append("")
+        blocks.append(f"…另有 {hidden} 条未附命令（消息长度所限）。用 "
+                      f"`/rsync_strm list` 查看清单后照上面的形式自行指定即可。")
+    return "\n".join(blocks).rstrip()
+
+
 def expected_path(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
     """
     由队列 key 推导「应当生成」的 .strm 绝对路径；该映射未配 strm_dir 时返回 None。
