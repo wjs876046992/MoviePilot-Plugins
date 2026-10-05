@@ -1632,7 +1632,7 @@ class StrmOpsMixin:
                          "unmatched_count": len(unmatched)}}
 
     def _api_strm_retry(self, body: Dict[str, Any],
-                        channel_event: Optional[Event] = None) -> Dict[str, Any]:
+                        channel_event: Any = None) -> Dict[str, Any]:
         """
         确认后对疑似异常执行「删旧重传」（复用 v0.1.4 的删旧通道）。
 
@@ -1643,6 +1643,20 @@ class StrmOpsMixin:
         判据只有一条：**待处理清单里没有对应 strm**。挂载视图不参与判断 ——
         它对 CD2 改名失败这个主成因给出的结论恰好是错的（详见下方说明）。
         The only criterion is the missing strm; the mount view is never consulted.
+
+        ⚠️ `channel_event` 的类型标注必须是 `Any`，**不能**写 `Optional[Event]`。
+        本方法同时被注册成 FastAPI 端点（`/strm_retry`），而宿主会用**签名**去
+        构造响应的 Pydantic 模型 —— `Event` 不是合法的 Pydantic 字段类型，
+        于是该路由**注册失败**：
+
+            Error adding plugin route /api/v1/plugin/Rsync115Sync/strm_retry:
+            Invalid args for response field! ... app.runtime.events.Event | None
+
+        现象是**看板上的「删旧重传」整个消失**（路由没建），而插件日志里
+        只有宿主 routes.py 的一行 ERROR，很容易被当成无关噪音。
+        实测踩过：加了这个参数之后该错误刷了 10 条。
+        Keep this annotation host-agnostic — the host derives the FastAPI response
+        model from the signature, and `Event` is not a valid Pydantic field type.
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
