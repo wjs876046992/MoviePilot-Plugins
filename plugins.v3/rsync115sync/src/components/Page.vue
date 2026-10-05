@@ -74,7 +74,7 @@
           <v-col cols="12" sm="4" class="pa-1">
             <div class="stat-card stat-error radius-lg pa-3 text-center">
               <div class="text-h5 font-weight-black text-error">
-                {{ (statusData.last_status?.missing_files?.length || 0) + (statusData.last_status?.corrupt_files?.length || 0) }}
+                {{ brokenCount }}
               </div>
               <div class="text-caption text-medium-emphasis mt-1">待重试缺失/残缺文件</div>
             </div>
@@ -99,7 +99,7 @@
           </v-col>
           <v-col cols="6" sm="3" class="pa-1">
             <div class="stat-card stat-warning radius-lg pa-2 text-center">
-              <div class="text-subtitle-1 font-weight-black text-warning">{{ statusData.strm_watching || 0 }}</div>
+              <div class="text-subtitle-1 font-weight-black text-warning">{{ watchingCount }}</div>
               <div class="text-caption text-medium-emphasis">strm 观察中</div>
             </div>
           </v-col>
@@ -176,7 +176,7 @@
 
         <!-- 补传 / 限流 / 源端扫描提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || statusData.strm_watching || sourceScanProblem"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || watchingCount || sourceScanProblem"
           :type="isThrottled || sourceScanProblem ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
@@ -203,8 +203,8 @@
             新入库的文件不会被发现。请检查「源端扫描入库」开关是否开启、映射源目录是否可读，
             或查看日志中最近一条「源端扫描」记录。
           </div>
-          <div v-if="statusData.strm_watching">
-            📺 strm 交叉验证进行中：<strong>{{ statusData.strm_watching }}</strong> 个文件处于观察期，
+          <div v-if="watchingCount">
+            📺 strm 交叉验证进行中：<strong>{{ watchingCount }}</strong> 个文件处于观察期，
             {{ statusData.strm_grace_minutes }} 分钟内未生成对应 .strm 才会被标记为「疑似上传异常」，
             属正常等待，无需处理。
           </div>
@@ -279,7 +279,7 @@
                 <v-icon start size="16">mdi-play</v-icon>
                 同步已就绪媒体
               </v-btn>
-              <v-btn color="warning" variant="tonal" size="small" radius-sm @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || (!statusData.last_status?.missing_files?.length && !statusData.last_status?.corrupt_files?.length)">
+              <v-btn color="warning" variant="tonal" size="small" radius-sm @click="triggerRetry" :loading="retrying" :disabled="statusData.is_running || !failedCount">
                 <v-icon start size="16">mdi-refresh</v-icon>
                 定向重试失败文件
               </v-btn>
@@ -343,7 +343,7 @@
                 radius-sm
                 :loading="batchSyncing"
                 :disabled="!selectedKeys.length || statusData.is_running"
-                @click="ignoreStrmSuspects(selectedKeys.filter((k) => k in (statusData.strm_suspects || {})))"
+                @click="ignoreStrmSuspects(selectedKeys.filter((k) => strmSuspectKeys.includes(k)))"
               >
                 <v-icon start size="16">mdi-eye-off-outline</v-icon>
                 忽略选中 ({{ strmSelectedCount }})
@@ -1188,13 +1188,38 @@ const progressStaleText = computed(() => {
   return `⚠️ 已 ${formatDuration(p.stale_seconds)} 没有收到 rsync 输出`
 })
 
-const failedCount = computed(() =>
-  (statusData.value.last_status?.missing_files?.length || 0) +
-  (statusData.value.last_status?.corrupt_files?.length || 0)
-)
+// 计数一律读 `/items` 的 states —— 与列表**同源**。
+// 此前计数走 `/status`、列表走 `/queue`，两条路各算各的，一旦判据漂移
+// 就会出现「角标写 3、列表里 2 条」这种自相矛盾的界面。
+const brokenCount = computed(() => itemsData.value.states.broken || 0)
+// ================= 统一条目列表（看板的唯一取数） =================
+//
+// 存储层早就统一了（`files` 表 + `status`），界面此前却按"五个清单"分别取数，
+// 于是同一份数据被切成五块、各有各的判据。`/items` 把它透成一个列表 +
+// `state` 字段，下面这些 computed 全部由它派生 —— **不再有第二个取数来源**。
+//
+// ⚠️ 保留 `queueList` / `failedEntries` 等既有名字：模板与操作函数用了一百多处，
+// 改名会让 diff 淹没真实改动。改的是**它们的来源**，不是名字。
+//
+// ⚠️ 必须声明在**所有读取它的 computed 之前**：`<script setup>` 里 const 有
+// 暂时性死区，后面的 computed 在 setup 阶段求值时读到未初始化的绑定会直接抛错
+// （表现为整个看板白屏，而不是某个数字不对）。
+const itemsData = ref({ items: [], states: {} })
+
+/** 按 state 取条目 —— 唯一的筛选方式。 */
+function itemsByState(...states) {
+  return itemsData.value.items.filter((it) => states.includes(it.state))
+}
+
+const failedCount = computed(() => brokenCount.value)
 
 // strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
-const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspects || {}).length)
+const strmSuspectCount = computed(() => itemsData.value.states.suspect || 0)
+
+// 观察期计数：同样读统一列表的 states，与 strmWatchingEntries 同源。
+// 此前读 /status 的 `strm_watching`，而明细走 /status 的另一个字段 ——
+// 计数与明细是两条取数路径，一旦漂移就会出现「说 3 个在观察、只列出 2 个」。
+const watchingCount = computed(() => itemsData.value.states.watching || 0)
 
 // 观察期条目明细：显示在疑似清单上方，带「观察中」tag、不可操作。
 // 宽限期从同步成功时刻起算，这里换算出剩余时间让用户对「还要等多久」有预期；
@@ -1207,14 +1232,18 @@ const strmSuspectCount = computed(() => Object.keys(statusData.value.strm_suspec
 // 5 小时、下一轮巡检却已判到期转疑似」—— 两边各自都自洽，用户完全无从判断
 // 该信谁，而这正是双钟问题最难排查的地方。
 const strmWatchingEntries = computed(() => {
-  const detail = statusData.value.strm_watch_detail || {}
-  const clocks = statusData.value.strm_watch_clocks || {}
+  // ⚠️ 来源改为统一列表（`state === 'watching'`），不再读 /status 的
+  // `strm_watch_detail` + 另一个 `strm_watch_clocks` 拼装 —— 那是同一件事的
+  // 第二份真相，两份对不上时看板会自己跟自己矛盾。
+  const watching = itemsByState('watching')
   const graceSync = (Number(statusData.value.strm_grace_minutes) || 5) * 60
   const graceGen = (Number(statusData.value.strm_regrace_hours) || 1) * 3600
   const now = Date.now() / 1000
-  return Object.entries(detail)
-    .map(([key, syncedTs]) => {
-      const clock = clocks[key] === 'gen' ? 'gen' : 'sync'
+  return watching
+    .map((it) => {
+      const key = it.key
+      const syncedTs = it.since
+      const clock = it.clock === 'gen' ? 'gen' : 'sync'
       const grace = clock === 'gen' ? graceGen : graceSync
       const remainingSec = Math.max(0, grace - (now - Number(syncedTs)))
       const remainingMin = Math.ceil(remainingSec / 60)
@@ -1235,7 +1264,7 @@ const strmWatchingEntries = computed(() => {
 // 「开关开启」近似判定 —— 没配 strm_dir 时扫描会返回明确的失败提示，
 // 比整个区块都不显示更容易让用户明白该怎么配置。
 const strmConfigured = computed(() => statusData.value.strm_check_enabled !== false)
-const strmSuspectKeys = computed(() => Object.keys(statusData.value.strm_suspects || {}))
+const strmSuspectKeys = computed(() => itemsByState('suspect').map((it) => it.key))
 
 // strm 助手是否就绪（运行中 + 至少一个映射配了网盘目录）。
 // 不可用时按钮置灰**并在区块内常驻说明原因** —— tooltip 在 disabled 元素上
@@ -1251,14 +1280,22 @@ const helperReason = computed(
 // 本插件收不到 —— 那种情况下 strm 不会出现，但云端文件是完好的。
 // 把「命令已发出」当成「生成已失败」，会诱导用户去删掉一个好文件。
 // 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
-const genRequested = computed(() => statusData.value.strm_gen_requested || {})
+// ⚠️ 来源改为统一列表的 suspect 条目（`gen_requested` 字段）。
+// 原先是 /status 的 `strm_gen_requested`，与列表各算各的 —— 同一件事两份真相。
+const genRequested = computed(() => {
+  const out = {}
+  for (const it of itemsByState('suspect')) {
+    if (it.gen_requested && it.since) out[it.key] = it.since
+  }
+  return out
+})
 
 // 选中项中有多少属于 strm 疑似清单。
 // 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，
 // 因此批量按钮必须按选中项的成分决定走哪条通道，不能只看当前在哪个标签页
 // （勾选状态是跨分组保留的，用户可以在对账清单里勾选、再翻到别的分组）。
 const strmSelectedCount = computed(
-  () => selectedKeys.value.filter((k) => k in (statusData.value.strm_suspects || {})).length
+  () => selectedKeys.value.filter((k) => strmSuspectKeys.value.includes(k)).length
 )
 const selectedStrmOnly = computed(
   () => selectedKeys.value.length > 0 && strmSelectedCount.value === selectedKeys.value.length
@@ -1272,7 +1309,11 @@ const blockedMinutes = computed(() =>
   Math.max(1, Math.ceil(((statusData.value.upload_blocked_until || 0) * 1000 - Date.now()) / 60000))
 )
 
-const queueList = ref([])
+// 冷却队列标签 = 统一列表里 state ∈ {cooling, ready} 的那些。
+// ⚠️ 它此前是 `/queue` 返回的独立数组；现在由统一列表派生，
+// 因此**不再有第二个取数来源**（角标与列表也不可能再对不上）。
+const queueList = computed(() => itemsByState('cooling', 'ready'))
+
 let timer = null
 
 // ---- 分页工具 ----
@@ -1290,13 +1331,19 @@ function paginate(list, pageRef) {
   return { total, pages, page, pageRef, slice: list.slice(start, start + PAGE_SIZE) }
 }
 
-// 对账异常标签的两类清单合成一个列表，才能让「每页 15 条」覆盖整体。
-// missing/corrupt 用 kind 区分，渲染时按 kind 决定配色与按钮文案。
-// Merge missing + corrupt into one list so the page size applies to the whole tab.
-const failedEntries = computed(() => [
-  ...(statusData.value.last_status?.missing_files || []).map((file) => ({ file, kind: 'missing' })),
-  ...(statusData.value.last_status?.corrupt_files || []).map((file) => ({ file, kind: 'corrupt' })),
-])
+// 对账异常标签：**由统一列表派生**（state = broken）。
+//
+// ⚠️ 这里此前从 `last_status.missing_files` / `corrupt_files` 两个平行数组拼装 ——
+// 那两个数组是"某个文件的状态"的**第二份真相**，与台账可能不一致。现在
+// reason 由后端在 `/items` 里给出（`detail`），前端不再自己判断属于哪一类。
+const failedEntries = computed(() =>
+  itemsByState('broken').map((it) => ({
+    file: it.key,
+    // detail 是后端给的中文类别（缺失/残缺）；缺省时按 missing 渲染，
+    // 保证旧后端（没有 detail 字段）也能显示而不是空白。
+    kind: it.detail === '残缺' ? 'corrupt' : 'missing',
+  }))
+)
 
 const queuePaged = computed(() => paginate(queueList.value, pageQueue))
 const failedPaged = computed(() => paginate(failedEntries.value, pageFailed))
@@ -1578,8 +1625,8 @@ async function batchSyncSelected() {
   try {
     // 路由分流：strm 疑似项走后端 /strm_retry（含删旧护栏），其余走 /sync_item。
     // 后端 /strm_retry 会对不在疑似清单内的 key 二次校验并忽略，这里有前端分流兜底。
-    const strmKeys = keys.filter((k) => k in (statusData.value.strm_suspects || {}))
-    const plainKeys = keys.filter((k) => !(k in (statusData.value.strm_suspects || {})))
+    const strmKeys = keys.filter((k) => strmSuspectKeys.value.includes(k))
+    const plainKeys = keys.filter((k) => !strmSuspectKeys.value.includes(k))
 
     const messages = []
     if (strmKeys.length) {
@@ -1810,24 +1857,26 @@ async function fetchStatus() {
     if (res && res.success && res.data) {
       statusData.value = res.data
     }
-    const qRes = await props.api.get('plugin/Rsync115Sync/queue')
-    if (qRes && qRes.success && qRes.data) {
-      queueList.value = qRes.data
+    // 统一条目列表（一行一个文件 + state）：看板**唯一**的数据源。
+    // 存储层早就统一了（files 表 + status），此前界面却按"五个清单"分别取数，
+    // 于是同一份数据被切成五块、各有各的判据。这里改为一处取、按 state 分。
+    // ⚠️ `/status` 仍然要取：它带的是**计数与运行态**（限流窗口、扫描健康度、
+    // 补传进度、webhook 统计），那些不是"某个文件的状态"，不属于台账。
+    const itRes = await props.api.get('plugin/Rsync115Sync/items')
+    if (itRes && itRes.success && itRes.data) {
+      itemsData.value = itRes.data
     }
     const iRes = await props.api.get('plugin/Rsync115Sync/ignored')
     if (iRes && iRes.success && iRes.data) {
       ignoredList.value = iRes.data
     }
     // 清理已不存在条目的勾选状态，避免提交到已消失的文件。
-    // strm 疑似清单也纳入存活集合：它同样是可勾选来源，漏掉会让用户
-    // 勾选后一刷新（30 秒轮询）就被静默清除
+    // ⚠️ 存活集合现在直接来自统一列表：以前这里手工拼了四份来源
+    // （冷却队列 + 两个对账数组 + strm 疑似），任何一处漏加都会让用户
+    // 勾选后一刷新（30 秒轮询）就被静默清除 —— 这正是"五套取数"的代价。
+    // `/items` 已经把全部可勾选条目装在一个列表里，拼不拼得全不再是问题。
     if (selectedKeys.value.length) {
-      const alive = new Set([
-        ...queueList.value.map((it) => it.key),
-        ...(statusData.value.last_status?.missing_files || []),
-        ...(statusData.value.last_status?.corrupt_files || []),
-        ...Object.keys(statusData.value.strm_suspects || {}),
-      ])
+      const alive = new Set(itemsData.value.items.map((it) => it.key))
       selectedKeys.value = selectedKeys.value.filter((k) => alive.has(k))
     }
   } catch (e) {

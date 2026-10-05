@@ -2679,12 +2679,20 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             elapsed = now_ts - float(basis)
             state = "ready" if elapsed >= threshold else "cooling"
             extra["remaining_seconds"] = int(max(0, threshold - elapsed))
+            # `is_ready` 与 state 冗余，但保留：它是旧 `/queue` 的字段名，
+            # 看板与外部调用都在读。同一个事实给两个名字是不理想的，
+            # 但改名的收益远小于"让所有读者同步改一遍"的风险 —— 记在 TODO 里。
+            extra["is_ready"] = state == "ready"
         elif status == _store_mod.STATUS_PENDING_VERIFY:
             # 台账 status 是 `pending_verify`，但那是**实现语言**（"待验证"）；
             # 用户看到的是"刚传完，在等 strm 出来"，因此对外统一叫 `watching`。
             # 状态名不统一正是"五个清单"那套留下的毛病，这里不再重复。
             state = "watching"
             extra["since"] = r.get("enqueued_at")
+            # 计时基准：'sync'（宽限期，从同步成功起算）或 'gen'（补生成窗口，
+            # 从请求时刻起算）。看板必须用**同一把尺子**算剩余时间，否则会出现
+            # 「看板说还剩 5 小时、巡检已判到期转疑似」的双钟问题。
+            extra["clock"] = ("gen" if r.get("gen_requested_at") else "sync")
         elif status == _store_mod.STATUS_SUSPECT:
             extra["origin"] = r.get("origin") or ""
             # 补生成标记与 status 正交（列视图），但界面上要显示"已经请过助手"
