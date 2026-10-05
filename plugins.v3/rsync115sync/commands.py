@@ -239,6 +239,39 @@ class CommandsMixin:
                 return raw[len(pref):].strip()
         return raw
 
+    def _example_cmd_target(self, shown: List[Dict[str, Any]],
+                            all_cooling: List[Dict[str, Any]]) -> str:
+        """
+        为示例命令挑一个**真的能用**的片段。
+
+        Pick a fragment for the example command that actually resolves.
+
+        ## 为什么不能张嘴就取第一条的文件名
+
+        实测撞到过：冷却队列里同时有 `S01/E01.mkv` 与 `S02/E01.mkv` 时，
+        示例给出 `E01.mkv` —— 用户照着敲，`_resolve_pending_target` 命中 2 条
+        并拒绝。**一个照抄就会被拒的示例比没有示例更糟**：它让人以为功能坏了。
+
+        因此按唯一性挑：优先找文件名在本队列里唯一的条目，给出它的文件名；
+        全都重名则退到"末两级目录"（`S01/E01.mkv`），那通常已经能区分。
+        实在挑不出来就**不给示例**，只留一行说明 —— 与 `strm.brief_target_of`
+        同一条原则：宁可让人自己看清单，也不要给一个会指错/被拒的目标。
+        """
+        by_name: Dict[str, int] = {}
+        for item in all_cooling:
+            name = self._brief_cmd_hint(item["key"]).lower()
+            by_name[name] = by_name.get(name, 0) + 1
+        for item in shown:
+            hint = self._brief_cmd_hint(item["key"])
+            if by_name.get(hint.lower(), 0) == 1:
+                return hint
+        # 文件名全重名 → 用末两级（目录/文件名），它通常带上季或剧名
+        for item in shown:
+            parts = [p for p in item["key"].split("/") if p]
+            if len(parts) >= 2:
+                return "/".join(parts[-2:])
+        return "（请照上面某一行自行截取片段，确保只命中一条）"
+
     @staticmethod
     def _brief_cmd_hint(key: str) -> str:
         """
@@ -829,7 +862,7 @@ class CommandsMixin:
                 if len(cooling_items) > len(shown):
                     reply += f"… 其余 {len(cooling_items) - len(shown)} 个未列出\n"
                 reply += (f"⚡ 提前上传：/rsync_sync <上面某一行的片段>\n"
-                          f"   例：/rsync_sync {self._brief_cmd_hint(shown[0]['key'])}\n"
+                          f"   例：/rsync_sync {self._example_cmd_target(shown, cooling_items)}\n"
                           f"   （冷却的现职是等文件写完 / 等外挂字幕到齐；确认它已安顿好再用。）\n")
             # 源端扫描（主通道）健康度：游标落后 = 新文件不会被发现。
             # 这与「队列里有多少」是两件事，必须分别报告 —— 队列空可能是
