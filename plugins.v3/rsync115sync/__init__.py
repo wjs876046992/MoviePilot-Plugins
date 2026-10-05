@@ -2680,6 +2680,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             state = "ready" if elapsed >= threshold else "cooling"
             extra["remaining_seconds"] = int(max(0, threshold - elapsed))
         elif status == _store_mod.STATUS_PENDING_VERIFY:
+            # 台账 status 是 `pending_verify`，但那是**实现语言**（"待验证"）；
+            # 用户看到的是"刚传完，在等 strm 出来"，因此对外统一叫 `watching`。
+            # 状态名不统一正是"五个清单"那套留下的毛病，这里不再重复。
+            state = "watching"
             extra["since"] = r.get("enqueued_at")
         elif status == _store_mod.STATUS_SUSPECT:
             extra["origin"] = r.get("origin") or ""
