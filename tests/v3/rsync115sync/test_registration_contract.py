@@ -73,6 +73,15 @@ def _class_node(tree: ast.Module) -> ast.ClassDef:
     return next(n for n in tree.body if isinstance(n, ast.ClassDef))
 
 
+def _all_sources() -> list:
+    """插件包内全部 .py 的**相对文件名**（用于逐文件检查）。"""
+    return [f.name for f in sorted(PLUGIN_DIR.glob("*.py"))]
+
+
+def _source_of(name: str) -> str:
+    return (PLUGIN_DIR / name).read_text(encoding="utf-8")
+
+
 def _method(node: ast.ClassDef, name: str) -> ast.FunctionDef:
     for m in node.body:
         if isinstance(m, ast.FunctionDef) and m.name == name:
@@ -192,23 +201,81 @@ def test_source_scan_service_is_registered():
 # 命令订阅
 # --------------------------------------------------------------------------
 
-def test_handle_command_is_registered_for_plugin_action():
-    """聊天指令入口同样依赖装饰器；删掉会让所有 /rsync_* 指令静默失效。"""
-    # 方法可能位于 Mixin 兄弟模块（阶段 2 拆分），跨包内全部 .py 查找
-    pkg = _package_source()
-    pkg_tree = ast.parse(pkg)
-    for node in ast.walk(pkg_tree):
-        if isinstance(node, ast.ClassDef):
-            try:
-                func = _method(node, "handle_command")
-            except AssertionError:
+def test_plugin_action_handler_lives_on_the_plugin_class():
+    """
+    PluginAction 处理器必须定义在**组合根类**（`__init__.py` 的 `Rsync115Sync`）里。
+
+    ## 为什么这条断言长成这样（真实缺陷，2026-09-28 定位）
+
+    宿主解析事件处理器实例的方式是「按**声明类的类名**查插件」：
+
+        # app/runtime/extensions/plugin/manager.py
+        def resolve_event_handler_instance(self, owner_class):
+            plugin_id = owner_class.__name__          # ← 类名字符串
+            if self._plugins.get(plugin_id) is not owner_class:
+                return None                            # ← 查不到就放弃
+            return EventHandlerBinding(instance=self._running_plugins.get(plugin_id), ...)
+
+    于是处理器定义在 Mixin 里时：
+
+        owner_class.__name__ == "CommandsMixin"   ≠   "Rsync115Sync"
+        → resolve 返回 None → invoke_sync 首行 `if not resolved: return`
+        → **处理器被静默跳过**：没有异常、没有日志；
+          而宿主照样打印「开始执行…执行完成」（那是它自己打的，与插件无关）。
+
+    用户实测现象：「发 `/rsync_status`，日志说执行完成，但一条回复都没有」，
+    且**全部** /rsync_* 指令一起失效。
+
+    ⚠️ 本用例**曾经写反**：它当时跨全部 .py 查找 `handle_command`，
+    注释还写着「方法可能位于 Mixin 兄弟模块」—— 等于把缺陷当契约钉住了，
+    所以拆分之后一路绿灯、命令全死。现在它钉的是宿主真正的要求：
+    装饰器必须与 `__init__.py` 里的插件类**在同一个类体内**。
+    """
+    init_src = _source_of("__init__.py")
+    tree = ast.parse(init_src)
+
+    plugin_classes = [
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.bases
+    ]
+    assert plugin_classes, "__init__.py 里找不到插件类"
+    # 组合根类 = __init__.py 里的那个插件类（本项目只有它继承 _PluginBase）
+    owner = plugin_classes[-1]
+
+    func = _method(owner, "handle_command")   # 找不到会 AssertionError
+    decorators = _decorator_source(func)
+    assert any("eventmanager.register" in d for d in decorators), (
+        f"组合根类 {owner.name} 的 handle_command 缺少事件注册装饰器，"
+        f"所有 /rsync_* 指令将无响应：{decorators}"
+    )
+
+
+def test_handler_is_not_declared_in_a_mixin():
+    """
+    反向断言：**任何 Mixin 里都不许**出现带 `PluginAction` 注册装饰器的方法。
+
+    这条是上一条的护栏。上一条只保证「组合根类里有」，
+    这一条保证「别处不再有一份会把人带偏的」—— 两份处理器时，
+    混在 Mixin 里的那份永远解析不到实例，却会在读代码时看起来是入口。
+    """
+    for path in _all_sources():
+        if path.endswith("__init__.py"):
+            continue
+        tree = ast.parse(_source_of(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
                 continue
-            decorators = _decorator_source(func)
-            assert any("eventmanager.register" in d for d in decorators), (
-                f"handle_command 缺少事件注册装饰器，所有 /rsync_* 指令将无响应：{decorators}"
-            )
-            return
-    raise AssertionError("handle_command 在插件包内未找到")
+            for item in node.body:
+                if not isinstance(item, ast.FunctionDef):
+                    continue
+                decos = _decorator_source(item)
+                if not any("eventmanager.register" in d for d in decos):
+                    continue
+                assert "PluginAction" not in "".join(decos), (
+                    f"{path} 的 {node.name}.{item.name} 注册了 PluginAction —— "
+                    f"宿主按 owner_class.__name__ 查插件实例，Mixin 类名查不到，"
+                    f"该处理器会被静默跳过。请搬到 __init__.py 的组合根类里。"
+                )
 
 
 # --------------------------------------------------------------------------
@@ -465,3 +532,72 @@ def test_combined_class_exposes_mixin_methods():
     mro_names = {c.__name__ for c in cls.__mro__}
     for mixin in ("StrmOpsMixin", "SyncOpsMixin", "CommandsMixin"):
         assert mixin in mro_names, f"{mixin} 未参与组合"
+
+
+# --------------------------------------------------------------------------
+# ⚠️ 事件处理器的**声明类**必须能被宿主解析到插件实例
+# --------------------------------------------------------------------------
+#
+# 本节钉的是本插件最隐蔽的一次事故（2026-09-28）：命令全部静默失效。
+# 上面 `test_plugin_action_handler_lives_on_the_plugin_class` 是静态版，
+# 这里是**运行时版** —— 直接问宿主的解析器「这个处理器属于哪个插件」。
+
+def test_plugin_action_resolves_to_a_real_plugin_instance():
+    """
+    用宿主的 `EventBindingResolver.owner_class` 反查声明类，必须是本插件类。
+
+    ## 判据为什么是「owner_class.__name__ 等于插件名」
+
+    宿主的解析链是：
+
+        _resolve_plugin_handler_instance(owner_class)
+            → plugin_id = owner_class.__name__
+            → self._plugins.get(plugin_id)      # 查不到 → None → 静默跳过
+
+    `_plugins` 的键是**插件 ID**（= 插件类名 `Rsync115Sync`）。所以只要
+    `owner_class.__name__` 不是 `Rsync115Sync`，这个处理器就永远不会被调用 ——
+    而宿主不会报错、不会告警，只在内部 `return`。
+
+    ⚠️ 这条断言必须走**宿主的真实解析器**，不能自己 `isinstance` 判断：
+    后者会漏掉「宿主按类名字符串查表」这个关键机制，而它正是缺陷的根源。
+    """
+    try:
+        module = importlib.import_module("app.plugins.rsync115sync")
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"无法导入生产命名空间（{exc.__class__.__name__}）")
+    try:
+        from app.runtime.event.binding import EventBindingResolver
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"宿主未提供 EventBindingResolver（{exc.__class__.__name__}）")
+
+    cls = module.Rsync115Sync
+    handler = getattr(cls, "handle_command", None)
+    assert handler is not None, "组合后的类上没有 handle_command，命令入口不存在"
+
+    owner = EventBindingResolver.owner_class(handler)
+    assert owner is not None, "宿主解析不出 handle_command 的声明类"
+    assert owner.__name__ == cls.__name__, (
+        f"handle_command 声明在 {owner.__name__} 上，而宿主按 owner_class.__name__ "
+        f"（'{owner.__name__}'）去插件表里查实例，只能查到 '{cls.__name__}' —— "
+        f"查不到就**静默跳过**该处理器：所有 /rsync_* 指令无响应，且无任何日志。"
+        f"请把 @eventmanager.register(PluginAction) 定义在 {cls.__name__} 类体里。"
+    )
+
+
+def test_webhook_handler_resolves_to_a_real_plugin_instance():
+    """同一条机制，webhook 入口也钉一遍（它是入库的第二条通道）。"""
+    try:
+        module = importlib.import_module("app.plugins.rsync115sync")
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"无法导入生产命名空间（{exc.__class__.__name__}）")
+    try:
+        from app.runtime.event.binding import EventBindingResolver
+    except Exception as exc:  # pragma: no cover
+        pytest.skip(f"宿主未提供 EventBindingResolver（{exc.__class__.__name__}）")
+
+    cls = module.Rsync115Sync
+    owner = EventBindingResolver.owner_class(cls.on_webhook_message)
+    assert owner is not None and owner.__name__ == cls.__name__, (
+        f"on_webhook_message 的声明类是 {getattr(owner, '__name__', None)}，"
+        f"宿主解析不到插件实例，webhook 入库会静默失效"
+    )

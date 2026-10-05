@@ -309,7 +309,7 @@ def test_dashboard_and_command_share_the_same_check_implementation(tmp_path):
     后者额外做了疑似清理。这条断言把命令侧的调用钉在端点上。
     """
     import app.plugins.rsync115sync as pkg
-    src = inspect.getsource(pkg.commands.CommandsMixin.handle_command)
+    src = inspect.getsource(pkg.commands.CommandsMixin._dispatch_command)
     seg = src[src.index('if arg_lower in ("check", "检查"'):]
     seg = seg[:seg.index("return")]
     assert "_api_strm_check" in seg, (

@@ -751,6 +751,54 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     #   · WebhookMessage **不在** _SNAPSHOT_EVENTS 内（只登记了 payload 模型）→
     #     快照拿不到 payload，必须直接读 event_data 的属性（repo 内 watchsync 同写法）
     # 这条差异是实测源码结论（app/runtime/event/contracts.py），不是推测。
+    # ================= 注册事件处理器（必须在**本类体内**，理由见下） =================
+    #
+    # ⚠️ 这两个方法**必须**定义在 `Rsync115Sync` 自己的类体里，**不能**挪进
+    # `CommandsMixin` / 任何 Mixin —— 挪进去会让整个功能静默死亡。
+    #
+    # ## 为什么（实测结论，2026-09-28）
+    #
+    # 宿主解析事件处理器实例的方式是「按**声明类的类名**查插件」：
+    #
+    #     # app/runtime/extensions/plugin/manager.py
+    #     def resolve_event_handler_instance(self, owner_class):
+    #         plugin_id = owner_class.__name__          # ← 用类名字符串
+    #         if self._plugins.get(plugin_id) is not owner_class:
+    #             return None                            # ← 查不到就放弃投递
+    #         plugin = self._running_plugins.get(plugin_id)
+    #
+    # 而 `handle_command` 曾定义在 `commands.py` 的 `CommandsMixin` 里，于是
+    #
+    #     owner_class.__name__ == "CommandsMixin"   ≠   "Rsync115Sync"
+    #     → resolve 返回 None → invoke_sync 第一行 `if not resolved: return`
+    #     → **处理器被静默跳过**：没有异常、没有日志、宿主照样打印
+    #       「开始执行…执行完成」（那是它自己的，与插件无关）。
+    #
+    # 现象就是用户实测的：「发 /rsync_status，日志显示执行完成，但没有任何回复」。
+    # 更糟的是**全部** /rsync_* 指令一起失效（它们都由这个方法分发）。
+    #
+    # 对照：`on_webhook_message` 一直定义在本类里，所以它的 owner_class 是
+    # `Rsync115Sync`，解析正常 —— 这也解释了为什么 webhook 入库一直好用、
+    # 而命令一直没反应却看不出原因。
+    #
+    # 仓内其它 V3 插件（bangumicoll / neodbsync / tvfirstwatch / doubansync）
+    # 的 PluginAction 处理器**也都定义在各自 `__init__.py` 的插件类里**，
+    # 这是宿主的硬性约定，不是风格偏好。
+    # The host resolves a handler's plugin instance by `owner_class.__name__`, so a
+    # handler declared in a mixin resolves to nothing and is dropped silently.
+    # Every other V3 plugin in this repo declares its PluginAction handler on the
+    # plugin class itself. Do not move these into a mixin.
+    @eventmanager.register(EventType.PluginAction)
+    def handle_command(self, event: Event):
+        """
+        /rsync_* 远程指令的统一入口（实现见 `CommandsMixin._dispatch_command`）。
+
+        Entry point for every /rsync_* command; the implementation lives in
+        `CommandsMixin._dispatch_command`. This wrapper exists **only** to give the
+        handler the right owner class — see the block comment above.
+        """
+        return self._dispatch_command(event)
+
     @eventmanager.register(EventType.WebhookMessage)
     def on_webhook_message(self, event: Event):
         """

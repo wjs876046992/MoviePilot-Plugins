@@ -441,13 +441,21 @@ class CommandsMixin:
 
     # ================= 交互命令分发 (带关键字查找与确认重试) =================
 
-    @eventmanager.register(EventType.PluginAction)
-    def handle_command(self, event: Event):
+    def _dispatch_command(self, event: Event):
         """
-        处理 /rsync_* 远程指令的统一入口。
+        处理 /rsync_* 远程指令的**实现**。
 
-        Single entry point for all /rsync_* remote commands. The action comes from
-        the command data registered in get_command().
+        Implementation of the /rsync_* command dispatcher. The action comes from
+        the command data registered in `get_command()`.
+
+        ⚠️ **不要把 `@eventmanager.register(EventType.PluginAction)` 加回本方法，
+        也不要把它改名回 `handle_command`。** 事件处理器必须定义在插件的
+        **组合根类**（`__init__.py` 的 `Rsync115Sync`）里 —— 宿主按
+        `owner_class.__name__` 查插件实例，而本类叫 `CommandsMixin`，
+        查不到任何插件，解析失败后宿主**静默跳过**该处理器：
+        没有异常、没有日志、命令一去不回（详见 `__init__.py` 里那段长注释）。
+        The registered handler is the thin wrapper on `Rsync115Sync`; this method is
+        only its implementation.
         """
         data = event.event_data or {}
         action = data.get("action")
