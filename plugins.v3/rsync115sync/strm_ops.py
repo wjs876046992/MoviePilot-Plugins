@@ -1032,14 +1032,14 @@ class StrmOpsMixin:
             # 命令侧传的是 watch 的全量 key（此时是"当前没有条目"）。
             # 单写前者会让 `/rsync_strm check` 在没有观察条目时回一句
             # 用户根本没选过什么的"所选文件"，莫名其妙。
-            msg = "当前没有处于观察期的条目（可能都已处理或解除）"
-            if cooling or resolved:
-                msg += (f"\n✅ 同步清理了疑似清单：{len(cooling)} 个其实仍在冷却队列（尚未上传）、"
-                        f"{len(resolved)} 个 strm 已生成，均已移出。")
-            # success 仍是 False：**请求的那些条目**一个都没查到（该入口的语义没变，
-            # 看板据此提示"可能已被处理"）。同步清理疑似清单是顺带动作，
-            # 写进 message 让用户知道，但不改变这次"检查"本身的结论。
-            return {"success": False, "message": msg,
+            #
+            # ⚠️ 清理结果**只放 data、不写进 message**：本函数负责"清"，调用方
+            # 负责"说"。写进来会与 `_api_strm_check` 的措辞叠加，同一条清理
+            # 在回执里出现两遍（实测过）。
+            # success 仍是 False：**请求的那些条目**一个都没查到（该入口的语义
+            # 没变，看板据此提示"可能已被处理"）。
+            return {"success": False,
+                    "message": "当前没有处于观察期的条目（可能都已处理或解除）",
                     "data": {"cooling_pruned": cooling, "resolved_suspects": resolved}}
 
         changed = False
