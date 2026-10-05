@@ -60,6 +60,40 @@ class SyncOpsMixin:
                 cooling_count += 1
         return ready_count, cooling_count, stale_count
 
+    def _pending_queue_entries(self, now_ts: float, threshold: float) -> List[Dict[str, Any]]:
+        """
+        列出**冷却中**的队列条目明细（按剩余时间从小到大），供 `/rsync_status` 展示。
+
+        List cool-down queue entries with their remaining wait, soonest first.
+
+        ## 为什么需要明细，不只是计数
+
+        `/rsync_status` 长期只报「冷却缓冲中: N 个」。用户看到这句话之后的下一个
+        动作常常是「那我能不能现在就把某个传了」—— 因为那个文件他刚亲手弄好
+        （跑完刮削、外挂字幕下齐），干等 4 小时毫无道理。只给计数，他就只能
+        自己回忆文件名、赌一个关键字；给出明细，他可以直接从消息里抄一段。
+
+        ⚠️ 判据必须与 `_count_queue` / `_execute_sync` **逐字相同**
+        （`now - 基准 >= 冷却时长` 即就绪），否则会出现「状态说冷却中 N 个、
+        明细列出 N+1 个」这类无从解释的分歧。这里反过来用同一个判据挑出**未就绪**
+        的那些。失效条目（源端已删）与 `_count_queue` 同口径排除。
+        """
+        items: List[Dict[str, Any]] = []
+        for key, basis_ts in self._pending_queue.items():
+            if not self._queue_key_exists(key):
+                continue
+            elapsed = now_ts - float(basis_ts)
+            if elapsed >= threshold:
+                continue                      # 已就绪，不属于"冷却中"
+            remaining = threshold - elapsed
+            # 向上取整到手（`math.ceil` 的等价写法，本模块不引入 math）：
+            # 「还需 0 分钟」会让人以为已经就绪，而它其实还在冷却里。
+            items.append({"key": key,
+                          "remaining_seconds": remaining,
+                          "remaining_min": max(1, int(remaining // 60) + (1 if remaining % 60 else 0))})
+        items.sort(key=lambda it: it["remaining_seconds"])
+        return items
+
     def _queue_key_exists(self, key: str) -> bool:
         """
         判断队列条目对应的源端文件是否仍然存在。

@@ -70,7 +70,7 @@ class CommandsMixin:
             {
                 "cmd": "/rsync_sync",
                 "event": EventType.PluginAction,
-                "desc": "同步已达冷却时间的入库媒体（冷却时长见配置页，默认 4h）",
+                "desc": "同步已达冷却时间的入库媒体；带文件名则不等冷却、立即定向同步该文件（例: /rsync_sync 繁花 S01E03）",
                 "category": "工具",
                 "data": {"action": "sync"}
             },
@@ -151,6 +151,7 @@ class CommandsMixin:
             f"\n"
             f"【触发同步】\n"
             f"/rsync_sync —— 同步已达冷却时间的入库媒体（冷却时长见配置页）\n"
+            f"/rsync_sync <文件名> —— ⚡ 不等冷却，立即上传该文件（会自动移出冷却队列）\n"
             f"/rsync_force —— 全量只读对账：逐文件比对源端与 CD2 挂载点的大小，\n"
             f"                仅对不一致的文件重传（⚠️ 它比的是挂载视图，不是云端）\n"
             f"                （不绕过冷却、共享限流配额、7 天冷却）\n"
@@ -237,6 +238,68 @@ class CommandsMixin:
             if low.startswith(pref.lower()):
                 return raw[len(pref):].strip()
         return raw
+
+    @staticmethod
+    def _brief_cmd_hint(key: str) -> str:
+        """
+        从队列 key 里取一段**够短又能搜到**的片段，供示例命令使用。
+
+        Short-but-findable fragment of a queue key, for the example command.
+
+        ⚠️ 与 `strm.brief_target_of` 的取向不同：那个是**有通知余量**的场景，
+        会为「唯一性」逐级退让（长一点也认）。这里是往一条本就拥挤的状态报告里
+        插示例，短是硬指标，因此只取**文件名部分**（去掉映射前缀与目录）。
+        代价是用户真抄下去时可能多命中几条 —— 那时 `_resolve_pending_target`
+        会列出候选让他写得更具体，而不是猜一个（不猜是刻意的，见其 docstring）。
+        """
+        body = key.rsplit("/", 1)[-1] if "/" in key else key
+        # 剥掉映射前缀（"电视剧:国产剧/…" → 若整条没有目录，前缀就还在开头）
+        if ":" in body:
+            body = body.split(":", 1)[1]
+        return body or key
+
+    def _resolve_pending_target(self, text: str) -> Tuple[str, str]:
+        """
+        把用户的指定（关键字）解析成**冷却队列**里的一个 key；返回 `(key, 错误)`。
+
+        Resolve a keyword to a single key in the cool-down queue.
+
+        ## 为什么只是关键字，不给序号
+
+        「疑似清单」有 `list` 子命令给出稳定序号，用户 `retry 2` 之前能先看一眼。
+        冷却队列**没有**这样一个入口，因此给序号等于让用户盲猜 —— 而这条路的
+        后果是**立刻把那个文件传上去**（绕过冷却）。猜错的对象会被提前上传，
+        虽不如删错文件严重，但同样不可预期。
+
+        关键字由用户看着手机上的通知/文件名直接写，唯一性在这里当场校验：
+        多命中就拒绝并列出候选，与 `_resolve_suspect_target` 同一条原则
+        （**不猜**）。冷却队列通常也就几个到几十个条目，这个代价可以接受。
+        """
+        text = (text or "").strip()
+        if not text:
+            return "", "未指定目标。例如：/rsync_sync 繁花 S01E03"
+        keys = list((getattr(self, "_pending_queue", None) or {}).keys())
+        if not keys:
+            return "", ("冷却队列是空的 —— 没有可提前上传的文件。\n"
+                        "用 /rsync_status 查看当前状态。")
+        kw = text.lower()
+        matched = [k for k in keys if kw in k.lower()]
+        if not matched:
+            # 命中的可能不是冷却队列里的：明确区分「没有这个文件」与
+            # 「有这个文件但没在冷却」—— 后者其实是好消息（已在传或已传完），
+            # 而一句笼统的"没找到"会让用户以为文件名写错了。
+            healed = self._search_target_files(text)["matched"]
+            if healed:
+                return "", (f"「{text}」不在冷却队列里（源端存在 {len(healed)} 个匹配）。\n"
+                            f"它可能已经在传、传过了，或压根没入库。\n"
+                            f"• 想确认状态 → /rsync_status\n"
+                            f"• 属实缺文件 → /rsync_retry {text}")
+            return "", f"冷却队列里没有匹配「{text}」的条目。\n用 /rsync_status 查看当前队列。"
+        if len(matched) > 1:
+            shown = "\n".join(f"• {k}" for k in matched[:_STRM_CMD_LIST_LIMIT])
+            return "", (f"「{text}」匹配到 {len(matched)} 条，请写得更具体：\n{shown}\n"
+                        f"（冷却队列没有稳定序号，因此只能按关键字指定）")
+        return matched[0], ""
 
     def _resolve_suspect_target(self, text: str) -> Tuple[List[str], str]:
         """
@@ -467,10 +530,26 @@ class CommandsMixin:
             self._start_sync_thread(mode="retry", custom_files=to_retry, channel_event=event)
 
         elif action == "sync":
+            # 带文件名 = 不等冷却、立即定向同步（看板「立即同步」按钮的命令版）。
+            #
+            # 为什么需要这条路：冷却期的现职是「等文件写完 / 等外挂字幕到齐」，
+            # 但用户常常**知道**那个文件已经安顿好了（刚跑完刮削、字幕已下齐），
+            # 此时干等 4 小时毫无道理。看板一直有这个按钮（`_api_sync_item`），
+            # 而命令侧此前没有 —— 用户在手机上收到通知却只能干等。
             if self._is_running:
                 self._post_reply(event, "⚠️ 当前同步任务正在运行中。")
-            else:
+                return
+            if not text_arg:
                 self._start_sync_thread(mode="ready", channel_event=event)
+                return
+
+            target, err = self._resolve_pending_target(text_arg)
+            if err:
+                self._post_reply(event, err)
+                return
+            res = self._api_sync_item({"keys": [target]})
+            head = "🚀 " if res.get("success") else "⚠️ "
+            self._post_reply(event, f"{head}{res.get('message', '操作失败')}\n\n目标：{target}")
 
         elif action == "force":
             if self._is_running:
@@ -737,6 +816,21 @@ class CommandsMixin:
             if stale_count:
                 reply += (f"🗑️ 源端已删除待清理: {stale_count} 个"
                           f"（文件已不在本地，将在下轮同步时移出队列，不计入上方计数）\n")
+            # 冷却明细：光给一个计数，用户没法"提前上传"那个他刚弄好的文件 ——
+            # 而这正是 `⚡ 立即同步` 要解决的场景。列表带关键字（不是序号：
+            # 冷却队列没有稳定序号，见 `_resolve_pending_target`），
+            # 用户从通知/文件名里直接抄一段就能用。
+            cooling_items = self._pending_queue_entries(now_ts, threshold)
+            if cooling_items:
+                shown = cooling_items[:_STRM_CMD_LIST_LIMIT]
+                reply += "--------------------------------\n🧊 冷却中（可不等冷却、立即上传）：\n"
+                for item in shown:
+                    reply += f"• {item['key']}（还需 {item['remaining_min']} 分钟）\n"
+                if len(cooling_items) > len(shown):
+                    reply += f"… 其余 {len(cooling_items) - len(shown)} 个未列出\n"
+                reply += (f"⚡ 提前上传：/rsync_sync <上面某一行的片段>\n"
+                          f"   例：/rsync_sync {self._brief_cmd_hint(shown[0]['key'])}\n"
+                          f"   （冷却的现职是等文件写完 / 等外挂字幕到齐；确认它已安顿好再用。）\n")
             # 源端扫描（主通道）健康度：游标落后 = 新文件不会被发现。
             # 这与「队列里有多少」是两件事，必须分别报告 —— 队列空可能是
             # 「没有新文件」，也可能是「扫描根本没在跑」，用户没法从计数区分。
