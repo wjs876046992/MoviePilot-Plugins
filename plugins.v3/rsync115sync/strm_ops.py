@@ -1009,12 +1009,38 @@ class StrmOpsMixin:
         would eventually disagree with it.
 
         纯本地文件检查，零 115 API，因此**不加执行锁**（不占配额、不与同步冲突）。
+
+        ⚠️ **出口时会同步一次疑似清单**（见方法末尾）：这个函数是"检查"这件事的
+        唯一实现，而"检查"的完整语义包含「把已经不自洽的疑似条目清出去」。
+        漏掉这一步的后果是：条目进了疑似清单就再也不会因为"其实还在冷却、
+        还没上传"而自动退场 —— 而通知正文里已经把 `/rsync_strm check` 写成了
+        第①步之后的标准动作（见 `strm.suspect_commands_text`），
+        用户照着敲却什么都没变，会以为命令没生效。
         """
         now_ts = time.time()
         grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
         targets = [k for k in (keys or []) if k in self._strm_watch]
         if not targets:
-            return {"success": False, "message": "所选文件已不在观察期（可能已被处理或解除）"}
+            # ⚠️ 即使没有观察期条目，也要同步疑似清单再返回。
+            # 命令侧的 `/rsync_strm check` 是**无参**的（传的是 watch 的全部 key），
+            # 一旦 watch 为空就走这条路 —— 而那时用户点 check 的动机常常正是
+            # 「疑似清单里有条不该在的」。在这里直接 return 会让"清疑似"这一步
+            # 在最需要它的场景下恰好被跳过。
+            cooling = self._prune_cooling_suspects()
+            resolved = self._prune_resolved_suspects() if self._strm_suspects else []
+            # ⚠️ 措辞对两个入口都得成立：看板传勾选的 key（"所选文件…"），
+            # 命令侧传的是 watch 的全量 key（此时是"当前没有条目"）。
+            # 单写前者会让 `/rsync_strm check` 在没有观察条目时回一句
+            # 用户根本没选过什么的"所选文件"，莫名其妙。
+            msg = "当前没有处于观察期的条目（可能都已处理或解除）"
+            if cooling or resolved:
+                msg += (f"\n✅ 同步清理了疑似清单：{len(cooling)} 个其实仍在冷却队列（尚未上传）、"
+                        f"{len(resolved)} 个 strm 已生成，均已移出。")
+            # success 仍是 False：**请求的那些条目**一个都没查到（该入口的语义没变，
+            # 看板据此提示"可能已被处理"）。同步清理疑似清单是顺带动作，
+            # 写进 message 让用户知道，但不改变这次"检查"本身的结论。
+            return {"success": False, "message": msg,
+                    "data": {"cooling_pruned": cooling, "resolved_suspects": resolved}}
 
         changed = False
         entered: List[str] = []          # 本次因到期而转入疑似的 key
@@ -1121,10 +1147,34 @@ class StrmOpsMixin:
             logger.info(f"[Rsync115Sync] 📺 手动检查观察期条目：{len(targets)} 个 → "
                         f"已生成 {len(settled)} / 转疑似 {len(suspects)} / "
                         f"清理 {len(gone) + len(no_dir)} / 仍等待 {len(still)}")
+
+        # ---- 顺手同步疑似清单：把「不自洽」的条目清出去 ----
+        #
+        # `_strm_check`（巡检）开头就跑这两个 prune，而本函数此前**完全没有** ——
+        # 于是看板/命令两条"检查"路径里，只有看板那条（`_api_strm_check`）
+        # 事后补跑了它们，命令侧的 `/rsync_strm check` 只调本函数。同一个动作
+        # 从两个入口做出来结果不同，正是本插件反复吃过的那种"看着都对"的分歧。
+        #
+        # ⚠️ 冷却同步（`_prune_cooling_suspects`）**必须在这里**：一条疑似如果在
+        # 清单里挂着的这段时间里被重新入队（源端文件被 touch、或又被扫描发现），
+        # 它就"还没上传"，按定义不可能有 strm —— 留在清单里只会把人引向
+        # 「删旧重传」，而那个动作对"还没轮到上传"的文件是纯破坏性的。
+        # 这也是通知正文把 `check` 写成第①步之后标准动作的意义所在。
+        #
+        # 刻意**不**加执行锁、不参与 `_is_running` 判定：与上面的探测一样是纯
+        # 本地只读判断 + 一次落盘，与正在跑的同步互不干扰。
+        # 顺序与 `_strm_check` 开头一致：**先冷却、后已解决** —— 冷却是"确定的
+        # 误报"（只查内存里的队列），而已解决要读文件系统。
+        cooling = self._prune_cooling_suspects()
+        resolved = self._prune_resolved_suspects() if self._strm_suspects else []
+        # 结果挂进 data，由调用方（看板端点 / 命令侧）决定怎么措辞 ——
+        # 本函数负责"清"，调用方负责"说"。
         return {"success": True, "message": msg,
                 "data": {"settled": settled, "suspects": suspects,
                          "still_watching": still,
-                         "removed": gone + no_dir, "results": results}}
+                         "removed": gone + no_dir, "results": results,
+                         "cooling_pruned": cooling,
+                         "resolved_suspects": resolved}}
 
     def check_one(self, key: str, now_ts: float, grace_secs: float) -> Tuple[str, Optional[str]]:
         """
@@ -1391,22 +1441,26 @@ class StrmOpsMixin:
 
         Dashboard entry point: check the given watching entries right now.
 
-        ⚠️ 这**不是**纯 `_check_watch_now`：本插件此前只提供"检查观察期"这一条
-        通道（见 strm_ops 模块头的说法），而 **v0.3.1 起对账/主动扫描都会检查
-        疑似清单**，如果这个端点只转调观察期那一侧，就会出现内部不一致 ——
-        最典型的是「只有观察期正确更新，疑似清单纹丝不动」（用户实测反馈过）。
-        This shares the suspect check too, otherwise the endpoint would only ever
-        keep the watch side correct while the suspect list stayed stale.
+        ⚠️ **疑似清单的清理不在这里** —— 它住在 `_check_watch_now` 里面。
+        曾经写在这一层，后果是命令侧的 `/rsync_strm check`（只调 `_check_watch_now`）
+        不做清理，两个入口行为不同：用户在通知里照抄 `check` 敲一遍，
+        疑似清单纹丝不动，以为命令没生效。
+        清理由唯一实现负责，本端点只负责**措辞**。
+        The pruning lives in the shared `_check_watch_now`, not here: doing it only
+        at this endpoint made the dashboard and the chat command disagree.
         """
         res = self._check_watch_now((body or {}).get("keys") or [])
-        if self._strm_suspects:
-            self._prune_cooling_suspects()
-            resolved = self._prune_resolved_suspects()
+        data = res.get("data") or {}
+        cooling = data.get("cooling_pruned") or []
+        resolved = data.get("resolved_suspects") or []
+        if cooling or resolved:
+            extra = []
+            if cooling:
+                extra.append(f"{len(cooling)} 个其实仍在冷却队列（尚未上传，按定义不会有 strm）")
             if resolved:
-                res["message"] = (res.get("message", "")
-                                  + f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已生成，"
-                                    f"已移出待处理清单。")
-                res.setdefault("data", {})["resolved_suspects"] = resolved
+                extra.append(f"{len(resolved)} 个 strm 已生成")
+            res["message"] = (res.get("message", "")
+                              + f"\n✅ 另有 " + "、".join(extra) + "，已移出疑似清单。")
         return res
 
     def _api_strm_scan(self) -> Dict[str, Any]:

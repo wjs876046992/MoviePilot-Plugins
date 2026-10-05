@@ -50,6 +50,8 @@ def _plugin(root, *, watch=None, suspects=None):
     plugin._strm_gen_requested = {}
     plugin._strm_watch = dict(watch or {})
     plugin._strm_suspects = dict(suspects or {})
+    # 冷却队列：`_prune_cooling_suspects` 要读它。
+    plugin._pending_queue = {}
     plugin._notify = False
     plugin._is_running = False
     plugin.save_data = lambda k, v: None
@@ -235,3 +237,82 @@ def test_check_notifies_when_entry_becomes_suspect(tmp_path):
 
     assert KEY in plugin._strm_suspects
     assert notified and KEY in notified[0], "手动检查转疑似也必须走通知"
+
+
+# --------------------------------------------------------------------------
+# 「检查」必须顺带同步疑似清单（两个入口口径一致）
+# --------------------------------------------------------------------------
+
+def test_check_prunes_suspects_that_are_back_in_the_cooling_queue(tmp_path):
+    """
+    `/rsync_strm check` 必须把"其实还在冷却队列"的疑似条目清出去。
+
+    ## 这个缺口是怎么来的
+
+    `_strm_check`（巡检）开头同时跑两个 prune，而 `_check_watch_now` 此前
+    **一个都不跑**。看板端点 `_api_strm_check` 事后自己补跑了，命令侧的
+    `/rsync_strm check` 只调 `_check_watch_now` —— 于是同一个动作从两个入口
+    做出来结果不同：用户照着通知里附的 `check` 敲一遍，疑似清单纹丝不动。
+
+    判据：一条疑似如果此刻**又**出现在冷却队列里，说明它还没上传，
+    按定义不可能有 strm，留着只会把人引向「删旧重传」——
+    而删旧重传对"还没轮到上传"的文件是纯破坏性的。
+    """
+    suspect = "电视剧:某剧/S01/E01.mkv"
+    plugin = _plugin(str(tmp_path), watch={}, suspects={suspect: {"ts": 0.0}})
+    # 它又被重新入队了（源端被 touch / 又被扫描发现）
+    plugin._pending_queue[suspect] = time.time()
+
+    res = plugin._check_watch_now([])
+
+    assert suspect not in plugin._strm_suspects, "仍在冷却队列的疑似没有被清出去"
+    assert res["data"]["cooling_pruned"] == [suspect]
+
+
+def test_check_keeps_suspects_that_are_not_cooling(tmp_path):
+    """
+    反向断言：不在冷却队列里的疑似**不能**被顺手清掉。
+
+    它正是一条真疑似（传过、但 strm 没出来），清掉就等于把问题藏起来。
+    """
+    suspect = "电视剧:某剧/S01/E02.mkv"
+    plugin = _plugin(str(tmp_path), watch={}, suspects={suspect: {"ts": 0.0}})
+
+    res = plugin._check_watch_now([])
+
+    assert suspect in plugin._strm_suspects, "真疑似被误清"
+    assert res["data"]["cooling_pruned"] == []
+
+
+def test_check_prune_runs_even_when_watch_list_is_empty(tmp_path):
+    """
+    **观察期为空时也要清疑似** —— 这恰恰是命令侧最常见的形态。
+
+    `/rsync_strm check` 传的是 watch 的全部 key；没有观察条目时 keys 为空。
+    早先在 `if not targets:` 处直接 return，"清疑似"这一步就在最需要它的
+    场景下恰好被跳过了。
+    """
+    suspect = "电视剧:某剧/S01/E03.mkv"
+    plugin = _plugin(str(tmp_path), watch={}, suspects={suspect: {"ts": 0.0}})
+    plugin._pending_queue[suspect] = time.time()
+
+    plugin._check_watch_now([])
+
+    assert suspect not in plugin._strm_suspects
+
+
+def test_dashboard_and_command_share_the_same_check_implementation(tmp_path):
+    """
+    看板与命令侧必须走**同一条**检查实现，否则"两边都对却不一样"。
+
+    命令侧曾经直接调 `_check_watch_now`，看板走 `_api_strm_check` ——
+    后者额外做了疑似清理。这条断言把命令侧的调用钉在端点上。
+    """
+    import app.plugins.rsync115sync as pkg
+    src = inspect.getsource(pkg.commands.CommandsMixin.handle_command)
+    seg = src[src.index('if arg_lower in ("check", "检查"'):]
+    seg = seg[:seg.index("return")]
+    assert "_api_strm_check" in seg, (
+        "命令侧 /rsync_strm check 必须调 _api_strm_check（含疑似清理），"
+        "直接调 _check_watch_now 会让看板与命令行为不一致"
+    )

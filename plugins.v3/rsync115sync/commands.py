@@ -636,7 +636,14 @@ class CommandsMixin:
                 return
             if arg_lower in ("check", "检查"):
                 # 立即检查观察期条目的 strm 是否已生成（不等下一轮巡检）
-                result = self._check_watch_now(list(self._strm_watch.keys()))
+                #
+                # ⚠️ 这里用 `_api_strm_check` 而**不是**直接调 `_check_watch_now`：
+                # 后者只负责"清"（把不自洽的疑似条目移出），措辞在端点那一层。
+                # 早先直接调 `_check_watch_now`，于是命令侧**只**做观察期判定、
+                # 疑似清单一个条目都不动 —— 而通知正文已把 `check` 写成补生成后的
+                # 标准动作，用户照抄敲下去却看不到任何变化。
+                # 同一个动作从看板与从命令做出来必须一致。
+                result = self._api_strm_check({"keys": list(self._strm_watch.keys())})
                 self._post_reply(event, ("📺 " if result.get("success") else "⚠️ ")
                                  + result.get("message", "检查失败"))
                 return
