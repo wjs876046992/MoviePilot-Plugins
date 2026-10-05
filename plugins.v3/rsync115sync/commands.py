@@ -399,7 +399,8 @@ class CommandsMixin:
             # ⚠️ 不做二次确认：手机端确认弹窗体验差，而**破坏性操作的门槛
             # 已经用"必须显式指定目标 + 不提供 all"表达了**。回执里明确写出
             # 删了什么、正在重传什么，让误操作可追溯。
-            res = self._api_strm_retry({"keys": [key]})
+            # 透传 event：重传过程与结果要回到用户手上（不传=静默，见其实现注释）
+            res = self._api_strm_retry({"keys": [key]}, channel_event=event)
             head = "🔁 " if res.get("success") else "⚠️ "
             return f"{head}{res.get('message', '操作失败')}\n\n目标：{key}"
         res = self._api_strm_ignore({"keys": [key]})
@@ -642,27 +643,16 @@ class CommandsMixin:
                         f"{_RETRY_KEYWORD_LIMIT} 个。\n请用更精确的文件名缩小范围，本次未做任何改动。"
                     )
                     return
-                deleted, undeletable = self._delete_dest_files_for_retry(result["matched"])
-                if undeletable:
-                    # 目标端删不掉 = 视图可能仍是脏的，此时 rsync 会因 --size-only
-                    # 跳过这些文件（白占配额），必须明确告知而不是静默继续
-                    names = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
-                    self._post_reply(
-                        event,
-                        f"⚠️ 有 {len(undeletable)} 个文件在目标端删除失败（挂载点可能未就绪），"
-                        f"已跳过它们，其余 {len(deleted)} 个继续重传：\n{names}\n"
-                        f"建议稍后重试；若反复失败请检查 CD2 挂载状态。"
-                    )
-                    if not deleted:
-                        return
-                summary = (
-                    f"🧹 已清理目标端 {len(deleted)} 个文件并开始定向重传：\n"
-                    + "\n".join(f"• {k}" for k in deleted[:_MAX_LOGGED_PATHS])
-                    + (f"\n（共 {len(deleted)} 个）" if len(deleted) > _MAX_LOGGED_PATHS else "")
-                )
-                self._post_reply(event, summary)
-                self._start_sync_thread(mode="retry", custom_files=deleted,
-                                        channel_event=event)
+                # ⚠️ 删旧重传的**唯一实现**在 `_retransfer_keys`。
+                # 这里曾经自己实现了一遍（预检、删除、失败处置全在这里），
+                # 结果与 `_api_strm_retry` 那份悄悄分叉：这条路径**没有前置预检**，
+                # 于是会出现「文件已从目标端删掉，却因为限流退避/挂载未就绪而没有
+                # 重传」—— 而预检存在的全部意义就是挡掉这个形态。
+                # 收敛到一处后，两个入口的行为由同一份代码保证一致。
+                res = self._retransfer_keys(result["matched"], channel_event=event,
+                                            origin="关键字定向重传")
+                head = "🧹 " if res.get("success") else "⚠️ "
+                self._post_reply(event, f"{head}{res.get('message', '操作失败')}")
             else:
                 # 不带关键字：维持既有语义 —— 重传历史异常清单
                 self._start_sync_thread(mode="retry", channel_event=event)

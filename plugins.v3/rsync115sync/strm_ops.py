@@ -1631,7 +1631,8 @@ class StrmOpsMixin:
                          "unmatched": unmatched[: _MAX_LOGGED_PATHS],
                          "unmatched_count": len(unmatched)}}
 
-    def _api_strm_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def _api_strm_retry(self, body: Dict[str, Any],
+                        channel_event: Optional[Event] = None) -> Dict[str, Any]:
         """
         确认后对疑似异常执行「删旧重传」（复用 v0.1.4 的删旧通道）。
 
@@ -1667,33 +1668,107 @@ class StrmOpsMixin:
         # The old re-probe guard blocked exactly the case it was meant to allow:
         # a rename-failure residue is byte-identical in size, so the mount reports
         # "visible and same size" for a file that is not usable at all.
-        # ---- 删旧**之前**先确认这轮传得动 ----
-        #
+        # ⚠️ 删旧重传的**唯一实现**在 `_retransfer_keys`（预检、删除、失败处置、
+        # 结果汇报都在那里）。本方法只做「越权护栏 + 转调」，不再自己实现一遍 ——
+        # 此前正是因为有两份实现，这里的预检与 `/rsync_retry` 那份悄悄分叉了。
+        # Delegation only: the guardrail lives here, everything else is shared.
+        # ⚠️ `channel_event` 必须透传：聊天指令发起的重传要靠它拿到进度与结果，
+        # 否则 `_execute_sync` 里所有 `_post_reply(channel_event=None, ...)` 都会
+        # 被静默丢弃 —— 用户只看到发起时那一句，之后毫无音讯（实测过的
+        # 「似乎没有重传」）。看板/API 路径不传，由接口自己回给前端。
+        return self._retransfer_keys(allowed, channel_event=channel_event,
+                                     origin="strm 疑似清单")
+
+    def _retransfer_keys(self, keys: List[str], *,
+                         channel_event: Optional[Event] = None,
+                         origin: str = "") -> Dict[str, Any]:
+        """
+        「删旧重传」的**唯一实现** —— 所有入口都必须走这里。
+
+        The single implementation of delete-then-retransfer. Every caller routes
+        through it, so no entry point can drift in behaviour.
+
+        ## 为什么必须收敛成一个实现（2026-09-28）
+
+        这个动作此前有**两份独立实现**：`/rsync_retry <文件名>` 一份、
+        `_api_strm_retry` 一份。两份的行为悄悄分叉了：
+
+        | | `/rsync_retry <文件名>` | `_api_strm_retry` |
+        |---|---|---|
+        | 前置预检 | ❌ 无 | ✅ 有 |
+        | 删除失败时 | 跳过失败的，传其余 | **整批中止** |
+        | 完成后反馈 | ✅ 回结果 | ❌ 静默（没传 channel_event） |
+
+        「无预检」那份会让**文件已经删掉、却因为限流退避/挂载未就绪而没传**
+        —— 而这正是预检存在的全部意义。两份实现必然分叉，因为它们唯一的
+        共同点只是「都调了 `_delete_dest_files_for_retry`」。
+        Two implementations existed and drifted: the un-preflighted one could delete
+        a file and then fail to upload it, which is exactly what the pre-flight exists
+        to prevent.
+
+        ## 参数与副作用
+
+        :param keys: 待重传的队列 key（"任务名:相对路径"）
+        :param channel_event: 聊天指令来源的事件。**传了才会有进度与结果反馈**
+            —— `_post_reply` 在 event 为空时直接 return。看板/API 路径不传，
+            由接口自己把结果回给前端。
+        :param origin: 仅用于日志与措辞，标明这次是谁发起的。
+        :return: `{"success", "message", "data": {deleted, undeletable, skipped}}`
+
+        结果**逐项**汇报，不再「有失败就整批中止也不说清哪些成了」：
+        - `deleted`：已清理并进入重传的；
+        - `undeletable`：目标端删不掉（挂载未就绪/CD2 视图未失效）——
+          这些**不能传**，带着脏视图去 rsync 会被 `--size-only` 跳过、白占配额；
+        - `skipped`：调用方判定为不该动的（如命中忽略规则）。
+        """
+        keys = [k for k in (keys or []) if k]
+        if not keys:
+            return {"success": False, "message": "未指定要重传的文件"}
+
+        who = f"（{origin}）" if origin else ""
+
+        # ---- 删之前先确认这轮传得动 ----
         # 顺序是承重的：先删后传的实现里，任何一条前置闸门（执行锁、风控退避、
         # 窗口配额、目录未就绪）都会让**文件已经被删掉、却没有重传**。
-        # 用户看到的却是「已删除 N 个文件并开始定向重传」——因为看板这条路径
-        # 不传 channel_event，`_post_reply` 直接 return，`_execute_sync` 里所有
-        # 拦截都是静默的（用户实测「似乎没有重传」的成因之一）。
-        # 先做只读预检，把「删了却传不了」变成「根本不会删」。
-        # Pre-flight: every gate inside _execute_sync would otherwise fire *after*
-        # the delete, leaving the file gone with no retry and no visible error.
-        blocked_reason = self._retry_preflight([])
+        # 把闸门搬到前面，最坏结果是「没删也没传」，用户重试即可。
+        blocked_reason = self._retry_preflight(keys)
         if blocked_reason:
-            logger.warning(f"[Rsync115Sync] ⛔ 删旧重传未执行（{blocked_reason}），未删除任何文件")
+            logger.warning(f"[Rsync115Sync] ⛔ 删旧重传未执行{who}（{blocked_reason}），"
+                           f"未删除任何文件")
             return {"success": False,
                     "message": f"本次删旧重传未执行，未删除任何文件。\n\n原因：{blocked_reason}\n\n"
                                f"（先把这道闸门挡在前面，是为了避免「文件已删、却没传上去」"
-                               f"—— 等条件满足后重新点即可。）"}
+                               f"—— 等条件满足后重新发起即可。）"}
 
-        deleted, undeletable = self._delete_dest_files_for_retry(allowed)
-        if undeletable:
+        deleted, undeletable = self._delete_dest_files_for_retry(keys)
+        if not deleted:
+            # 全都没删掉 = 挂载点很可能不可用。此时**一个都不传**：
+            # 带着脏视图的 rsync 会被 --size-only 判定「已同步」而整批跳过。
+            listed = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
             return {"success": False,
-                    "message": f"{len(undeletable)} 个文件目标端删除失败（挂载点可能未就绪），请稍后重试"}
-        # 重传期间仍留在疑似清单（失败会被同步流程记入异常清单）；
-        # 成功后由 _strm_arm_watch 解除
-        self._start_sync_thread(mode="retry", custom_files=deleted)
+                    "message": f"{len(undeletable)} 个文件在目标端删除失败，未重传任何文件"
+                               f"（挂载点可能未就绪）：\n{listed}\n"
+                               f"请检查 CD2 挂载状态后重试。",
+                    "data": {"deleted": [], "undeletable": undeletable}}
+
+        # 部分失败：传能传的，但把失败的**明确列出来**，不静默吞掉
+        note = ""
+        if undeletable:
+            listed = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
+            more = f"\n（共 {len(undeletable)} 个）" if len(undeletable) > _MAX_LOGGED_PATHS else ""
+            note = (f"\n\n⚠️ 另有 {len(undeletable)} 个目标端删除失败、已跳过"
+                    f"（挂载点可能未就绪）：\n{listed}{more}")
+
+        # ⚠️ channel_event 必须往下传：不传的话 `_execute_sync` 里所有反馈都会
+        # 被 `_post_reply(channel_event=None, ...)` 静默丢弃，用户只看到发起时
+        # 那一句话，之后毫无音讯（实测过的「似乎没有重传」）。
+        self._start_sync_thread(mode="retry", custom_files=deleted,
+                                channel_event=channel_event)
+        logger.info(f"[Rsync115Sync] 🧹 删旧重传已启动{who}：清理 {len(deleted)} 个"
+                    f"{f'，跳过 {len(undeletable)} 个' if undeletable else ''}")
         return {"success": True,
-                "message": f"已删除 {len(deleted)} 个文件并开始定向重传，完成后自动复核 strm"}
+                "message": f"已删除 {len(deleted)} 个文件并开始定向重传，完成后自动复核 strm{note}",
+                "data": {"deleted": deleted, "undeletable": undeletable}}
 
     def _search_target_files(self, keyword: str) -> Dict[str, Any]:
         """
