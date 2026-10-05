@@ -1061,6 +1061,111 @@ mode=retry 定向上传」，重写必然漂移），命令侧只做「关键字
 失效条目（源端已删）同口径排除。剩余分钟**向上取整**：
 「还需 0 分钟」会让人以为已经就绪，而它其实还在冷却里。
 
+### 3.16 ⛔ 全部 `/rsync_*` 指令静默失效 —— 处理器被声明在 Mixin 里（2026-09-28）
+
+**用户实测**：发 `/rsync_status`，宿主日志显示
+
+```
+command.py - 用户 6212146549 开始执行：查看当前115同步进度与冷却/待重试队列 ...
+command.py - 用户 6212146549 查看当前115同步进度与冷却/待重试队列 执行完成
+```
+
+**但没有任何回复**，而插件日志里**连一行都没有**。
+
+#### 3.16.1 根因：宿主按「声明类的类名」查插件实例
+
+```python
+# app/runtime/extensions/plugin/manager.py
+def resolve_event_handler_instance(self, owner_class):
+    plugin_id = owner_class.__name__          # ← 用的是类名字符串
+    if self._plugins.get(plugin_id) is not owner_class:
+        return None                            # ← 查不到就放弃
+    plugin = self._running_plugins.get(plugin_id)
+    return EventHandlerBinding(instance=plugin, ...)
+```
+
+`_plugins` 的键是**插件 ID**（= 插件类名 `Rsync115Sync`）。而阶段 2 拆分把
+`handle_command` 搬进了 `commands.py` 的 `CommandsMixin`：
+
+```
+owner_class.__name__ == "CommandsMixin"   ≠   "Rsync115Sync"
+→ resolve 返回 None
+→ invoke_sync 首行 `if not resolved: return`
+→ 处理器被**静默跳过**
+```
+
+⚠️ **三无**：无异常、无告警、无日志。宿主照常打印它自己的
+「开始执行…执行完成」—— 那两行与插件毫无关系，是**误导人的假信号**
+（它们由 `_CommandManager.execute` 打印，只要命令存在于命令表就会打）。
+
+**全部** `/rsync_*` 指令一起失效：它们都由这一个方法分发。
+
+#### 3.16.2 为什么 webhook 一直好用
+
+`on_webhook_message` **一直**定义在 `__init__.py` 的 `Rsync115Sync` 类体里，
+`owner_class` 解析得到 `Rsync115Sync`，一切正常。这个对照正好说明差异来自
+**声明位置**，而不是功能本身有问题。
+
+实测（真机容器内，修复前）：
+
+```
+handle_command  __qualname__ = CommandsMixin.handle_command
+                owner_class  = CommandsMixin          ❌ 解析不到
+on_webhook_message  owner_class = Rsync115Sync        ✅
+```
+
+仓内其它 V3 插件（`bangumicoll` / `neodbsync` / `tvfirstwatch` / `doubansync`）
+的 PluginAction 处理器**也都定义在各自 `__init__.py` 的插件类里** ——
+这是宿主的硬性约定，不是风格偏好。
+
+#### 3.16.3 修法
+
+```python
+# __init__.py（Rsync115Sync 类体里）
+@eventmanager.register(EventType.PluginAction)
+def handle_command(self, event):
+    return self._dispatch_command(event)       # 薄包装，只为拿到正确的 owner class
+
+# commands.py
+def _dispatch_command(self, event):            # 实现搬到这里，去掉装饰器
+    ...
+```
+
+⚠️ 添加时要注意**基类契约必须仍然在类上**：`get_command` / `handle_command` /
+`get_api` / `get_service` 四个名字是宿主直接按字符串取的，所以
+`handle_command` 这个名字**必须保留在组合后的类上**（包装法天然满足）。
+
+#### 3.16.4 测试：原用例**把缺陷当契约钉住了**
+
+原 `test_handle_command_is_registered_for_plugin_action` 跨**全部 .py**
+查找 handler，注释还写着「方法可能位于 Mixin 兄弟模块（阶段 2 拆分）」——
+于是拆分之后一路绿灯，命令全死却测不出来。
+
+现在四条：
+
+| 用例 | 钉什么 |
+|---|---|
+| `test_plugin_action_handler_lives_on_the_plugin_class` | 装饰器必须与 `__init__.py` 里的插件类**在同一类体**内 |
+| `test_handler_is_not_declared_in_a_mixin` | **反向**：任何 Mixin 里不许有注册了 PluginAction 的方法 |
+| `test_plugin_action_resolves_to_a_real_plugin_instance` | **运行时**：用宿主真实的 `EventBindingResolver.owner_class` 反查，必须等于插件类名 |
+| `test_webhook_handler_resolves_to_a_real_plugin_instance` | 同上，webhook 入口 |
+
+⚠️ 后两条必须走**宿主的真实解析器**，不能自己 `isinstance` 判断 ——
+后者会漏掉「宿主按类名字符串查表」这个关键机制，而那正是缺陷的根源。
+这两条需要 MoviePilot 后端，本机 skip（`tests/_bootstrap.py` 找不到 `app/`），
+在真机上验证。
+
+#### 3.16.5 教训
+
+**「静默失效」的入口只靠日志排查会一无所获**：宿主打印的是它自己的成功，
+插件不打任何东西，两端都不报错。这类缺陷只能靠
+「把宿主解析代码读完 + 用宿主自己的 API 反查」定位。
+
+同类风险提醒：**任何需要在 `__init__.py` 之外定义的宿主契约方法，都要先确认
+宿主是按什么查表的**。本次是按 `owner_class.__name__`；如果将来拆分时
+把 `get_command` / `get_api` 等搬到 Mixin，宿主按实例属性取，那没问题 ——
+但事件处理器不行。
+
 
 ## 4. 新增能力
 
