@@ -121,6 +121,58 @@ def brief_target_of(key: str, pairs: List[Dict[str, Any]],
     return None
 
 
+def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]],
+                            limit: Optional[int] = None) -> List[List[Dict[str, str]]]:
+    """
+    给疑似通知生成**可点按执行**的按钮（Telegram inline keyboard）。
+
+    Build tap-to-run buttons for the suspect notification.
+
+    ## 为什么从"围栏代码块"改成按钮（2026-10-06，用户实测反馈）
+
+    第一版把命令放进 ``` 围栏，指望 Telegram 对代码块提供"点按复制"。
+    实测**不行**：Telegram 只在桌面端与部分移动端对代码块给复制按钮，
+    用户的长按选择很难只选中那一行（前后都是文字），结果是**复制不了**。
+
+    而宿主本身支持一条更直接的通路：**按钮的 `callback_data` 只要是 `/` 开头的
+    斜杠命令，点一下就会真的执行**（`telegram/module.py` 里甚至专门做了
+    "非管理员点斜杠命令按钮则拒绝"的校验 —— 只有在真会执行时才需要这道校验）。
+    点一下 vs 复制粘贴再发送，前者少两步。
+
+    ## 分组：破坏性的放第二行，且文案自明
+
+    `retry` 会**先删云端旧文件**，属于破坏性操作，因此：
+
+      · 单独一行、不跟 `gen`/`ignore` 混排（混排时误点概率显著上升）；
+      · 文案带 ⚠️ 与"删旧"字样，点之前就知道会发生什么；
+      · 顺序上排在 `gen`（安全、多数情况够用）之后。
+
+    ⚠️ 按钮数量有上限：Telegram 单条消息的按钮总数与每行宽度都有限，
+    因此与文字块共用 `limit`（默认取 `MAX_LOGGED_PATHS`）。
+    """
+    from .constants import MAX_LOGGED_PATHS as _default_limit
+    cap = _default_limit if limit is None else limit
+    shown = list(new_suspects[:max(0, cap)])
+
+    rows: List[List[Dict[str, str]]] = [
+        # 整批操作：对所有条目都安全，因此单独一行
+        [{"text": "🔄 先试补生成（多数够用）", "callback_data": "/rsync_strm gen"}],
+        [{"text": "🔍 检查结果", "callback_data": "/rsync_strm check"}],
+    ]
+    for key in shown:
+        target = brief_target_of(key, pairs, shown)
+        if not target:
+            continue
+        # ⚠️ 用 key 的末段做按钮文案：完整路径太长会被 Telegram 截断成一堆省略号，
+        # 而按条分行的按钮必须让用户认得出是哪个文件。
+        label = target if len(target) <= 28 else "…" + target[-27:]
+        rows.append([
+            {"text": f"⚠️ 删旧重传 {label}", "callback_data": f"/rsync_strm retry {target}"},
+            {"text": "误报忽略", "callback_data": f"/rsync_strm ignore {target}"},
+        ])
+    return rows
+
+
 def suspect_commands_text(new_suspects: List[str], pairs: List[Dict[str, Any]],
                           limit: Optional[int] = None) -> str:
     """

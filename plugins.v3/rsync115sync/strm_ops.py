@@ -662,18 +662,26 @@ class StrmOpsMixin:
         more = f"\n（另有 {len(new_suspects) - _MAX_LOGGED_PATHS} 个未列出）" \
             if len(new_suspects) > _MAX_LOGGED_PATHS else ""
         try:
+            # ⚠️ 正文**不再放命令块**，改为按钮（点一下即执行）。
+            # 第一版把命令塞进 ``` 围栏指望"点按复制"，用户实测复制不出来
+            # —— Telegram 的代码块复制在移动端很难只选中那一行，而前后都是文字。
+            # 宿主支持 `callback_data` 为斜杠命令的按钮（点一下真的执行），
+            # 少两步操作。见 strm.suspect_command_buttons 的说明。
+            buttons = _strm.suspect_command_buttons(new_suspects, self._sync_pairs)
             self.post_message(
                 mtype=mtype,
                 title="115同步：发现疑似上传异常",
                 text=(
                     f"⚠️ 本次新发现 {len(new_suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
                     f"{listed}{more}\n\n"
-                    f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。\n"
-                    f"💡 请先确认 strm 插件本身是否正常（媒体是否识别、功能是否开启），\n"
-                    f"   再按下面顺序处理（命令可直接点按复制）：\n"
-                    f"{self._strm_suspect_commands_text(new_suspects)}\n\n"
-                    f"❗ ② 是破坏性操作（先删云端旧文件再重传），只在①之后仍缺 strm 时用。"
+                    f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。\n\n"
+                    f"按下面按钮处理即可（点一下直接执行）：\n"
+                    f"① 先点「先试补生成」—— strm 插件漏生成的话，这一步就够了；\n"
+                    f"   等 1~2 分钟再点「检查结果」确认。\n"
+                    f"② 补生成后仍无 strm，才点「⚠️ 删旧重传」（会先删云端旧文件）。\n"
+                    f"③ 确认这个文件本就不该有 strm，点「误报忽略」。"
                 ),
+                buttons=buttons,
             )
             self._strm_notified = True
             self.save_data("strm_notified", True)
