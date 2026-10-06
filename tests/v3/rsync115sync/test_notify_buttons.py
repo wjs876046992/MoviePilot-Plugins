@@ -54,21 +54,41 @@ def _pair():
 KEY = "9KG:桥本有菜/SNIS-755/SNIS-755-破解-C.mp4"
 
 
-def test_every_button_runs_a_real_slash_command():
+def test_every_button_uses_the_host_plugin_callback_format():
     """
-    ⚠️ 核心约束：`callback_data` 必须是 `/` 开头的斜杠命令。
+    ⚠️ 核心约束：`callback_data` 必须是 `[PLUGIN]<插件ID>|<内容>`。
 
-    宿主只把这种形态的按钮当命令执行；写成别的（或带参数前缀）点了不会有反应，
-    而用户会以为"点了没用"。这条与库内另一处同样是对宿主机制的硬依赖。
+    ## 这条断言是被真机打回来的
+
+    第一版写成 `/rsync_strm gen`，以为宿主会把斜杠命令的按钮当命令执行。
+    **实测点下去只回一句「回调数据格式错误，请检查！」，插件侧收不到任何事件。**
+
+    宿主（`app/chain/message.py` 的 `callback_routes`）是**白名单**：
+
+        [PLUGIN]<ID>|<内容>   transfer:   skill:   sites:
+        subscribes:   media:   update:   agent_choice
+
+    斜杠命令**不在其中**，会落到兜底分支由宿主回那句报错。
+    （我在 `telegram/module.py` 看到的「非管理员点斜杠命令按钮则拒绝」是给
+    **Agent 会话确认按钮**用的，不是通用能力 —— 把局部机制当成了通用机制。）
+
+    判据直接复刻宿主的 `parse_callback`：前缀 + 用 `|` 能切成两段 + 插件 ID 对得上。
     """
     rows = _strm().suspect_command_buttons([KEY], [_pair()])
     assert rows, "没生成任何按钮"
     for row in rows:
         for btn in row:
-            assert btn["callback_data"].startswith("/rsync_"), (
-                f"按钮 [{btn['text']}] 的 callback_data={btn['callback_data']!r} "
-                f"不是斜杠命令 —— 点了不会执行"
+            cd = btn["callback_data"]
+            assert cd.startswith("[PLUGIN]"), (
+                f"按钮 [{btn['text']}] 的 callback_data={cd!r} 不以 [PLUGIN] 开头 —— "
+                f"宿主不会转发，点了只会得到「回调数据格式错误」"
             )
+            plugin_id, sep, content = cd.partition("|")
+            assert sep, f"callback_data={cd!r} 缺少 `|` 分隔符"
+            assert plugin_id.replace("[PLUGIN]", "", 1) == "Rsync115Sync", (
+                f"插件 ID 写成了 {plugin_id!r}，宿主会转发给别的插件"
+            )
+            assert content, f"callback_data={cd!r} 的内容段为空"
             assert btn.get("text"), "按钮缺文案"
 
 
@@ -80,7 +100,7 @@ def test_gen_and_check_are_whole_batch_and_stand_alone():
     """
     rows = _strm().suspect_command_buttons([KEY], [_pair()])
     flat = {b["callback_data"]: (i, len(r)) for i, r in enumerate(rows) for b in r}
-    for cmd in ("/rsync_strm gen", "/rsync_strm check"):
+    for cmd in ("[PLUGIN]Rsync115Sync|gen", "[PLUGIN]Rsync115Sync|check"):
         assert cmd in flat, f"缺少按钮 {cmd}"
         _, width = flat[cmd]
         assert width == 1, f"{cmd} 所在行有 {width} 个按钮，应当独占一行"
@@ -95,11 +115,11 @@ def test_destructive_button_says_so_and_comes_after_gen():
     """
     rows = _strm().suspect_command_buttons([KEY], [_pair()])
     order = [b["callback_data"] for r in rows for b in r]
-    retry_idx = next(i for i, c in enumerate(order) if c.startswith("/rsync_strm retry"))
-    gen_idx = next(i for i, c in enumerate(order) if c == "/rsync_strm gen")
+    retry_idx = next(i for i, c in enumerate(order) if c.endswith("|retry " + KEY.split("/")[-1].rsplit(".", 1)[0]) or "|retry " in c)
+    gen_idx = next(i for i, c in enumerate(order) if c.endswith("|gen"))
     assert gen_idx < retry_idx, "「删旧重传」排在了「先试补生成」之前"
 
-    retry_btn = next(b for r in rows for b in r if b["callback_data"].startswith("/rsync_strm retry"))
+    retry_btn = next(b for r in rows for b in r if "|retry " in b["callback_data"])
     assert ("删旧" in retry_btn["text"]) or ("⚠" in retry_btn["text"]), (
         f"破坏性按钮文案不自明：{retry_btn['text']!r} —— 点之前必须让人看出来"
     )
@@ -115,16 +135,16 @@ def test_ambiguous_keyword_yields_no_button_for_that_entry():
     dup = "9KG:x/E01.mkv"
     rows = _strm().suspect_command_buttons([dup, dup], [_pair()])
     cmds = [b["callback_data"] for r in rows for b in r]
-    assert not any(c.startswith("/rsync_strm retry") for c in cmds), (
+    assert not any("|retry " in c for c in cmds), (
         "条目无法唯一确定时仍生成了重传按钮"
     )
     # 整批操作仍要在（它们不依赖具体条目）
-    assert "/rsync_strm gen" in cmds
+    assert "[PLUGIN]Rsync115Sync|gen" in cmds
 
 
 def test_button_count_is_bounded():
     """条目多时按钮数量有上限 —— Telegram 对按钮总数有限制。"""
     keys = [f"9KG:剧{n}/E{n:02d}.mkv" for n in range(20)]
     rows = _strm().suspect_command_buttons(keys, [_pair()], limit=5)
-    retry_rows = [r for r in rows if any(c["callback_data"].startswith("/rsync_strm retry") for c in r)]
+    retry_rows = [r for r in rows if any("|retry " in c["callback_data"] for c in r)]
     assert len(retry_rows) == 5, f"limit=5 时应只有 5 行条目按钮，实际 {len(retry_rows)}"

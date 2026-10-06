@@ -121,6 +121,20 @@ def brief_target_of(key: str, pairs: List[Dict[str, Any]],
     return None
 
 
+# 插件按钮回调的前缀。**格式由宿主决定，不是自定义的**：
+#     [PLUGIN]插件ID|内容
+# 只有这个形状的 callback_data 才会被宿主转发成 MessageAction（见
+# `application/messaging/plugin.py:parse_callback`），其余一律落到
+# 「回调数据格式错误，请检查！」那个兜底分支里 —— 用户点了按钮只看到那行报错，
+# 而插件侧**收不到任何事件**（实测踩过：第一版用了斜杠命令的 callback_data）。
+CB_PREFIX = "[PLUGIN]Rsync115Sync|"
+
+
+def _cb(action: str, target: str = "") -> str:
+    """拼一个能被宿主转发到本插件的按钮回调数据。"""
+    return f"{CB_PREFIX}{action}" + (f" {target}" if target else "")
+
+
 def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]],
                             limit: Optional[int] = None) -> List[List[Dict[str, str]]]:
     """
@@ -156,8 +170,8 @@ def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]]
 
     rows: List[List[Dict[str, str]]] = [
         # 整批操作：对所有条目都安全，因此单独一行
-        [{"text": "🔄 先试补生成（多数够用）", "callback_data": "/rsync_strm gen"}],
-        [{"text": "🔍 检查结果", "callback_data": "/rsync_strm check"}],
+        [{"text": "🔄 先试补生成（多数够用）", "callback_data": _cb("gen")}],
+        [{"text": "🔍 检查结果", "callback_data": _cb("check")}],
     ]
     for key in shown:
         target = brief_target_of(key, pairs, shown)
@@ -167,8 +181,8 @@ def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]]
         # 而按条分行的按钮必须让用户认得出是哪个文件。
         label = target if len(target) <= 28 else "…" + target[-27:]
         rows.append([
-            {"text": f"⚠️ 删旧重传 {label}", "callback_data": f"/rsync_strm retry {target}"},
-            {"text": "误报忽略", "callback_data": f"/rsync_strm ignore {target}"},
+            {"text": f"⚠️ 删旧重传 {label}", "callback_data": _cb("retry", target)},
+            {"text": "误报忽略", "callback_data": _cb("ignore", target)},
         ])
     return rows
 

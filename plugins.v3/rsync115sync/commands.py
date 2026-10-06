@@ -445,6 +445,71 @@ class CommandsMixin:
 
     # ================= 交互命令分发 (带关键字查找与确认重试) =================
 
+    def _handle_button_action(self, event: Event) -> None:
+        """
+        处理通知里按钮的点击（**实现**，注册见 `__init__.py`）。
+
+        Handle an inline-keyboard click from a notification.
+
+        ## 事件形状
+
+        宿主把 `[PLUGIN]Rsync115Sync|<内容>` 解析成 `(plugin_id, content)` 后广播：
+
+            {"plugin_id": "Rsync115Sync", "text": "<内容>", "userid": ..., ...}
+
+        ## ⚠️ 两道守卫都是必须的
+
+        1. **插件 ID 守卫**：`MessageAction` 是定向事件，但形状上仍是广播 ——
+           不判 `plugin_id` 就会把别的插件的按钮回调也解析一遍（可能误动本插件
+           的数据）。库内 `p115strmhelper` 同样做法。
+        2. **内容必须以已知动作开头**：解析不出动作就**静默返回**，不回消息
+           —— 否则用户点到别处（或旧消息里的按钮）会收到莫名其妙的回复。
+
+        ⚠️ 与命令路径同一条复用原则：这里只做"动作+目标 → 已有入口"的映射，
+        真正的实现全部转调既有方法，不在本函数里重写一遍。
+        """
+        data = getattr(event, "event_data", None) or {}
+        own = self.__class__.__name__.lower() if hasattr(self, "__class__") else ""
+        plugin_id = str(data.get("plugin_id") or "").strip()
+        target_id = str(data.get("__mp_target_plugin_id") or "").strip()
+        if plugin_id and plugin_id.lower() != own:
+            return
+        if target_id and target_id.lower() != own:
+            return
+
+        raw = str(data.get("text") or "").strip()
+        if not raw:
+            return
+        action, _, target = raw.partition(" ")
+        action = action.strip().lower()
+        target = target.strip()
+
+        # 按钮回调没有 `channel_event` 那套上下文，但回复需要渠道与用户：
+        # 把 MessageAction 的字段转成 `_post_reply` 认识的形状（它读 channel/user）。
+        reply_ctx = Event(
+            EventType.PluginAction,
+            {"channel": data.get("channel"), "source": data.get("source"),
+             "user": data.get("userid") or data.get("user")},
+        )
+
+        if action == "gen":
+            # 整批补生成：与 /rsync_strm gen 同一条入口
+            res = self._api_strm_generate({"keys": list(self._strm_suspects.keys())})
+            self._post_reply(reply_ctx, ("📺 " if res.get("success") else "⚠️ ")
+                             + res.get("message", "操作失败"))
+            return
+        if action == "check":
+            res = self._api_strm_check({"keys": list(self._strm_watch.keys())})
+            self._post_reply(reply_ctx, ("📺 " if res.get("success") else "⚠️ ")
+                             + res.get("message", "检查失败"))
+            return
+        if action in ("retry", "ignore") and target:
+            # 转调与命令侧**同一个**实现（含越权护栏），不在按钮路径重写一遍
+            self._post_reply(reply_ctx, self._strm_suspect_action(
+                reply_ctx, target, "retry" if action == "retry" else "ignore"))
+            return
+        logger.debug(f"[Rsync115Sync] 未识别的按钮回调，已忽略: {raw!r}")
+
     def _dispatch_command(self, event: Event):
         """
         处理 /rsync_* 远程指令的**实现**。

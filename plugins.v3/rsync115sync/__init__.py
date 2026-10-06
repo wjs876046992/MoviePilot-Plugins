@@ -891,6 +891,37 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         """
         return self._dispatch_command(event)
 
+    @eventmanager.register(EventType.MessageAction)
+    def on_message_action(self, event: Event):
+        """
+        通知按钮的点击回调（实现见 `CommandsMixin._handle_button_action`）。
+
+        Inline-keyboard callback handler for notification buttons.
+
+        ## ⚠️ 按钮回调**不是**斜杠命令（2026-10-06 实测踩到）
+
+        第一版把按钮的 `callback_data` 写成了 `/rsync_strm gen`，以为宿主会当命令执行。
+        实测点下去只回一句「回调数据格式错误，请检查！」，插件侧**收不到任何事件**。
+
+        宿主真正的规则（`app/chain/message.py` 的 `callback_routes`）是**白名单**，
+        只认这些前缀：
+
+            [PLUGIN]<插件ID>|<内容>    transfer:  skill:  sites:
+            subscribes:  media:  update:  agent_choice
+
+        `/` 开头的斜杠命令**不在其中** —— 它会落到兜底分支，由宿主回那句报错。
+        （早先在 `telegram/module.py` 里看到的「非管理员点斜杠命令按钮则拒绝」
+        那段校验，是给 **Agent 会话的确认按钮**用的，不是通用能力。我把那一处
+        当成了通用机制 —— 这是"看到一半就下结论"。）
+
+        正确形状是 `[PLUGIN]Rsync115Sync|<动作> [目标]`，宿主会把它解析成
+        `(plugin_id, content)` 并广播 `MessageAction` 事件。
+
+        ⚠️ 与 `handle_command` 同理：处理器**必须**定义在插件类体里，Mixin 里
+        声明会因 `owner_class.__name__` 查不到插件而被静默跳过。
+        """
+        return self._handle_button_action(event)
+
     @eventmanager.register(EventType.WebhookMessage)
     def on_webhook_message(self, event: Event):
         """
