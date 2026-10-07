@@ -14,6 +14,7 @@ correctly sized, blinding both the audit and `--size-only`. The .strm produced b
 a strm plugin is an independent witness and is read purely locally.
 """
 
+import hashlib
 import os
 import posixpath
 from typing import Any, Dict, List, Optional, Tuple
@@ -129,10 +130,42 @@ def brief_target_of(key: str, pairs: List[Dict[str, Any]],
 # 而插件侧**收不到任何事件**（实测踩过：第一版用了斜杠命令的 callback_data）。
 CB_PREFIX = "[PLUGIN]Rsync115Sync|"
 
+# ⚠️ Telegram 对按钮的 `callback_data` 有 **64 字节**硬上限，超了会让**整条消息
+# 发送失败**（`Bad Request: BUTTON_DATA_INVALID`），而不是只丢那一个按钮。
+# 实测踩到：`[PLUGIN]Rsync115Sync|retry JOJO的奇妙冒险 S06E01.1080p.Netflix.WEB-DL.x264.AAC`
+# 是 83 字节（中文每字 3 字节），于是带按钮的通知**整条发不出去**
+# —— 而插件把发送失败当成成功，用户什么都没收到，日志里也只有宿主一行 ERROR。
+#
+# 因此按钮**不携带关键字**，改带一个短指纹：后端用同一算法在清单里反查。
+# 指纹是 key 的 sha1 前 10 位十六进制（10 字节），加上前缀与动作总计 < 40 字节。
+BUTTON_MAX_BYTES = 64
 
-def _cb(action: str, target: str = "") -> str:
-    """拼一个能被宿主转发到本插件的按钮回调数据。"""
-    return f"{CB_PREFIX}{action}" + (f" {target}" if target else "")
+
+def fingerprint(key: str) -> str:
+    """
+    给疑似条目算一个**短而稳**的指纹，供按钮回调携带。
+
+    Short stable fingerprint of a suspect key, carried in button callbacks.
+
+    ## 为什么不用序号
+
+    `_strm_suspect_list_text` 用序号，那是**给人看的**（先 `list` 看一眼再敲）。
+    按钮不行：通知常在几小时后才被点，那时清单可能已增删，序号指向别的条目
+    —— 而 `retry` 是**删除性操作**，点错就是删错文件。
+
+    ## 为什么不用关键字
+
+    关键字是 key 的子串，中文一多就超 64 字节（见上）。指纹与内容长度无关。
+
+    ⚠️ 指纹是 key 的纯函数，因此**与清单无关**：哪怕清单变了，只要那个条目还在，
+    反查就能命中；不在就明确回「不在疑似异常清单中」，绝不猜。
+    """
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+
+
+def _cb(action: str, fp: str = "") -> str:
+    """拼一个能被宿主转发到本插件的按钮回调数据（形如 `gen` / `retry ab12cd34ef`）。"""
+    return f"{CB_PREFIX}{action}" + (f" {fp}" if fp else "")
 
 
 def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]],
@@ -181,8 +214,9 @@ def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]]
         # 而按条分行的按钮必须让用户认得出是哪个文件。
         label = target if len(target) <= 28 else "…" + target[-27:]
         rows.append([
-            {"text": f"⚠️ 删旧重传 {label}", "callback_data": _cb("retry", target)},
-            {"text": "误报忽略", "callback_data": _cb("ignore", target)},
+            {"text": f"⚠️ 删旧重传 {label}",
+             "callback_data": _cb("retry", fingerprint(key))},
+            {"text": "误报忽略", "callback_data": _cb("ignore", fingerprint(key))},
         ])
     return rows
 

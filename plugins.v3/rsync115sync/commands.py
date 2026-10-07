@@ -504,9 +504,21 @@ class CommandsMixin:
                              + res.get("message", "检查失败"))
             return
         if action in ("retry", "ignore") and target:
-            # 转调与命令侧**同一个**实现（含越权护栏），不在按钮路径重写一遍
+            # ⚠️ 按钮携带的是**指纹**不是关键字（Telegram 对 callback_data 有
+            # 64 字节上限，中文关键字必然超限 → 整条消息发不出去）。
+            # 这里把指纹反查回完整 key，再交给与命令侧**同一个**实现
+            # （含越权护栏），不在按钮路径重写一遍。
+            from .strm import fingerprint as _fp
+            keys = [k for k in self._strm_suspects if _fp(k) == target]
+            if len(keys) != 1:
+                # 清单已变（条目被处理掉、或指纹撞车）→ **明确拒绝，绝不猜**。
+                # 这是删除性操作，猜错就是删错文件。
+                self._post_reply(reply_ctx,
+                                 f"⚠️ 该条目已不在疑似异常清单中（可能已被处理）。\n"
+                                 f"用 /rsync_strm list 查看当前清单。")
+                return
             self._post_reply(reply_ctx, self._strm_suspect_action(
-                reply_ctx, target, "retry" if action == "retry" else "ignore"))
+                reply_ctx, keys[0], "retry" if action == "retry" else "ignore"))
             return
         logger.debug(f"[Rsync115Sync] 未识别的按钮回调，已忽略: {raw!r}")
 
