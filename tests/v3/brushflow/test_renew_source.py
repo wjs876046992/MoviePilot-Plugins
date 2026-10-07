@@ -215,9 +215,38 @@ class TestParseNexusList:
         assert torrent.site_name == "彩虹岛"
         assert torrent.site_cookie == "uid=1; pass=abc"
 
-    def test_no_hit_and_run_for_this_site(self):
-        """彩虹岛复活区无 H&R 标记，统一按无 H&R 处理"""
+    def test_hit_and_run_marker_is_parsed(self):
+        """H&R 标记写在 div.circle-text 里，必须解析出来
+
+        此前硬编码 hit_and_run=False，导致任务的「排除 H&R」对复活区完全失效。
+        """
+        html = (
+            '<table class="torrentname"><tr>'
+            '<td class="embedded"><a title="H5 Movie 2024" href="details.php?id=9">x</a>'
+            '<font class="subtitle"><div class="circle">'
+            '<div class="circle-text">h5</div></div></font></td>'
+            '<td></td><td></td><td><span title="2026-07-19 18:55:39"></span></td>'
+            '<td>1.00 / GB</td><td><a>1</a></td><td><a>1</a></td>'
+            '</tr></table>'
+        )
+        assert _parse(html)[0].hit_and_run is True
+
+    def test_plain_row_has_no_hit_and_run(self):
+        """无 circle-text 标记的行不应被误判为 H&R"""
         assert _parse()[0].hit_and_run is False
+
+    def test_quantity_marker_is_not_hit_and_run(self):
+        """n/N 前缀是纯达量考核，不算 H&R"""
+        html = (
+            '<table class="torrentname"><tr>'
+            '<td class="embedded"><a title="N Movie 2024" href="details.php?id=10">x</a>'
+            '<font class="subtitle"><div class="circle">'
+            '<div class="circle-text">n5</div></div></font></td>'
+            '<td></td><td></td><td><span title="2026-07-19 18:55:39"></span></td>'
+            '<td>1.00 / GB</td><td><a>1</a></td><td><a>1</a></td>'
+            '</tr></table>'
+        )
+        assert _parse(html)[0].hit_and_run is False
 
     def test_empty_or_garbage_html_is_safe(self):
         assert _parse("") == []
