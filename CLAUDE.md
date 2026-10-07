@@ -28,10 +28,13 @@ Implications when editing:
   do not fight the merge. The workflow's own comment names `package.v2.json` and the `traktcleaner`
   plugin as frequent conflict points (files both sides have edited).
 - **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
-  V2 `WatchSync`). The overwhelming majority of this fork's own non-merge commits are on
-  `Rsync115Sync`. Develop them freely, but never assume upstream shares them — an upstream merge
-  will not supply their index entries, and upstream edits to the shared index files can conflict
-  with their entries.
+  V2 `WatchSync`). A second category is a **shared plugin the fork has diverged from**: `BrushFlow`
+  exists upstream (v6.1.2) but this fork is far ahead (v6.4.7, ~16 fork-local commits). Develop them
+  freely, but never assume upstream shares your state — an upstream merge will not supply the
+  fork-only index entries, nor carry the fork's newer `BrushFlow` entry. Fork-local non-merge
+  commits are dominated by `Rsync115Sync` (~135), then `BrushFlow` (~16) and `WatchSync` (~15).
+  Because `BrushFlow` lives in `package.v3.json`, upstream edits to the shared index files can
+  conflict there too, not only in `package.v2.json`.
 - `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
   host/IP), and `.testhost/` is a gitignored partial stub — it has stub `app/` modules but **no**
   `app.testing`, so pytest cannot bootstrap against it. Neither is part of the repo.
@@ -58,11 +61,13 @@ Naming/identity rules (all three must agree):
 A Vue-mode plugin has **two more** version fields, and they are checked far more weakly than the
 three above: its own `package.json` `version` and the version chip hardcoded in `Config.vue`. Bump
 all five. `check_plugin_versions.py` *does* inspect these two, but only as a **warning** by default —
-the repo carries several pre-existing drifts (`FullScreenPosterWall`, `BrushFlow`, `WatchSync`, …).
-It becomes a hard **failure only for plugin IDs in `CHECK_STRICT_PLUGINS`**, which
-`.githooks/pre-push` fills with the plugins your push touches. Net effect: the hook is strictly
-stricter than the PR gate, so a drift you introduce in your own plugin fails locally but would slip
-past CI — a false green (v0.2.2 shipped a fix for exactly this drift).
+at the time of writing four drift entries remain (`AgentResourceOfficer`, `FullScreenPosterWall`,
+and `WatchSync` in both `package.v3.json` and `package.v2.json`; run the gate for the live list —
+`BrushFlow` is aligned today but has drifted before). It becomes a hard **failure only for plugin IDs
+in `CHECK_STRICT_PLUGINS`**, which `.githooks/pre-push` fills with the plugins your push touches.
+Net effect: the hook is strictly stricter than the PR gate, so a drift you introduce in your own
+plugin fails locally but would slip past CI — a false green (v0.2.2 shipped a fix for exactly this
+drift).
 
 Plugin source directories are copied wholesale into release zips — `release.yml` excludes only
 `__pycache__` and `*.pyc` — so sibling modules, `dist/`, frontend sources, and any `*.md` inside
@@ -128,6 +133,22 @@ layout) or set `MOVIEPILOT_BACKEND_PATH`. Always use the backend's venv interpre
 > APIs). A prior session reported a fixed count of failing cases without a baseline; those failures
 > turned out to be harness limitations, not regressions.
 
+**Backend-free tests.** `tests/conftest.py` bootstraps the backend at import time, so *no* pytest run
+works without it — not even `tests/ci`. But a test file that never imports `app.*` (e.g. one that
+parses plugin sources with `ast`, or loads a backend-free sibling module through `importlib`) can
+still run with **`--noconftest`**, which skips the bootstrap entirely:
+
+```bash
+/tmp/venv-t/bin/python -m pytest tests/v3/<id>/test_x.py --noconftest -q   # or any local pytest
+```
+
+This is how pure-logic guards (template/source assertions, event-registration contracts, button
+payload shape) stay runnable on a machine with no backend. It is not a substitute for the full
+suite, and `tests/run.py` remains the CI entry point.
+> harness will always have some failures of its own (missing `fastapi`, `caplog` behaviour, private
+> APIs). A prior session reported a fixed count of failing cases without a baseline; those failures
+> turned out to be harness limitations, not regressions.
+
 ```bash
 # Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point)
 ../MoviePilot/.venv/bin/python tests/run.py
@@ -163,15 +184,29 @@ python3 scripts/check_new_plugin_tests.py --base-ref origin/main
 uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py --python 3.14 --platform linux-x64
 
 # Vue federated frontend (inside a plugin that ships one) — run from the plugin directory.
-# Package manager and scripts vary by plugin: check its package.json first (yarn or pnpm;
-# not every plugin defines typecheck). Build output must land in dist/assets/.
-yarn build    # or: pnpm build / yarn typecheck && yarn build when those scripts exist
+# The build script is always `vite build`; pick the package manager from the lockfile that
+# is present (pnpm-lock.yaml → pnpm, package-lock.json → npm, none → npm). No plugin here
+# defines a typecheck script, and none use yarn. Build output must land in dist/assets/.
+pnpm build    # when pnpm-lock.yaml exists (BrushFlow, Rsync115Sync)
+npm ci && npm run build    # when package-lock.json exists (LunaTVSource, CourseOrganizer, …)
 
 git diff --check                 # whitespace check; recommended before commit (no hook runs it)
 ```
 
 `.githooks/pre-push` runs the version gate and the federation CSS gate on every push (it does not run
-tests). Enable it with `git config core.hooksPath .githooks` if it is not already active.
+tests). Enable it with `git config core.hooksPath .githooks` if it is not already active — **check
+this rather than assuming: in this working copy it is not set, so the hook does not run at all** and
+the gates must be invoked by hand.
+
+### Commit message convention
+
+The fork is overwhelmingly Conventional Commits (`type(scope): subject`, ~90% of the last 300
+non-merge commits). `scope` is the plugin ID lowercased (`brushflow`, `rsync115sync`); private
+`alpha:` / `chore:` / `docs:` commits omit it. In the actively developed fork-local plugins
+(`brushflow`, `rsync115sync`) the subject joins the *what* and the *why* with a full-width em dash:
+`fix(brushflow): 站点刷流 v6.4.7 —— 复活区解析 H&R 标记`. Bodies are written in Chinese, start from
+the observed symptom or wrong assumption, and state the consequence — not a restatement of the diff.
+Do not add a separate "why" paragraph that merely repeats the subject.
 
 Note: the backend may not exist locally. `py_compile`, the version gate, `check_federation_css.py`,
 and the standalone scripts under `scripts/` and `.github/scripts/` run without it. Any pytest run
@@ -210,7 +245,43 @@ Entry points on `_PluginBase` — the ones that matter most:
   their frontend sources (`src/`, `vite.config.js`, `package.json`, lockfile) in the plugin directory.
   `plugins.v3/rsync115sync` is the working reference for this layout.
 
-Host access boundaries:
+### Event-handler and endpoint contracts (silent-failure traps)
+
+These are host-side rules that cost a debugging session each when missed, because **every failure
+mode here is silent**: no exception, no plugin log line, and the host still prints its own success
+message. Source of truth is the host's `app/runtime/`, not this repo.
+
+- **Register event handlers on the plugin class, never in a sibling Mixin.** The host resolves a
+  handler's plugin instance by the **declaring class name**:
+  `resolve_event_handler_instance(owner_class)` → `plugin_id = owner_class.__name__` → looks the
+  plugin up in `_plugins`. A handler declared on `class FooOpsMixin` resolves to the string
+  `"FooOpsMixin"`, which is not a plugin, so `invoke_sync` hits `if not resolved: return` and the
+  handler is **dropped**. To split a plugin across files, the Mixin holds an ordinary method and the
+  plugin class holds a thin decorated wrapper that calls it. Symptom: all remote commands seem to
+  "execute" in the host log yet the plugin produces nothing.
+- **Endpoint method signatures become FastAPI response models.** A method listed in `get_api()` is
+  introspected by FastAPI; annotating a parameter with a host type such as `Event` fails
+  (`Invalid args for response field`) and the **whole route silently fails to register** — the
+  dashboard region that calls it just disappears. Use `Any` / plain types in endpoint signatures.
+  (Internal methods are unaffected — only registered endpoints.)
+- **Buttons: `callback_data` must be `[PLUGIN]<PluginID>|<content>`.** The host's callback router
+  (`app/chain/message.py`) is an allowlist; bracket `[PLUGIN]` payloads are parsed by
+  `application/messaging/plugin.py:parse_callback` and re-broadcast as `EventType.MessageAction`
+  with `{plugin_id, text, userid, channel, …}`. Anything else (including a bare slash command) falls
+  to a fallback that replies "回调数据格式错误" to the user — the plugin never sees the event. See
+  `docs/faq/14-message-interaction.md`; a `MessageAction` handler needs an own-`plugin_id` guard
+  because the event is shaped like a broadcast.
+- **`callback_data` is capped at 64 bytes, and exceeding it fails the *entire* message**
+  (`BUTTON_DATA_INVALID`) — not just that one button. Chinese text is 3 bytes per character, so a
+  keyword-bearing payload blows the limit fast. Never put a filename/subject in `callback_data`;
+  carry a short fingerprint and resolve it server-side, and drop buttons rather than lose the
+  message.
+- **`post_message` returns `None` and does not surface delivery failure.** `_messaging.py` logs the
+  provider error and moves on, so a plugin cannot tell whether a notification arrived — and any
+  "already notified" latch would then suppress retries, turning one failed send into permanent
+  silence. Validate everything rejectable *before* sending.
+
+### Host access boundaries
 
 - Use stable SDK imports: `app.sdk.config`, `app.sdk.media`, `app.sdk.events`, `app.sdk.logging`,
   `app.sdk.network`, `app.sdk.services`, `app.sdk.utilities`.
@@ -253,9 +324,15 @@ directory-name collisions, or a `pyproject.toml` with no index entry) rather tha
 Current opt-outs: `AutoSubv2`, `AgentResourceOfficer`, `AnimeUpscale`.
 
 Federated CSS is a hard constraint: never bundle global Vuetify/MDI styles into a remote component.
-Share `vuetify` and `vuetify/styles` with `generate: false`, strip `node_modules/vuetify` and
-`node_modules/@mdi` CSS in PostCSS, and never commit `__federation_shared_vuetify/styles-*.css` —
-remote CSS lands in the host `document` and leaks into the whole UI. Run
+Remote CSS lands in the host `document` and leaks into the whole UI. Share `vue`/`vuetify` with
+`generate: false` and strip `node_modules/vuetify` and `node_modules/@mdi` CSS in PostCSS. The gate
+(`check_federation_css.py`) rejects a committed
+`**/__federation_shared_vuetify/styles-*.css` and any CSS referenced by a `remoteEntry.js` that
+contains unscoped global selectors (`html`, `body`, `:root`, `*`, `.v-*`, `.mdi-*`, `.rounded*`,
+`.elevation-N`) — the historical fix for exactly that was commit `aa50460`. It also **requires every
+federated plugin to be `"release": true`** in its index. Plugin configs differ on whether they list
+`'vuetify/styles'` in `shared` (BrushFlow/WatchSync/Rsync115Sync omit it deliberately; CourseOrganizer/
+LunaTVSource declare it) — both styles pass the gate. Run
 `python .github/scripts/check_federation_css.py` after any frontend build.
 
 ## Index Files and Version Selection
