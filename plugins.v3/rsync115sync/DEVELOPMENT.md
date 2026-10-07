@@ -3586,7 +3586,7 @@ monitor 检测到源码变化、准备热重载时**：
 ```bash
 docker exec mp3 rm -rf /app/app/plugins/rsync115sync/__pycache__
 touch /volume2/docker/moviepilot/config/local_plugins/plugins.v3/rsync115sync/strm_ops.py
-# 等 monitor 轮询（约 1~3 分钟），日志应出现「加载插件：Rsync115Sync 版本：0.4.0」
+# 等 monitor 轮询（约 1~3 分钟），日志应出现「加载插件：Rsync115Sync 版本：0.5.0」
 ```
 
 ⚠️ NAS 侧 `local_plugins/.../__pycache__/` 同样会沾上 root 属主的
