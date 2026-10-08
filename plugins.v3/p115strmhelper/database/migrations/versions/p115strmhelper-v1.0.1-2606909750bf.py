@@ -20,8 +20,8 @@ depends_on = None
 def upgrade() -> None:
     op.execute("""
         DELETE FROM files
-        WHERE rowid NOT IN (
-            SELECT MIN(rowid)
+        WHERE id NOT IN (
+            SELECT MIN(id)
             FROM files
             GROUP BY path
         );
@@ -29,8 +29,8 @@ def upgrade() -> None:
 
     op.execute("""
         DELETE FROM folders
-        WHERE rowid NOT IN (
-            SELECT MIN(rowid)
+        WHERE id NOT IN (
+            SELECT MIN(id)
             FROM folders
             GROUP BY path
         );
