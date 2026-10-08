@@ -13,10 +13,10 @@ class LifeEvent(P115StrmHelperBase):
 
     __tablename__ = "life_event"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
     type = Column(Integer, nullable=False, index=True)
-    file_id = Column(Integer, nullable=False, index=True)
-    parent_id = Column(Integer, nullable=False, index=True)
+    file_id = Column(BigInteger, nullable=False, index=True)
+    parent_id = Column(BigInteger, nullable=False, index=True)
     file_name = Column(String(255), default="")
     file_category = Column(Integer, nullable=False)
     file_type = Column(Integer, nullable=False, index=True)

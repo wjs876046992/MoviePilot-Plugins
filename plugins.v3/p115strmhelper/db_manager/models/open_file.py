@@ -13,8 +13,8 @@ class OpenFile(P115StrmHelperBase):
 
     __tablename__ = "open_files"
 
-    id = Column(Integer, primary_key=True)
-    parent_id = Column(Integer, nullable=False)
+    id = Column(BigInteger, primary_key=True)
+    parent_id = Column(BigInteger, nullable=False)
     name = Column(String(255), default="")
     sha1 = Column(String(40), default="")
     size = Column(BigInteger, default=0)

@@ -1,6 +1,6 @@
 from typing import Set, List, Dict
 
-from sqlalchemy import Column, Integer, String, Text, select
+from sqlalchemy import Column, Integer, BigInteger, String, Text, select
 from sqlalchemy.orm import Session
 
 from ...db_manager import P115StrmHelperBase, db_query, db_update, execute_upsert_batch
@@ -13,8 +13,8 @@ class OpenFolder(P115StrmHelperBase):
 
     __tablename__ = "open_folders"
 
-    id = Column(Integer, primary_key=True)
-    parent_id = Column(Integer, nullable=False)
+    id = Column(BigInteger, primary_key=True)
+    parent_id = Column(BigInteger, nullable=False)
     name = Column(String(255), default="")
     path = Column(Text, unique=True)
 
