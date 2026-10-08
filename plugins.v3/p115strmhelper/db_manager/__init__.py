@@ -319,6 +319,40 @@ class P115StrmHelperBase(_PluginDeclarativeBase):
         return self.__name__.lower()
 
 
+def execute_upsert_batch(db: Session, model: Any, batch: List[dict]) -> bool:
+    """
+    通用跨数据库批量 upsert：兼容 SQLite 与 PostgreSQL。
+
+    - PostgreSQL 下使用 `pg_insert(model).on_conflict_do_update`。
+    - SQLite 下使用 `sqlite_insert(model).prefix_with("OR REPLACE")`。
+    """
+    if not batch:
+        return True
+    dialect_name = getattr(getattr(db, "bind", None), "dialect", None)
+    name = getattr(dialect_name, "name", "")
+    if name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(model)
+        primary_cols = [col.name for col in model.__table__.primary_key.columns]
+        update_cols = {
+            col.name: getattr(stmt.excluded, col.name)
+            for col in model.__table__.columns
+            if col.name not in primary_cols
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=primary_cols,
+            set_=update_cols,
+        )
+        db.execute(stmt, batch)
+    else:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        stmt = sqlite_insert(model).prefix_with("OR REPLACE")
+        db.execute(stmt, batch)
+    return True
+
+
 class DbOper:
     """
     数据库操作基类

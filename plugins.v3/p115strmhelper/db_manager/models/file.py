@@ -14,10 +14,9 @@ from sqlalchemy import (
     update,
     func,
 )
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from ...db_manager import db_update, db_query, P115StrmHelperBase
+from ...db_manager import db_update, db_query, P115StrmHelperBase, execute_upsert_batch
 
 
 class File(P115StrmHelperBase):
@@ -108,9 +107,7 @@ class File(P115StrmHelperBase):
         :param db (Session): 数据库会话
         :param batch (List): 待写入的数据列表
         """
-        stmt = sqlite_insert(File).prefix_with("OR REPLACE")
-        db.execute(stmt, batch)
-        return True
+        return execute_upsert_batch(db, File, batch)
 
     @staticmethod
     @db_update

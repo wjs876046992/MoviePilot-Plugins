@@ -1033,7 +1033,7 @@
     "name": "115网盘STRM助手",
     "description": "115网盘STRM生成一条龙服务",
     "labels": "云盘",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem",
     "level": 1,
@@ -1041,6 +1041,7 @@
     "system_version": ">=3.0.0",
     "v3t": false,
     "history": {
+      "v3.0.2": "修复 PostgreSQL 运行环境下生活事件等数据库批量 upsert 语法错误（syntax error at or near \"OR\"），实现跨 SQLite 与 PostgreSQL 的通用 upsert 机制。",
       "v3.0.1": "适配 MoviePilot v3.1.2：为 P115StrmHelperBase 补充 __abstract__ 与 __allow_unmapped__ 声明，修复 SQLAlchemy 2.0 下的 MappedAnnotationError；将迁移 1.0.1 中的 SQLite 专有 rowid 替换为跨库通用主键 id，兼容 PostgreSQL 运行环境。",
       "v3.0.0": "V3 专用版本：导入迁移到 app.sdk 稳定门面，媒体身份改用 media_source/media_id，数据层改用主程序插件自管理数据库并支持存量库一次性导入。\n\n依赖修正：p115client==0.0.9.6.5.1 只声明 python-concurrenttools>=0.1.8（无上界），解析出的 0.1.9 已把 threadpool_map/taskgroup_map 改名为 thread_conmap/async_conmap，导致 p115client 导入即失败、插件 load_failed；现锁定 python-concurrenttools==0.1.8 修复。\n\nfull_strm_sync / share_strm_scan / txt_tree_storage 未发布到 PyPI，改为随插件目录分发 cp314 wheel，并在 pyproject.toml 用 tool.uv.sources 按平台本地解析；因这些 wheel 无 cp314t 轮子、且 p115center-sdk 也没有，声明 v3t: false。"
     }

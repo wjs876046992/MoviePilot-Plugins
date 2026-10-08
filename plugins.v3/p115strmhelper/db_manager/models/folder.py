@@ -12,10 +12,9 @@ from sqlalchemy import (
     update,
     func,
 )
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from ...db_manager import db_update, db_query, P115StrmHelperBase
+from ...db_manager import db_update, db_query, P115StrmHelperBase, execute_upsert_batch
 
 
 class Folder(P115StrmHelperBase):
@@ -114,9 +113,7 @@ class Folder(P115StrmHelperBase):
 
         :return bool: 始终返回 True
         """
-        stmt = sqlite_insert(Folder).prefix_with("OR REPLACE")
-        db.execute(stmt, batch)
-        return True
+        return execute_upsert_batch(db, Folder, batch)
 
     @staticmethod
     @db_update

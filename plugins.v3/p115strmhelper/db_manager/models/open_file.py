@@ -2,9 +2,8 @@ from typing import Set, List, Dict
 
 from sqlalchemy import Column, Integer, String, BigInteger, Text, select
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from ...db_manager import P115StrmHelperBase, db_query, db_update
+from ...db_manager import P115StrmHelperBase, db_query, db_update, execute_upsert_batch
 
 
 class OpenFile(P115StrmHelperBase):
@@ -51,8 +50,7 @@ class OpenFile(P115StrmHelperBase):
         :param db (Session): 数据库会话
         :param batch (List): 待写入的数据列表
         """
-        stmt = sqlite_insert(OpenFile).prefix_with("OR REPLACE")
-        db.execute(stmt, batch)
+        return execute_upsert_batch(db, OpenFile, batch)
 
     @staticmethod
     @db_query
