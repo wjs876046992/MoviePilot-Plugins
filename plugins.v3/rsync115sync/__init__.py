@@ -177,12 +177,19 @@ from . import progress as _progress  # noqa: E402
 from . import store as _store_mod  # noqa: E402
 from .store import Store as _Store  # noqa: E402
 
+_VIDEO_EXT_SET = {e.strip().lower() for e in STRM_VIDEO_EXTENSIONS.split(",") if e.strip()}
+
+
+def _is_video_file(path: str) -> bool:
+    """判定文件是否为视频文件（用于触发伴生外挂字幕匹配）。"""
+    return _ext_of(path).lower() in _VIDEO_EXT_SET
+
 
 class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.0"
+    plugin_version = "0.5.1"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -977,6 +984,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 看板上零痕迹，直到逐行读代码才发现。
         skipped_ext: Dict[str, int] = {}
         now_ts = time.time()
+        dir_cache: Dict[str, Optional[List[str]]] = {}
 
         for file_path in raw_paths or []:
             if not file_path:
@@ -1015,12 +1023,36 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                         skipped_ext, from_scan)
                     if sub:
                         added_paths.append(sub)
+
+                    # 伴生外挂字幕联动补偿（解决纯扫描模式下外挂字幕因 mtime 较旧被遗漏）：
+                    # 若当前文件是主媒体视频，无论从扫描还是单文件 Webhook 进来，
+                    # 均检索同目录下同主名的伴生字幕（.srt, .ass 等），并继承主视频的冷却基准，
+                    # 确保视频与外挂字幕成套入队、同一时刻到期并在同一批 rsync 中上传。
+                    if _is_video_file(file_path):
+                        rel_path = os.path.relpath(file_path, src_root)
+                        sidecars = self._find_sidecar_files(src_root, rel_path, dir_cache)
+                        if sidecars:
+                            queue_key = f"{pair_name}:{rel_path}"
+                            main_basis = self._pending_queue.get(queue_key)
+                            if main_basis is None:
+                                main_basis = self._cooldown_basis(file_path, now_ts, from_scan)
+                            for sc_rel in sidecars:
+                                sc_full = os.path.join(src_root, sc_rel)
+                                sc_sub = self._enqueue_one_path(
+                                    sc_full, own_pair, src_root, pair_name, now_ts, counts,
+                                    skipped_ext, from_scan, override_basis=main_basis)
+                                if sc_sub:
+                                    added_paths.append(sc_sub)
                     continue
+
+                # all_ext 映射：把同一目录下的所有同级附属文件一并入队，
+                # 并共享当前主文件的冷却基准时间，避免附属文件因旧 mtime 提前上传。
                 counts["expanded"] += 1
+                main_basis = self._cooldown_basis(file_path, now_ts, from_scan)
                 for mate in siblings:
                     sub = self._enqueue_one_path(
                         mate, own_pair, src_root, pair_name, now_ts, counts,
-                        skipped_ext, from_scan)
+                        skipped_ext, from_scan, override_basis=main_basis)
                     if sub:
                         added_paths.append(sub)
                 continue
@@ -1253,7 +1285,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     def _enqueue_one_path(self, file_path: str, own_pair: Dict[str, Any], src_root: str,
                           pair_name: str, now_ts: float, counts: Dict[str, int],
                           skipped_ext: Optional[Dict[str, int]] = None,
-                          from_scan: bool = False) -> str:
+                          from_scan: bool = False,
+                          override_basis: Optional[float] = None) -> str:
         """
         对**单个文件**做完整入队判定，返回入队的相对路径（未入队返回空串）。
 
@@ -1265,6 +1298,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             传 None 表示调用方不需要这个维度（单测直调常见）。
         :param from_scan: 候选是否来自源端扫描。它只影响「取不到 mtime 时」的兜底
             方向（见 `_cooldown_basis`），默认 False = 信任发现时刻（webhook 路径）。
+        :param override_basis: 指定冷却基准时间戳。主要用于「同主名伴生字幕」或
+            「all_ext 兄弟文件」强制继承主媒体视频的基准时间，确保同批冷却并同一轮上传。
         """
         if not _wh_valid_extension(own_pair, file_path, self._media_extensions):
             counts["skipped"] += 1
@@ -1301,7 +1336,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             counts["duplicate"] += 1
             return ""
 
-        self._pending_queue[queue_key] = self._cooldown_basis(file_path, now_ts, from_scan)
+        basis = override_basis if override_basis is not None else self._cooldown_basis(file_path, now_ts, from_scan)
+        self._pending_queue[queue_key] = basis
         counts["added"] += 1
         return rel_path
 
