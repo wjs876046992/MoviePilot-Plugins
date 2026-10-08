@@ -1780,23 +1780,62 @@ class StrmOpsMixin:
                                f"—— 等条件满足后重新发起即可。）"}
 
         deleted, undeletable = self._delete_dest_files_for_retry(keys)
+        # 细分不可处理原因，绝不把「本地源文件缺失」误报成「CD2 挂载未就绪」
+        src_missing: List[str] = []
+        mount_failed: List[str] = []
+        unmapped: List[str] = []
+        for k in undeletable:
+            pair = None
+            rel_p = None
+            for p in self._sync_pairs:
+                pn = _pair_name(p)
+                if k.startswith(f"{pn}:"):
+                    pair = p
+                    rel_p = k.split(f"{pn}:", 1)[1]
+                    break
+            if pair is None or not rel_p:
+                unmapped.append(k)
+            else:
+                src_root = (pair.get("src") or "").strip().rstrip("/")
+                src_file = os.path.join(src_root, rel_p)
+                if not os.path.isfile(src_file):
+                    src_missing.append(k)
+                else:
+                    mount_failed.append(k)
+
         if not deleted:
-            # 全都没删掉 = 挂载点很可能不可用。此时**一个都不传**：
-            # 带着脏视图的 rsync 会被 --size-only 判定「已同步」而整批跳过。
-            listed = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
+            # 一个都没删掉：按具体原因向用户如实回报
+            reasons = []
+            if src_missing:
+                listed = "\n".join(f"• {k}" for k in src_missing[:_MAX_LOGGED_PATHS])
+                more = f"\n（另有 {len(src_missing) - _MAX_LOGGED_PATHS} 个未列出）" if len(src_missing) > _MAX_LOGGED_PATHS else ""
+                reasons.append(f"{len(src_missing)} 个文件因本地源文件不存在已跳过（未删除云端旧文件，防误删）：\n"
+                               f"{listed}{more}\n"
+                               f"（提示：本地文件可能已被移动、改名或删除；可使用 /rsync_strm prune 清理无效条目）")
+            if mount_failed:
+                listed = "\n".join(f"• {k}" for k in mount_failed[:_MAX_LOGGED_PATHS])
+                more = f"\n（另有 {len(mount_failed) - _MAX_LOGGED_PATHS} 个未列出）" if len(mount_failed) > _MAX_LOGGED_PATHS else ""
+                reasons.append(f"{len(mount_failed)} 个文件在目标端删除失败，未重传任何文件（挂载点可能未就绪）：\n"
+                               f"{listed}{more}\n"
+                               f"请检查 CD2 挂载状态后重试。")
+            if unmapped:
+                listed = "\n".join(f"• {k}" for k in unmapped[:_MAX_LOGGED_PATHS])
+                reasons.append(f"{len(unmapped)} 个文件无法匹配任何映射配置：\n{listed}")
+
+            msg = "\n\n".join(reasons) if reasons else f"{len(undeletable)} 个文件无法处理，未重传任何文件。"
             return {"success": False,
-                    "message": f"{len(undeletable)} 个文件在目标端删除失败，未重传任何文件"
-                               f"（挂载点可能未就绪）：\n{listed}\n"
-                               f"请检查 CD2 挂载状态后重试。",
+                    "message": msg,
                     "data": {"deleted": [], "undeletable": undeletable}}
 
-        # 部分失败：传能传的，但把失败的**明确列出来**，不静默吞掉
-        note = ""
-        if undeletable:
-            listed = "\n".join(f"• {k}" for k in undeletable[:_MAX_LOGGED_PATHS])
-            more = f"\n（共 {len(undeletable)} 个）" if len(undeletable) > _MAX_LOGGED_PATHS else ""
-            note = (f"\n\n⚠️ 另有 {len(undeletable)} 个目标端删除失败、已跳过"
-                    f"（挂载点可能未就绪）：\n{listed}{more}")
+        # 部分失败：传能传的，但把失败的明确分类列出来，不静默吞掉
+        note_parts = []
+        if src_missing:
+            note_parts.append(f"{len(src_missing)} 个本地缺失已跳过（可使用 /rsync_strm prune 清理）")
+        if mount_failed:
+            note_parts.append(f"{len(mount_failed)} 个目标端删除失败已跳过（挂载点可能未就绪）")
+        if unmapped:
+            note_parts.append(f"{len(unmapped)} 个未匹配映射已跳过")
+        note = f"\n\n⚠️ 另有 " + "、".join(note_parts) if note_parts else ""
 
         # ⚠️ channel_event 必须往下传：不传的话 `_execute_sync` 里所有反馈都会
         # 被 `_post_reply(channel_event=None, ...)` 静默丢弃，用户只看到发起时
