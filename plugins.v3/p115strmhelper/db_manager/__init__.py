@@ -230,6 +230,9 @@ class P115StrmHelperBase(_PluginDeclarativeBase):
     P115StrmHelper 数据库模型基类，提供通用的 CRUD 操作方法
     """
 
+    __abstract__ = True
+    __allow_unmapped__ = True
+
     id: Any
     __name__: str
 
