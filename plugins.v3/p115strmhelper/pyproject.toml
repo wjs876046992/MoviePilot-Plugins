@@ -3,17 +3,9 @@ name = "moviepilot-plugin-p115strmhelper"
 dynamic = ["version"]
 requires-python = ">=3.14"
 dependencies = [
-    "p115client==0.0.9.6.5.1",
-    # ⚠️ 必须与 p115client 一同锁定。
-    # p115client 0.0.9.6.5.1 在 tool/upload.py 里 `from concurrenttools import
-    # threadpool_map, taskgroup_map`，而它只声明 `python-concurrenttools>=0.1.8`
-    # （无上界）。python-concurrenttools 0.1.9 已把这两个名字改名为
-    # thread_conmap / async_conmap，因此不锁定时解析出的 0.1.9 会让 p115client
-    # 导入即失败，插件以 load_failed 结束。锁定到 0.1.8 即恢复。
-    # 升级 p115client 到使用 thread_conmap/async_conmap 的版本（>=0.0.9.7.2）后，
-    # 可改为 python-concurrenttools>=0.1.9 并删除本行。
-    "python-concurrenttools==0.1.8",
-    "sentry-sdk~=2.68.0",
+    "p115client==0.0.9.7.2",
+    "python-concurrenttools>=0.1.9",
+    "sentry-sdk~=2.71.0",
     "aligo~=6.2.8",
     "qrcode_terminal~=0.8",
     "pyahocorasick~=2.3.0",

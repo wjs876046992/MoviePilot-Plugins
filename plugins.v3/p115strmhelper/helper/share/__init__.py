@@ -13,9 +13,10 @@ from p115client.tool.iterdir import share_iterdir
 from p115client.util import share_extract_payload
 
 from app.chain.media import MediaChain
-from app.sdk.media import MediaInfo, MetaInfo
-from app.sdk.logging import logger
-from app.sdk.utilities import StringUtils
+from app.core.context import MediaInfo
+from app.core.metainfo import MetaInfo
+from app.log import logger
+from app.utils.string import StringUtils
 
 from ...core.aliyunpan import BAligo
 from ...core.config import configer
@@ -117,7 +118,7 @@ class ShareTransferHelper:
                 share_code=share_code,
                 cid=0,
                 app="web",
-                max_workers=0,
+                order="user_ptime",
                 **configer.get_ios_ua_app(app=False),
             ):
                 if file_num == 1:
@@ -338,7 +339,7 @@ class ShareTransferHelper:
                         share_code=share_code,
                         cid=0,
                         app="web",
-                        max_workers=0,
+                        order="user_ptime",
                         **configer.get_ios_ua_app(app=False),
                     )
                 ]

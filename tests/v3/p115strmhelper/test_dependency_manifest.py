@@ -38,20 +38,13 @@ def _dependency(manifest: dict, name: str) -> str | None:
 
 
 def test_p115client_is_pinned_exactly(manifest):
-    """p115client 锁到具体版本，避免浮动到使用新 concurrenttools 名字的版本。"""
-    assert _dependency(manifest, "p115client") == "p115client==0.0.9.6.5.1"
+    """p115client 升级并锁到 0.0.9.7.2。"""
+    assert _dependency(manifest, "p115client") == "p115client==0.0.9.7.2"
 
 
-def test_concurrenttools_is_pinned_to_compatible_018(manifest):
-    """关键回归：必须精确锁 0.1.8，否则解析出的 0.1.9 会让 p115client 导入失败。"""
-    assert _dependency(manifest, "python-concurrenttools") == "python-concurrenttools==0.1.8"
-
-
-def test_concurrenttools_pin_is_not_an_open_range(manifest):
-    """禁止改回 ``>=0.1.8`` 这类无上界写法（这正是故障根因）。"""
-    declared = _dependency(manifest, "python-concurrenttools")
-    assert declared is not None
-    assert ">=" not in declared and "~=" not in declared and ">" not in declared
+def test_concurrenttools_is_compatible_with_019(manifest):
+    """0.0.9.7.2 已原生适配 concurrenttools 0.1.9 的新 API。"""
+    assert _dependency(manifest, "python-concurrenttools") == "python-concurrenttools>=0.1.9"
 
 
 @pytest.mark.parametrize("package", RUST_PACKAGES)

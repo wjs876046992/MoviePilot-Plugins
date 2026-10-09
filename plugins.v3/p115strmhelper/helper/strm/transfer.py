@@ -6,10 +6,12 @@ from p115client import P115Client
 from p115client.tool.attr import get_attr
 
 from app.chain.storage import StorageChain
-from app.sdk.config import settings
-from app.sdk.media import MediaInfo, MetaBase, MetaInfoPath
-from app.application.directory import DirectoryHelper
-from app.sdk.logging import logger
+from app.core.config import settings
+from app.core.context import MediaInfo
+from app.core.meta import MetaBase
+from app.core.metainfo import MetaInfoPath
+from app.helper.directory import DirectoryHelper
+from app.log import logger
 from app.schemas import TransferInfo, FileItem
 from app.schemas.types import EventType, ChainEventType
 
@@ -272,7 +274,7 @@ class TransferStrmHelper:
         item: Dict,
         event_type: Union[EventType, ChainEventType],
         mediainfodownloader: MediaInfoDownloader,
-    ):
+    ) -> None:
         """
         生成 STRM 操作
 
@@ -281,13 +283,23 @@ class TransferStrmHelper:
         :param event_type (Union): 事件类型
         :param mediainfodownloader (MediaInfoDownloader): 媒体信息下载器实例
         """
-        _database_helper = FileDbHelper()
-        _get_url = StrmUrlGetter()
-
         # 转移信息
         item_transfer: Optional[TransferInfo] = item.get("transferinfo")
         if isinstance(item_transfer, dict):
             item_transfer: TransferInfo = TransferInfo(**item_transfer)
+        if (
+            item_transfer is None
+            or item_transfer.target_item is None
+            or item_transfer.target_diritem is None
+        ):
+            logger.debug(
+                "【监控整理STRM生成】整理结果缺少目标文件或目录信息，跳过 STRM 生成"
+            )
+            return
+
+        _database_helper = FileDbHelper()
+        _get_url = StrmUrlGetter()
+
         # 媒体信息
         mediainfo: Optional[MediaInfo] = item.get("mediainfo")
         # 元数据信息
