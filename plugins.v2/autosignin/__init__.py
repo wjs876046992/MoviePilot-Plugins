@@ -1924,6 +1924,12 @@ class AutoSignIn(_PluginBase):
             if has_signin_evidence(page_source):
                 logger.info(f"{site} 签到成功，已确认站点返回的签到状态")
                 return SiteResult(site, "签到成功", True, True)
+            try:
+                from pathlib import Path
+                Path("/config/temp/audiences_debug.html").write_text(page_source, encoding="utf-8")
+                logger.info(f"{site} 调试信息：已保存签到返回源码至 /config/temp/audiences_debug.html")
+            except Exception as e:
+                logger.warning(f"保存调试文件失败: {e}")
             logger.info(f"{site} 登录成功，签到未确认")
             return SiteResult(site, "登录成功，签到未确认", False, True)
         except Exception as e:
