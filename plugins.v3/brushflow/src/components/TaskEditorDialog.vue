@@ -9,9 +9,9 @@ const props = defineProps({
   sites: { type: Array, default: () => [] },
   downloaders: { type: Array, default: () => [] },
   globalDynamicDelete: { type: Boolean, default: false },
-  // 全局阈值文本与当前下载器是否单独配了删种阈值，用于「跟随」模式下的提示
+  // 全局阈值文本与下载器独立限额配置字典
   globalDeleteRange: { type: String, default: '' },
-  scopedDownloaderDeleteRange: { type: String, default: '' },
+  downloaderLimits: { type: Object, default: () => ({}) },
   saving: { type: Boolean, default: false },
 })
 
@@ -28,6 +28,15 @@ const renewCapable = computed(
   () => props.sites.find(item => item.value === Number(localTask.value.site_id))?.renew === true
 )
 const scheduleText = computed(() => localTask.value.cron || `每 ${localTask.value.brush_interval || 10} 分钟`)
+
+// 当前选中的下载器是否单独配了动态删种阈值，直接响应 localTask.downloader 的变化
+const scopedDownloaderDeleteRange = computed(() => {
+  const name = localTask.value.downloader
+  if (!name) return ''
+  const limit = (props.downloaderLimits || {})[name] || {}
+  return limit.proxy_delete && limit.delete_size_range ? String(limit.delete_size_range) : ''
+})
+
 // 删除方式在「按条件删除」与三个阈值来源之间切换，映射到后端的两个字段
 const deleteMode = computed({
   get() {

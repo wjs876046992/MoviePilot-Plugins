@@ -97,12 +97,6 @@ function downloaderLimitSummary(name) {
   }
   return parts.join(' · ')
 }
-// 选中任务绑定的下载器当前是否单独配了删种阈值，供任务编辑器「跟随下载器」模式判断可用性
-const selectedDownloaderDeleteRange = computed(() => {
-  const name = editorTask.value.downloader
-  const limit = (status.value.downloader_limits || {})[name] || {}
-  return limit.proxy_delete && limit.delete_size_range ? String(limit.delete_size_range) : ''
-})
 // 检查事件的摘要：区分任务自身的条件删除与体积托管删种，避免两个数字混在一起
 function runEventCheckText(run) {
   const taskDeleted = Number(run.deleted_count || 0) - Number(run.global_deleted_count || 0)
@@ -1038,7 +1032,7 @@ defineExpose({ loadStatus, refreshAll, loading, saving })
       :downloaders="status.options.downloaders"
       :global-dynamic-delete="Boolean(status.global_dynamic_delete)"
       :global-delete-range="status.global_delete_size_range || ''"
-      :scoped-downloader-delete-range="selectedDownloaderDeleteRange"
+      :downloader-limits="status.downloader_limits || {}"
       :saving="saving"
       @save="saveTask"
     />

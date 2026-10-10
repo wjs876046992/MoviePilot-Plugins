@@ -49,9 +49,9 @@ const _sfc_main$1 = {
   sites: { type: Array, default: () => [] },
   downloaders: { type: Array, default: () => [] },
   globalDynamicDelete: { type: Boolean, default: false },
-  // 全局阈值文本与当前下载器是否单独配了删种阈值，用于「跟随」模式下的提示
+  // 全局阈值文本与下载器独立限额配置字典
   globalDeleteRange: { type: String, default: '' },
-  scopedDownloaderDeleteRange: { type: String, default: '' },
+  downloaderLimits: { type: Object, default: () => ({}) },
   saving: { type: Boolean, default: false },
 },
   emits: ['update:modelValue', 'save'],
@@ -72,6 +72,15 @@ const renewCapable = computed$1(
   () => props.sites.find(item => item.value === Number(localTask.value.site_id))?.renew === true
 );
 const scheduleText = computed$1(() => localTask.value.cron || `每 ${localTask.value.brush_interval || 10} 分钟`);
+
+// 当前选中的下载器是否单独配了动态删种阈值，直接响应 localTask.downloader 的变化
+const scopedDownloaderDeleteRange = computed$1(() => {
+  const name = localTask.value.downloader;
+  if (!name) return ''
+  const limit = (props.downloaderLimits || {})[name] || {};
+  return limit.proxy_delete && limit.delete_size_range ? String(limit.delete_size_range) : ''
+});
+
 // 删除方式在「按条件删除」与三个阈值来源之间切换，映射到后端的两个字段
 const deleteMode = computed$1({
   get() {
@@ -905,7 +914,7 @@ return (_ctx, _cache) => {
                                     }, 8, ["disabled"]),
                                     _createVNode$1(_component_VBtn, {
                                       value: 'downloader',
-                                      disabled: !__props.scopedDownloaderDeleteRange
+                                      disabled: !scopedDownloaderDeleteRange.value
                                     }, {
                                       default: _withCtx$1(() => [...(_cache[67] || (_cache[67] = [
                                         _createTextVNode$1("跟随下载器", -1)
@@ -949,7 +958,7 @@ return (_ctx, _cache) => {
                                 : (deleteMode.value === 'downloader')
                                   ? (_openBlock$1(), _createElementBlock$1("div", _hoisted_13$1, [
                                       _createTextVNode$1(" 使用下载器「" + _toDisplayString$1(localTask.value.downloader || '未选择') + "」的阈值 ", 1),
-                                      _createElementVNode$1("strong", null, _toDisplayString$1(__props.scopedDownloaderDeleteRange), 1),
+                                      _createElementVNode$1("strong", null, _toDisplayString$1(scopedDownloaderDeleteRange.value), 1),
                                       _cache[71] || (_cache[71] = _createTextVNode$1(" GB 独立判定。 ", -1))
                                     ]))
                                   : (_openBlock$1(), _createElementBlock$1("div", _hoisted_14$1, " 不参与体积删种，只按下方触发条件删除。 ")),
@@ -1260,7 +1269,7 @@ return (_ctx, _cache) => {
 }
 
 };
-const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-3f69f50a"]]);
+const TaskEditorDialog = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-213b0108"]]);
 
 const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,withCtx:_withCtx,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,mergeProps:_mergeProps,createElementBlock:_createElementBlock,renderList:_renderList,Fragment:_Fragment,unref:_unref,normalizeClass:_normalizeClass,normalizeStyle:_normalizeStyle} = await importShared('vue');
 
@@ -1447,12 +1456,6 @@ function downloaderLimitSummary(name) {
   }
   return parts.join(' · ')
 }
-// 选中任务绑定的下载器当前是否单独配了删种阈值，供任务编辑器「跟随下载器」模式判断可用性
-const selectedDownloaderDeleteRange = computed(() => {
-  const name = editorTask.value.downloader;
-  const limit = (status.value.downloader_limits || {})[name] || {};
-  return limit.proxy_delete && limit.delete_size_range ? String(limit.delete_size_range) : ''
-});
 // 检查事件的摘要：区分任务自身的条件删除与体积托管删种，避免两个数字混在一起
 function runEventCheckText(run) {
   const taskDeleted = Number(run.deleted_count || 0) - Number(run.global_deleted_count || 0);
@@ -2973,10 +2976,10 @@ return (_ctx, _cache) => {
       downloaders: status.value.options.downloaders,
       "global-dynamic-delete": Boolean(status.value.global_dynamic_delete),
       "global-delete-range": status.value.global_delete_size_range || '',
-      "scoped-downloader-delete-range": selectedDownloaderDeleteRange.value,
+      "downloader-limits": status.value.downloader_limits || {},
       saving: saving.value,
       onSave: saveTask
-    }, null, 8, ["modelValue", "task", "sites", "downloaders", "global-dynamic-delete", "global-delete-range", "scoped-downloader-delete-range", "saving"]),
+    }, null, 8, ["modelValue", "task", "sites", "downloaders", "global-dynamic-delete", "global-delete-range", "downloader-limits", "saving"]),
     _createVNode(_component_VDialog, {
       modelValue: deleteDialog.value,
       "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((deleteDialog).value = $event)),
@@ -3074,6 +3077,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4ae1d6e2"]]);
+const BrushFlowWorkbench = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-55db937f"]]);
 
 export { BrushFlowWorkbench as B };
