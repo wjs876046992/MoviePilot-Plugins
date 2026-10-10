@@ -17,7 +17,9 @@ globals, and import-time side effects as process-wide concerns.
 ## Fork and Upstream Sync
 
 This working copy is a **fork** of upstream `jxxghp/MoviePilot-Plugins` (`origin` = the personal
-fork; `upstream` = jxxghp). `.github/workflows/sync-upstream.yml` merges `upstream/main` into `main`
+fork). The upstream remote is **not necessarily configured locally** — in this working copy
+`git remote -v` shows only `origin`, but a locally cached `refs/remotes/upstream/main` ref survives
+from the sync workflow. `.github/workflows/sync-upstream.yml` merges `upstream/main` into `main`
 on a daily schedule (and on `workflow_dispatch`): a clean merge auto-pushes to `main`; a conflicted
 merge aborts, force-pushes a `sync-upstream` branch, and opens/refreshes a PR for manual resolution
 (needs the `SYNC_TOKEN` secret — without it the run errors and prints a compare link instead).
@@ -30,10 +32,12 @@ Implications when editing:
 - **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
   V2 `WatchSync`), as well as V3 `P115StrmHelper` (bundles offline cp314 wheels in `wheels/`). A second
   category is a **shared plugin the fork has diverged from**: `BrushFlow` exists upstream (v6.1.2) but
-  this fork is far ahead (v6.4.13, ~18 fork-local commits). Develop them freely, but never assume upstream
+  this fork is far ahead (v6.4.13). Develop them freely, but never assume upstream
   shares your state — an upstream merge will not supply the fork-only index entries, nor carry the fork's
-  newer `BrushFlow` entry. Fork-local non-merge commits are dominated by `Rsync115Sync` (~135), then
-  `BrushFlow` (~18), `WatchSync` (~15), and `P115StrmHelper`.
+  newer `BrushFlow` entry. Fork-local non-merge commit totals drift upward as work continues; run
+  `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count rather than trusting a
+  number here (at the time of writing `Rsync115Sync` dominates by far, then `BrushFlow`, `WatchSync`,
+  `P115StrmHelper`).
   Because `BrushFlow` and `P115StrmHelper` live in `package.v3.json`, upstream edits to the shared index
   files can conflict there too, not only in `package.v2.json`.
 - `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
@@ -61,10 +65,12 @@ Naming/identity rules (all three must agree):
 
 A Vue-mode plugin has **two more** version fields, and they are checked far more weakly than the
 three above: its own `package.json` `version` and the version chip hardcoded in `Config.vue`. Bump
-all five. `check_plugin_versions.py` *does* inspect these two, but only as a **warning** by default —
-at the time of writing four drift entries remain (`AgentResourceOfficer`, `FullScreenPosterWall`,
-and `WatchSync` in both `package.v3.json` and `package.v2.json`; run the gate for the live list —
-`BrushFlow` is aligned today but has drifted before). It becomes a hard **failure only for plugin IDs
+all five. `check_plugin_versions.py` *does* inspect these two, but only as a **warning** by default.
+Run the gate for the live list rather than trusting a count here (it changes as plugins are touched):
+`python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json`.
+At the time of writing it reports three drift entries — `FullScreenPosterWall` and `WatchSync` in
+`package.v3.json`, and `WatchSync` in `package.v2.json`; `BrushFlow` is aligned today but has drifted
+before. It becomes a hard **failure only for plugin IDs
 in `CHECK_STRICT_PLUGINS`**, which `.githooks/pre-push` fills with the plugins your push touches.
 Net effect: the hook is strictly stricter than the PR gate, so a drift you introduce in your own
 plugin fails locally but would slip past CI — a false green (v0.2.2 shipped a fix for exactly this
@@ -324,6 +330,20 @@ V3 extra dependencies go in `plugins.v3/<id>/pyproject.toml`. The manifest contr
 - Plugins must never execute package managers (`pip`, `uv`, etc.) via subprocess or shell
 - Dependencies install into the host shared environment and must not downgrade or override MoviePilot core dependencies
 
+⚠️ **Known failing manifests at the time of writing.** This gate is *not* currently green against the
+repo as committed — two fork-local plugins violate the contract above:
+
+- `plugins.v3/rsync115sync/pyproject.toml` — `project.name = "rsync115sync"` (should be
+  `moviepilot-plugin-rsync115sync`) and `requires-python = ">=3.10"` (should be `">=3.14"`).
+- `plugins.v3/p115strmhelper/pyproject.toml` — its `[tool.uv.sources]` entries are **lists** of
+  `{path, marker}` tables (bundled per-platform wheels), while
+  `test_v3_uv_sources_reference_declared_dependencies_and_indexes` asserts each source is a single
+  dict. This is a deliberate fork pattern the upstream test does not model.
+
+Both fail under `uv run --with pytest --with packaging pytest tests/ci/test_v3_dependency_manifests.py
+--noconftest` (2 failed, 14 passed). Fix the manifest *before* relying on this test as a signal, and
+expect the fix to be a real change to the plugin, not a test edit — upstream owns this test.
+
 Declare a dependency-gate platform subset with:
 
 ```toml
@@ -344,7 +364,8 @@ Only a literal boolean `false` opts out — a missing field or any other value m
 The opt-out is read by `scripts/check_v3_dependency_install.py` (`FREE_THREADED_FIELD`), which
 **errors if a manifest cannot be matched to exactly one `package.v3.json` ID** (case-folded
 directory-name collisions, or a `pyproject.toml` with no index entry) rather than silently passing.
-Current opt-outs: `AutoSubv2`, `AgentResourceOfficer`, `AnimeUpscale`.
+Current opt-outs: `AutoSubv2`, `AnimeUpscale`, `AutoSubtitle`, `SubtitleAssistant`,
+`P115StrmHelper`.
 
 Federated CSS is a hard constraint: never bundle global Vuetify/MDI styles into a remote component.
 Remote CSS lands in the host `document` and leaks into the whole UI. Share `vue`/`vuetify` with
@@ -354,9 +375,9 @@ Remote CSS lands in the host `document` and leaks into the whole UI. Share `vue`
 contains unscoped global selectors (`html`, `body`, `:root`, `*`, `.v-*`, `.mdi-*`, `.rounded*`,
 `.elevation-N`) — the historical fix for exactly that was commit `aa50460`. It also **requires every
 federated plugin to be `"release": true`** in its index. Plugin configs differ on whether they list
-`'vuetify/styles'` in `shared` (BrushFlow/WatchSync/Rsync115Sync omit it deliberately; CourseOrganizer/
-LunaTVSource declare it) — both styles pass the gate. Run
-`python .github/scripts/check_federation_css.py` after any frontend build.
+`'vuetify/styles'` in `shared`: `Rsync115Sync` omits it deliberately, while BrushFlow, WatchSync,
+CourseOrganizer, LunaTVSource, FullScreenPosterWall, and P115StrmHelper all declare it — both styles
+pass the gate. Run `python .github/scripts/check_federation_css.py` after any frontend build.
 
 ## Index Files and Version Selection
 
