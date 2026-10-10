@@ -1037,7 +1037,7 @@
     "name": "115网盘STRM助手",
     "description": "115网盘STRM生成一条龙服务",
     "labels": "云盘",
-    "version": "3.1.1",
+    "version": "3.1.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem",
     "level": 1,
@@ -1045,6 +1045,7 @@
     "system_version": ">=3.0.0",
     "v3t": false,
     "history": {
+      "v3.1.2": "同步上游 v2.8.76 更新：适配 RE0（原 HDHive）新域名（re0.me）以及配套的签到、频道搜索、资源解锁流程，优化 Cloudflare 校验处理与资源提取。",
       "v3.1.1": "为数据库 files(parent_id, pickcode)、folders(parent_id)、open_files(parent_id, pick_code)、open_folders(parent_id) 等高频过滤列建立 B-Tree 索引（Alembic 迁移 1.0.5），显著消除全表扫描，提升万级媒体数据下的比对与反查性能。",
       "v3.1.0": "同步上游 v2.8.75 更新：升级 p115client 至 0.0.9.7.2 并原生适配 python-concurrenttools 0.1.9 新接口；修复增量同步目录树串集与冲突映射（#450）；修复整理结果不完整时的异常（#455）；清理残留的通用刮削图片与 NFO（#437）；修复增量清理误处理目录问题（#446）。",
       "v3.0.3": "修复 PostgreSQL 运行环境下 64 位网盘 ID 溢出异常（NumericValueOutOfRange / 9h9h）：新增 1.0.4 数据库迁移，将 files、folders、life_event、open_files、open_folders 表中的 id、parent_id、file_id 等字段从 32 位 Integer 提升为 64 位 BigInteger。",
