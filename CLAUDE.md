@@ -28,13 +28,14 @@ Implications when editing:
   do not fight the merge. The workflow's own comment names `package.v2.json` and the `traktcleaner`
   plugin as frequent conflict points (files both sides have edited).
 - **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
-  V2 `WatchSync`). A second category is a **shared plugin the fork has diverged from**: `BrushFlow`
-  exists upstream (v6.1.2) but this fork is far ahead (v6.4.7, ~16 fork-local commits). Develop them
-  freely, but never assume upstream shares your state — an upstream merge will not supply the
-  fork-only index entries, nor carry the fork's newer `BrushFlow` entry. Fork-local non-merge
-  commits are dominated by `Rsync115Sync` (~135), then `BrushFlow` (~16) and `WatchSync` (~15).
-  Because `BrushFlow` lives in `package.v3.json`, upstream edits to the shared index files can
-  conflict there too, not only in `package.v2.json`.
+  V2 `WatchSync`), as well as V3 `P115StrmHelper` (bundles offline cp314 wheels in `wheels/`). A second
+  category is a **shared plugin the fork has diverged from**: `BrushFlow` exists upstream (v6.1.2) but
+  this fork is far ahead (v6.4.13, ~18 fork-local commits). Develop them freely, but never assume upstream
+  shares your state — an upstream merge will not supply the fork-only index entries, nor carry the fork's
+  newer `BrushFlow` entry. Fork-local non-merge commits are dominated by `Rsync115Sync` (~135), then
+  `BrushFlow` (~18), `WatchSync` (~15), and `P115StrmHelper`.
+  Because `BrushFlow` and `P115StrmHelper` live in `package.v3.json`, upstream edits to the shared index
+  files can conflict there too, not only in `package.v2.json`.
 - `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
   host/IP), and `.testhost/` is a gitignored partial stub — it has stub `app/` modules but **no**
   `app.testing`, so pytest cannot bootstrap against it. Neither is part of the repo.
@@ -136,18 +137,16 @@ layout) or set `MOVIEPILOT_BACKEND_PATH`. Always use the backend's venv interpre
 **Backend-free tests.** `tests/conftest.py` bootstraps the backend at import time, so *no* pytest run
 works without it — not even `tests/ci`. But a test file that never imports `app.*` (e.g. one that
 parses plugin sources with `ast`, or loads a backend-free sibling module through `importlib`) can
-still run with **`--noconftest`**, which skips the bootstrap entirely:
+still run with **`--noconftest`**, which skips the bootstrap entirely. Use `uv` or any local python:
 
 ```bash
-/tmp/venv-t/bin/python -m pytest tests/v3/<id>/test_x.py --noconftest -q   # or any local pytest
+uv run --with pytest pytest tests/v3/<id>/test_x.py --noconftest -q
+uv run --with pytest pytest tests/ci/test_v3_contract.py --noconftest -q
 ```
 
 This is how pure-logic guards (template/source assertions, event-registration contracts, button
-payload shape) stay runnable on a machine with no backend. It is not a substitute for the full
-suite, and `tests/run.py` remains the CI entry point.
-> harness will always have some failures of its own (missing `fastapi`, `caplog` behaviour, private
-> APIs). A prior session reported a fixed count of failing cases without a baseline; those failures
-> turned out to be harness limitations, not regressions.
+payload shape, CI gate contracts) stay runnable on a machine with no backend. It is not a substitute
+for the full suite, and `tests/run.py` remains the CI entry point.
 
 ```bash
 # Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point)
@@ -157,11 +156,11 @@ suite, and `tests/run.py` remains the CI entry point.
 ../MoviePilot/.venv/bin/python -m pytest tests/v3
 ../MoviePilot/.venv/bin/python -m pytest tests/v2
 
-# Single plugin, or a single test
+# Single plugin, or a single test (backend environment)
 ../MoviePilot/.venv/bin/python -m pytest tests/v3/rsync115sync
 ../MoviePilot/.venv/bin/python -m pytest tests/v3/rsync115sync/test_plugin.py::test_name
 
-# Fast syntax-only check (works without the backend, plain python3 is fine)
+# Fast syntax-only check (works without backend, plain python3 is fine)
 python3 -m py_compile plugins.v3/<plugin_id>/__init__.py
 python3 -m compileall plugins.v3/<plugin_id>
 
@@ -177,11 +176,17 @@ CHECK_STRICT_PLUGINS=myplugin python3 .github/scripts/check_plugin_versions.py p
 # Federated component CSS gate (required after building Vue frontend artifacts)
 python3 .github/scripts/check_federation_css.py
 
+# V3 import boundary gate: ast scan checking legacy compat imports & forbidden host access
+# (requires backend at MOVIEPILOT_BACKEND_PATH or ../MoviePilot for app.runtime.compat.manifest)
+python3 scripts/check_v3_imports.py
+# Ratchet down import baseline after removing legacy imports/host db accesses:
+python3 scripts/check_v3_imports.py --write-baseline
+
 # New-plugin test gate: every new plugins.v3/ dir needs a tests/v3/<id>/ dir
 python3 scripts/check_new_plugin_tests.py --base-ref origin/main
 
 # V3 dependency install gate (per platform; manifest-declared platform subsets supported)
-uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py --python 3.14 --platform linux-x64
+uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py --abi cp314 --platform linux-x64
 
 # Vue federated frontend (inside a plugin that ships one) — run from the plugin directory.
 # The build script is always `vite build`; pick the package manager from the lockfile that
@@ -285,6 +290,16 @@ message. Source of truth is the host's `app/runtime/`, not this repo.
 
 - Use stable SDK imports: `app.sdk.config`, `app.sdk.media`, `app.sdk.events`, `app.sdk.logging`,
   `app.sdk.network`, `app.sdk.services`, `app.sdk.utilities`.
+- **Zero-tolerance import rules** (enforced by `scripts/check_v3_imports.py`, zero baseline allowed):
+  - Never import or dynamically load other plugins (`app.plugins.<other>`).
+  - Never modify `sys.path` (`sys.path.append(...)`, `sys.path.insert(...)`).
+  - Never directly access host SQLite database files (`user.db`).
+  - Never import from `app.sdk.legacy` / `app.sdk._legacy`.
+- **Ratcheting legacy baseline** (`tests/ci/v3_import_baseline.json`):
+  - Imports needing host compat manifest (`app.plugins._PluginBase`, `app.log`, `app.core.*`) and direct
+    host data access (`app.db.models.*`, `SessionFactory`, `AsyncSessionFactory`, `ScopedSession`) are
+    tracked in the baseline. New code must use `app.sdk` and Oper/Chain; baseline counts can only decrease.
+    Run `python3 scripts/check_v3_imports.py --write-baseline` after cleaning up legacy imports.
 - Host data goes through Oper / Chain / SDK. Do not import `app.db.models.*` host models, and do not
   import or hold `SessionFactory` / `AsyncSessionFactory` / `ScopedSession`.
 - Choose storage by responsibility: `get_config()`/`update_config()` for user settings,
@@ -297,11 +312,19 @@ message. Source of truth is the host's `app/runtime/`, not this repo.
   `httpx2.RequestError`, not `httpx.RequestError`, and never call `httpx2.alias_httpx()`.
 - V3 media identity is the pair `media_source` + `media_id`; do not rely on bare IDs.
 
-Dependencies: V3 extra dependencies go in the plugin's `pyproject.toml`
-(`[project].dependencies`, `dynamic = ["version"]`, real version stays in the plugin class). Do not
-commit plugin-level lockfiles (`uv.lock`); V1/V2 keep `requirements.txt`. Dependencies install into
-the host shared environment and must not downgrade or override MoviePilot core dependencies. Declare
-a dependency-gate platform subset with:
+### Dependencies & Manifest Contract
+
+V3 extra dependencies go in `plugins.v3/<id>/pyproject.toml`. The manifest contract is enforced by
+`tests/ci/test_v3_dependency_manifests.py`:
+- `project.name = "moviepilot-plugin-<plugin_id_lower>"` (exact match required)
+- `project.dynamic = ["version"]` — never commit a static `version` field (version stays in the plugin class)
+- `project.requires-python = ">=3.14"` (aligned with V3 Python 3.14 host runtime)
+- `project.dependencies` must be a static list of PEP 508 requirement strings
+- Never commit plugin-level lockfiles (`uv.lock`) or `requirements.txt` under `plugins.v3/` (V1/V2 keep `requirements.txt`)
+- Plugins must never execute package managers (`pip`, `uv`, etc.) via subprocess or shell
+- Dependencies install into the host shared environment and must not downgrade or override MoviePilot core dependencies
+
+Declare a dependency-gate platform subset with:
 
 ```toml
 [tool.moviepilot.dependency-gate]
@@ -354,7 +377,8 @@ key equals `version` and history is semver-descending.
 
 - Plugin version gate — index `version` vs class `plugin_version` (`check_plugin_versions.py`)
 - New plugin test gate — new `plugins.v3/` dirs need `tests/v3/<id>/`
-- Federation CSS gate
+- Federation CSS gate — verify CSS scoping and no un-scoped global rules (`check_federation_css.py`)
+- V3 import boundary gate — AST scan verifying zero-tolerance rules and baseline ratcheting (`scripts/check_v3_imports.py`, `test_v3_import_contract.py`)
 - Plugin test gate — `tests/run.py` against the MoviePilot V3 backend
 - Dependency install gate — isolated install + `uv pip check` on Linux x64/arm64, Windows x64,
   macOS Intel/ARM
