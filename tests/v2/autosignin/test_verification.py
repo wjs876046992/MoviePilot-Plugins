@@ -525,7 +525,7 @@ def test_flaresolverr_request_formats_cookies_and_parses_response(monkeypatch):
         url="https://audiences.me/attendance.php",
         cookies="c_secure_uid=123; c_secure_pass=abc",
         ua="test-ua",
-        timeout=45
+        timeout=70
     )
 
     assert html == "<html><body>" + _SIGNED + "</body></html>"
@@ -535,7 +535,7 @@ def test_flaresolverr_request_formats_cookies_and_parses_response(monkeypatch):
     json_data = call_kwargs["json"]
     assert json_data["cmd"] == "request.get"
     assert json_data["url"] == "https://audiences.me/attendance.php"
-    assert json_data["maxTimeout"] == 45000
+    assert json_data["maxTimeout"] == 70000
     assert json_data["cookies"] == [
         {"name": "c_secure_uid", "value": "123", "domain": "audiences.me"},
         {"name": "c_secure_pass", "value": "abc", "domain": "audiences.me"},

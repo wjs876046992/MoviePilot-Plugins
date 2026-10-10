@@ -1807,7 +1807,7 @@ class AutoSignIn(_PluginBase):
         """通用 FlareSolverr 请求方法，自动格式化 Cookie 域名并解决 Cloudflare 质询"""
         fs_url = cls._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", "")
         if not fs_url:
-            return None
+            fs_url = "http://flaresolverr:8191"
         fs_api = fs_url.rstrip("/") + "/v1"
         domain = urlparse(url).netloc
         if ":" in domain:
@@ -1826,29 +1826,31 @@ class AutoSignIn(_PluginBase):
                     "domain": domain
                 })
 
+        # 解决 Cloudflare 质询（如 Turnstile/5秒盾）通常需要 30-50 秒，不能受站点短超时的限制
+        effective_timeout = max(int(timeout or 60), 60)
         payload = {
             "cmd": "request.get",
             "url": url,
-            "maxTimeout": int(timeout or 60) * 1000,
+            "maxTimeout": effective_timeout * 1000,
             "cookies": fs_cookies
         }
 
         try:
-            logger.info(f"[FlareSolverr] 代理请求解决 CF 质询: {url} ...")
-            res = RequestUtils(content_type="application/json", timeout=int(timeout or 60) + 15).post_json(
+            logger.info(f"[FlareSolverr] ({fs_api}) 代理请求解决 CF 质询: {url} ...")
+            res = RequestUtils(content_type="application/json", timeout=effective_timeout + 15).post_json(
                 url=fs_api, json=payload
             )
             if not res:
-                logger.error("[FlareSolverr] 请求返回空响应")
+                logger.error(f"[FlareSolverr] ({fs_api}) 请求返回空响应")
                 return None
             if res.get("status") != "ok":
-                logger.error(f"[FlareSolverr] 请求失败: {res.get('message', '未知错误')}")
+                logger.error(f"[FlareSolverr] ({fs_api}) 请求失败: {res.get('message', '未知错误')}")
                 return None
 
             solution = res.get("solution", {})
             return solution.get("response")
         except Exception as e:
-            logger.error(f"[FlareSolverr] 调用异常: {str(e)}")
+            logger.error(f"[FlareSolverr] ({fs_api}) 调用异常: {str(e)}")
             return None
 
     @staticmethod
