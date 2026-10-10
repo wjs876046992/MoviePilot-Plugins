@@ -26,7 +26,7 @@ class Folder(P115StrmHelperBase):
     __tablename__ = "folders"
 
     id = Column(BigInteger, primary_key=True)
-    parent_id = Column(BigInteger, nullable=False)
+    parent_id = Column(BigInteger, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     path = Column(Text, nullable=False, unique=True)
 

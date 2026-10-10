@@ -112,7 +112,7 @@ class P115StrmHelper(_PluginBase):
     # 门禁会判为「未声明类级 plugin_version」而失败。
     # version.py 的 VERSION 供 Sentry UA 等复用，两处需同步；
     # tests/v3/p115strmhelper/test_version_sync.py 锁住它们与索引版本的一致性。
-    plugin_version = "3.1.0"
+    plugin_version = "3.1.1"
     # 插件作者
     plugin_author = "DDSRem"
     # 作者主页

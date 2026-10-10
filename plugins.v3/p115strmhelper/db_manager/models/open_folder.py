@@ -14,7 +14,7 @@ class OpenFolder(P115StrmHelperBase):
     __tablename__ = "open_folders"
 
     id = Column(BigInteger, primary_key=True)
-    parent_id = Column(BigInteger, nullable=False)
+    parent_id = Column(BigInteger, nullable=False, index=True)
     name = Column(String(255), default="")
     path = Column(Text, unique=True)
 
