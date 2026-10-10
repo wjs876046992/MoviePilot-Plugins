@@ -510,3 +510,57 @@ def test_quiz_reward_text_requires_completed_state(monkeypatch, module_name, cla
     if module_name == "52pt":
         kwargs["timeout"] = 15
     assert getattr(handler(), f"_{class_name}__signin")(**kwargs)[0] is success
+
+
+def test_flaresolverr_request_formats_cookies_and_parses_response(monkeypatch):
+    """FlareSolverr 请求正确拼接带 domain 的 Cookie 字典并返回页面源码。"""
+    AutoSignIn._flaresolverr_url = "http://192.168.100.156:8191"
+    post_json = Mock(return_value={
+        "status": "ok",
+        "solution": {"response": "<html><body>" + _SIGNED + "</body></html>"}
+    })
+    monkeypatch.setattr("app.plugins.autosignin.RequestUtils", Mock(return_value=SimpleNamespace(post_json=post_json)))
+
+    html = AutoSignIn._flaresolverr_request(
+        url="https://audiences.me/attendance.php",
+        cookies="c_secure_uid=123; c_secure_pass=abc",
+        ua="test-ua",
+        timeout=45
+    )
+
+    assert html == "<html><body>" + _SIGNED + "</body></html>"
+    post_json.assert_called_once()
+    call_kwargs = post_json.call_args.kwargs
+    assert call_kwargs["url"] == "http://192.168.100.156:8191/v1"
+    json_data = call_kwargs["json"]
+    assert json_data["cmd"] == "request.get"
+    assert json_data["url"] == "https://audiences.me/attendance.php"
+    assert json_data["maxTimeout"] == 45000
+    assert json_data["cookies"] == [
+        {"name": "c_secure_uid", "value": "123", "domain": "audiences.me"},
+        {"name": "c_secure_pass", "value": "abc", "domain": "audiences.me"},
+    ]
+
+
+def test_generic_signin_auto_falls_back_to_flaresolverr_on_cf_challenge(monkeypatch):
+    """命中 Cloudflare 盾时，自动回退到 FlareSolverr 并正确识别签到结果。"""
+    AutoSignIn._flaresolverr_url = "http://192.168.100.156:8191"
+    cf_page = '<html><title>Just a moment...</title><body>Checking your browser</body></html>'
+    monkeypatch.setattr("app.plugins.autosignin.RequestUtils", Mock(return_value=SimpleNamespace(
+        get_res=Mock(return_value=response(cf_page, status=403)))))
+    monkeypatch.setattr(AutoSignIn, "_flaresolverr_request", Mock(return_value=_SIGNED))
+
+    result = AutoSignIn._AutoSignIn__signin_base(site_info(render=False))
+    assert result == SiteResult("测试站", "签到成功", True, True)
+
+
+def test_generic_login_auto_falls_back_to_flaresolverr_on_cf_challenge(monkeypatch):
+    """模拟登录命中 Cloudflare 盾时，自动回退到 FlareSolverr 并识别登录状态。"""
+    AutoSignIn._flaresolverr_url = "http://192.168.100.156:8191"
+    cf_page = '<html><title>Just a moment...</title><body>Checking your browser</body></html>'
+    monkeypatch.setattr("app.plugins.autosignin.RequestUtils", Mock(return_value=SimpleNamespace(
+        get_res=Mock(return_value=response(cf_page, status=403)))))
+    monkeypatch.setattr(AutoSignIn, "_flaresolverr_request", Mock(return_value=_LOGIN))
+
+    result = AutoSignIn._AutoSignIn__login_base(site_info(render=False))
+    assert result == (True, "模拟登录成功")

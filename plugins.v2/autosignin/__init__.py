@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from multiprocessing.dummy import Pool as ThreadPool
 from multiprocessing.pool import ThreadPool
 from typing import Any, List, Dict, Tuple, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import pytz
 from app import schemas
@@ -72,6 +72,7 @@ class AutoSignIn(_PluginBase):
     _start_time: int = None
     _end_time: int = None
     _auto_cf: int = 0
+    _flaresolverr_url: str = ""
 
     def init_plugin(self, config: dict = None):
         """加载配置并保留动态全选标记，注册需要立即执行的任务。"""
@@ -90,6 +91,9 @@ class AutoSignIn(_PluginBase):
             self._login_sites = config.get("login_sites") or []
             self._retry_keyword = config.get("retry_keyword")
             self._auto_cf = config.get("auto_cf")
+            self._flaresolverr_url = (config.get("flaresolverr_url") or
+                                      getattr(settings, "FLARESOLVERR_URL", "") or "").rstrip("/")
+            AutoSignIn._flaresolverr_url = self._flaresolverr_url
             self._clean = config.get("clean")
 
             # 过滤掉已删除的站点
@@ -145,6 +149,7 @@ class AutoSignIn(_PluginBase):
                 "login_sites": self._login_sites,
                 "retry_keyword": self._retry_keyword,
                 "auto_cf": self._auto_cf,
+                "flaresolverr_url": self._flaresolverr_url,
                 "clean": self._clean,
             }
         )
@@ -418,6 +423,23 @@ class AutoSignIn(_PluginBase):
                                         }
                                     }
                                 ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 6
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'flaresolverr_url',
+                                            'label': 'FlareSolverr 地址',
+                                            'placeholder': '例如 http://192.168.100.156:8191（留空不启用）'
+                                        }
+                                    }
+                                ]
                             }
                         ]
                     },
@@ -540,6 +562,7 @@ class AutoSignIn(_PluginBase):
             "notify": True,
             "cron": "",
             "auto_cf": 0,
+            "flaresolverr_url": "",
             "onlyonce": False,
             "clean": False,
             "queue_cnt": 5,
@@ -1779,6 +1802,55 @@ class AutoSignIn(_PluginBase):
             return SiteResult(site_name, f"{message}（未执行签到）", False, True)
         return SiteResult(site_name, message, success, success)
 
+    @classmethod
+    def _flaresolverr_request(cls, url: str, cookies: str = None, ua: str = None, timeout: int = 60) -> Optional[str]:
+        """通用 FlareSolverr 请求方法，自动格式化 Cookie 域名并解决 Cloudflare 质询"""
+        fs_url = cls._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", "")
+        if not fs_url:
+            return None
+        fs_api = fs_url.rstrip("/") + "/v1"
+        domain = urlparse(url).netloc
+        if ":" in domain:
+            domain = domain.split(":")[0]
+
+        fs_cookies = []
+        if cookies:
+            for item in cookies.split(";"):
+                item = item.strip()
+                if not item or "=" not in item:
+                    continue
+                k, v = item.split("=", 1)
+                fs_cookies.append({
+                    "name": k.strip(),
+                    "value": v.strip(),
+                    "domain": domain
+                })
+
+        payload = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": int(timeout or 60) * 1000,
+            "cookies": fs_cookies
+        }
+
+        try:
+            logger.info(f"[FlareSolverr] 代理请求解决 CF 质询: {url} ...")
+            res = RequestUtils(content_type="application/json", timeout=int(timeout or 60) + 15).post_json(
+                url=fs_api, json=payload
+            )
+            if not res:
+                logger.error("[FlareSolverr] 请求返回空响应")
+                return None
+            if res.get("status") != "ok":
+                logger.error(f"[FlareSolverr] 请求失败: {res.get('message', '未知错误')}")
+                return None
+
+            solution = res.get("solution", {})
+            return solution.get("response")
+        except Exception as e:
+            logger.error(f"[FlareSolverr] 调用异常: {str(e)}")
+            return None
+
     @staticmethod
     def __signin_base(site_info: CommentedMap) -> SiteResult:
         """
@@ -1807,12 +1879,19 @@ class AutoSignIn(_PluginBase):
                 # 拼登签到地址
                 checkin_url = urljoin(site_url, "attendance.php")
             logger.info(f"开始站点签到：{site}，地址：{checkin_url}...")
+            page_source = None
             if render:
-                page_source = PlaywrightHelper().get_page_source(url=checkin_url,
-                                                                 cookies=site_cookie,
-                                                                 ua=ua,
-                                                                 proxies=proxy_server,
-                                                                 timeout=timeout)
+                if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                    page_source = AutoSignIn._flaresolverr_request(url=checkin_url,
+                                                                   cookies=site_cookie,
+                                                                   ua=ua,
+                                                                   timeout=timeout)
+                if not page_source:
+                    page_source = PlaywrightHelper().get_page_source(url=checkin_url,
+                                                                     cookies=site_cookie,
+                                                                     ua=ua,
+                                                                     proxies=proxy_server,
+                                                                     timeout=timeout)
             else:
                 res = RequestUtils(cookies=site_cookie,
                                    ua=ua,
@@ -1822,10 +1901,18 @@ class AutoSignIn(_PluginBase):
                 if res is None:
                     return SiteResult(site, "签到失败，无法打开网站！", False)
                 if under_challenge(res.text):
-                    return SiteResult(site, "签到失败，站点被Cloudflare防护，请打开站点浏览器仿真", False)
-                if res.status_code != 200:
+                    if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                        logger.info(f"{site} 命中 Cloudflare 防护，自动切换至 FlareSolverr 解析...")
+                        page_source = AutoSignIn._flaresolverr_request(url=checkin_url,
+                                                                       cookies=site_cookie,
+                                                                       ua=ua,
+                                                                       timeout=timeout)
+                    if not page_source:
+                        return SiteResult(site, "签到失败，站点被Cloudflare防护，请打开站点浏览器仿真", False)
+                elif res.status_code != 200:
                     return SiteResult(site, f"签到失败，状态码：{res.status_code}！", False)
-                page_source = res.text
+                else:
+                    page_source = res.text
             if not page_source:
                 return SiteResult(site, "签到失败，站点返回空页面", False)
             if under_challenge(page_source):
@@ -1897,12 +1984,19 @@ class AutoSignIn(_PluginBase):
             if "attendance.php" in site_url:
                 site_url = urljoin(site_url, "./")
             logger.info(f"开始站点模拟登录：{site}，地址：{site_url}...")
+            page_source = None
             if render:
-                page_source = PlaywrightHelper().get_page_source(url=site_url,
-                                                                 cookies=site_cookie,
-                                                                 ua=ua,
-                                                                 proxies=proxy_server,
-                                                                 timeout=timeout)
+                if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                    page_source = AutoSignIn._flaresolverr_request(url=site_url,
+                                                                   cookies=site_cookie,
+                                                                   ua=ua,
+                                                                   timeout=timeout)
+                if not page_source:
+                    page_source = PlaywrightHelper().get_page_source(url=site_url,
+                                                                     cookies=site_cookie,
+                                                                     ua=ua,
+                                                                     proxies=proxy_server,
+                                                                     timeout=timeout)
             else:
                 res = RequestUtils(cookies=site_cookie,
                                    ua=ua,
@@ -1912,10 +2006,18 @@ class AutoSignIn(_PluginBase):
                 if res is None:
                     return False, f"模拟登录失败，无法打开网站！"
                 if under_challenge(res.text):
-                    return False, "模拟登录失败，站点被Cloudflare防护，请打开站点浏览器仿真"
-                if res.status_code != 200:
+                    if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                        logger.info(f"{site} 命中 Cloudflare 防护，自动切换至 FlareSolverr 解析...")
+                        page_source = AutoSignIn._flaresolverr_request(url=site_url,
+                                                                       cookies=site_cookie,
+                                                                       ua=ua,
+                                                                       timeout=timeout)
+                    if not page_source:
+                        return False, "模拟登录失败，站点被Cloudflare防护，请打开站点浏览器仿真"
+                elif res.status_code != 200:
                     return False, f"模拟登录失败，状态码：{res.status_code}！"
-                page_source = res.text
+                else:
+                    page_source = res.text
             if not page_source:
                 return False, "模拟登录失败，站点返回空页面"
             if under_challenge(page_source):

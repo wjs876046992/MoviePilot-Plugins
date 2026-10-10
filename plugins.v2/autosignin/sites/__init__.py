@@ -60,6 +60,17 @@ class _ISiteSigninHandler(metaclass=ABCMeta):
         :return: 页面源码，错误信息
         """
         if render:
+            try:
+                from app.plugins.autosignin import AutoSignIn
+                if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                    fs_source = AutoSignIn._flaresolverr_request(url=url,
+                                                                 cookies=cookie,
+                                                                 ua=ua,
+                                                                 timeout=timeout or 60)
+                    if fs_source:
+                        return fs_source
+            except Exception:
+                pass
             return PlaywrightHelper().get_page_source(url=url,
                                                       cookies=cookie,
                                                       ua=ua,
@@ -79,20 +90,35 @@ class _ISiteSigninHandler(metaclass=ABCMeta):
             res = RequestUtils(headers=headers,
                                proxies=settings.PROXY if proxy else None,
                                timeout=timeout or 20).get_res(url=url)
-            if res is not None and res.status_code == 200:
-                # 使用chardet检测字符编码
-                raw_data = res.content
-                if raw_data:
-                    try:
-                        result = chardet.detect(raw_data)
-                        encoding = result['encoding']
-                        # 解码为字符串
-                        return raw_data.decode(encoding)
-                    except Exception as e:
-                        logger.error(f"chardet解码失败：{str(e)}")
+            if res is not None:
+                try:
+                    from app.helper.cloudflare import under_challenge
+                    if under_challenge(res.text):
+                        from app.plugins.autosignin import AutoSignIn
+                        if AutoSignIn._flaresolverr_url or getattr(settings, "FLARESOLVERR_URL", None):
+                            fs_source = AutoSignIn._flaresolverr_request(url=url,
+                                                                         cookies=cookie,
+                                                                         ua=ua,
+                                                                         timeout=timeout or 60)
+                            if fs_source:
+                                return fs_source
+                except Exception:
+                    pass
+
+                if res.status_code == 200:
+                    # 使用chardet检测字符编码
+                    raw_data = res.content
+                    if raw_data:
+                        try:
+                            result = chardet.detect(raw_data)
+                            encoding = result['encoding']
+                            # 解码为字符串
+                            return raw_data.decode(encoding)
+                        except Exception as e:
+                            logger.error(f"chardet解码失败：{str(e)}")
+                            return res.text
+                    else:
                         return res.text
-                else:
-                    return res.text
             return ""
 
     @staticmethod
