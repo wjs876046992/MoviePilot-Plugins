@@ -263,7 +263,7 @@ class BrushFlow(_PluginBase):
     plugin_name = "站点刷流"
     plugin_desc = "自动托管多个站点刷流任务，并独立调度、统计与诊断。"
     plugin_icon = "brush-flow.png"
-    plugin_version = "6.4.11"
+    plugin_version = "6.4.12"
     plugin_author = "jxxghp,InfinityPacer,Seed680"
     author_url = "https://github.com/InfinityPacer"
     plugin_config_prefix = "brushflow_"
@@ -2020,10 +2020,9 @@ class BrushFlow(_PluginBase):
         if task.disksize:
             limit_size = float(task.disksize) * 1024 ** 3
             if estimated_size > limit_size:
-                reason = (
-                    f"预计做种体积 {self.__bytes_to_gb(estimated_size):.1f} GB，"
-                    f"超过任务保种上限 {task.disksize} GB"
-                )
+                # 提示文案不能拼接动态的 estimated_size，否则每个种子算出的体积都不一样，
+                # 轮末 Counter 聚合时会被当成不同的原因、每个计数都是 1，导致总结日志疯狂重复刷屏
+                reason = f"超过任务保种上限 {task.disksize} GB"
                 return False, reason
         limit_value, scope, scope_label = self._seeding_scope(task)
         if not limit_value:
@@ -2032,10 +2031,7 @@ class BrushFlow(_PluginBase):
             global_torrents_size = self._calculate_scope_seeding_size(scope, task)
         estimated_scope_size = global_torrents_size + (add_torrent_size or 0)
         if estimated_scope_size > limit_value * 1024 ** 3:
-            reason = (
-                f"预计{scope_label}做种体积 {self.__bytes_to_gb(estimated_scope_size):.1f} GB，"
-                f"超过{scope_label}保种上限 {limit_value:g} GB"
-            )
+            reason = f"超过{scope_label}保种上限 {limit_value:g} GB"
             return False, reason
         return True, None
 
