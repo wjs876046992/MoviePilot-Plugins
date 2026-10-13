@@ -179,7 +179,7 @@ class CrossSeed(_PluginBase):
     # 插件图标
     plugin_icon = "qingwa.png"
     # 插件版本
-    plugin_version = "3.0.3"
+    plugin_version = "3.0.4"
     # 插件作者
     plugin_author = "233@qingwa"
     # 作者主页
@@ -229,6 +229,58 @@ class CrossSeed(_PluginBase):
     exist = 0
     fail = 0
     cached = 0
+
+    @staticmethod
+    def _parse_site_token(
+        site_token_line: str,
+        known_site_names: Optional[Any] = None,
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        解析单行站点 Passkey 配置。
+
+        格式支持：
+        1. 冒号分隔（推荐）：站点名称:Passkey 或 站点名称:Passkey 间隔时间
+           支持英文冒号 `:` 与中文冒号 `：`，站点名称可包含空格（如 "Depth Studio:xxxxxx"）。
+        2. 空白分隔（兼容无冒号的单词或已知站点名称）：站点名称 Passkey [间隔时间]
+        """
+        line = (site_token_line or "").strip()
+        if not line:
+            return None, None, None
+
+        site_name: Optional[str] = None
+        passkey: Optional[str] = None
+        gap: Optional[str] = None
+
+        if ":" in line or "：" in line:
+            parts = re.split(r"[:：]", line, maxsplit=1)
+            site_name = parts[0].strip()
+            rest = parts[1].strip()
+            rest_arr = re.split(r"[\s:：]+", rest)
+            if rest_arr and rest_arr[0]:
+                passkey = rest_arr[0]
+            if len(rest_arr) > 1 and rest_arr[1]:
+                gap = rest_arr[1]
+        elif known_site_names:
+            for name in sorted(known_site_names, key=len, reverse=True):
+                if line.startswith(name) and len(line) > len(name) and line[len(name)].isspace():
+                    site_name = name
+                    rest = line[len(name):].strip()
+                    rest_arr = re.split(r"\s+", rest)
+                    if rest_arr and rest_arr[0]:
+                        passkey = rest_arr[0]
+                    if len(rest_arr) > 1 and rest_arr[1]:
+                        gap = rest_arr[1]
+                    break
+
+        if not site_name:
+            site_key_arr = re.split(r"[\s:：]+", line)
+            site_name = site_key_arr[0]
+            if len(site_key_arr) > 1:
+                passkey = site_key_arr[1]
+            if len(site_key_arr) > 2:
+                gap = site_key_arr[2]
+
+        return site_name, passkey, gap
 
     def init_plugin(self, config: dict = None):
         self._error_caches = []
@@ -296,16 +348,17 @@ class CrossSeed(_PluginBase):
             site_name_key_map = dict()
             site_name_gap_map = dict()
             for site_key in self._token.strip().split("\n"):
-                site_key_arr = re.split(r"[\s:：]+", site_key.strip())
-                site_name = site_key_arr[0]
-                if len(site_key_arr) > 1:
-                    site_name_key_map[site_name] = site_key_arr[1]
-                if len(site_key_arr) > 2:
-                    if str.isdigit(site_key_arr[2]):
-                        site_name_gap_map[site_name] = int(site_key_arr[2])
+                site_name, site_key_val, site_gap = self._parse_site_token(
+                    site_key, all_site_cs_info_map.keys()
+                )
+                if site_name and site_key_val:
+                    site_name_key_map[site_name] = site_key_val
+                if site_name and site_gap:
+                    if str(site_gap).isdigit():
+                        site_name_gap_map[site_name] = int(site_gap)
                     else:
                         logger.warn(
-                            f"站点{site_name}配置的查询请求间隔时间不为整数，不能生效, 请修改 {site_key_arr[2]}"
+                            f"站点{site_name}配置的查询请求间隔时间不为整数，不能生效, 请修改 {site_gap}"
                         )
 
             # 只给选中的站点补全站点配置
@@ -313,6 +366,12 @@ class CrossSeed(_PluginBase):
             # 根据配置来补充passkey
             for site_name in site_names:
                 site_key = site_name_key_map.get(site_name)
+                if not site_key:
+                    # 尝试不区分大小写匹配（如用户输入 ptfans 或 depth studio）
+                    for k, v in site_name_key_map.items():
+                        if k.casefold() == site_name.casefold():
+                            site_key = v
+                            break
                 if not site_key:
                     logger.warning(
                         f"未找到站点{site_name}的passkey, 请检查passkey配置是否有误，站点{site_name}将跳过辅种")
@@ -836,7 +895,14 @@ class CrossSeed(_PluginBase):
                     continue
                 save_path = self.__get_save_path(torrent, service.type)
                 # 获取种子文件路径
-                torrent_path = Path(self._torrentpaths[idx]) / f"{hash_str}.torrent"
+                torrent_path = Path(self._torrentpaths[idx]) / f"{hash_str}.torrent" if idx < len(self._torrentpaths) else Path(f"{hash_str}.torrent")
+                if not torrent_path.exists():
+                    # 尝试从其他配置的种子目录查找（支持跨下载器迁移或路径映射顺序不一致）
+                    for alt_dir in self._torrentpaths:
+                        candidate = Path(alt_dir) / f"{hash_str}.torrent"
+                        if candidate.exists():
+                            torrent_path = candidate
+                            break
                 torrent_info = None
                 if not torrent_path.exists():
                     if False and service.type == "qbittorrent":
