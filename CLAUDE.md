@@ -31,13 +31,14 @@ Implications when editing:
   plugin as frequent conflict points (files both sides have edited).
 - **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
   V2 `WatchSync`), as well as V3 `P115StrmHelper` (bundles offline cp314 wheels in `wheels/`). A second
-  category is a **shared plugin the fork has diverged from**: `BrushFlow` exists upstream (v6.1.2) but
-  this fork is far ahead (v6.4.13). Develop them freely, but never assume upstream
-  shares your state — an upstream merge will not supply the fork-only index entries, nor carry the fork's
-  newer `BrushFlow` entry. Fork-local non-merge commit totals drift upward as work continues; run
-  `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count rather than trusting a
-  number here (at the time of writing `Rsync115Sync` dominates by far, then `BrushFlow`, `WatchSync`,
-  `P115StrmHelper`).
+  category is **shared plugins the fork has diverged from**: `BrushFlow` exists upstream (v6.1.2) but
+  this fork is far ahead (v6.4.13); similarly in V2, `plugins.v2/autosignin` has diverged locally with
+  FlareSolverr Cloudflare challenge bypass, attendance verification, and 14-day history. Develop them freely,
+  but never assume upstream shares your state — an upstream merge will not supply fork-only index entries,
+  nor carry the fork's newer `BrushFlow` entry or V2 custom logic. Fork-local non-merge commit totals drift
+  upward as work continues; run `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count
+  rather than trusting a number here (at the time of writing `Rsync115Sync` dominates by far, then `BrushFlow`,
+  `WatchSync`, `P115StrmHelper`).
   Because `BrushFlow` and `P115StrmHelper` live in `package.v3.json`, upstream edits to the shared index
   files can conflict there too, not only in `package.v2.json`.
 - `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
@@ -148,15 +149,33 @@ still run with **`--noconftest`**, which skips the bootstrap entirely. Use `uv` 
 ```bash
 uv run --with pytest pytest tests/v3/<id>/test_x.py --noconftest -q
 uv run --with pytest pytest tests/ci/test_v3_contract.py --noconftest -q
+
+# Batch run all backend-free CI gate tests (verifies CSS gate, new plugin test gate, release packaging, and contracts)
+uv run --with pytest pytest \
+  tests/ci/test_federation_css_gate.py \
+  tests/ci/test_new_plugin_test_gate.py \
+  tests/ci/test_plugin_release_gate.py \
+  tests/ci/test_plugin_release_directory.py \
+  tests/ci/test_v3_contract.py \
+  --noconftest -q
+
+# Check V3 dependency manifest static constraints (requires packaging; see known caveats below)
+uv run --with pytest --with packaging pytest tests/ci/test_v3_dependency_manifests.py --noconftest -q
 ```
 
 This is how pure-logic guards (template/source assertions, event-registration contracts, button
-payload shape, CI gate contracts) stay runnable on a machine with no backend. It is not a substitute
-for the full suite, and `tests/run.py` remains the CI entry point.
+payload shape, CI gate contracts) stay runnable on a machine with no backend. Note that
+`tests/ci/test_v3_import_contract.py` still requires the backend because it loads `app.runtime.compat.manifest`.
+It is not a substitute for the full suite, and `tests/run.py` remains the CI entry point.
 
 ```bash
-# Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point)
+# Activate pre-push hook (checks strict version drift, federation CSS, and warns if behind upstream/main)
+git config core.hooksPath .githooks
+
+# Full regression: ci + v3 + compatible v2, each in its own subprocess (CI entry point).
+# Extra CLI args pass through to each pytest subprocess (e.g. -k "test_foo" -q):
 ../MoviePilot/.venv/bin/python tests/run.py
+../MoviePilot/.venv/bin/python tests/run.py -k test_name -q
 
 # One generation (never mix generations in one pytest process — same-named plugin packages collide)
 ../MoviePilot/.venv/bin/python -m pytest tests/v3
@@ -169,15 +188,16 @@ for the full suite, and `tests/run.py` remains the CI entry point.
 # Fast syntax-only check (works without backend, plain python3 is fine)
 python3 -m py_compile plugins.v3/<plugin_id>/__init__.py
 python3 -m compileall plugins.v3/<plugin_id>
+python3 -m compileall plugins.v2/<plugin_id>
 
 # Version gate: index version vs plugin_version across all three indexes
 # (package.json / package.v2.json only fully check release:true entries;
 #  package.v3.json checks every entry + V3 history/major-bump contract)
 python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 
-# Same gate in the strict form the pre-push hook uses: only the listed plugin IDs
+# Same gate in the strict form the pre-push hook uses: comma-separated lowercased plugin IDs
 # are checked for the package.json/Config.vue drift that is otherwise a warning.
-CHECK_STRICT_PLUGINS=myplugin python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
+CHECK_STRICT_PLUGINS=rsync115sync,brushflow python3 .github/scripts/check_plugin_versions.py package.json package.v2.json package.v3.json
 
 # Federated component CSS gate (required after building Vue frontend artifacts)
 python3 .github/scripts/check_federation_css.py
@@ -204,10 +224,10 @@ npm ci && npm run build    # when package-lock.json exists (LunaTVSource, Course
 git diff --check                 # whitespace check; recommended before commit (no hook runs it)
 ```
 
-`.githooks/pre-push` runs the version gate and the federation CSS gate on every push (it does not run
-tests). Enable it with `git config core.hooksPath .githooks` if it is not already active — **check
-this rather than assuming: in this working copy it is not set, so the hook does not run at all** and
-the gates must be invoked by hand.
+`.githooks/pre-push` runs the strict version gate on touched plugins, the federation CSS gate, and
+a read-only check that warns if local `HEAD` is behind `upstream/main` (non-blocking). Enable it with
+`git config core.hooksPath .githooks` if it is not already active — **check this rather than assuming:
+in this working copy it is not set by default, so the hook does not run at all** until explicitly configured.
 
 ### Commit message convention
 
