@@ -4,7 +4,7 @@ from typing import Tuple
 from p115client import check_response
 
 from app.sdk.logging import logger
-from app.schemas.types import MessageType
+from app.schemas import MessageType
 
 from ...core.config import configer
 from ...core.message import post_message

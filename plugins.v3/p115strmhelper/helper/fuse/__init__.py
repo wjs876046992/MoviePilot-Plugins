@@ -14,6 +14,7 @@ from stat import S_IFDIR, S_IFREG
 from time import sleep
 from typing import Any
 from uuid import uuid4
+from weakref import finalize
 
 try:
     from mfusepy import FUSE, Operations
@@ -173,9 +174,10 @@ class P115FuseOperations(Operations):
         self.gid = gid
         ttl_cache = TTLCache(
             ttl=int(readdir_ttl),
-            region="p115strmhelper_fuse_readdir",
+            region=f"{__package__}:p115strmhelper_fuse_readdir:{uuid4().hex}",
             maxsize=8096000,
         )
+        finalize(self, ttl_cache.clear)
         id_to_readdir_cache = IntKeyCacheAdapter(ttl_cache)
         self.fs = client.get_fs(id_to_readdir=id_to_readdir_cache)  # type: ignore[arg-type]
         self._opened: dict[int, Any] = {}

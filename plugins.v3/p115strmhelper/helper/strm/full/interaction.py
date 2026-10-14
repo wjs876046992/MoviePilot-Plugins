@@ -2,7 +2,7 @@ from pathlib import Path
 from time import time as time_unix
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.schemas.types import MessageType
+from app.schemas import MessageType
 from app.sdk.logging import logger
 
 from ....core.config import configer
@@ -60,11 +60,11 @@ class StrmCleanupInteraction:
         生成 Telegram 等渠道 inline 按钮 callback_data
 
         MoviePilot 仅当 callback_data 以 ``[PLUGIN]`` 开头时才会把回调转发为 ``MessageAction``；
-        格式为 ``[PLUGIN]{PLUSIN_NAME}|`` + ``p115scc|request_id|y|n``（主站再拆成插件 ID 与 payload）
+        格式为 ``[PLUGIN]{plugin_id}|`` + ``p115scc|request_id|y|n``（主站再拆成插件 ID 与 payload）
         Telegram 单键 callback_data 长度上限 64 字节，payload 须保持简短
         """
         payload = f"{self._CB_PREFIX}|{request_id}|{'y' if approve else 'n'}"
-        return f"[PLUGIN]{configer.PLUSIN_NAME}|{payload}"
+        return f"[PLUGIN]{configer.plugin_id}|{payload}"
 
     def _load_store(self) -> Dict[str, Any]:
         raw = configer.get_plugin_data(self._PENDING_KEY)

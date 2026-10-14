@@ -39,7 +39,7 @@ class P115DiskPatcher:
         client = getattr(self_instance, "client", None)
         if not client:
             return None
-        helper = P115DiskCore(client=client)
+        helper = P115DiskCore(p115_api=self_instance)
         logger.debug("【P115Disk】调用补丁接口上传")
         return helper.upload(
             target_dir=target_dir, local_path=local_path, new_name=new_name

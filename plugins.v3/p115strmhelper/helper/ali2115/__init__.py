@@ -9,8 +9,9 @@ from httpx import stream
 from p115client import P115Client
 
 from app.sdk.logging import logger
-from app.sdk.media import MediaInfo, MetaInfo
+from app.sdk.media import MetaInfo
 from app.chain.media import MediaChain
+from app.sdk.media import MediaInfo
 
 from ...core.aliyunpan import BAligo
 from ...core.config import configer

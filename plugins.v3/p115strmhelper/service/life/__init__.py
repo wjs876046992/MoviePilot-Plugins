@@ -9,7 +9,7 @@ from ...utils.exception import NotifyExceptionFormatter
 from ...utils.sentry import sentry_manager
 
 from app.sdk.logging import logger
-from app.schemas.types import MessageType
+from app.schemas import MessageType
 
 
 @sentry_manager.capture_plugin_exceptions

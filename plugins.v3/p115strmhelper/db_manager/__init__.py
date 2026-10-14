@@ -1,295 +1,205 @@
+from functools import wraps
+from inspect import signature
 from threading import RLock
 from time import sleep
-from typing import Any, Generator, List, Optional, Self, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Self
 from sqlite3 import OperationalError as SqlOperationalError, SQLITE_BUSY
 
-from sqlalchemy import and_, inspect
-from sqlalchemy.orm import declared_attr, Session
+from sqlalchemy import and_, inspect, func
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.exc import OperationalError
 
+from ..core.config import configer
 from app.sdk.database import PluginDatabaseHandle, plugin_declarative_base
 from app.sdk.logging import logger
 
 
-# 当前插件实例（本体或分身）绑定的数据库句柄
-#
-# v3 下每个插件实例（本体与每个分身）运行的是各自独立执行的模块副本（宿主加载器对
-# 分身按实例标识重新 exec 一遍插件源码，参见 app/runtime/extensions/plugin/loader.py
-# 的 load_instance/_execute_instance_module），本模块的模块级全局变量因此天然按实例
-# 隔离，不会被本体与分身共用；不需要额外的线程绑定或 contextvar 方案
-_HANDLE_LOCK = RLock()
-_active_handle: Optional[PluginDatabaseHandle] = None
+_DATABASE_LIFECYCLE_LOCK = RLock()
 
 
-def bind_handle(handle: PluginDatabaseHandle) -> None:
+class _DBManager:
+    def __init__(self) -> None:
+        self._ready = False
+
+    def get_database(self) -> PluginDatabaseHandle:
+        """
+        获取宿主当前实例的数据库句柄
+
+        :return PluginDatabaseHandle: 已完成迁移的插件数据库
+
+        :raises RuntimeError: 初始化未完成或插件已停止
+        """
+        with _DATABASE_LIFECYCLE_LOCK:
+            if not self._ready:
+                raise RuntimeError("插件数据库尚未初始化或已停止")
+            return configer.plugin_instance.get_database()
+
+    def close_database(self) -> None:
+        """
+        停止接受新数据库操作，连接池由宿主生命周期释放
+        """
+        with _DATABASE_LIFECYCLE_LOCK:
+            self._ready = False
+
+
+def get_db() -> Generator[Session, None, None]:
     """
-    绑定当前插件实例的数据库句柄
+    提供宿主插件数据库会话，事务提交由调用方决定
 
-    必须在 init_plugin() 中、存量数据库迁移（core.legacy_migration）完成之后调用一次；
-    重复调用（如配置热重载重新执行 init_plugin）用同一插件实例取得的句柄覆盖即可，
-    句柄本身由宿主按插件标识缓存，重复获取不会重复建库
-
-    :param handle (PluginDatabaseHandle): 宿主返回的插件自有数据库句柄
+    :yields Session: 当前请求的独立会话
     """
-    global _active_handle
-    with _HANDLE_LOCK:
-        _active_handle = handle
-
-
-def _current_handle() -> PluginDatabaseHandle:
-    """
-    获取当前已绑定的数据库句柄
-
-    :return PluginDatabaseHandle: 已绑定的句柄
-
-    :raises RuntimeError: 尚未调用 bind_handle() 绑定句柄时抛出
-    """
-    if _active_handle is None:
-        raise RuntimeError(
-            "插件数据库句柄尚未绑定，必须先在 init_plugin() 中调用 bind_handle()"
-        )
-    return _active_handle
-
-
-def get_db() -> Generator:
-    """
-    获取数据库会话，用于WEB请求
-
-    :return Generator: 数据库会话生成器
-    """
-    db = None
-    try:
-        db = _current_handle().session()
+    with ct_db_manager.get_database().session() as db:
         yield db
-    finally:
-        if db:
-            db.close()
 
 
-def get_args_db(args: tuple, kwargs: dict) -> Optional[Session]:
+def init_database() -> bool:
     """
-    从参数中获取数据库Session对象
+    在启动后台服务前完成宿主建表与旧库导入
 
-    :param args (Tuple): 位置参数元组
-    :param kwargs (Dict): 关键字参数字典
-
-    :return Session: 数据库会话对象，未找到返回 None
+    :return bool: 初始化成功时返回 True
     """
-    db = None
-    if args:
-        for arg in args:
-            if isinstance(arg, Session):
-                db = arg
-                break
-    if kwargs:
-        for _, value in kwargs.items():
-            if isinstance(value, Session):
-                db = value
-                break
-    return db
+    with _DATABASE_LIFECYCLE_LOCK:
+        from .init import initialize_database
+
+        ct_db_manager._ready = False
+        initialize_database(configer.plugin_instance, configer.PLUGIN_DB_PATH)
+        ct_db_manager._ready = True
+    return True
 
 
-def update_args_db(args: tuple, kwargs: dict, db: Session) -> Tuple[tuple, dict]:
-    """
-    更新参数中的数据库Session对象
+def _database_operation(func: Callable, write: bool) -> Callable:
+    call_signature = signature(func)
 
-    关键字传参时更新db的值，否则更新第1或第2个参数
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        bound = call_signature.bind_partial(*args, **kwargs)
+        db = bound.arguments.get("db")
+        if db is not None:
+            if not isinstance(db, Session):
+                raise TypeError("db 必须为 SQLAlchemy Session 或 None")
+            return func(*args, **kwargs)
 
-    :param args (Tuple): 位置参数元组
-    :param kwargs (Dict): 关键字参数字典
-    :param db (Session): 数据库会话对象
-
-    :return Tuple: 更新后的 (args, kwargs)
-    """
-    if kwargs and "db" in kwargs:
-        kwargs["db"] = db
-    elif args:
-        if args[0] is None:
-            args = (db, *args[1:])
-        else:
-            args = (args[0], db, *args[2:])
-    return args, kwargs
-
-
-def db_update(func):
-    """
-    数据库更新类操作装饰器，第一个参数必须是数据库会话或存在db参数
-    """
-
-    def wrapper(*args, **kwargs):
-        """
-        自动获取数据库会话、执行更新操作并处理重试逻辑
-
-        :param args: 原始位置参数
-        :param kwargs: 原始关键字参数
-
-        :return: 被装饰函数的返回值
-
-        :raises OperationalError: 重试耗尽后仍无法获取数据库锁时抛出
-        """
-        # 是否关闭数据库会话
-        _close_db = False
-        db = get_args_db(args, kwargs)
-        if not db:
-            # 每个插件实例线程绑定各自独立的会话，不同实例互不复用
-            db = _current_handle().scoped_session()
-            # 标记需要关闭数据库会话
-            _close_db = True
-            # 更新参数中的数据库会话
-            args, kwargs = update_args_db(args, kwargs, db)
-
-        max_retries = 3
-        retry_delay = 0.1
-        last_err = None
-
-        try:
-            for attempt in range(max_retries):
+        for attempt in range(3):
+            with ct_db_manager.get_database().session() as session:
+                bound.arguments["db"] = session
                 try:
-                    # 执行函数
-                    result = func(*args, **kwargs)
-                    # 提交事务
-                    db.commit()
+                    result = func(*bound.args, **bound.kwargs)
+                    if write:
+                        session.flush()
+                        session.expunge_all()
+                        session.commit()
                     return result
                 except OperationalError as err:
-                    # 回滚事务
-                    db.rollback()
-                    last_err = err
+                    session.rollback()
+                    code = getattr(err.orig, "sqlite_errorcode", 0)
                     if not (
                         isinstance(err.orig, SqlOperationalError)
-                        and err.orig.sqlite_errorcode == SQLITE_BUSY
+                        and code & 0xFF == SQLITE_BUSY
+                        and attempt < 2
                     ):
-                        raise err
-
-                    logger.warning(
-                        f"数据库锁定，第 {attempt + 1} 次重试，等待 {retry_delay}s..."
-                    )
-                    sleep(retry_delay)
-                    retry_delay *= 2
-            if last_err:
-                raise last_err
-        except Exception as err:
-            if not isinstance(err, OperationalError):
-                db.rollback()
-            raise err
-        finally:
-            # 关闭数据库会话
-            if _close_db:
-                db.close()
+                        raise
+                    delay = 0.1 * 2**attempt
+                    logger.warning(f"插件数据库忙，{delay}s 后重试当前事务")
+                except Exception:
+                    session.rollback()
+                    raise
+            sleep(delay)
+        raise RuntimeError("插件数据库操作未完成")
 
     return wrapper
 
 
-def db_query(func):
+def db_update(func: Callable) -> Callable:
     """
-    数据库查询操作装饰器，第一个参数必须是数据库会话或存在db参数
-    注意：db.query列表数据时，需要转换为list返回
+    自动管理插件自有表的写事务，显式传入的会话由调用方提交或回滚
+
+    :param func (Callable): 含 db 参数的数据库操作
+
+    :return Callable: 保留原签名的数据库操作
     """
-
-    def wrapper(*args, **kwargs):
-        """
-        自动获取数据库会话、执行查询操作并管理会话生命周期
-
-        :param args: 原始位置参数
-        :param kwargs: 原始关键字参数
-
-        :return: 被装饰函数的返回值
-        """
-        # 是否关闭数据库会话
-        _close_db = False
-        # 从参数中获取数据库会话
-        db = get_args_db(args, kwargs)
-        if not db:
-            # 每个插件实例线程绑定各自独立的会话，不同实例互不复用
-            db = _current_handle().scoped_session()
-            # 标记需要关闭数据库会话
-            _close_db = True
-            # 更新参数中的数据库会话
-            args, kwargs = update_args_db(args, kwargs, db)
-        try:
-            # 执行函数
-            result = func(*args, **kwargs)
-        except Exception as err:
-            raise err
-        finally:
-            # 关闭数据库会话
-            if _close_db:
-                db.close()
-        return result
-
-    return wrapper
+    return _database_operation(func, write=True)
 
 
-# 插件自有表的声明式基类，携带独立 MetaData：既不与宿主注册表抢注册，也不会与其它
-# 插件定义同名表冲突；热重载会重新执行本模块、重新调用一次 plugin_declarative_base()，
-# 因此每次都拿到干净的注册表
-_PluginDeclarativeBase = plugin_declarative_base()
-
-
-class P115StrmHelperBase(_PluginDeclarativeBase):
+def db_query(func: Callable) -> Callable:
     """
-    P115StrmHelper 数据库模型基类，提供通用的 CRUD 操作方法
+    自动管理插件自有表的查询会话，结果须在函数内完成物化
+
+    :param func (Callable): 含 db 参数的查询操作
+
+    :return Callable: 保留原签名的查询操作
+    """
+    return _database_operation(func, write=False)
+
+
+def path_startswith(db: Session, column: Any, prefix: str) -> ColumnElement[bool]:
+    """
+    保留原 SQLite 路径前缀匹配在两种宿主数据库中的语义
+
+    原 startswith 使用 LIKE，百分号和下划线仍是通配符，反斜杠不作转义
+    SQLite 默认仅折叠 ASCII 大小写，PostgreSQL 使用相同折叠规则
+
+    :param db (Session): 当前数据库会话
+    :param column (Any): 路径字段
+    :param prefix (str): 原路径匹配前缀
+
+    :return ColumnElement: 保持原匹配范围的 SQL 条件
+    """
+    if db.get_bind().dialect.name == "sqlite":
+        return column.startswith(prefix)
+    uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lowercase = "abcdefghijklmnopqrstuvwxyz"
+    return func.translate(column, uppercase, lowercase).startswith(
+        prefix.translate(str.maketrans(uppercase, lowercase)), escape=""
+    )
+
+
+class P115StrmHelperBase(plugin_declarative_base()):
+    """
+    使用独立元数据注册表的插件模型基类
     """
 
     __abstract__ = True
-    __allow_unmapped__ = True
-
-    id: Any
-    __name__: str
 
     @db_update
-    def create(self, db: Session):
+    def create(self, db: Session) -> None:
         """
-        创建新记录并添加到数据库
-
-        :param db (Session): 数据库会话
+        将当前记录加入调用方事务
         """
         db.add(self)
 
     @classmethod
     @db_query
-    def get(cls, db: Session, rid: int) -> Self:
+    def get(cls, db: Session, rid: int) -> Optional[Self]:
         """
-        根据主键 ID 查询单条记录
-
-        :param db (Session): 数据库会话
-        :param rid (int): 记录 ID
-
-        :return Self: 匹配的模型实例，未找到时返回 None
+        根据主键查询记录
         """
         return db.query(cls).filter(and_(cls.id == rid)).first()
 
     @db_update
-    def update(self, db: Session, payload: dict):
+    def update(self, db: Session, payload: Dict[str, Any]) -> None:
         """
-        更新当前记录的部分字段
-
-        :param db (Session): 数据库会话
-        :param payload (Dict): 要更新的字段字典，值为 None 的键会被过滤
+        更新非空字段并将脱离会话的对象加入当前事务
         """
-        payload = {k: v for k, v in payload.items() if v is not None}
         for key, value in payload.items():
-            setattr(self, key, value)
+            if value is not None:
+                setattr(self, key, value)
         if inspect(self).detached:
             db.add(self)
 
     @classmethod
     @db_update
-    def delete(cls, db: Session, rid):
+    def delete(cls, db: Session, rid: int) -> None:
         """
-        根据主键 ID 删除记录
-
-        :param db (Session): 数据库会话
-        :param rid (int): 记录 ID
+        按主键删除记录
         """
         db.query(cls).filter(and_(cls.id == rid)).delete()
 
     @classmethod
     @db_update
-    def truncate(cls, db: Session):
+    def truncate(cls, db: Session) -> None:
         """
-        清空当前模型对应的数据库表所有记录
-
-        :param db (Session): 数据库会话
+        清空当前模型的数据
         """
         db.query(cls).delete()
 
@@ -297,73 +207,26 @@ class P115StrmHelperBase(_PluginDeclarativeBase):
     @db_query
     def list(cls, db: Session) -> List[Self]:
         """
-        查询当前模型的所有记录
-
-        :param db (Session): 数据库会话
-
-        :return List: 所有记录列表
+        读取并物化当前模型的全部记录
         """
-        result = db.query(cls).all()
-        return list(result)
+        return list(db.query(cls).all())
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
         """
-        将模型实例的所有数据库列转换为字典
-
-        :return Dict: 列名到列值的字典映射
+        返回当前记录的列值快照
         """
-        return {c.name: getattr(self, c.name, None) for c in self.__table__.columns}  # noqa
-
-    @declared_attr
-    def __tablename__(self) -> str:
-        return self.__name__.lower()
-
-
-def execute_upsert_batch(db: Session, model: Any, batch: List[dict]) -> bool:
-    """
-    通用跨数据库批量 upsert：兼容 SQLite 与 PostgreSQL。
-
-    - PostgreSQL 下使用 `pg_insert(model).on_conflict_do_update`。
-    - SQLite 下使用 `sqlite_insert(model).prefix_with("OR REPLACE")`。
-    """
-    if not batch:
-        return True
-    dialect_name = getattr(getattr(db, "bind", None), "dialect", None)
-    name = getattr(dialect_name, "name", "")
-    if name == "postgresql":
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-        stmt = pg_insert(model)
-        primary_cols = [col.name for col in model.__table__.primary_key.columns]
-        update_cols = {
-            col.name: getattr(stmt.excluded, col.name)
-            for col in model.__table__.columns
-            if col.name not in primary_cols
+        return {
+            column.name: getattr(self, column.name) for column in self.__table__.columns
         }
-        stmt = stmt.on_conflict_do_update(
-            index_elements=primary_cols,
-            set_=update_cols,
-        )
-        db.execute(stmt, batch)
-    else:
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
-        stmt = sqlite_insert(model).prefix_with("OR REPLACE")
-        db.execute(stmt, batch)
-    return True
 
 
 class DbOper:
     """
-    数据库操作基类
+    可选地接收调用方会话的插件数据库操作基类
     """
 
-    _db: Session = None
-
-    def __init__(self, db: Session = None):
-        """
-        初始化数据库操作基类
-
-        :param db (Session): 数据库会话，可选
-        """
+    def __init__(self, db: Optional[Session] = None) -> None:
         self._db = db
+
+
+ct_db_manager = _DBManager()
