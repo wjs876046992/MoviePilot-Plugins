@@ -44,6 +44,7 @@ from . import strm as _strm  # noqa: E402
 
 from .constants import (  # noqa: E402
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
+    HELPER_HEALTH_INTERVAL as _HELPER_HEALTH_INTERVAL,
     STRM_SCAN_LIMIT as STRM_SCAN_LIMIT,
     STRM_VIDEO_EXTENSIONS as STRM_VIDEO_EXTENSIONS,
     # 「不值得进入 strm 交叉验证」的原因码，常量的唯一归属地见其定义处说明
@@ -1270,11 +1271,25 @@ class StrmOpsMixin:
 
     def _helper_running(self) -> Tuple[bool, str]:
         """
-        助手插件是否在运行。返回 (是否运行, 不运行时的原因)。
+        助手插件是否在**运行且启用**。返回 (是否可用, 不可用时的原因)。
 
         Why check the running state at all: the helper keys its behaviour off its own
         login/session. A plugin that is installed but failed to log in will accept the
         command and do nothing, which from our side looks identical to success.
+
+        ⚠️ 判据是**两层**：① `running_plugins` 里有这个键；② 它的 `get_state()` 为真。
+
+        第二层不是锦上添花 —— **停用的插件仍在 `running_plugins` 表里**（宿主
+        `lifecycle.py` 在 `init_plugin` 后无条件写入 `_running[plugin_id]`，只在
+        `enabled` 时才 `_enable_events`）。因此「装了但被停用」的助手会让第一层判定
+        通过，而我们发过去的命令落在一个事件处理器已关闭的插件上 —— 与"没装"
+        在用户视角完全一样（点了没反应），却会被这里判成"正常"。这正是本方法
+        docstring 原本要防的那类失效，只是原实现漏了一半。
+
+        ⚠️ **探测失败必须放行**：`get_state()` 缺失或抛错时按"可用"处理。与
+        `_helper_accepted_pan_roots` 的「读不到时不阻塞」同一取向 —— 一个会把
+        可用功能判死的探针，比没有探针更糟。这也让测试里的裸替身
+        （`running_plugins = {"P115StrmHelper": object()}`）继续通过。
         """
         if _plugin_manager_cls() is None:
             return False, "宿主未提供插件管理器，无法确认 strm 助手是否在运行"
@@ -1282,9 +1297,18 @@ class StrmOpsMixin:
             running = _plugin_manager_cls()().running_plugins or {}
         except Exception as e:
             return False, f"读取插件运行态失败：{e}"
-        if not running.get(_P115_STRM_HELPER_PLUGIN):
+        instance = running.get(_P115_STRM_HELPER_PLUGIN)
+        if not instance:
             return False, (f"未检测到运行中的「{_P115_STRM_HELPER_PLUGIN}」插件。"
                            f"请先安装并启用它（本功能借它生成 strm）")
+        try:
+            if not bool(instance.get_state()):
+                return False, (f"「{_P115_STRM_HELPER_PLUGIN}」已加载但处于**停用**状态，"
+                               f"它收不到本插件发出的命令。请到它的配置页启用后重试")
+        except Exception:
+            # 探不到状态说明对方实例形态与预期不同（旧版本宿主/桩环境）——
+            # 按可用处理，绝不因此把功能判死。
+            pass
         return True, ""
 
     def _strm_helper_ready(self) -> Dict[str, Any]:
@@ -1301,6 +1325,48 @@ class StrmOpsMixin:
         if not configured:
             return {"ready": False, "reason": _P115_PAN_DIR_HINT}
         return {"ready": True, "reason": ""}
+
+    def _helper_health(self) -> Dict[str, Any]:
+        """
+        助手健康检查：**交叉验证的判定还可信吗**（是否有人在生成 .strm）。
+
+        Is anything actually generating .strm right now?
+
+        ## 为什么与 `_strm_helper_ready` 是两个检查
+
+        两者的问题不同，前提也不同，合并会让其中一方说假话：
+
+        | | `_strm_helper_ready` | 本方法 |
+        |---|---|---|
+        | 回答 | 「先尝试生成 strm」按钮能不能点 | 交叉验证会不会大面积误报 |
+        | 前提 | 助手在跑 **且** 映射配了 `pan_dir` | 助手在跑（`pan_dir` 与它无关） |
+        | 失败后果 | 少一个便利功能 | 每个同步成功的文件都被判成"上传异常" |
+
+        ## 为什么它只通报告警、不改行为
+
+        助手停摆后，**没有任何东西在生成 `.strm`**，于是每个同步成功的文件都会在
+        宽限期后进入疑似清单 —— 用户看到的是一批"上传异常"，真因却是助手没跑。
+        仅靠「补生成按钮不可用」完全说不出这句话（用户可能根本不点那个按钮）。
+
+        但把它接成"助手没跑就停掉交叉验证"是错的：本插件的 `strm_dir` 允许接
+        **任意** strm 生成插件（见 Config.vue 的说明），因此"没检测到 P115StrmHelper"
+        与"没人生成 .strm"**并不等价**。加上瞬时重载/加载顺序都可能让探测假阴性 ——
+        自动停用会在用户毫不知情的情况下关掉整条链路。故只告警，并在文案里给出
+        「我用的是别的插件」这个出口。架构依据见 test_helper_dependency_boundary。
+
+        :return: `{"needed", "ok", "reason", "checked_at"}`
+            `needed=False` 表示这台实例根本没在用 strm 交叉验证，此时 `ok` 恒为真 ——
+            不启用 strm 的用户不该每次启动都吃一条告警。
+        """
+        # 没在用交叉验证的两种情形：总开关关闭、以及没有任何映射配 strm 目录。
+        # 后者才是真正的门槛 —— 只有配了 strm_dir 的映射才在等 .strm 出现。
+        if not getattr(self, "_strm_check_enabled", True):
+            return {"needed": False, "ok": True, "reason": "", "checked_at": 0.0}
+        if not any((p.get("strm_dir") or "").strip()
+                   for p in (getattr(self, "_sync_pairs", None) or [])):
+            return {"needed": False, "ok": True, "reason": "", "checked_at": 0.0}
+        ok, reason = self._helper_running()
+        return {"needed": True, "ok": ok, "reason": reason, "checked_at": time.time()}
 
     def _helper_accepted_pan_roots(self) -> Tuple[List[str], Optional[str]]:
         """
@@ -1332,6 +1398,95 @@ class StrmOpsMixin:
         if not raw:
             return [], None
         return [pan for _, pan in _strm.parse_pan_mappings(raw)], None
+
+    def _helper_health_check(self, *, force: bool = False) -> Dict[str, Any]:
+        """
+        助手健康检查的执行入口：节流 → 探测 → **仅在状态变化时**留痕/通知。
+
+        Throttled health probe that only logs and notifies on a *state transition*.
+
+        ## 为什么只在变化时留痕
+
+        本检查挂在本插件既有的 `_scheduled_sync` cron 上（默认 `*/10`），而复查间隔是
+        30 分钟。若每次探测都打日志，一个长期健康的实例每天仍会产出几十条同义
+        INFO —— 与「只有新发现才通知」是同一条原则：重复的告警会把真实变化淹没。
+
+        因此状态存在 `save_data("helper_health")` 里，与上次对比后分三种情况：
+          · 健康 → 不健康：WARNING + 一条通知（宽限期到会大面积误报，值得打扰）
+          · 不健康 → 健康：INFO 恢复 + 重置通知闩锁
+          · 状态未变：什么都不做（连日志都不打）
+
+        :param force: 忽略节流立即探测。启动首查用它 —— 那一次与 30 分钟窗口无关。
+        """
+        now_ts = time.time()
+        if not force and (now_ts - getattr(self, "_helper_health_last", 0.0)
+                          < _HELPER_HEALTH_INTERVAL):
+            return getattr(self, "_helper_health_state", {}) or {}
+        self._helper_health_last = now_ts
+
+        health = self._helper_health()
+        if not health.get("needed"):
+            # 这台实例没用 strm 交叉验证：不算「状态变化」，也不留痕。
+            # 但要清掉历史告警态 —— 用户关掉 strm 开关后横幅必须消失。
+            self._helper_health_state = {"ok": True, "reason": ""}
+            return health
+
+        prev = getattr(self, "_helper_health_state", None) or {}
+        prev_known = prev.get("ok")
+        self._helper_health_state = {"ok": health["ok"], "reason": health["reason"]}
+
+        if prev_known is None or prev_known != health["ok"]:
+            self.save_data("helper_health", {"ok": health["ok"],
+                                             "checked_at": health["checked_at"]})
+        if health["ok"]:
+            if prev_known is False:
+                logger.info("[Rsync115Sync] ✅ strm 助手已恢复运行，"
+                            "交叉验证的判定重新可信")
+                self._helper_health_notified = False
+            return health
+
+        if prev_known is False:
+            # 已经是告警态：不发第二条通知，也不重复打日志。
+            return health
+
+        logger.warning(
+            f"[Rsync115Sync] ⚠️ {health['reason']}\n"
+            f"    没有插件在生成 .strm 时，**每一个同步成功的文件都会在宽限期"
+            f"（{getattr(self, '_strm_grace_minutes', 0)} 分钟）后被判为"
+            f"「疑似上传异常」** —— 你收到的疑似告警可能全部是误报。\n"
+            f"    若你使用**其它** strm 插件生成指针文件，本条可忽略。")
+        self._notify_helper_down(health["reason"])
+        return health
+
+    def _notify_helper_down(self, reason: str) -> None:
+        """
+        助手掉线时推送**一条**通知（与疑似通知同通道、同受众）。
+
+        Single notification on helper loss. 只在状态转移时调用一次，且用闩锁挡住
+        重载后的重复推送 —— 与 `_strm_notified` 同一手法：`post_message` 不返回
+        投递结果，因此闩锁必须在发送成功之后才置位，否则一次失败会变成永久静默。
+        """
+        if not getattr(self, "_notify", False) or getattr(self, "_helper_health_notified", False):
+            return
+        mtype = self._plugin_mtype()
+        if mtype is None:
+            logger.warning("[Rsync115Sync] 宿主 MessageType 不可用，已跳过助手掉线通知以免广播")
+            return
+        try:
+            self.post_message(
+                mtype=mtype,
+                title="115同步：strm 助手未运行",
+                text=(f"⚠️ {reason}\n\n"
+                      f"当前没有插件在生成 .strm 指针文件，因此同步成功的文件会在宽限期"
+                      f"（{getattr(self, '_strm_grace_minutes', 0)} 分钟）后集中进入"
+                      f"「疑似上传异常」—— 这些告警**很可能全是误报**，请先确认助手状态，"
+                      f"不要急着删旧重传。\n\n"
+                      f"若你使用其它 strm 插件生成指针文件，本条可忽略。"),
+            )
+            self._helper_health_notified = True
+            logger.info("[Rsync115Sync] 📨 已推送 strm 助手掉线通知")
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 助手掉线通知发送失败（已忽略）: {e}")
 
     def _send_helper_command(self, pan_path: str) -> bool:
         """

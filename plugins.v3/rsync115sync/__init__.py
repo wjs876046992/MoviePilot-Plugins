@@ -37,6 +37,15 @@ try:
 except Exception:  # pragma: no cover - 兼容旧宿主
     _PluginManager = None
 
+# 一次性任务门面：助手健康检查的**首次**探测要延后执行（见
+# `_schedule_startup_helper_check` 的说明）。缺失时降级为不排程 ——
+# 那只是少一次启动告警，定期复查仍会在下一轮 cron 里跑，不该让插件加载失败。
+# One-shot scheduling facade for the deferred first health probe. None on older hosts.
+try:
+    from app.sdk.scheduler import add_plugin_once_job as _add_plugin_once_job
+except Exception:  # pragma: no cover - 兼容旧宿主
+    _add_plugin_once_job = None
+
 # 宿主 webhook 事件的 payload 模型。实现 `webhook_parser` 时必须返回它的实例 ——
 # 宿主在 WebhookChain 里直接把它交给 eventmanager，返回别的类型（或 None）都会
 # 让整条链静默结束。桩环境下退化成一个「能带任意属性」的最小替身。
@@ -130,6 +139,7 @@ from .constants import (  # noqa: E402
     DEFAULT_MEDIA_EXTENSIONS,
     DEFAULT_RSYNC_TIMEOUT,
     DEFAULT_TASK_TIMEOUT,
+    HELPER_HEALTH_STARTUP_DELAY as _HELPER_HEALTH_STARTUP_DELAY,
     LEGACY_DEFAULTS as _LEGACY_DEFAULTS,
     LEGACY_DEFAULTS_ALL as _LEGACY_DEFAULTS_ALL,
     MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
@@ -189,7 +199,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.1"
+    plugin_version = "0.5.2"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -342,6 +352,19 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # Keys already handed to the helper, so repeated clicks do not silently
         # re-trigger cloud traversals.
         self._strm_gen_requested: Dict[str, float] = {}
+
+        # strm 助手健康检查的运行态（见 strm_ops._helper_health_check）。
+        # ⚠️ 这两项**刻意不持久化、也不跨重载恢复**：
+        #   · `_helper_health_state` 为 None 表示「本进程还没探过」，重载后首次探测
+        #     会重新建立基线 —— 若从磁盘恢复旧状态，插件重载（升级、保存配置）时
+        #     就会因为「基线说健康、现在不健康」而重复推一条同样的掉线通知。
+        #   · `_helper_health_notified` 是通知闩锁，同理只应该在**同一进程内**
+        #     挡住重复推送；跨进程保留等于让一次掉线永久静音。
+        # Health probe runtime state. Deliberately NOT persisted: restoring it across a
+        # reload would re-fire the same "helper down" notification on every reload.
+        self._helper_health_state: Optional[Dict[str, Any]] = None
+        self._helper_health_last: float = 0.0
+        self._helper_health_notified: bool = False
 
         # 严格继承 sync_115.sh 的参数设置 (绝不用 --inplace, --temp-dir, --partial)
         # Parameters strictly inherited from sync_115.sh.
@@ -667,6 +690,57 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                              "这通常意味着你跑的不是最新版插件（见 DEVELOPMENT §9.17）")
         except Exception as log_err:  # 摘要日志失败绝不能影响插件加载
             logger.warning(f"[Rsync115Sync] 初始化摘要日志输出失败（已忽略）: {log_err}")
+
+        # 最后一步：排一次**延迟**的 strm 助手健康检查（见方法说明）。
+        # 放在所有状态恢复之后，保证 `_sync_pairs` / `_strm_check_enabled` 已就位。
+        self._schedule_startup_helper_check()
+
+    def _schedule_startup_helper_check(self) -> None:
+        """
+        排一次延迟的助手健康检查，用于覆盖「启动即静默」这个空窗。
+
+        Schedule a deferred helper health probe after startup.
+
+        ## 为什么不能在这里直接查
+
+        宿主按插件逐个 `init_plugin` 并**在 init_plugin 返回之后**才写入运行表
+        （`lifecycle.py`：`instance.init_plugin(...)` → `self._running[current_id] = instance`）。
+        因此本插件初始化时，`P115StrmHelper` 是否已经在表里取决于**加载顺序** ——
+        直接同步检查会读到「助手不存在」这个假状态，然后推一条错误告警。
+
+        延迟到宿主把所有插件都加载完之后再判，才是可信的。用宿主公开的一次性任务
+        门面（`add_plugin_once_job`，见 Plugin_Development §9.3）而不是自建
+        `threading.Timer`：后者会在插件重载时留下一个指向旧实例的游离线程。
+
+        ## 失败一律静默降级
+
+        旧的宿主没有这个门面（导入期已降级为 None），或调度器尚未就绪
+        （`add_plugin_once_job` 返回 False）—— 两种情况下都不重试、不报错：
+        定期复查（挂在 `_scheduled_sync` 上）会在下一轮 cron 里补上这次探测，
+        功能完整。启动检查只是「让问题更早被看见」的增强，不是功能前提。
+
+        ⚠️ 同一任务 ID 重复追加时宿主只保留最后一次，因此反复重载不会堆积任务；
+        插件重载换成新实例后宿主会丢弃旧实例登记的任务。
+        """
+        if _add_plugin_once_job is None:
+            logger.debug("[Rsync115Sync] 宿主未提供 add_plugin_once_job，"
+                         "跳过启动期助手健康检查（定期复查仍会在下一轮 cron 生效）")
+            return
+        try:
+            scheduled = _add_plugin_once_job(
+                self.__class__.__name__,
+                "helper_health_startup",
+                self._helper_health_check,
+                "115同步：启动检查 strm 助手",
+                delay_seconds=_HELPER_HEALTH_STARTUP_DELAY,
+                func_kwargs={"force": True},
+            )
+        except Exception as err:
+            logger.debug(f"[Rsync115Sync] 排程启动期助手健康检查失败（已忽略）: {err}")
+            return
+        if not scheduled:
+            logger.debug("[Rsync115Sync] 调度器未就绪，启动期助手健康检查未排上"
+                         "（定期复查仍会在下一轮 cron 生效）")
 
     def get_state(self) -> bool:
         return self._enabled
@@ -2678,6 +2752,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "strm_gen_requested": dict(self._strm_gen_requested),
                 "strm_gen_dir_limit": STRM_GEN_DIR_LIMIT,
                 "strm_helper_ok": self._strm_helper_ready(),
+                # 助手健康（有无人在生成 .strm）——与上面的"补生成是否可用"是两个问题：
+                # 前者决定看板要不要挂"交叉验证可能大面积误报"的横幅，后者只决定
+                # 「先尝试生成 strm」按钮的可点性。合并会让其中一个说假话。
+                # 内部对 `_strm_check_enabled` / `_sync_pairs` 已做 getattr 兜底，
+                # 因此 `__new__` 构造的最小实例上调用也安全。
+                "helper_health": self._helper_health(),
                 "rate_limit_enabled": self._rate_limit_enabled,
                 "upload_window_count": self._upload_window_count,
                 "upload_max_per_window": self._upload_max_per_window,
@@ -3282,6 +3362,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._strm_check()
         except Exception as e:
             logger.warning(f"[Rsync115Sync] strm 交叉验证巡检异常（已忽略，不影响本轮同步）: {e}")
+
+        # strm 助手健康复查：同样纯本地、自带 30 分钟节流，且**仅在状态变化时**留痕。
+        # 挂在巡检这里是刻意的 —— 它问的是「巡检的判定还可信吗」，与巡检同频最自然；
+        # 单独注册一个 service 只会多一份需要维护的调度注册，收益为零。
+        try:
+            self._helper_health_check()
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 助手健康检查异常（已忽略，不影响本轮同步）: {e}")
 
         # ready 优先：新鲜入库的时效性远高于存量补传。
         # 若 ready 本轮确实有活干，补传推迟到下一个 tick（`_resume_backfill_if_pending`

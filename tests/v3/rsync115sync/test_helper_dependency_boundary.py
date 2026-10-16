@@ -91,6 +91,14 @@ def test_only_the_generate_endpoint_depends_on_helper():
         "_send_helper_command",       # 实际下发命令
         "_api_strm_generate",         # 补生成入口
         "_strm_helper_ready",         # 派生的就绪检查（调用 _helper_running）
+        # 助手健康检查（v0.5.2）：只**报告**有没有人在生成 .strm，不改任何行为 ——
+        # 它回答的是「你接下来收到的疑似告警可不可信」，与补生成那条依赖无关。
+        # 刻意与 _strm_helper_ready 分开：那个要 pan_dir 已配，这个不需要。
+        # 它的存在不放松下面任何一条"自包含"断言（交叉验证/扫描/删旧重传仍零依赖）。
+        "_helper_health",             # 健康探测（调用 _helper_running）
+        "_helper_health_check",       # 节流 + 仅状态变化时留痕（供 cron 与启动首查共用）
+        "_notify_helper_down",        # 掉线时的一条通知（状态转移时调用）
+        "_schedule_startup_helper_check",  # 排一次延迟首查（不探测，只排程）
         # 补生成成功后的收尾：它自己不调用助手，只是把条目移回观察期。
         # 出现在这里的原因是「补生成这件事」被有意收成一个方法，而不是说
         # 这里产生了新的依赖 —— 若要在这里读助手配置，就应该重新审视整个边界。

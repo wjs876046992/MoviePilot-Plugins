@@ -176,12 +176,26 @@
 
         <!-- 补传 / 限流 / 源端扫描提示：用通俗文字说明“为什么慢、还要多久” -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || watchingCount || sourceScanProblem"
-          :type="isThrottled || sourceScanProblem ? 'warning' : 'info'"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || watchingCount || sourceScanProblem || helperHealthWarning"
+          :type="isThrottled || sourceScanProblem || helperHealthWarning ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
           class="radius-sm mb-3 text-body-2"
         >
+          <!-- 助手健康：**必须排在最前**。它解释的是「你接下来收到的一批疑似告警
+               可能全是误报」，而下面的疑似/观察数字正是被它影响的那些 —— 先看到
+               结论再看数字，才不会照着误报去删旧重传。
+               措辞刻意留出第二条出口：strm_dir 允许用户接任意 strm 生成插件，
+               插件无法可靠区分，因此不能说死"功能不可用"。 -->
+          <div v-if="helperHealthWarning" class="font-weight-medium">
+            ⚠️ {{ helperHealthReason }}
+            <div class="mt-1 font-weight-regular">
+              当前可能<b>没有插件在生成 .strm 指针文件</b>，因此同步成功的文件会在宽限期后
+              集中进入「疑似上传异常」—— 这些告警<b>可能全是误报</b>，请先确认助手状态，
+              不要急着删旧重传。
+              <br>若你使用<b>其它</b> strm 插件生成指针文件，本条可忽略。
+            </div>
+          </div>
           <div v-if="isThrottled" class="font-weight-medium">
             ⏸ 为避免触发 115 风控，上传已自动暂停，约 {{ blockedMinutes }} 分钟后恢复，无需手动操作。
           </div>
@@ -203,10 +217,19 @@
             新入库的文件不会被发现。请检查「源端扫描入库」开关是否开启、映射源目录是否可读，
             或查看日志中最近一条「源端扫描」记录。
           </div>
+          <!-- ⚠️ 措辞必须跟着助手健康走：助手在跑时这些条目「属正常等待」，
+               助手不在跑时它们**必然**到期转疑似。同一句话在两种状态下说完相反的
+               意思，会让用户照着"无需处理"忽略掉一批真告警。 -->
           <div v-if="watchingCount">
             📺 strm 交叉验证进行中：<strong>{{ watchingCount }}</strong> 个文件处于观察期，
-            {{ statusData.strm_grace_minutes }} 分钟内未生成对应 .strm 才会被标记为「疑似上传异常」，
-            属正常等待，无需处理。
+            {{ statusData.strm_grace_minutes }} 分钟内未生成对应 .strm 才会被标记为「疑似上传异常」。
+            <template v-if="helperHealthWarning">
+              <b>但当前没有插件在生成 .strm，这些条目到期后大概率全部会被判为疑似
+              （很可能是误报）</b>，请先解决上方助手问题。
+            </template>
+            <template v-else>
+              属正常等待，无需处理。
+            </template>
           </div>
         </v-alert>
 
@@ -671,7 +694,17 @@
               <div class="font-weight-medium mb-1">
                 「先尝试生成 strm」当前不可用：{{ helperReason }}
               </div>
-              <div class="text-caption">
+              <!-- ⚠️ 指引必须按**成因**分流。助手根本没在运行时，"去配网盘目录"是答非所问
+                   （用户照着配完仍然点不动，只会更困惑）；此时该给的是"把助手启用起来"。
+                   只有助手在跑、纯粹因为本插件没配网盘目录时才讲 pan_dir 那两条。 -->
+              <div v-if="helperHealthWarning" class="text-caption">
+                请先到 <b>P115StrmHelper</b> 的配置页确认它<b>已安装并启用</b> ——
+                它没运行时，本插件发出的补生成命令不会被任何插件接收。
+                <br>（若你使用<b>其它</b> strm 插件生成指针文件，本条可忽略：
+                「先尝试生成 strm」只对接 P115StrmHelper，但扫描、清理、
+                删旧重传以及整条交叉验证链路都<b>不依赖任何外部插件</b>。）
+              </div>
+              <div v-else class="text-caption">
                 配好即可用它免掉整轮删除重传（生成成功 ⇒ 只是助手漏生成，无需重传）：
                 <br>① 在本插件<b>配置页</b>为该映射填写「<b>网盘目录</b>」——
                 115 网盘里的真实路径（如 <code>/HomeTheater/TV</code>），不是 CD2 挂载路径；
@@ -1029,6 +1062,10 @@ const statusData = ref({
   strm_gen_requested: {},
   strm_gen_dir_limit: 20,
   strm_helper_ok: { ready: false, reason: '' },
+  // 助手健康（有无人在生成 .strm）。与 strm_helper_ok 是两个问题：
+  // 那个决定「先尝试生成 strm」按钮能不能点，这个决定要不要挂"可能大面积误报"横幅。
+  // 默认 needed=false：未启用 strm 交叉验证的实例不该看到任何相关提示。
+  helper_health: { needed: false, ok: true, reason: '' },
   backfill_total: 0,
   rate_limit_enabled: true,
   upload_window_count: 0,
@@ -1270,6 +1307,15 @@ const strmSuspectKeys = computed(() => itemsByState('suspect').map((it) => it.ke
 const helperReady = computed(() => statusData.value.strm_helper_ok?.ready === true)
 const helperReason = computed(
   () => statusData.value.strm_helper_ok?.reason || 'strm 助手未就绪'
+)
+// 助手健康：needed 表示这台实例真的在用 strm 交叉验证（总开关开 + 至少一个映射配了
+// strm 目录）。needed=false 时一律不提示 —— 未启用该功能的用户不该看到任何相关文案。
+const helperHealthWarning = computed(() => {
+  const h = statusData.value.helper_health
+  return !!h && h.needed === true && h.ok !== true
+})
+const helperHealthReason = computed(
+  () => statusData.value.helper_health?.reason || '未检测到 strm 助手在运行'
 )
 // 已请求过补生成的 key。
 //

@@ -135,6 +135,21 @@ RETRY_KEYWORD_LIMIT = 15
 # Minimum interval between strm cross-validation sweeps.
 STRM_CHECK_INTERVAL = 1800
 
+# 助手健康检查的复查间隔（秒）。与 STRM_CHECK_INTERVAL 同频即可 ——
+# 它问的是「现在还有没有东西在生成 .strm」，那不是秒级变化的状态。
+# 注意：该检查**只在状态发生变化时**才记日志/发通知，所以频率高一点也不会刷屏。
+# Interval for re-checking the helper plugin's health. Same cadence as the strm
+# sweep; it only logs/notifies on a *state change*, so a higher rate is harmless.
+HELPER_HEALTH_INTERVAL = 1800
+
+# 启动后延迟多久做首次助手健康检查（秒）。
+# ⚠️ 不能是 0：宿主按插件逐个 `init_plugin` 并写入运行表，顺序无保证 ——
+# 在 init_plugin 里同步检查会读到「助手尚未加载」这个假状态。
+# Delay before the first helper health check: the host loads plugins one by one in
+# unspecified order, so a synchronous check inside init_plugin can read a false
+# "helper absent" simply because it has not been loaded yet.
+HELPER_HEALTH_STARTUP_DELAY = 60
+
 # ---- 源端游标扫描 / source-root cursor scan ----
 # 入库发现的**主通道**。取代了 2026-09-25 删除的宿主整理事件订阅，
 # 判据与 sync_115.sh 的 `find -newer <last_sync>` 同构：
