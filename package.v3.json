@@ -1127,7 +1127,7 @@
     "name": "115网盘STRM助手",
     "description": "115网盘STRM生成一条龙服务",
     "labels": "云盘",
-    "version": "3.2.0",
+    "version": "3.3.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem",
     "level": 1,
@@ -1135,6 +1135,7 @@
     "system_version": ">=3.0.0",
     "v3t": false,
     "history": {
+      "v3.3.0": "同步上游 v3.0.1 / v3.0.2：\n- 修复 115 秒传显示大小取整导致整理后处理误判文件身份、无法生成 STRM 的问题，统一使用精确字节数并保留后续文件变化校验（#475）\n- 新增「整理后处理恢复」记录列表，支持状态筛选、分页、详情查询与核验重试；符合条件的历史大小误判记录可恢复，未完成任务可继续执行\n- 适配新版 MoviePilot V3 覆盖整理参数，保留宿主暂存完整性校验、旧文件保护与持久步骤恢复\n- 优化 Emby 新文件发现与媒体库刷新，避免父目录全量刷新；兼容远端 POSIX、Windows 盘符及 UNC 路径\n- 未配置 STRM 链接地址时保留插件初始化，生成时明确提示补全地址（#476）；新增 P115Client 共享目录节点缓存清理\n- 更新 p115center 授权配置、Rust 组件构建依赖及预编译 wheel",
       "v3.2.0": "同步上游官方首发 V3 大版本重构：\n- 运行框架：全面适配 MoviePilot V3 SDK 与实例模型，配置、缓存、worker 队列及定时任务按实例严格隔离\n- 数据库与整理状态机：集成 transfer_postprocess 与 transfer_resource 检查点表，支持整理任务中断恢复、逐文件结果核验与失败重试；融合本仓 PostgreSQL 64位 ID 扩展与高频查询 B-Tree 索引\n- 存储与访问：适配 115 Open、115网盘Plus 和阿里云盘最新路径契约，更新上传队列、302 连接池及 FUSE/WebDAV 接口\n- 搜索与服务：适配 V3 原生媒体编号模型与 RE0 新域名及流程，优化 Cloudflare 校验",
       "v3.1.2": "同步上游 v2.8.76 更新：适配 RE0（原 HDHive）新域名（re0.me）以及配套的签到、频道搜索、资源解锁流程，优化 Cloudflare 校验处理与资源提取。",
       "v3.1.1": "为数据库 files(parent_id, pickcode)、folders(parent_id)、open_files(parent_id, pick_code)、open_folders(parent_id) 等高频过滤列建立 B-Tree 索引（Alembic 迁移 1.0.5），显著消除全表扫描，提升万级媒体数据下的比对与反查性能。",

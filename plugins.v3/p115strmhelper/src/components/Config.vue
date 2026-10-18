@@ -105,7 +105,7 @@
                       </v-text-field>
                     </v-col>
                     <v-col cols="12" md="4">
-                      <v-text-field v-model="config.moviepilot_address" label="STRM 文件内链接地址" hint="点右侧图标自动填充当前站点地址。"
+                      <v-text-field v-model="config.moviepilot_address" label="STRM 文件内链接地址" hint="留空时无法生成 STRM。点右侧图标自动填充当前站点地址。"
                         persistent-hint density="compact" variant="outlined" hide-details="auto">
                         <template v-slot:append>
                           <v-icon icon="mdi-web" @click="setMoviePilotAddressToCurrentOrigin" aria-label="使用当前站点地址"
@@ -273,6 +273,7 @@ const loading = ref(true);
 const saveLoading = ref(false);
 const syncLoading = ref(false);
 const clearIdPathCacheLoading = ref(false);
+const clearP115ClientCacheLoading = ref(false);
 const clearIncrementSkipCacheLoading = ref(false);
 const clearR302CacheLoading = ref(false);
 // 主分类标签
@@ -756,6 +757,7 @@ const saveConfig = async () => {
   message.text = '';
   message.type = 'info';
   try {
+    config.moviepilot_address = config.moviepilot_address?.trim() || null;
     // 文件大小输入框：从 ref 同步到 config 再提交
     config.upload_module_skip_upload_wait_size = parseSize(skipUploadWaitSizeFormattedRef.value) || 0;
     config.upload_module_force_upload_wait_size = parseSize(forceUploadWaitSizeFormattedRef.value) || 0;
@@ -961,6 +963,31 @@ const clearIdPathCache = async () => {
     console.error('文件路径ID缓存清理失败:', err);
   } finally {
     clearIdPathCacheLoading.value = false;
+    setTimeout(() => {
+      if (message.type === 'success' || message.type === 'error') {
+        message.text = '';
+      }
+    }, 3000);
+  }
+};
+
+const clearP115ClientCache = async () => {
+  clearP115ClientCacheLoading.value = true;
+  message.text = '';
+  try {
+    const result = await props.api.post(`plugin/${PLUGIN_ID}/clear_p115client_cache`);
+    if (result && result.code === 0) {
+      message.text = result.msg || 'P115Client 缓存清理成功';
+      message.type = 'success';
+    } else {
+      throw new Error(result?.msg || 'P115Client 缓存清理失败');
+    }
+  } catch (err) {
+    message.text = `P115Client 缓存清理失败: ${err.message || '未知错误'}`;
+    message.type = 'error';
+    console.error('P115Client 缓存清理失败:', err);
+  } finally {
+    clearP115ClientCacheLoading.value = false;
     setTimeout(() => {
       if (message.type === 'success' || message.type === 'error') {
         message.text = '';
@@ -1312,6 +1339,7 @@ provide('monitorLifeMinFileSizeFormattedRef', monitorLifeMinFileSizeFormattedRef
 // Loading states
 provide('syncLoading', syncLoading);
 provide('clearIdPathCacheLoading', clearIdPathCacheLoading);
+provide('clearP115ClientCacheLoading', clearP115ClientCacheLoading);
 provide('clearIncrementSkipCacheLoading', clearIncrementSkipCacheLoading);
 provide('clearR302CacheLoading', clearR302CacheLoading);
 
@@ -1323,6 +1351,7 @@ provide('isAliTokenVisible', isAliTokenVisible);
 // Actions
 provide('triggerFullSync', triggerFullSync);
 provide('clearIdPathCache', clearIdPathCache);
+provide('clearP115ClientCache', clearP115ClientCache);
 provide('clearIncrementSkipCache', clearIncrementSkipCache);
 provide('clearR302Cache', clearR302Cache);
 provide('checkLifeEventStatus', checkLifeEventStatus);

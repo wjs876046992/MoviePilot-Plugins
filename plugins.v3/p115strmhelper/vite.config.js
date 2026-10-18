@@ -103,8 +103,8 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5001,   // 使用不同于主应用的端口
+    port: 5002,   // 使用不同于主应用的端口
     cors: true,   // 启用CORS
-    origin: 'http://localhost:5001'
+    origin: 'http://localhost:5002'
   },
 }) 
