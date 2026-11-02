@@ -36,7 +36,7 @@ class PersonMeta(_PluginBase):
     # 插件图标
     plugin_icon = "actor.png"
     # 插件版本
-    plugin_version = "3.1.1"
+    plugin_version = "3.1.3"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -68,6 +68,9 @@ class PersonMeta(_PluginBase):
     _person_detail_cache = None
     _processed_person_images = None
     _processed_person_infos = None
+    # 图片下载复用会话：{"douban"|"other": (配置指纹, RequestUtils)}
+    _image_clients = None
+    _image_client_lock = threading.Lock()
 
     def init_plugin(self, config: dict = None):
         self.__reset_people_cache()
@@ -755,8 +758,13 @@ class PersonMeta(_PluginBase):
                 if person_key not in self._processed_person_images:
                     logger.debug(f"更新人物 {people.get('Name')} 的图片：{profile_path}")
                     self._processed_person_images.add(person_key)
-                    self.set_item_image(server=server, server_type=server_type,
-                                        itemid=people.get("Id"), imageurl=profile_path)
+                    try:
+                        self.set_item_image(server=server, server_type=server_type,
+                                            itemid=people.get("Id"), imageurl=profile_path)
+                    except RequestException as err:
+                        # 重试耗尽后只放弃这张图片：名称与简介的更新不能跟着一起被跳过，
+                        # 人物图片会在下一轮重新处理
+                        logger.error(f"人物 {people.get('Name')} 图片重试后仍下载失败：{str(err)}")
                 else:
                     logger.debug(f"人物 {people.get('Name')} 的图片本轮已更新，跳过")
 
@@ -1099,6 +1107,37 @@ class PersonMeta(_PluginBase):
         else:
             return __set_plex_iteminfo()
 
+    def __image_client(self, is_douban: bool) -> RequestUtils:
+        """
+        取得按图片来源复用连接的下载客户端。
+
+        跨境图片链路单次 TLS 握手可达数秒，原先每张图片都新建不带会话的
+        RequestUtils，握手成本随图片数量线性叠加，是刮削超时被放大的主因。
+
+        :param is_douban: 是否为豆瓣图片；豆瓣固定携带 Referer 且不沿用 TMDB 代理配置
+        :return: 持有持久会话的 RequestUtils，代理或 UA 配置变化时重建
+        """
+        kind = "douban" if is_douban else "other"
+        fingerprint = f"{settings.USER_AGENT}|{settings.PROXY!r}"
+        with self._image_client_lock:
+            clients = self._image_clients
+            if clients is None:
+                clients = {}
+                self._image_clients = clients
+            cached = clients.get(kind)
+            if cached and cached[0] == fingerprint:
+                return cached[1]
+            client = RequestUtils(
+                headers={"Referer": "https://movie.douban.com/"} if is_douban else None,
+                proxies=None if is_douban else settings.PROXY,
+                ua=settings.USER_AGENT,
+                use_session=True,
+            )
+            if cached:
+                cached[1].close()
+            clients[kind] = (fingerprint, client)
+            return client
+
     @retry(RequestException, logger=logger)
     def set_item_image(self, server: str, server_type: str, itemid: str, imageurl: str):
         """
@@ -1118,17 +1157,17 @@ class PersonMeta(_PluginBase):
             下载图片
             """
             try:
-                if "doubanio.com" in imageurl:
-                    r = RequestUtils(headers={
-                        'Referer': "https://movie.douban.com/"
-                    }, ua=settings.USER_AGENT).get_res(url=imageurl, raise_exception=True)
-                else:
-                    r = RequestUtils(proxies=settings.PROXY,
-                                     ua=settings.USER_AGENT).get_res(url=imageurl, raise_exception=True)
+                r = self.__image_client("doubanio.com" in imageurl).get_res(
+                    url=imageurl, raise_exception=True)
                 if r:
                     return base64.b64encode(r.content).decode()
                 else:
                     logger.warn(f"{imageurl} 图片下载失败，请检查网络连通性")
+            except RequestException:
+                # 交给 set_item_image 的 @retry 处理：在这里吞掉会让重试成为死代码，
+                # 跨境图片链路的一次抖动就会把海报永久丢掉，只能等下一轮刮削。
+                # 状态码错误不会走到这里，get_res 返回的响应本身就是假值。
+                raise
             except Exception as err:
                 logger.error(f"下载图片失败：{str(err)}")
             return None
@@ -1228,5 +1267,13 @@ class PersonMeta(_PluginBase):
                     self._scheduler.shutdown()
                     self._event.clear()
                 self._scheduler = None
+            # 释放复用会话，避免重载配置后继续带着旧代理设置连接
+            with self._image_client_lock:
+                clients, self._image_clients = self._image_clients, None
+            for _, client in (clients or {}).values():
+                try:
+                    client.close()
+                except Exception as err:
+                    logger.debug(f"关闭图片下载会话失败：{err}")
         except Exception as e:
             print(str(e))
