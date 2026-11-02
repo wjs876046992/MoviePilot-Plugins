@@ -39,6 +39,17 @@ def _plugin_manager_cls():
         return _PluginManager
     return None
 
+
+def _is_hour_in_window(current_hour: int, start: int, end: int) -> bool:
+    """
+    判断当前小时（0-23）是否落在 [start, end] 窗口内。支持跨午夜配置（如 22 到 6）。
+    """
+    start = max(0, min(23, int(start)))
+    end = max(0, min(23, int(end)))
+    if start <= end:
+        return start <= current_hour <= end
+    return current_hour >= start or current_hour <= end
+
 from . import store as _store_mod   # noqa: E402
 from . import strm as _strm  # noqa: E402
 
@@ -521,10 +532,41 @@ class StrmOpsMixin:
             elif settled_ok:
                 logger.debug(f"[Rsync115Sync] strm 交叉验证：{len(settled_ok)} 个文件 strm 已生成，正常")
 
+        # 检查未解决疑似条目的定期催办提醒（无新异常且时段与间隔满足时触发）
+        if not new_suspects and self._strm_suspects:
+            self._check_suspect_remind(now_ts)
+
         return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
                 "ok": len(settled_ok), "new_suspects": len(new_suspects),
                 "resolved": len(resolved),
                 "cooling_pruned": len(cooling_pruned)}
+
+    def _check_suspect_remind(self, now_ts: float) -> None:
+        """
+        未解决疑似异常的定期催办提醒。
+
+        在设定的生效时段内（默认每天 9:00 - 21:00），若距离上次通知已超过设定的提醒间隔
+        （默认 2 小时），重新向用户推送一条带有快捷操作按钮的提醒通知，防止消息被刷掉后遗忘。
+        """
+        if not getattr(self, "_notify", False) or not self._strm_suspects:
+            return
+        remind_hours = max(0, int(getattr(self, "_strm_suspect_remind_hours", 2)))
+        if remind_hours <= 0:
+            return
+
+        start_h = int(getattr(self, "_strm_suspect_remind_start_hour", 9))
+        end_h = int(getattr(self, "_strm_suspect_remind_end_hour", 21))
+        cur_h = time.localtime(now_ts).tm_hour
+        if not _is_hour_in_window(cur_h, start_h, end_h):
+            return
+
+        last_ts = float(getattr(self, "_strm_last_notified_ts", 0.0) or 0.0)
+        # 必须真的超过设定间隔才提醒（首次异常入库已发过通知并记录 last_ts）
+        if (now_ts - last_ts) < remind_hours * 3600:
+            return
+
+        # 触发催办提醒（包含清单中所有未解决条目）
+        self._notify_strm_suspects(list(self._strm_suspects.keys()), is_reminder=True, now_ts=now_ts)
 
     def _prune_cooling_suspects(self) -> List[str]:
         """
@@ -644,31 +686,32 @@ class StrmOpsMixin:
             self._reset_strm_notified_if_clear()
         return resolved
 
-    def _notify_strm_suspects(self, new_suspects: List[str]) -> None:
+    def _notify_strm_suspects(self, suspects: List[str], *, is_reminder: bool = False,
+                               now_ts: Optional[float] = None) -> None:
         """
-        发现新的 strm 疑似异常时推送通知（仅新发现时发，不重复打扰）。
+        推送 strm 疑似异常通知或未解决催办提醒。
 
-        Notify on newly discovered strm suspects only — the whole-list state is
-        already visible on the dashboard, so repeating it every sweep would train
-        the user to ignore the channel.
+        :param suspects: 疑似条目列表（新发现时为新增项，催办提醒时为全体未解决项）
+        :param is_reminder: True 表示定期催办提醒，False 表示新发现异常即时报警
+        :param now_ts: 可选的通知时间戳（用于单测与时间对齐，缺省取 time.time()）
         """
-        if not self._notify or self._strm_notified or not new_suspects:
+        if not getattr(self, "_notify", False) or not suspects:
             return
         mtype = self._plugin_mtype()
         if mtype is None:
             logger.warning("[Rsync115Sync] 宿主 MessageType 不可用，已跳过 strm 疑似异常通知以免广播")
             return
         total = len(self._strm_suspects)
-        listed = "\n".join(f"• {k}" for k in new_suspects[:_MAX_LOGGED_PATHS])
-        more = f"\n（另有 {len(new_suspects) - _MAX_LOGGED_PATHS} 个未列出）" \
-            if len(new_suspects) > _MAX_LOGGED_PATHS else ""
+        listed = "\n".join(f"• {k}" for k in suspects[:_MAX_LOGGED_PATHS])
+        more = f"\n（另有 {len(suspects) - _MAX_LOGGED_PATHS} 个未列出）" \
+            if len(suspects) > _MAX_LOGGED_PATHS else ""
         try:
             # ⚠️ 正文**不再放命令块**，改为按钮（点一下即执行）。
             # 第一版把命令塞进 ``` 围栏指望"点按复制"，用户实测复制不出来
             # —— Telegram 的代码块复制在移动端很难只选中那一行，而前后都是文字。
             # 宿主支持 `callback_data` 为斜杠命令的按钮（点一下真的执行），
             # 少两步操作。见 strm.suspect_command_buttons 的说明。
-            buttons = _strm.suspect_command_buttons(new_suspects, self._sync_pairs)
+            buttons = _strm.suspect_command_buttons(suspects, self._sync_pairs)
             # ⚠️ 预检按钮体积：Telegram 对 `callback_data` 有 64 字节上限，
             # 超限时**整条消息发送失败**（BUTTON_DATA_INVALID），而不是只丢那个按钮。
             # 早先按钮携带中文关键字，实测 83 字节 → 整条通知发不出去，
@@ -686,13 +729,23 @@ class StrmOpsMixin:
                     f"只发正文（否则整条消息都会被拒）: "
                     f"{[b.get('text') for b in oversized[:3]]}")
                 buttons = None
+
+            if is_reminder:
+                title = "115同步：发现疑似上传异常（未处理提醒）"
+                head_line = f"⏰ 待处理提醒：当前仍有 {total} 个疑似上传异常尚未处理：\n"
+                reason_line = "判定依据：同步已报告成功，但在 strm 目录未检测到对应指针文件。"
+            else:
+                title = "115同步：发现疑似上传异常"
+                head_line = f"⚠️ 本次新发现 {len(suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
+                reason_line = f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。"
+
             self.post_message(
                 mtype=mtype,
-                title="115同步：发现疑似上传异常",
+                title=title,
                 text=(
-                    f"⚠️ 本次新发现 {len(new_suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
+                    f"{head_line}"
                     f"{listed}{more}\n\n"
-                    f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。\n\n"
+                    f"{reason_line}\n\n"
                     f"按下面按钮处理即可（点一下直接执行）：\n"
                     f"① 先点「先试补生成」—— strm 插件漏生成的话，这一步就够了；\n"
                     f"   等 1~2 分钟再点「检查结果」确认。\n"
@@ -701,9 +754,13 @@ class StrmOpsMixin:
                 ),
                 buttons=buttons,
             )
+            ts = now_ts if now_ts is not None else time.time()
             self._strm_notified = True
+            self._strm_last_notified_ts = ts
             self.save_data("strm_notified", True)
-            logger.info(f"[Rsync115Sync] 📤 已推送 strm 疑似异常通知（{len(new_suspects)} 个新发现，"
+            self.save_data("strm_last_notified_ts", ts)
+            tag = "催办提醒" if is_reminder else f"{len(suspects)} 个新发现"
+            logger.info(f"[Rsync115Sync] 📤 已推送 strm 疑似异常通知（{tag}，"
                         f"清单共 {total} 个）")
         except Exception as e:
             logger.error(f"[Rsync115Sync] strm 疑似异常通知发送失败: {e}")
@@ -729,7 +786,9 @@ class StrmOpsMixin:
         """
         if self._strm_notified and not self._strm_suspects:
             self._strm_notified = False
+            self._strm_last_notified_ts = 0.0
             self.save_data("strm_notified", False)
+            self.save_data("strm_last_notified_ts", 0.0)
             if self._notify:
                 mtype = self._plugin_mtype()
                 if mtype is not None:

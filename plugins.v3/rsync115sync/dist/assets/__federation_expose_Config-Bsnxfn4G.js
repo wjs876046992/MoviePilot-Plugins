@@ -132,7 +132,10 @@ const _hoisted_32 = { class: "dep-split-row" };
 const _hoisted_33 = { class: "dep-split-row" };
 const _hoisted_34 = { class: "settings-group-card radius-lg overflow-hidden" };
 const _hoisted_35 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
-const _hoisted_36 = { class: "setting-row d-flex align-center justify-space-between row-pad-x py-3" };
+const _hoisted_36 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
+const _hoisted_37 = { class: "d-flex align-center flex-wrap ga-3 mt-2" };
+const _hoisted_38 = { class: "text-caption text-primary mt-1" };
+const _hoisted_39 = { class: "setting-row d-flex align-center justify-space-between row-pad-x py-3" };
 const {ref,computed,onMounted} = await importShared('vue');
 
 
@@ -191,6 +194,9 @@ const config = ref({
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
   strm_grace_minutes: 5,
+  strm_suspect_remind_hours: 2,
+  strm_suspect_remind_start_hour: 9,
+  strm_suspect_remind_end_hour: 21,
 });
 
 // ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
@@ -349,7 +355,7 @@ return (_ctx, _cache) => {
                 color: "primary",
                 size: "22"
               }, {
-                default: _withCtx(() => [...(_cache[19] || (_cache[19] = [
+                default: _withCtx(() => [...(_cache[22] || (_cache[22] = [
                   _createTextVNode("mdi-cloud-sync", -1)
                 ]))]),
                 _: 1
@@ -366,7 +372,7 @@ return (_ctx, _cache) => {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_icon, { size: "18" }, {
-                  default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                  default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
                     _createTextVNode("mdi-close", -1)
                   ]))]),
                   _: 1
@@ -375,7 +381,7 @@ return (_ctx, _cache) => {
                   activator: "parent",
                   location: "bottom"
                 }, {
-                  default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+                  default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
                     _createTextVNode("关闭配置", -1)
                   ]))]),
                   _: 1
@@ -388,22 +394,22 @@ return (_ctx, _cache) => {
             _createElementVNode("div", null, [
               _createVNode(_component_v_card_title, { class: "text-subtitle-1 font-weight-bold pa-0 d-flex align-center" }, {
                 default: _withCtx(() => [
-                  _cache[21] || (_cache[21] = _createTextVNode(" 115 网盘同步配置 ", -1)),
+                  _cache[24] || (_cache[24] = _createTextVNode(" 115 网盘同步配置 ", -1)),
                   _createVNode(_component_v_chip, {
                     size: "x-small",
                     color: "primary",
                     variant: "tonal",
                     class: "ml-2 font-weight-bold"
                   }, {
-                    default: _withCtx(() => [...(_cache[20] || (_cache[20] = [
-                      _createTextVNode("v0.5.2", -1)
+                    default: _withCtx(() => [...(_cache[23] || (_cache[23] = [
+                      _createTextVNode("v0.5.3", -1)
                     ]))]),
                     _: 1
                   })
                 ]),
                 _: 1
               }),
-              _cache[22] || (_cache[22] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
+              _cache[25] || (_cache[25] = _createElementVNode("div", { class: "header-subtitle text-caption text-medium-emphasis" }, "设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数", -1))
             ])
           ]),
           _: 1
@@ -446,7 +452,7 @@ return (_ctx, _cache) => {
           default: _withCtx(() => [
             _createElementVNode("div", _hoisted_4, [
               _createElementVNode("div", _hoisted_5, [
-                _cache[25] || (_cache[25] = _createElementVNode("div", null, [
+                _cache[28] || (_cache[28] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用同步助手"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "总控主开关，开启后生效定时轮询与入库监听")
                 ], -1)),
@@ -460,7 +466,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_6, [
-                _cache[26] || (_cache[26] = _createElementVNode("div", null, [
+                _cache[29] || (_cache[29] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用入库监听"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "Webhook 与源端扫描共用的总闸")
                 ], -1)),
@@ -478,7 +484,7 @@ return (_ctx, _cache) => {
                   title: "怎么把入库推给本插件（Webhook）",
                   class: "mb-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                  default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
                     _createTextVNode(" 在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识： ", -1),
                     _createElementVNode("br", null, null, -1),
                     _createElementVNode("code", { class: "wrap-anywhere" }, "http://<moviepilot地址>:3001/api/v1/webhook/?token=<API_TOKEN>&source=rsync115sync", -1),
@@ -510,20 +516,20 @@ return (_ctx, _cache) => {
               _createElementVNode("div", _hoisted_8, [
                 _createElementVNode("div", null, [
                   _createElementVNode("div", _hoisted_9, [
-                    _cache[29] || (_cache[29] = _createTextVNode(" 源端扫描入库 ", -1)),
+                    _cache[32] || (_cache[32] = _createTextVNode(" 源端扫描入库 ", -1)),
                     _createVNode(_component_v_chip, {
                       size: "x-small",
                       color: "primary",
                       variant: "tonal",
                       class: "ml-1 font-weight-bold"
                     }, {
-                      default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
+                      default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
                         _createTextVNode("主通道", -1)
                       ]))]),
                       _: 1
                     })
                   ]),
-                  _cache[30] || (_cache[30] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "遍历本地源目录发现新入库，不依赖任何外部通知", -1))
+                  _cache[33] || (_cache[33] = _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "遍历本地源目录发现新入库，不依赖任何外部通知", -1))
                 ]),
                 _createVNode(_component_v_switch, {
                   modelValue: config.value.source_scan_enabled,
@@ -535,7 +541,7 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_10, [
-                _cache[31] || (_cache[31] = _createElementVNode("div", null, [
+                _cache[34] || (_cache[34] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "源端扫描 Cron 规则"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "多久扫一轮（默认 30 分钟）")
                 ], -1)),
@@ -554,7 +560,7 @@ return (_ctx, _cache) => {
                   title: "入库是怎么被发现的",
                   class: "mb-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                  default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
                     _createTextVNode(" 本插件有", -1),
                     _createElementVNode("b", null, "两条", -1),
                     _createTextVNode("入库来源，分工是刻意的： ", -1),
@@ -583,7 +589,7 @@ return (_ctx, _cache) => {
                   color: "primary",
                   class: "mr-1"
                 }, {
-                  default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+                  default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
                     _createTextVNode("mdi-folder-swap-outline", -1)
                   ]))]),
                   _: 1
@@ -602,12 +608,12 @@ return (_ctx, _cache) => {
                     start: "",
                     size: "16"
                   }, {
-                    default: _withCtx(() => [...(_cache[34] || (_cache[34] = [
+                    default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
                       _createTextVNode("mdi-plus", -1)
                     ]))]),
                     _: 1
                   }),
-                  _cache[35] || (_cache[35] = _createTextVNode(" 添加目录映射 ", -1))
+                  _cache[38] || (_cache[38] = _createTextVNode(" 添加目录映射 ", -1))
                 ]),
                 _: 1
               })
@@ -616,7 +622,7 @@ return (_ctx, _cache) => {
               title: "每个映射是一对路径：本地源目录 → CD2 挂载的 115 目录",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
+              default: _withCtx(() => [...(_cache[39] || (_cache[39] = [
                 _createTextVNode(" 插件只同步这些映射内的文件，不会扫描其它位置。 ", -1),
                 _createElementVNode("div", { class: "mt-2" }, [
                   _createElementVNode("b", null, "任务备注名称"),
@@ -677,7 +683,7 @@ return (_ctx, _cache) => {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_icon, { size: "18" }, {
-                              default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                              default: _withCtx(() => [...(_cache[40] || (_cache[40] = [
                                 _createTextVNode("mdi-trash-can-outline", -1)
                               ]))]),
                               _: 1
@@ -693,7 +699,7 @@ return (_ctx, _cache) => {
                             sm: "4"
                           }, {
                             default: _withCtx(() => [
-                              _cache[38] || (_cache[38] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "任务备注名称", -1)),
+                              _cache[41] || (_cache[41] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "任务备注名称", -1)),
                               _createVNode(_component_v_text_field, {
                                 modelValue: pair.name,
                                 "onUpdate:modelValue": $event => ((pair.name) = $event),
@@ -709,7 +715,7 @@ return (_ctx, _cache) => {
                             sm: "4"
                           }, {
                             default: _withCtx(() => [
-                              _cache[39] || (_cache[39] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "本地源目录", -1)),
+                              _cache[42] || (_cache[42] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "本地源目录", -1)),
                               _createVNode(_component_v_text_field, {
                                 modelValue: pair.src,
                                 "onUpdate:modelValue": $event => ((pair.src) = $event),
@@ -725,7 +731,7 @@ return (_ctx, _cache) => {
                             sm: "4"
                           }, {
                             default: _withCtx(() => [
-                              _cache[40] || (_cache[40] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "CD2 挂载 115 目录", -1)),
+                              _cache[43] || (_cache[43] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "CD2 挂载 115 目录", -1)),
                               _createVNode(_component_v_text_field, {
                                 modelValue: pair.dest,
                                 "onUpdate:modelValue": $event => ((pair.dest) = $event),
@@ -751,7 +757,7 @@ return (_ctx, _cache) => {
                           }, 1024),
                           _createVNode(_component_v_col, { cols: "12" }, {
                             default: _withCtx(() => [
-                              _cache[41] || (_cache[41] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "strm 目录（可选，启用上传结果交叉验证）", -1)),
+                              _cache[44] || (_cache[44] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "strm 目录（可选，启用上传结果交叉验证）", -1)),
                               _createVNode(_component_v_text_field, {
                                 modelValue: pair.strm_dir,
                                 "onUpdate:modelValue": $event => ((pair.strm_dir) = $event),
@@ -764,7 +770,7 @@ return (_ctx, _cache) => {
                           }, 1024),
                           _createVNode(_component_v_col, { cols: "12" }, {
                             default: _withCtx(() => [
-                              _cache[42] || (_cache[42] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "网盘目录（可选，仅「先尝试生成 strm」需要）", -1)),
+                              _cache[45] || (_cache[45] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "网盘目录（可选，仅「先尝试生成 strm」需要）", -1)),
                               _createVNode(_component_v_text_field, {
                                 modelValue: pair.pan_dir,
                                 "onUpdate:modelValue": $event => ((pair.pan_dir) = $event),
@@ -788,12 +794,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
+                default: _withCtx(() => [...(_cache[46] || (_cache[46] = [
                   _createTextVNode("mdi-timer-sand", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[44] || (_cache[44] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
+              _cache[47] || (_cache[47] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
             _createElementVNode("div", _hoisted_19, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
@@ -803,7 +809,7 @@ return (_ctx, _cache) => {
                     sm: "6"
                   }, {
                     default: _withCtx(() => [
-                      _cache[45] || (_cache[45] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "入库冷却延迟时长 (小时)", -1)),
+                      _cache[48] || (_cache[48] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "入库冷却延迟时长 (小时)", -1)),
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.delay_hours,
                         "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((config.value.delay_hours) = $event)),
@@ -825,7 +831,7 @@ return (_ctx, _cache) => {
                     sm: "6"
                   }, {
                     default: _withCtx(() => [
-                      _cache[46] || (_cache[46] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "定时检查 Cron 规则", -1)),
+                      _cache[49] || (_cache[49] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "定时检查 Cron 规则", -1)),
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.cron,
                         "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((config.value.cron) = $event)),
@@ -848,12 +854,12 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[47] || (_cache[47] = [
+                default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
                   _createTextVNode("mdi-shield-check-outline", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[48] || (_cache[48] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
+              _cache[51] || (_cache[51] = _createTextVNode(" CD2 核心过滤与防假死参数 ", -1))
             ]),
             _createElementVNode("div", _hoisted_21, [
               _createVNode(_component_v_row, { density: "compact" }, {
@@ -863,7 +869,7 @@ return (_ctx, _cache) => {
                     sm: "6"
                   }, {
                     default: _withCtx(() => [
-                      _cache[49] || (_cache[49] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "rsync I/O 超时 (秒)", -1)),
+                      _cache[52] || (_cache[52] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "rsync I/O 超时 (秒)", -1)),
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.rsync_timeout,
                         "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((config.value.rsync_timeout) = $event)),
@@ -882,7 +888,7 @@ return (_ctx, _cache) => {
                     sm: "6"
                   }, {
                     default: _withCtx(() => [
-                      _cache[50] || (_cache[50] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单次任务最大超时 (秒)", -1)),
+                      _cache[53] || (_cache[53] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单次任务最大超时 (秒)", -1)),
                       _createVNode(_component_v_text_field, {
                         modelValue: config.value.task_timeout,
                         "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((config.value.task_timeout) = $event)),
@@ -898,7 +904,7 @@ return (_ctx, _cache) => {
                   }),
                   _createVNode(_component_v_col, { cols: "12" }, {
                     default: _withCtx(() => [
-                      _cache[51] || (_cache[51] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "排除文件与目录规则 (每行一条，严格继承 sync_115.sh)", -1)),
+                      _cache[54] || (_cache[54] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "排除文件与目录规则 (每行一条，严格继承 sync_115.sh)", -1)),
                       _createVNode(_component_v_textarea, {
                         modelValue: config.value.exclude_patterns,
                         "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.value.exclude_patterns) = $event)),
@@ -921,18 +927,18 @@ return (_ctx, _cache) => {
                 color: "primary",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[52] || (_cache[52] = [
+                default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
                   _createTextVNode("mdi-speedometer-slow", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[53] || (_cache[53] = _createTextVNode(" 上传限流与风控退避 ", -1))
+              _cache[56] || (_cache[56] = _createTextVNode(" 上传限流与风控退避 ", -1))
             ]),
             _createVNode(CollapsibleNote, {
               title: "为什么需要限流？",
               class: "mb-2"
             }, {
-              default: _withCtx(() => [...(_cache[54] || (_cache[54] = [
+              default: _withCtx(() => [...(_cache[57] || (_cache[57] = [
                 _createTextVNode(" 115 网盘会统计", -1),
                 _createElementVNode("b", null, "单位时间内上传的文件个数", -1),
                 _createTextVNode("。大量小文件（尤其是字幕、样张） 在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。 ", -1),
@@ -947,7 +953,7 @@ return (_ctx, _cache) => {
             }),
             _createElementVNode("div", _hoisted_23, [
               _createElementVNode("div", _hoisted_24, [
-                _cache[55] || (_cache[55] = _createElementVNode("div", null, [
+                _cache[58] || (_cache[58] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
                 ], -1)),
@@ -974,7 +980,7 @@ return (_ctx, _cache) => {
                             start: "",
                             size: "14"
                           }, {
-                            default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
+                            default: _withCtx(() => [...(_cache[59] || (_cache[59] = [
                               _createTextVNode("mdi-speedometer", -1)
                             ]))]),
                             _: 1
@@ -1002,7 +1008,7 @@ return (_ctx, _cache) => {
                       sm: "6"
                     }, {
                       default: _withCtx(() => [
-                        _cache[57] || (_cache[57] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单批文件数上限", -1)),
+                        _cache[60] || (_cache[60] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单批文件数上限", -1)),
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_batch_size,
                           "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.value.upload_batch_size) = $event)),
@@ -1022,7 +1028,7 @@ return (_ctx, _cache) => {
                       sm: "6"
                     }, {
                       default: _withCtx(() => [
-                        _cache[58] || (_cache[58] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单窗口上传文件数上限", -1)),
+                        _cache[61] || (_cache[61] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "单窗口上传文件数上限", -1)),
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_max_per_window,
                           "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.value.upload_max_per_window) = $event)),
@@ -1042,7 +1048,7 @@ return (_ctx, _cache) => {
                       sm: "6"
                     }, {
                       default: _withCtx(() => [
-                        _cache[59] || (_cache[59] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "限流窗口时长 (秒)", -1)),
+                        _cache[62] || (_cache[62] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "限流窗口时长 (秒)", -1)),
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.upload_window_secs,
                           "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((config.value.upload_window_secs) = $event)),
@@ -1062,7 +1068,7 @@ return (_ctx, _cache) => {
                       sm: "6"
                     }, {
                       default: _withCtx(() => [
-                        _cache[60] || (_cache[60] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "命中风控后退避时长 (秒)", -1)),
+                        _cache[63] || (_cache[63] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "命中风控后退避时长 (秒)", -1)),
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.backoff_secs,
                           "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((config.value.backoff_secs) = $event)),
@@ -1079,7 +1085,7 @@ return (_ctx, _cache) => {
                     }),
                     _createVNode(_component_v_col, { cols: "12" }, {
                       default: _withCtx(() => [
-                        _cache[61] || (_cache[61] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "风控特征关键词 (每行一条，命中即退避)", -1)),
+                        _cache[64] || (_cache[64] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "风控特征关键词 (每行一条，命中即退避)", -1)),
                         _createVNode(_component_v_textarea, {
                           modelValue: config.value.rate_limit_keywords,
                           "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((config.value.rate_limit_keywords) = $event)),
@@ -1098,7 +1104,7 @@ return (_ctx, _cache) => {
                       sm: "6"
                     }, {
                       default: _withCtx(() => [
-                        _cache[62] || (_cache[62] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "全量校验冷却 (天)", -1)),
+                        _cache[65] || (_cache[65] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "全量校验冷却 (天)", -1)),
                         _createVNode(_component_v_text_field, {
                           modelValue: config.value.force_cooldown_days,
                           "onUpdate:modelValue": _cache[17] || (_cache[17] = $event => ((config.value.force_cooldown_days) = $event)),
@@ -1123,19 +1129,19 @@ return (_ctx, _cache) => {
                 color: "warning",
                 class: "mr-1"
               }, {
-                default: _withCtx(() => [...(_cache[63] || (_cache[63] = [
+                default: _withCtx(() => [...(_cache[66] || (_cache[66] = [
                   _createTextVNode("mdi-television-classic", -1)
                 ]))]),
                 _: 1
               }),
-              _cache[65] || (_cache[65] = _createTextVNode(" strm 交叉验证 ", -1)),
+              _cache[68] || (_cache[68] = _createTextVNode(" strm 交叉验证 ", -1)),
               _createVNode(_component_v_chip, {
                 size: "x-small",
                 variant: "tonal",
                 color: "success",
                 class: "ml-2 font-weight-bold"
               }, {
-                default: _withCtx(() => [...(_cache[64] || (_cache[64] = [
+                default: _withCtx(() => [...(_cache[67] || (_cache[67] = [
                   _createTextVNode(" 不依赖任何插件 ", -1)
                 ]))]),
                 _: 1
@@ -1145,7 +1151,7 @@ return (_ctx, _cache) => {
               title: "它解决的是「假成功」—— 为什么对账看不出来",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [...(_cache[66] || (_cache[66] = [
+              default: _withCtx(() => [...(_cache[69] || (_cache[69] = [
                 _createTextVNode(" CD2 改名失败时，挂载视图会显示目标文件 「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账 与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角", -1),
                 _createElementVNode("b", null, "结构上看不见", -1),
                 _createTextVNode("这种失败。 ", -1),
@@ -1179,12 +1185,12 @@ return (_ctx, _cache) => {
                   variant: "tonal",
                   class: "font-weight-bold flex-shrink-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[67] || (_cache[67] = [
+                  default: _withCtx(() => [...(_cache[70] || (_cache[70] = [
                     _createTextVNode(" 本插件独立完成 ", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[68] || (_cache[68] = _createElementVNode("span", null, [
+                _cache[71] || (_cache[71] = _createElementVNode("span", null, [
                   _createTextVNode(" 观察期、主动扫描（全量 / 关键字）、疑似清单、忽略规则、清理无效项、 "),
                   _createElementVNode("b", null, "删旧重传"),
                   _createTextVNode("、状态通知 ")
@@ -1197,12 +1203,12 @@ return (_ctx, _cache) => {
                   variant: "tonal",
                   class: "font-weight-bold flex-shrink-0"
                 }, {
-                  default: _withCtx(() => [...(_cache[69] || (_cache[69] = [
+                  default: _withCtx(() => [...(_cache[72] || (_cache[72] = [
                     _createTextVNode(" 需要 P115StrmHelper ", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[70] || (_cache[70] = _createElementVNode("span", null, [
+                _cache[73] || (_cache[73] = _createElementVNode("span", null, [
                   _createTextVNode(" 仅「"),
                   _createElementVNode("b", null, "先尝试生成 strm"),
                   _createTextVNode("」一项。它请助手按文件所在的网盘目录重新生成 一次指针文件：生成成功 ⇒ 是情况 ①，"),
@@ -1215,7 +1221,7 @@ return (_ctx, _cache) => {
               title: "「先尝试生成 strm」的启用前提（两处都要配）",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [...(_cache[71] || (_cache[71] = [
+              default: _withCtx(() => [...(_cache[74] || (_cache[74] = [
                 _createElementVNode("b", null, "①", -1),
                 _createTextVNode(" 上方目录映射里为该映射填写「", -1),
                 _createElementVNode("b", null, "网盘目录", -1),
@@ -1238,7 +1244,7 @@ return (_ctx, _cache) => {
             }),
             _createElementVNode("div", _hoisted_34, [
               _createElementVNode("div", _hoisted_35, [
-                _cache[72] || (_cache[72] = _createElementVNode("div", null, [
+                _cache[75] || (_cache[75] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "观察宽限期（分钟）"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
                     _createTextVNode(" strm 生成并不实时（可能还在上传或刮削中），因此同步成功后先等待一段时间再判定， 避免把「还没生成」误判为上传异常。最小 1 分钟。 "),
@@ -1260,7 +1266,58 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               _createElementVNode("div", _hoisted_36, [
-                _cache[73] || (_cache[73] = _createElementVNode("div", null, [
+                _cache[77] || (_cache[77] = _createElementVNode("div", null, [
+                  _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "未解决疑似异常催办提醒"),
+                  _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 当存在未解决的疑似上传异常时，定期在指定时段重新推送通知提醒（带快捷操作按钮），避免通知被新消息顶掉后遗忘。 填 0 表示仅在首次发现时提醒一次；默认每 2 小时提醒一次。 ")
+                ], -1)),
+                _createElementVNode("div", _hoisted_37, [
+                  _createVNode(_component_v_text_field, {
+                    modelValue: config.value.strm_suspect_remind_hours,
+                    "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((config.value.strm_suspect_remind_hours) = $event)),
+                    modelModifiers: { number: true },
+                    type: "number",
+                    step: "1",
+                    min: "0",
+                    label: "提醒间隔（小时）",
+                    variant: "outlined",
+                    density: "compact",
+                    style: {"max-width":"160px"},
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"]),
+                  _createVNode(_component_v_text_field, {
+                    modelValue: config.value.strm_suspect_remind_start_hour,
+                    "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((config.value.strm_suspect_remind_start_hour) = $event)),
+                    modelModifiers: { number: true },
+                    type: "number",
+                    step: "1",
+                    min: "0",
+                    max: "23",
+                    label: "起始时段（点）",
+                    variant: "outlined",
+                    density: "compact",
+                    style: {"max-width":"140px"},
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"]),
+                  _cache[76] || (_cache[76] = _createElementVNode("span", { class: "text-body-2 text-medium-emphasis" }, "至", -1)),
+                  _createVNode(_component_v_text_field, {
+                    modelValue: config.value.strm_suspect_remind_end_hour,
+                    "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((config.value.strm_suspect_remind_end_hour) = $event)),
+                    modelModifiers: { number: true },
+                    type: "number",
+                    step: "1",
+                    min: "0",
+                    max: "23",
+                    label: "结束时段（点）",
+                    variant: "outlined",
+                    density: "compact",
+                    style: {"max-width":"140px"},
+                    "hide-details": ""
+                  }, null, 8, ["modelValue"])
+                ]),
+                _createElementVNode("div", _hoisted_38, " 当前设置：" + _toDisplayString(config.value.strm_suspect_remind_hours > 0 ? `每天 ${config.value.strm_suspect_remind_start_hour}:00 至 ${config.value.strm_suspect_remind_end_hour}:00 期间，每 ${config.value.strm_suspect_remind_hours} 小时催办一次（其余时间免打扰）` : '已禁用定期催办提醒（仅首次发现时通知一次）'), 1)
+              ]),
+              _createElementVNode("div", _hoisted_39, [
+                _cache[78] || (_cache[78] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "当前状态"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 处于观察期的文件数会在看板顶部提示，疑似异常清单在独立的「strm 疑似异常」标签页内。 ")
                 ], -1)),
@@ -1292,12 +1349,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[74] || (_cache[74] = [
+                  default: _withCtx(() => [...(_cache[79] || (_cache[79] = [
                     _createTextVNode("mdi-view-dashboard-outline", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[75] || (_cache[75] = _createTextVNode(" 查看监控看板 ", -1))
+                _cache[80] || (_cache[80] = _createTextVNode(" 查看监控看板 ", -1))
               ]),
               _: 1
             }),
@@ -1315,12 +1372,12 @@ return (_ctx, _cache) => {
                   start: "",
                   size: "16"
                 }, {
-                  default: _withCtx(() => [...(_cache[76] || (_cache[76] = [
+                  default: _withCtx(() => [...(_cache[81] || (_cache[81] = [
                     _createTextVNode("mdi-content-save", -1)
                   ]))]),
                   _: 1
                 }),
-                _cache[77] || (_cache[77] = _createTextVNode(" 保存配置 ", -1))
+                _cache[82] || (_cache[82] = _createTextVNode(" 保存配置 ", -1))
               ]),
               _: 1
             }, 8, ["loading"])
@@ -1335,6 +1392,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9d015854"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-bab0e345"]]);
 
 export { Config as default };

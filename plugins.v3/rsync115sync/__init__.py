@@ -138,6 +138,9 @@ from .constants import (  # noqa: E402
     DEFAULT_EXCLUDE_PATTERNS,
     DEFAULT_MEDIA_EXTENSIONS,
     DEFAULT_RSYNC_TIMEOUT,
+    DEFAULT_STRM_SUSPECT_REMIND_END_HOUR,
+    DEFAULT_STRM_SUSPECT_REMIND_HOURS,
+    DEFAULT_STRM_SUSPECT_REMIND_START_HOUR,
     DEFAULT_TASK_TIMEOUT,
     HELPER_HEALTH_STARTUP_DELAY as _HELPER_HEALTH_STARTUP_DELAY,
     LEGACY_DEFAULTS as _LEGACY_DEFAULTS,
@@ -199,7 +202,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.2"
+    plugin_version = "0.5.3"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -217,6 +220,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     DEFAULT_EXCLUDE_PATTERNS = DEFAULT_EXCLUDE_PATTERNS
     DEFAULT_RSYNC_TIMEOUT = DEFAULT_RSYNC_TIMEOUT
     DEFAULT_TASK_TIMEOUT = DEFAULT_TASK_TIMEOUT
+    DEFAULT_STRM_SUSPECT_REMIND_HOURS = DEFAULT_STRM_SUSPECT_REMIND_HOURS
+    DEFAULT_STRM_SUSPECT_REMIND_START_HOUR = DEFAULT_STRM_SUSPECT_REMIND_START_HOUR
+    DEFAULT_STRM_SUSPECT_REMIND_END_HOUR = DEFAULT_STRM_SUSPECT_REMIND_END_HOUR
 
     # 历史默认值与源端扫描参数：迁移逻辑（_migrate_legacy_defaults）与 __init__
     # 都通过 self.* 访问它们。**别名必须保留** —— 直接删掉类属性会让
@@ -344,7 +350,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._strm_grace_minutes: int = 5              # 宽限期（分钟），可配置
         self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
         self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
-        self._strm_notified: bool = False              # 疑似清单是否已推送过通知（防重复打扰）
+        self._strm_notified: bool = False              # 疑似清单是否已推送过通知
+        self._strm_last_notified_ts: float = 0.0       # 上次推送疑似异常通知/提醒的时间戳
+        self._strm_suspect_remind_hours: int = self.DEFAULT_STRM_SUSPECT_REMIND_HOURS
+        self._strm_suspect_remind_start_hour: int = self.DEFAULT_STRM_SUSPECT_REMIND_START_HOUR
+        self._strm_suspect_remind_end_hour: int = self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR
         # 已请 strm 助手补生成过的 key → 时间戳。
         # 记录它的目的是**防止无限重试**：用户可能反复点「尝试生成」，而助手每次
         # 都会真的去遍历云端目录（有成本）。已请求过的条目在看板标出，让用户先看
@@ -522,6 +532,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             # strm 交叉验证配置（总开关与宽限期；每映射的 strm_dir 在 sync_pairs 内）
             self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
             self._strm_grace_minutes = self._read_grace_minutes(config)
+            self._strm_suspect_remind_hours = max(
+                0, int(config.get("strm_suspect_remind_hours", self.DEFAULT_STRM_SUSPECT_REMIND_HOURS))
+            )
+            self._strm_suspect_remind_start_hour = max(
+                0, min(23, int(config.get("strm_suspect_remind_start_hour", self.DEFAULT_STRM_SUSPECT_REMIND_START_HOUR)))
+            )
+            self._strm_suspect_remind_end_hour = max(
+                0, min(23, int(config.get("strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR)))
+            )
             self._warn_on_legacy_grace_unit(config)
             # 老配置迁移：把「从未调整过」的旧默认值平滑升到新默认值
             self._migrate_legacy_defaults(config)
@@ -642,6 +661,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # 正准备摘掉的条目，其标记此刻还「有主」，会被漏掉。
         self._prune_orphan_gen_markers()
         self._strm_notified = bool(self.get_data("strm_notified") or False)
+        self._strm_last_notified_ts = float(self.get_data("strm_last_notified_ts") or 0.0)
         if self._strm_watch or self._strm_suspects:
             logger.info(f"[Rsync115Sync] 📺 已恢复 strm 交叉验证状态："
                         f"待观察 {len(self._strm_watch)} / 疑似异常 {len(self._strm_suspects)}")
@@ -2285,6 +2305,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 # 无可配置项。曾有的渠道白名单已随其移除（DEVELOPMENT §4.0a）。
                 "strm_check_enabled": self._strm_check_enabled,
                 "strm_grace_minutes": self._strm_grace_minutes,
+                "strm_suspect_remind_hours": self._strm_suspect_remind_hours,
+                "strm_suspect_remind_start_hour": self._strm_suspect_remind_start_hour,
+                "strm_suspect_remind_end_hour": self._strm_suspect_remind_end_hour,
                 "notify": self._notify,
                 "delay_hours": self._delay_hours,
                 "cron": self._cron,
@@ -2332,6 +2355,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # strm 交叉验证配置（与 init_plugin 保持一致）
         self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
         self._strm_grace_minutes = self._read_grace_minutes(config)
+        self._strm_suspect_remind_hours = max(
+            0, int(config.get("strm_suspect_remind_hours", self.DEFAULT_STRM_SUSPECT_REMIND_HOURS))
+        )
+        self._strm_suspect_remind_start_hour = max(
+            0, min(23, int(config.get("strm_suspect_remind_start_hour", self.DEFAULT_STRM_SUSPECT_REMIND_START_HOUR)))
+        )
+        self._strm_suspect_remind_end_hour = max(
+            0, min(23, int(config.get("strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR)))
+        )
         self._warn_on_legacy_grace_unit(config)
         self.update_config(config)
         refreshed = self._refresh_scheduled_job()
@@ -2746,6 +2778,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "strm_watching": len(self._strm_watch),
                 "strm_grace_minutes": self._strm_grace_minutes,
                 "strm_check_enabled": self._strm_check_enabled,
+                "strm_suspect_remind_hours": getattr(self, "_strm_suspect_remind_hours", self.DEFAULT_STRM_SUSPECT_REMIND_HOURS),
+                "strm_suspect_remind_start_hour": getattr(self, "_strm_suspect_remind_start_hour", self.DEFAULT_STRM_SUSPECT_REMIND_START_HOUR),
+                "strm_suspect_remind_end_hour": getattr(self, "_strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR),
                 # 已请 strm 助手补生成过的 key → 时间戳，看板据此标出
                 # 「已请求生成，等待结果」，避免用户重复点击（每次都会让助手
                 # 真的去遍历云端目录，是有成本的操作）。

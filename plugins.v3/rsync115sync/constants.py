@@ -150,6 +150,13 @@ HELPER_HEALTH_INTERVAL = 1800
 # "helper absent" simply because it has not been loaded yet.
 HELPER_HEALTH_STARTUP_DELAY = 60
 
+# ---- 疑似异常未处理催办提醒（v0.5.3）----
+# 默认每 2 小时提醒一次，时段为每天 9:00 到 21:00（其余时间夜间免打扰）。设为 0 表示禁用催办提醒。
+# Periodic reminder for unresolved suspect entries. Re-sends notification with action buttons.
+DEFAULT_STRM_SUSPECT_REMIND_HOURS = 2
+DEFAULT_STRM_SUSPECT_REMIND_START_HOUR = 9
+DEFAULT_STRM_SUSPECT_REMIND_END_HOUR = 21
+
 # ---- 源端游标扫描 / source-root cursor scan ----
 # 入库发现的**主通道**。取代了 2026-09-25 删除的宿主整理事件订阅，
 # 判据与 sync_115.sh 的 `find -newer <last_sync>` 同构：

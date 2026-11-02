@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.2</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.3</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -482,6 +482,56 @@
               hide-details
             ></v-text-field>
           </div>
+          <div class="setting-row setting-row-stacked row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">未解决疑似异常催办提醒</div>
+              <div class="text-caption text-medium-emphasis">
+                当存在未解决的疑似上传异常时，定期在指定时段重新推送通知提醒（带快捷操作按钮），避免通知被新消息顶掉后遗忘。
+                填 0 表示仅在首次发现时提醒一次；默认每 2 小时提醒一次。
+              </div>
+            </div>
+            <div class="d-flex align-center flex-wrap ga-3 mt-2">
+              <v-text-field
+                v-model.number="config.strm_suspect_remind_hours"
+                type="number"
+                step="1"
+                min="0"
+                label="提醒间隔（小时）"
+                variant="outlined"
+                density="compact"
+                style="max-width: 160px"
+                hide-details
+              ></v-text-field>
+              <v-text-field
+                v-model.number="config.strm_suspect_remind_start_hour"
+                type="number"
+                step="1"
+                min="0"
+                max="23"
+                label="起始时段（点）"
+                variant="outlined"
+                density="compact"
+                style="max-width: 140px"
+                hide-details
+              ></v-text-field>
+              <span class="text-body-2 text-medium-emphasis">至</span>
+              <v-text-field
+                v-model.number="config.strm_suspect_remind_end_hour"
+                type="number"
+                step="1"
+                min="0"
+                max="23"
+                label="结束时段（点）"
+                variant="outlined"
+                density="compact"
+                style="max-width: 140px"
+                hide-details
+              ></v-text-field>
+            </div>
+            <div class="text-caption text-primary mt-1">
+              当前设置：{{ config.strm_suspect_remind_hours > 0 ? `每天 ${config.strm_suspect_remind_start_hour}:00 至 ${config.strm_suspect_remind_end_hour}:00 期间，每 ${config.strm_suspect_remind_hours} 小时催办一次（其余时间免打扰）` : '已禁用定期催办提醒（仅首次发现时通知一次）' }}
+            </div>
+          </div>
           <div class="setting-row d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">当前状态</div>
@@ -565,6 +615,9 @@ const config = ref({
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
   strm_grace_minutes: 5,
+  strm_suspect_remind_hours: 2,
+  strm_suspect_remind_start_hour: 9,
+  strm_suspect_remind_end_hour: 21,
 })
 
 // ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
