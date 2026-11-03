@@ -615,7 +615,7 @@
               <template v-else>当前设置：已禁用定期催办提醒（仅首次发现时通知一次）</template>
             </div>
           </div>
-          <div class="setting-row d-flex align-center justify-space-between row-pad-x py-3">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">当前状态</div>
               <div class="text-caption text-medium-emphasis">
@@ -1051,6 +1051,20 @@ onMounted(() => {
 .setting-row > .v-btn {
   flex: 0 0 auto;
 }
+/* 开关/状态行（.setting-row-inline）：左侧文字多则换行，右侧控件始终保持在同一行右侧 */
+.setting-row-inline {
+  flex-wrap: nowrap !important;
+}
+.setting-row-inline > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 12px;
+}
+.setting-row-inline > .v-switch,
+.setting-row-inline > .v-chip,
+.setting-row-inline > .v-btn {
+  flex: 0 0 auto;
+}
 /* 控件本身也不得溢出容器 */
 .setting-row > .v-text-field {
   max-width: 100%;
@@ -1101,42 +1115,37 @@ onMounted(() => {
     align-items: flex-start !important;
     gap: 8px;
   }
-  /* ④ **开关行例外：保持横排，开关钉在右边。**
-     用户反馈：「开关光秃秃地在下面，不美观」—— 纵排后开关掉到文字下方、
-     左对齐，看起来像是漏排了一个元素，而不是"这一项的开关"。
-
-     与"输入框行"（setting-row-stacked，仍走纵排）的区别：
-       · 开关是**小控件**（约 36×20px），横排下它占宽很小、挤压风险低；
-       · 输入框是**宽控件**（需要 200px+），横排下才真正会被文字挤没 ——
-         那正是之前栽过三次的那一类，所以它继续纵排。
-
-     ⚠️ 这条横排**必须**同时满足三个前提，否则"挤压"会以另一种形式回来：
-       1. 文字列可收缩（`flex: 1 1 20rem; min-width: 15rem`，见基础样式）；
-       2. 父级 `flex-wrap: wrap` —— 真放不下时**整块换行**而不是压没开关；
-       3. 父级 `overflow: hidden` —— 不允许横向溢出被卡片裁掉。
-     三者都在基础样式里，这里只把主轴翻回 row。 */
-  .setting-row-inline {
-    flex-direction: row;
-    align-items: center !important;
-  }
-  /* 纵排时为了对齐加的那点负缩进，横排下要还回去 */
-  .setting-row-inline > .v-switch {
-    margin-left: 0;
-  }
-  /* ⚠️ **必须重置纵排下的 flex 基准**。
-     桌面端给文字列设的是 `flex: 1 1 20rem`（20rem 是**宽度**基准，用来决定何时
-     换行）。但一旦主轴变成 column，这个 `flex-basis` 就转而控制**高度** ——
-     于是手机端每一个"开关 + 说明"行都会凭空多出约 320px 的高度，
-     表现为「启用同步助手」这类行奇高、一屏放不下两项。
-     （用户实测反馈：手机端「启用同步助手」占了很大的高度。）
-     纵排下不需要任何宽度分配：宽度由 `align-items: stretch` 给满，
-     高度应完全由内容决定，所以重置为 `flex: 0 0 auto`。 */
   .setting-row > div:first-child {
     flex: 0 0 auto;
     min-width: 0;
   }
   .setting-row > .v-switch {
     margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
+  }
+
+  /* ④ **开关行保持单行并排（文字过多自动换行，右侧开关钉在右侧）**
+     用户反馈：「手机端样式也尽量让左侧文字，过多就换行，右侧开关，看起来是一行，目前前端样式看起来是两行了」
+     原因：此前未设 flex-wrap: nowrap，且 div:first-child 在手机端继承了 flex: 0 0 auto，
+     导致长说明文字撑满宽度后把开关挤到了下一行。
+     现解法：
+       1. 主轴为 row，强制 flex-wrap: nowrap 禁止开关掉下去；
+       2. 左侧 div:first-child 设为 flex: 1 1 auto; min-width: 0; margin-right: 12px;，文字过多自动内部折行；
+       3. 右侧开关/徽标 flex: 0 0 auto 不被压缩，对齐在右侧，垂直居中对齐文字块。 */
+  .setting-row-inline {
+    flex-direction: row;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+  }
+  .setting-row-inline > div:first-child {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    margin-right: 12px;
+  }
+  .setting-row-inline > .v-switch,
+  .setting-row-inline > .v-chip,
+  .setting-row-inline > .v-btn {
+    flex: 0 0 auto !important;
+    margin-left: 0 !important;
   }
   /* 模块标题行（标题 + 右侧操作按钮）：标题允许收缩换行，按钮不被迫溢出 */
   .section-header {

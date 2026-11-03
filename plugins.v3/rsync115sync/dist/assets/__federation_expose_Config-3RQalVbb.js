@@ -142,7 +142,7 @@ const _hoisted_42 = { class: "setting-row setting-row-stacked row-pad-x py-3 bor
 const _hoisted_43 = { class: "text-caption text-primary mt-1" };
 const _hoisted_44 = { class: "wrap-anywhere" };
 const _hoisted_45 = { class: "wrap-anywhere" };
-const _hoisted_46 = { class: "setting-row d-flex align-center justify-space-between row-pad-x py-3" };
+const _hoisted_46 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3" };
 const {ref,computed,onMounted} = await importShared('vue');
 
 
@@ -1602,6 +1602,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-1bf865c0"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b8816ddc"]]);
 
 export { Config as default };
