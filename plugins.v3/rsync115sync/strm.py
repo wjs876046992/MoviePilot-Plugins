@@ -169,7 +169,8 @@ def _cb(action: str, fp: str = "") -> str:
 
 
 def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]],
-                            limit: Optional[int] = None) -> List[List[Dict[str, str]]]:
+                            limit: Optional[int] = None,
+                            total_count: Optional[int] = None) -> List[List[Dict[str, str]]]:
     """
     给疑似通知生成**可点按执行**的按钮（Telegram inline keyboard）。
 
@@ -201,11 +202,16 @@ def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]]
     cap = _default_limit if limit is None else limit
     shown = list(new_suspects[:max(0, cap)])
 
+    has_multiple = (total_count > 1) if total_count is not None else (len(new_suspects) > 1)
+
     rows: List[List[Dict[str, str]]] = [
         # 整批操作：对所有条目都安全，因此单独一行
         [{"text": "🔄 先试补生成（多数够用）", "callback_data": _cb("gen")}],
         [{"text": "🔍 检查结果", "callback_data": _cb("check")}],
     ]
+    if has_multiple:
+        rows.append([{"text": "⚠️ 全部删旧重传", "callback_data": _cb("retry_all")}])
+
     for key in shown:
         target = brief_target_of(key, pairs, shown)
         if not target:

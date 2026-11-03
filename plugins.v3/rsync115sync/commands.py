@@ -503,6 +503,25 @@ class CommandsMixin:
             self._post_reply(reply_ctx, ("📺 " if res.get("success") else "⚠️ ")
                              + res.get("message", "检查失败"))
             return
+        if action == "retry_all":
+            # 全部删旧重传：对当前所有疑似异常条目执行删旧重传
+            keys = list(self._strm_suspects.keys())
+            if not keys:
+                self._post_reply(reply_ctx, "⚠️ 当前没有待处理的 strm 疑似异常。")
+                return
+            res = self._api_strm_retry({"keys": keys}, channel_event=reply_ctx)
+            if res.get("success"):
+                self._post_reply(
+                    reply_ctx,
+                    f"🔁 {res.get('message', '已启动删旧重传')}\n\n"
+                    f"已提交全部 {len(keys)} 个疑似异常文件进行删旧重传。"
+                )
+            else:
+                self._post_reply(
+                    reply_ctx,
+                    f"⚠️ {res.get('message', '操作失败')}"
+                )
+            return
         if action in ("retry", "ignore") and target:
             # ⚠️ 按钮携带的是**指纹**不是关键字（Telegram 对 callback_data 有
             # 64 字节上限，中文关键字必然超限 → 整条消息发不出去）。

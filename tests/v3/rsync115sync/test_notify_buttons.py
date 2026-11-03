@@ -30,6 +30,24 @@ import types
 
 import pytest
 
+# 构造最小桩环境以测试 commands 模块
+for _m in ["app", "app.core", "app.core.event", "app.sdk", "app.sdk.logging"]:
+    if _m not in sys.modules:
+        sys.modules[_m] = types.ModuleType(_m)
+
+class _DummyEvent:
+    def __init__(self, event_type, event_data):
+        self.event_type = event_type
+        self.event_data = event_data
+
+sys.modules["app.core.event"].Event = _DummyEvent
+sys.modules["app.core.event"].EventType = types.SimpleNamespace(PluginAction=4, MessageAction=3)
+sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(register=lambda *a, **kw: lambda f: f)
+sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
+    info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
+    warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
+)
+
 _PLUGIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))),
@@ -148,3 +166,97 @@ def test_button_count_is_bounded():
     rows = _strm().suspect_command_buttons(keys, [_pair()], limit=5)
     retry_rows = [r for r in rows if any("|retry " in c["callback_data"] for c in r)]
     assert len(retry_rows) == 5, f"limit=5 时应只有 5 行条目按钮，实际 {len(retry_rows)}"
+
+
+def test_single_suspect_has_no_retry_all_button():
+    """
+    单条异常时**不出现**「全部删旧重传」按钮（单条已有单独重传按钮，避免冗余）。
+    """
+    rows = _strm().suspect_command_buttons([KEY], [_pair()])
+    cmds = [b["callback_data"] for r in rows for b in r]
+    assert not any("|retry_all" in c for c in cmds), "单条异常时不应出现全部删旧重传按钮"
+
+    rows_with_total_1 = _strm().suspect_command_buttons([KEY], [_pair()], total_count=1)
+    cmds_1 = [b["callback_data"] for r in rows_with_total_1 for b in r]
+    assert not any("|retry_all" in c for c in cmds_1), "total_count=1 时不应出现全部删旧重传按钮"
+
+
+def test_multiple_suspects_have_retry_all_button():
+    """
+    多条异常时必须出现「⚠️ 全部删旧重传」按钮：
+    1. 独占一行；
+    2. 文案自明（含"全部删旧重传"与"⚠️"）；
+    3. 顺序排在 gen 与 check 之后；
+    4. callback_data 满足 Telegram 格式与 64 字节约束。
+    """
+    keys = ["9KG:剧/E01.mkv", "9KG:剧/E02.mkv"]
+    rows = _strm().suspect_command_buttons(keys, [_pair()])
+    flat = {b["callback_data"]: (i, len(r), b["text"]) for i, r in enumerate(rows) for b in r}
+
+    retry_all_cd = "[PLUGIN]Rsync115Sync|retry_all"
+    assert retry_all_cd in flat, f"多条异常时缺少按钮 {retry_all_cd}"
+    row_idx, width, text = flat[retry_all_cd]
+    assert width == 1, f"全部删旧重传应当独占一行，实际宽度 {width}"
+    assert "全部删旧重传" in text, f"文案缺少「全部删旧重传」: {text!r}"
+    assert "⚠" in text, f"破坏性按钮文案应带警示符: {text!r}"
+
+    # 顺序排在 gen 和 check 之后
+    gen_row = flat["[PLUGIN]Rsync115Sync|gen"][0]
+    check_row = flat["[PLUGIN]Rsync115Sync|check"][0]
+    assert gen_row < row_idx, "全部删旧重传排在了补生成之前"
+    assert check_row < row_idx, "全部删旧重传排在了检查结果之前"
+
+    # 字节长度约束
+    assert len(retry_all_cd.encode("utf-8")) <= 64
+
+
+def test_total_count_triggers_retry_all_even_if_new_suspects_is_single():
+    """
+    本次新增虽然只有 1 条，但系统清单总数 > 1 时，仍应当提供「全部删旧重传」。
+    """
+    rows = _strm().suspect_command_buttons([KEY], [_pair()], total_count=3)
+    cmds = [b["callback_data"] for r in rows for b in r]
+    assert "[PLUGIN]Rsync115Sync|retry_all" in cmds, (
+        "total_count=3 时应生成全部删旧重传按钮"
+    )
+
+
+def test_handle_button_action_retry_all():
+    """
+    点击「全部删旧重传」按钮时的回调处理：
+    1. 清单为空时，友好提示无需处理；
+    2. 清单非空时，调用 _api_strm_retry 批量传入全部 key 并回执。
+    """
+    name = "_rp_btn_test"
+    cmds_mod = importlib.import_module(f"{name}.commands")
+    cmds_mod.Event = _DummyEvent
+    CommandsMixin = cmds_mod.CommandsMixin
+
+    class FakePlugin(CommandsMixin):
+        def __init__(self):
+            self._strm_suspects = {}
+            self.replies = []
+            self.retried_keys = []
+
+        def _post_reply(self, event, msg):
+            self.replies.append(msg)
+
+        def _api_strm_retry(self, body, channel_event=None):
+            self.retried_keys = body.get("keys", [])
+            return {"success": True, "message": f"已清理 {len(self.retried_keys)} 个旧文件"}
+
+    plugin = FakePlugin()
+    # 1. 空清单
+    event = _DummyEvent(3, {"plugin_id": "FakePlugin", "text": "retry_all"})
+    plugin._handle_button_action(event)
+    assert len(plugin.replies) == 1
+    assert "没有待处理" in plugin.replies[0]
+
+    # 2. 有多个疑似条目
+    plugin._strm_suspects = {"9KG:a.mkv": {}, "9KG:b.mkv": {}}
+    plugin.replies.clear()
+    plugin._handle_button_action(event)
+    assert plugin.retried_keys == ["9KG:a.mkv", "9KG:b.mkv"]
+    assert len(plugin.replies) == 1
+    assert "已清理 2 个旧文件" in plugin.replies[0]
+    assert "已提交全部 2 个疑似异常文件" in plugin.replies[0]

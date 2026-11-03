@@ -711,7 +711,7 @@ class StrmOpsMixin:
             # —— Telegram 的代码块复制在移动端很难只选中那一行，而前后都是文字。
             # 宿主支持 `callback_data` 为斜杠命令的按钮（点一下真的执行），
             # 少两步操作。见 strm.suspect_command_buttons 的说明。
-            buttons = _strm.suspect_command_buttons(suspects, self._sync_pairs)
+            buttons = _strm.suspect_command_buttons(suspects, self._sync_pairs, total_count=total)
             # ⚠️ 预检按钮体积：Telegram 对 `callback_data` 有 64 字节上限，
             # 超限时**整条消息发送失败**（BUTTON_DATA_INVALID），而不是只丢那个按钮。
             # 早先按钮携带中文关键字，实测 83 字节 → 整条通知发不出去，
@@ -749,7 +749,7 @@ class StrmOpsMixin:
                     f"按下面按钮处理即可（点一下直接执行）：\n"
                     f"① 先点「先试补生成」—— strm 插件漏生成的话，这一步就够了；\n"
                     f"   等 1~2 分钟再点「检查结果」确认。\n"
-                    f"② 补生成后仍无 strm，才点「⚠️ 删旧重传」（会先删云端旧文件）。\n"
+                    f"② 补生成后仍无 strm，才点「⚠️ 删旧重传」（存在多条异常时可点「⚠️ 全部删旧重传」）。\n"
                     f"③ 确认这个文件本就不该有 strm，点「误报忽略」。"
                 ),
                 buttons=buttons,

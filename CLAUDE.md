@@ -29,18 +29,23 @@ Implications when editing:
 - Upstream merges are performed by that workflow, not by hand. Keep fork-local changes tidy so they
   do not fight the merge. The workflow's own comment names `package.v2.json` and the `traktcleaner`
   plugin as frequent conflict points (files both sides have edited).
-- **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync` and `WatchSync` (plus a
-  V2 `WatchSync`), as well as V3 `P115StrmHelper` (bundles offline cp314 wheels in `wheels/`). A second
-  category is **shared plugins the fork has diverged from**: `BrushFlow` exists upstream (v6.1.2) but
-  this fork is far ahead (v6.4.13); similarly in V2, `plugins.v2/autosignin` has diverged locally with
+- **Fork-local plugins** exist that upstream does not have: V3 `Rsync115Sync`, `WatchSync` and
+  `P115StrmHelper` (the last bundles offline cp314 wheels in `wheels/`, a path that is gitignored
+  globally but force-included just for that plugin). A second category is **shared plugins the fork
+  has diverged from**: `BrushFlow` exists upstream (v6.1.4) but
+  this fork is far ahead (v6.4.14); similarly in V2, `plugins.v2/autosignin` has diverged locally with
   FlareSolverr Cloudflare challenge bypass, attendance verification, and 14-day history. Develop them freely,
   but never assume upstream shares your state — an upstream merge will not supply fork-only index entries,
   nor carry the fork's newer `BrushFlow` entry or V2 custom logic. Fork-local non-merge commit totals drift
   upward as work continues; run `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count
-  rather than trusting a number here (at the time of writing `Rsync115Sync` dominates by far, then `BrushFlow`,
-  `WatchSync`, `P115StrmHelper`).
+  rather than trusting a number here (at the time of writing `Rsync115Sync` dominates by far, then
+  `ClashRuleProvider`, `IMDbSource`, `BrushFlow`).
   Because `BrushFlow` and `P115StrmHelper` live in `package.v3.json`, upstream edits to the shared index
-  files can conflict there too, not only in `package.v2.json`.
+  files can conflict there too, not only in `package.v2.json`. In practice the two index files conflict on
+  nearly every sync, and a reliable resolution is a **structural merge** — per key take the higher
+  `version`, union the `history` entries, re-sort descending — rather than hand-picking hunks, because
+  the two sides do not agree on `history` order (upstream `OidcAuth` and `TraktCleaner` are ascending,
+  everything else descending).
 - `scripts/update_rsync115sync.sh` is a **gitignored** local helper (it embeds a personal NAS
   host/IP), and `.testhost/` is a gitignored partial stub — it has stub `app/` modules but **no**
   `app.testing`, so pytest cannot bootstrap against it. Neither is part of the repo.
@@ -218,8 +223,15 @@ uv run --no-project --python 3.14 python scripts/check_v3_dependency_install.py 
 # The build script is always `vite build`; pick the package manager from the lockfile that
 # is present (pnpm-lock.yaml → pnpm, package-lock.json → npm, none → npm). No plugin here
 # defines a typecheck script, and none use yarn. Build output must land in dist/assets/.
-pnpm build    # when pnpm-lock.yaml exists (BrushFlow, Rsync115Sync)
-npm ci && npm run build    # when package-lock.json exists (LunaTVSource, CourseOrganizer, …)
+# Note the split is per plugin, and a plugin can differ between generations — always look at
+# the lockfile in the directory you are building, not at the same plugin's other generation.
+pnpm build    # pnpm-lock.yaml present: V3 BrushFlow, MediaServerNotifyPlus, Rsync115Sync;
+              #   V2 MediaServerNotifyPlus, PTDataStatistics
+npm ci && npm run build    # package-lock.json present: V3 CourseOrganizer, FullScreenPosterWall,
+                           #   LunaTVSource, P115StrmHelper; V2 StorageCleanup
+npm install && npm run build    # package.json only, no lockfile: V3 MediaOverviewEnhancer,
+                                #   MusicLibraryManager, WatchSync; V2 AgentTokens, BrushFlow,
+                                #   CourseOrganizer, WatchSync
 
 git diff --check                 # whitespace check; recommended before commit (no hook runs it)
 ```
@@ -354,7 +366,11 @@ V3 extra dependencies go in `plugins.v3/<id>/pyproject.toml`. The manifest contr
 repo as committed — two fork-local plugins violate the contract above:
 
 - `plugins.v3/rsync115sync/pyproject.toml` — `project.name = "rsync115sync"` (should be
-  `moviepilot-plugin-rsync115sync`) and `requires-python = ">=3.10"` (should be `">=3.14"`).
+  `moviepilot-plugin-rsync115sync`). Note its `requires-python = ">=3.10"` is **also** non-conforming,
+  but it is *not* one of the two failures: `_pyproject_files()` in the test globs in filesystem order,
+  so the failing `requires-python` assertion lands on whichever manifest sorts after `rsync115sync`
+  in that glob, and the first failing assertion short-circuits each case. Fix `project.name` first,
+  then re-run — the `requires-python` case surfaces next.
 - `plugins.v3/p115strmhelper/pyproject.toml` — its `[tool.uv.sources]` entries are **lists** of
   `{path, marker}` tables (bundled per-platform wheels), while
   `test_v3_uv_sources_reference_declared_dependencies_and_indexes` asserts each source is a single
@@ -363,6 +379,7 @@ repo as committed — two fork-local plugins violate the contract above:
 Both fail under `uv run --with pytest --with packaging pytest tests/ci/test_v3_dependency_manifests.py
 --noconftest` (2 failed, 14 passed). Fix the manifest *before* relying on this test as a signal, and
 expect the fix to be a real change to the plugin, not a test edit — upstream owns this test.
+`animeupscale` also declares `[tool.uv.sources]` but conforms (single dict per source), so it passes.
 
 Declare a dependency-gate platform subset with:
 
@@ -394,10 +411,19 @@ Remote CSS lands in the host `document` and leaks into the whole UI. Share `vue`
 `**/__federation_shared_vuetify/styles-*.css` and any CSS referenced by a `remoteEntry.js` that
 contains unscoped global selectors (`html`, `body`, `:root`, `*`, `.v-*`, `.mdi-*`, `.rounded*`,
 `.elevation-N`) — the historical fix for exactly that was commit `aa50460`. It also **requires every
-federated plugin to be `"release": true`** in its index. Plugin configs differ on whether they list
-`'vuetify/styles'` in `shared`: `Rsync115Sync` omits it deliberately, while BrushFlow, WatchSync,
-CourseOrganizer, LunaTVSource, FullScreenPosterWall, and P115StrmHelper all declare it — both styles
-pass the gate. Run `python .github/scripts/check_federation_css.py` after any frontend build.
+federated plugin to be `"release": true`** in its index.
+Plugin configs differ on whether they list `'vuetify/styles'` in `shared`, and both styles pass the gate —
+but the split is **per plugin and per generation**, so verify before assuming. As committed, the V3
+plugins that declare it are `CourseOrganizer`, `LunaTVSource`, `MediaOverviewEnhancer`,
+`MediaServerNotifyPlus`, `MusicLibraryManager`, `P115StrmHelper`; V2 ones that declare it are
+`BrushFlow`, `MediaServerNotifyPlus`, `PTDataStatistics`, `WatchSync`. Deliberately **omitting** it:
+V3 `BrushFlow`, V3 `Rsync115Sync`, V3 `WatchSync`, `FullScreenPosterWall` (whose config mentions the
+string only in a comment — its real `shared` has just `vue`), plus V2 `AgentTokens`,
+`CourseOrganizer`, `StorageCleanup`. Two plugins (`MediaServerNotifyPlus`, `PTDataStatistics`) declare
+it *and* filter the emitted `styles-*.css` chunk back out. The reason omission is safe: declaring it
+makes originjs emit a `dist/assets/__federation_shared_vuetify/styles-*.css` that `remoteEntry.js`
+never references but the gate still rejects — so adding it "for completeness" is a regression, not a
+cleanup. Run `python .github/scripts/check_federation_css.py` after any frontend build.
 
 ## Index Files and Version Selection
 
