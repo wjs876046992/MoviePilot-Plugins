@@ -202,7 +202,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.4"
+    plugin_version = "0.5.5"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -4299,31 +4299,33 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 code_hint = ""
                 if fatal_exit_codes:
                     code_hint = f"❌ rsync 失败: {', '.join(fatal_exit_codes)}\n"
+                # 失败路径**保留全部数字**（这是用户排查的唯一依据），
+                # 但把两条重复的 💡 提示合并成一行 —— 它们在两个分支里
+                # 各出现一次，且说的是同一件事。
+                tips = "👉 /rsync_retry 重试 · /rsync_ignore <剧名> 忽略存量"
                 if synced_count > 0:
                     # 有实际传输动作，但仍有未完成项 → 必须报告
                     msg = (
-                        f"⚠️ 115同步存在未完成项！\n"
+                        f"⚠️ 115同步存在未完成项\n"
                         f"耗时: {duration} 秒\n"
                         f"{code_hint}"
                         # 同上：候选数与实际传输数是两回事，分开写
-                        f"📤 实际传输: {transferred_total} 个（核对 {synced_count} 个）\n"
-                        f"🔍 缺失未同步: {len(total_missing)} 个\n"
-                        f"🔍 大小残缺: {len(total_corrupt)} 个\n"
-                        f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"
-                        f"💡 如为不想同步的存量文件，可发送 /rsync_ignore 剧名 忽略。"
+                        f"📤 实际传输 {transferred_total} 个（核对 {synced_count} 个）\n"
+                        f"🔍 缺失未同步 {len(total_missing)} 个 · "
+                        f"大小残缺 {len(total_corrupt)} 个\n"
+                        f"{tips}"
                     )
                     should_notify = True
                 elif anomaly_changed or fatal_exit_codes:
                     # 异常项有变化，或 rsync 以致命退出码失败 → 报告
                     # （后者即使异常清单无变化也必须上报，否则失败被静默吞掉）
                     msg = (
-                        f"⚠️ 115同步异常清单有更新！\n"
+                        f"⚠️ 115同步异常清单有更新\n"
                         f"耗时: {duration} 秒\n"
                         f"{code_hint}"
-                        f"🔍 缺失未同步: {len(total_missing)} 个\n"
-                        f"🔍 大小残缺: {len(total_corrupt)} 个\n"
-                        f"💡 手机端发送 /rsync_retry 即可定向重试异常文件！\n"
-                        f"💡 如为不想同步的存量文件，可发送 /rsync_ignore 剧名 忽略。"
+                        f"🔍 缺失未同步 {len(total_missing)} 个 · "
+                        f"大小残缺 {len(total_corrupt)} 个\n"
+                        f"{tips}"
                     )
                     should_notify = True
                 else:

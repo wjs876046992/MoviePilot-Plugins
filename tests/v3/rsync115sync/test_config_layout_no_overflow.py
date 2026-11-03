@@ -628,3 +628,128 @@ def test_form_fields_are_not_visually_clipped():
             f"框外 label「{m.group(1)}」后面没有紧跟输入框 —— "
             f"它可能被插到了错误的层级（会把标题显示在无关位置）"
         )
+
+
+# --------------------------------------------------------------------------
+# 渐进式披露：配置页分级（v0.5.5）
+# --------------------------------------------------------------------------
+
+def _script(src: str) -> str:
+    """取 <script setup> 部分。"""
+    return src[src.find("<script setup>"):src.find("</script>")]
+
+
+def test_advanced_zone_is_collapsed_by_default():
+    """
+    高级设置必须**默认收起**，且用 `v-show` 而不是 `v-if`。
+
+    ## 为什么（用户反馈）
+
+    「现在使用起来过于复杂，尤其是一些文字说明，太长了，怎么能让用户快速上手」
+    —— 配置页曾有 43 个控件全部平铺，新用户首屏要滚很久才能看到「保存」。
+
+    分级的做法是：首屏只留「要不要用 / 同步哪些目录 / 等多久」这三类决策，
+    其余（调度、超时、排除规则、限流、strm 参数）收进一个总开关后面。
+
+    ⚠️ 三条约束各自对应一种退化：
+
+    1. **默认 false**：若默认展开，等于什么都没做。
+    2. **用 v-show 不是 v-if**：折叠后内容仍要在 DOM 里 —— 用户排查配置时
+       会直接 Ctrl+F 搜「cron」「限流」这类词，移除 DOM 会让搜索无结果。
+       与 CollapsibleNote 是同一取向。
+    3. **高级区必须真的被包起来**：只加一个开关、却忘了给各区加 `v-show`，
+       开关就成了摆设（点它什么都不变），而这在视觉上"看起来一切正常"。
+    """
+    src = _read_component("Config.vue")
+    script = _script(src)
+
+    assert re.search(r"const showAdvanced = ref\(false\)", script), (
+        "高级设置总开关必须默认关闭（showAdvanced 初始为 false），否则分级等于没做"
+    )
+
+    body = src[src.find("<template>"):src.rfind("</template>")]
+    assert 'v-show="showAdvanced"' in body, (
+        "高级区必须用 v-show=\"showAdvanced\" 控制 —— 不要用 v-if（折叠后仍需可搜索）"
+    )
+    assert 'v-if="showAdvanced"' not in body, (
+        "高级区不得用 v-if：内容会被移出 DOM，Ctrl+F 搜不到关键词"
+    )
+
+    # 高级区必须覆盖到这几个被认为「不该占用首屏」的模块。
+    # 判定方式：这些模块的标题或标志性文案，在同一行或所在容器上带 v-show。
+    # 用「附近是否有 v-show」的松散判据，避免把整块 HTML 结构写死进测试 ——
+    # 结构会随排版调整，而"这四块属于高级区"是本测试真正要保护的结论。
+    for marker in ("CD2 核心过滤与防假死参数", "上传限流与风控退避", "strm 交叉验证"):
+        idx = body.find(marker)
+        assert idx > 0, f"未找到高级区标记「{marker}」"
+        window = body[max(0, idx - 300):idx + 300]
+        assert "showAdvanced" in window, (
+            f"「{marker}」没有处在 showAdvanced 的控制范围内 —— "
+            f"它会仍然出现在首屏，分级对用户就是失效的"
+        )
+
+
+def test_pair_advanced_fields_collapse_per_pair():
+    """
+    每个目录映射里的可选字段必须独立折叠，且状态**不写进 pair 对象**。
+
+    ## 为什么按映射独立折叠
+
+    只填「名称 / 源目录 / 目标目录」就能用，而 strm 目录、网盘目录是可选增强。
+    展开态固定时，3 个映射会白白多出 ~600px 高度 —— 手机端尤其明显。
+
+    ## 为什么折叠状态不能存在 pair 里
+
+    `saveConfig` 把整个 `config` POST 给后端，而后端把 `sync_pairs` **原样**存下来。
+    任何加在 pair 对象上的 UI 键（`__uid`、`_expanded` …）都会被持久化，
+    再读回时混进真实配置，甚至可能被当作未知字段写进宿主配置。
+    因此折叠态必须放在独立的 `pairAdvanced` 里，且提交前剥离临时键。
+    """
+    src = _read_component("Config.vue")
+    script = _script(src)
+    body = src[src.find("<template>"):src.rfind("</template>")]
+
+    assert re.search(r"const pairAdvanced = ref\(\{\}\)", script), (
+        "映射内的折叠状态必须存在独立的 pairAdvanced 里，不能塞进 pair 对象"
+    )
+    assert re.search(r"function (?:isPairAdvanced|togglePairAdvanced)", script), (
+        "缺少映射折叠的开合方法"
+    )
+    # 折叠容器用 v-show（与全局高级区同一条理由：折叠后仍可搜索）
+    assert re.search(r'v-show="isPairAdvanced\(pair\)"', body), (
+        "映射内的可选字段必须用 v-show=\"isPairAdvanced(pair)\" 控制收起"
+    )
+    # 提交前必须剥离浏览器侧的临时键
+    assert "delete p.__uid" in script or "delete pair.__uid" in script, (
+        "saveConfig 提交前必须剥离 __uid —— 否则它会被后端写进 sync_pairs"
+    )
+    assert "_payloadForBackend" in script or "delete p.__uid" in script, (
+        "提交前剥离临时键的处理缺失，UI 状态会泄漏进后端配置"
+    )
+
+
+def test_previously_missing_settings_are_now_exposed():
+    """
+    三个「后端早已支持、界面从未暴露」的字段必须真的出现在表单里。
+
+    ## 为什么单独立一条
+
+    `media_extensions` 尤其严重：目录映射的说明写着
+    「关闭时只传下方『同步的扩展名』白名单里的文件」，而**那个输入框根本不存在**
+    —— 文档指向一个不存在的控件，用户按说明去找只会找不到。
+    这类「文档与界面不同步」不会报错，只能靠断言钉住。
+
+    `notify` 与 `strm_check_enabled` 同理：`_api_get_config` 一直在返回它们，
+    `_api_save_config` 一直在读它们，界面却没有入口。
+    """
+    body = _template(_config_vue())
+    expected = {
+        "config.notify": "发送通知总开关",
+        "config.strm_check_enabled": "strm 交叉验证总开关",
+        "config.media_extensions": "同步的扩展名白名单",
+    }
+    for binding, label in expected.items():
+        assert binding in body, (
+            f"配置页缺少 {binding}（{label}）—— 后端已支持但界面无入口，"
+            f"用户无法调整，说明文字也可能指向不存在的控件"
+        )

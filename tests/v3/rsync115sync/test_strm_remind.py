@@ -137,8 +137,8 @@ def test_new_suspects_alert_immediately(tmp_path):
     plugin._notify_strm_suspects(["电视剧:ep1.mkv"])
 
     assert len(sent) == 1
-    assert "发现疑似上传异常" in sent[0]["title"]
-    assert "未处理提醒" not in sent[0]["title"]
+    assert "缺 strm" in sent[0]["title"]
+    assert "待处理" not in sent[0]["title"]
     assert plugin._strm_notified is True
     assert plugin._strm_last_notified_ts > 0
     assert plugin.saved_data["strm_last_notified_ts"] == plugin._strm_last_notified_ts
@@ -222,8 +222,8 @@ def test_remind_sent_when_interval_and_window_met(tmp_path, monkeypatch):
 
     assert len(sent) == 1, "未在满足条件时触发催办提醒"
     msg = sent[0]
-    assert "发现疑似上传异常（未处理提醒）" in msg["title"]
-    assert "待处理提醒" in msg["text"]
+    assert "仍有" in msg["title"] and "待处理" in msg["title"]
+    assert "尚未处理" in msg["text"]
     assert "ep1.mkv" in msg["text"]
     assert "ep2.mkv" in msg["text"]
     assert msg["buttons"] is not None, "催办提醒中未携带交互按钮"

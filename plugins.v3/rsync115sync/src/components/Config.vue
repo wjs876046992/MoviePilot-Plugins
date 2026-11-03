@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.4</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.5</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -36,6 +36,22 @@
 
       <!-- 表单主体滚动区 -->
       <v-card-text class="config-body card-pad-x py-4 overflow-y-auto">
+        <!-- 高级设置总开关：默认关闭，首屏只留「新用户必须决定的几件事」。
+             ⚠️ 用 v-show 而不是 v-if 包高级区：与 CollapsibleNote 同一取向 ——
+             折叠后内容仍在 DOM 里，Ctrl+F 能搜到关键词（用户排查配置时
+             恰恰会去搜索「cron」「限流」这类词）。 -->
+        <div class="settings-group-card radius-lg overflow-hidden mb-4">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
+            <div>
+              <div class="font-weight-bold text-body-2">显示高级设置</div>
+              <div class="text-caption text-medium-emphasis">
+                调度周期、超时与排除规则、上传限流、strm 参数 —— 默认值已适配大多数场景
+              </div>
+            </div>
+            <v-switch v-model="showAdvanced" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+        </div>
+
         <!-- 模块 1：基础开关 -->
         <div class="settings-group-card radius-lg overflow-hidden mb-4">
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
@@ -67,7 +83,7 @@
                代价是它在一片蓝色说明块里显得像是另一种东西 —— 用户直接指出
                「样式和其它描述模块不一样，其他是蓝色的」。层级已经由**位置**
                表达（紧跟在所属开关之后），不需要再靠换一套配色去强调。 -->
-          <div class="row-pad-x pb-3">
+          <div class="row-pad-x pb-3" v-show="showAdvanced">
             <CollapsibleNote title="怎么把入库推给本插件（Webhook）" class="mb-0">
     在发送端（自建脚本、下载器回调等）把地址指向平台 webhook 入口，并带上本插件的收件人标识：
                   <br>
@@ -100,12 +116,23 @@
             <v-switch v-model="config.source_scan_enabled" color="primary" inset hide-details density="compact"></v-switch>
           </div>
 
+          <!-- 通知总开关：后端 `notify` 早已参与 `_notify` 判定，但此前界面上
+               没有入口 —— 想「先静音观察几天」只能改配置文件。放在基础区是因为
+               它和「启用同步助手」同属「要不要用」的决策，不是调优参数。 -->
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-t">
+            <div>
+              <div class="font-weight-bold text-body-2">发送通知</div>
+              <div class="text-caption text-medium-emphasis">同步结果、疑似异常与催办提醒的推送总开关</div>
+            </div>
+            <v-switch v-model="config.notify" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+
           <!-- ⚠️ 这一行**刻意不用横排**（不加 justify-space-between / align-center）。
                它是「标签在上、输入框在下」的纵向排布 —— 因为没有横排，
                就不存在"文字把输入框挤掉"这件事，与文字多长、窗口多宽都无关。
                前三次我都在调 flex 宽度分配（减字数、加 wrap、加 basis），
                都没解决；改用不依赖 flex 计算的排布后，挤压在结构上不可能发生。 -->
-          <div class="setting-row setting-row-stacked row-pad-x py-3">
+          <div class="setting-row setting-row-stacked row-pad-x py-3" v-show="showAdvanced">
             <div>
               <div class="font-weight-bold text-body-2">源端扫描 Cron 规则</div>
               <div class="text-caption text-medium-emphasis">多久扫一轮（默认 30 分钟）</div>
@@ -121,7 +148,7 @@
           </div>
 
           <!-- 入库发现的完整语义集中在这里（卡片内只留一句话，见上） -->
-          <div class="row-pad-x pb-3">
+          <div class="row-pad-x pb-3" v-show="showAdvanced">
             <CollapsibleNote title="入库是怎么被发现的" class="mb-0">
     本插件有<b>两条</b>入库来源，分工是刻意的：
                   <div class="mt-1">
@@ -206,26 +233,48 @@
                 <div class="stacked-label text-caption text-medium-emphasis">CD2 挂载 115 目录</div>
                 <v-text-field v-model="pair.dest" variant="outlined" density="compact" placeholder="/volume2/CloudNAS/115/TV"></v-text-field>
               </v-col>
-              <v-col cols="12">
-                <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
-              </v-col>
-              <v-col cols="12">
-                <div class="stacked-label text-caption text-medium-emphasis">strm 目录（可选，启用上传结果交叉验证）</div>
-                <v-text-field
-                  v-model="pair.strm_dir"
-                  variant="outlined"
-                  density="compact"
-                  placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"></v-text-field>
-              </v-col>
-              <v-col cols="12">
-                <div class="stacked-label text-caption text-medium-emphasis">网盘目录（可选，仅「先尝试生成 strm」需要）</div>
-                <v-text-field
-                  v-model="pair.pan_dir"
-                  variant="outlined"
-                  density="compact"
-                  placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"></v-text-field>
-              </v-col>
             </v-row>
+
+            <!-- 每个映射的可选设置独立折叠：只填「名称 / 源 / 目标」时卡片高度
+                 从 280px+ 降到约 90px，多映射用户在手机端不再需要长距离滚动。
+                 ⚠️ 折叠状态存在 `pairAdvanced`（按映射的稳定 id 索引），
+                 **不写进 pair 对象本身** —— 否则 saveConfig 会把 __uid 之类的
+                 临时键一起 POST 给后端，污染 sync_pairs。 -->
+            <div
+              class="pair-advanced-head d-flex align-center text-caption text-primary"
+              role="button"
+              tabindex="0"
+              :aria-expanded="isPairAdvanced(pair) ? 'true' : 'false'"
+              @click="togglePairAdvanced(pair)"
+              @keydown.enter.prevent="togglePairAdvanced(pair)"
+              @keydown.space.prevent="togglePairAdvanced(pair)"
+            >
+              <v-icon size="16" class="mr-1">{{ isPairAdvanced(pair) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
+              {{ isPairAdvanced(pair) ? '收起高级设置' : '高级设置（文件类型过滤、strm 验证）' }}
+            </div>
+            <div v-show="isPairAdvanced(pair)" class="mt-2 pt-2 pair-advanced-body">
+              <v-row density="compact">
+                <v-col cols="12">
+                  <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
+                </v-col>
+                <v-col cols="12">
+                  <div class="stacked-label text-caption text-medium-emphasis">strm 目录（可选，启用上传结果交叉验证）</div>
+                  <v-text-field
+                    v-model="pair.strm_dir"
+                    variant="outlined"
+                    density="compact"
+                    placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"></v-text-field>
+                </v-col>
+                <v-col cols="12">
+                  <div class="stacked-label text-caption text-medium-emphasis">网盘目录（可选，仅「先尝试生成 strm」需要）</div>
+                  <v-text-field
+                    v-model="pair.pan_dir"
+                    variant="outlined"
+                    density="compact"
+                    placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"></v-text-field>
+                </v-col>
+              </v-row>
+            </div>
           </div>
         </div>
         <div v-else class="empty-hint-box text-center py-6 radius-lg mb-4 text-caption text-disabled">
@@ -239,7 +288,7 @@
         </div>
         <div class="settings-group-card radius-lg overflow-hidden pa-4 mb-4">
           <v-row density="comfortable">
-            <v-col cols="12" sm="6">
+            <v-col cols="12">
               <div class="stacked-label text-caption text-medium-emphasis">入库冷却延迟时长 (小时)</div>
               <v-text-field
                 v-model.number="config.delay_hours"
@@ -249,28 +298,28 @@
                 variant="outlined"
                 density="compact"
                 suffix="小时"
-                hint="媒体入库后等待 N 小时再上传。它同时兜两件事：① 留足外挂字幕与刮削时间；② 等文件写完 —— 源端扫描没有「写完了」这个信号，而正在写入的文件修改时间恰好是最新的，冷却期是唯一挡住「传到一半源文件还在变」的机制。建议 4~6 小时。设为 0 可关闭等待"
+                hint="入库后等 N 小时再上传：留足字幕与刮削时间，并避开「文件还在写」的时段。建议 4~6 小时；0 表示不等待"
                 persistent-hint></v-text-field>
             </v-col>
-            <v-col cols="12" sm="6">
+            <v-col cols="12" v-show="showAdvanced">
               <div class="stacked-label text-caption text-medium-emphasis">定时检查 Cron 规则</div>
               <v-text-field
                 v-model="config.cron"
                 variant="outlined"
                 density="compact"
                 placeholder="0 */2 * * *"
-                hint="多久巡检一次。到期文件会按上面的限流规则分批上传；本轮无到期文件时才续跑补传队列（新鲜入库优先于存量补传）"
+                hint="多久巡检一次。到期文件按限流规则分批上传；本轮无到期文件时才续跑补传队列"
                 persistent-hint></v-text-field>
             </v-col>
           </v-row>
         </div>
 
         <!-- 模块 4：高级过滤与防假死参数 -->
-        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2">
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2" v-show="showAdvanced">
           <v-icon size="18" color="primary" class="mr-1">mdi-shield-check-outline</v-icon>
           CD2 核心过滤与防假死参数
         </div>
-        <div class="settings-group-card radius-lg overflow-hidden pa-4">
+        <div class="settings-group-card radius-lg overflow-hidden pa-4" v-show="showAdvanced">
           <v-row density="compact">
             <v-col cols="12" sm="6">
               <div class="stacked-label text-caption text-medium-emphasis">rsync I/O 超时 (秒)</div>
@@ -282,19 +331,29 @@
             </v-col>
             <v-col cols="12">
               <div class="stacked-label text-caption text-medium-emphasis">排除文件与目录规则 (每行一条，严格继承 sync_115.sh)</div>
-              <v-textarea v-model="config.exclude_patterns" variant="outlined" density="compact" rows="3" hint="每行一条，命中即跳过。默认排除群晖元数据与系统临时文件；注意排除只作用于源端，无法清理 115 上已有的残留" persistent-hint></v-textarea>
+              <v-textarea v-model="config.exclude_patterns" variant="outlined" density="compact" rows="3" hint="每行一条，命中即跳过。只作用于源端，无法清理 115 上已有的残留" persistent-hint></v-textarea>
+            </v-col>
+            <v-col cols="12">
+              <div class="stacked-label text-caption text-medium-emphasis">同步的扩展名（逗号分隔，未开启「同步所有文件类型」时生效）</div>
+              <v-textarea
+                v-model="config.media_extensions"
+                variant="outlined"
+                density="compact"
+                rows="3"
+                hint="视频、字幕、音频的扩展名白名单。映射里开启「同步所有文件类型」时本清单不生效"
+                persistent-hint></v-textarea>
             </v-col>
           </v-row>
         </div>
 
         <!-- 模块 5：上传限流与风控退避 -->
-        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4">
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" v-show="showAdvanced">
           <v-icon size="18" color="primary" class="mr-1">mdi-speedometer-slow</v-icon>
           上传限流与风控退避
         </div>
 
         <!-- 通俗说明：为什么需要限流，用大白话讲清风控逻辑 -->
-        <CollapsibleNote title="为什么需要限流？" class="mb-2">
+        <CollapsibleNote title="为什么需要限流？" class="mb-2" v-show="showAdvanced">
     115 网盘会统计<b>单位时间内上传的文件个数</b>。大量小文件（尤其是字幕、样张）
               在短时间内集中上传最容易被判定为异常流量而触发风控，导致上传被拒绝甚至临时封禁。
               <br>
@@ -303,7 +362,7 @@
               会在下一个窗口自动继续，直到全部传完。
           </CollapsibleNote>
 
-        <div class="settings-group-card radius-lg overflow-hidden">
+        <div class="settings-group-card radius-lg overflow-hidden" v-show="showAdvanced">
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">启用上传限流</div>
@@ -400,14 +459,14 @@
         </div>
 
         <!-- 模块 6：strm 交叉验证 -->
-        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2">
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2" v-show="showAdvanced">
           <v-icon size="18" color="warning" class="mr-1">mdi-television-classic</v-icon>
           strm 交叉验证
           <v-chip size="x-small" variant="tonal" color="success" class="ml-2 font-weight-bold">
             不依赖任何插件
           </v-chip>
         </div>
-        <CollapsibleNote title="它解决的是「假成功」—— 为什么对账看不出来" class="mb-3">
+        <CollapsibleNote title="它解决的是「假成功」—— 为什么对账看不出来" class="mb-3" v-show="showAdvanced">
           CD2 改名失败时，挂载视图会显示目标文件
           「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账
           与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角<b>结构上看不见</b>这种失败。
@@ -426,7 +485,7 @@
 
         <!-- 依赖边界对照表：本模块是「核心不依赖、可选增强依赖」的典型，
              分开列出来，避免用户以为整个功能都要装 P115StrmHelper -->
-        <div class="dep-split radius-sm mb-3">
+        <div class="dep-split radius-sm mb-3" v-show="showAdvanced">
           <div class="dep-split-row">
             <v-chip size="x-small" color="success" variant="tonal" class="font-weight-bold flex-shrink-0">
               本插件独立完成
@@ -448,7 +507,7 @@
           </div>
         </div>
 
-        <CollapsibleNote title="「先尝试生成 strm」的启用前提（两处都要配）" class="mb-3">
+        <CollapsibleNote title="「先尝试生成 strm」的启用前提（两处都要配）" class="mb-3" v-show="showAdvanced">
           <b>①</b> 上方目录映射里为该映射填写「<b>网盘目录</b>」
           （115 网盘里的真实路径，与本地 strm 目录是两棵独立的树，无法自动推导）；
           <br><b>②</b> 该网盘路径必须已在 P115StrmHelper 的<b>「全量同步路径」</b>里配置过 ——
@@ -460,7 +519,19 @@
           <b>不配也不影响上面「本插件独立完成」的任何一项</b>。
         </CollapsibleNote>
 
-        <div class="settings-group-card radius-lg overflow-hidden">
+        <div class="settings-group-card radius-lg overflow-hidden" v-show="showAdvanced">
+          <!-- strm 交叉验证总开关：后端 `_strm_check_enabled` 长期存在且会被
+               `_strm_check` / 看板扫描检查，但界面上一直没有入口。放在本模块
+               最前，语义是「这一整块要不要用」。 -->
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">启用 strm 交叉验证</div>
+              <div class="text-caption text-medium-emphasis">
+                关闭后不再观察与扫描，已有的疑似清单保留不动
+              </div>
+            </div>
+            <v-switch v-model="config.strm_check_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
           <div class="setting-row setting-row-stacked row-pad-x py-3 border-b">
             <div>
               <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
@@ -490,46 +561,58 @@
                 填 0 表示仅在首次发现时提醒一次；默认每 2 小时提醒一次。
               </div>
             </div>
-            <div class="d-flex align-center flex-wrap ga-3 mt-2">
-              <v-text-field
-                v-model.number="config.strm_suspect_remind_hours"
-                type="number"
-                step="1"
-                min="0"
-                label="提醒间隔（小时）"
-                variant="outlined"
-                density="compact"
-                style="max-width: 160px"
-                hide-details
-              ></v-text-field>
-              <v-text-field
-                v-model.number="config.strm_suspect_remind_start_hour"
-                type="number"
-                step="1"
-                min="0"
-                max="23"
-                label="起始时段（点）"
-                variant="outlined"
-                density="compact"
-                style="max-width: 140px"
-                hide-details
-              ></v-text-field>
-              <span class="text-body-2 text-medium-emphasis">至</span>
-              <v-text-field
-                v-model.number="config.strm_suspect_remind_end_hour"
-                type="number"
-                step="1"
-                min="0"
-                max="23"
-                label="结束时段（点）"
-                variant="outlined"
-                density="compact"
-                style="max-width: 140px"
-                hide-details
-              ></v-text-field>
-            </div>
+            <!-- ⚠️ 三个字段都必须用框外 `.stacked-label`，**不得**传 label= ——
+                 Vuetify 会因此渲染框内 label 与边框缺口，而隐藏它已失败三次
+                 （见本文件 .stacked-label 那段长注释）。 -->
+            <v-row density="compact" class="mt-2">
+              <v-col cols="12" sm="4">
+                <div class="stacked-label text-caption text-medium-emphasis">提醒间隔（小时）</div>
+                <v-text-field
+                  v-model.number="config.strm_suspect_remind_hours"
+                  type="number"
+                  step="1"
+                  min="0"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="4">
+                <div class="stacked-label text-caption text-medium-emphasis">起始时段（点）</div>
+                <v-text-field
+                  v-model.number="config.strm_suspect_remind_start_hour"
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="23"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="4">
+                <div class="stacked-label text-caption text-medium-emphasis">结束时段（点）</div>
+                <v-text-field
+                  v-model.number="config.strm_suspect_remind_end_hour"
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="23"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                ></v-text-field>
+              </v-col>
+            </v-row>
+            <!-- 实时预览拆成两行：整句里含有 `12:00` 这类不可断串，
+                 一次性排在一行会被布局门禁判红（也确实会在窄屏撑宽卡片）。 -->
             <div class="text-caption text-primary mt-1">
-              当前设置：{{ config.strm_suspect_remind_hours > 0 ? `每天 ${config.strm_suspect_remind_start_hour}:00 至 ${config.strm_suspect_remind_end_hour}:00 期间，每 ${config.strm_suspect_remind_hours} 小时催办一次（其余时间免打扰）` : '已禁用定期催办提醒（仅首次发现时通知一次）' }}
+              <template v-if="config.strm_suspect_remind_hours > 0">
+                当前设置：每天 <code class="wrap-anywhere">{{ config.strm_suspect_remind_start_hour }}:00</code>
+                至 <code class="wrap-anywhere">{{ config.strm_suspect_remind_end_hour }}:00</code>，
+                每 {{ config.strm_suspect_remind_hours }} 小时催办一次（其余时间免打扰）
+              </template>
+              <template v-else>当前设置：已禁用定期催办提醒（仅首次发现时通知一次）</template>
             </div>
           </div>
           <div class="setting-row d-flex align-center justify-space-between row-pad-x py-3">
@@ -578,6 +661,24 @@ const saving = ref(false)
 const error = ref(null)
 const successMessage = ref(null)
 
+// 高级设置总开关：默认关闭。新用户首屏只看到「总开关 + 两个入库开关 + 通知
+// + 目录映射 + 冷却时长」，其余全部收起 —— 这是本次「快速上手」改动的核心。
+// 不持久化：它是阅读辅助而非配置项，且后端没有对应字段。
+const showAdvanced = ref(false)
+
+// 每个目录映射的可选字段（文件类型 / strm 目录 / 网盘目录）的折叠状态。
+// ⚠️ 用映射下标做键，且在 removePair 里随之重排 —— 若直接把标记写进
+// `pair` 对象，saveConfig 会把临时键一起 POST 给后端，污染 sync_pairs。
+const pairAdvanced = ref({})
+
+function isPairAdvanced(pair) {
+  return !!pairAdvanced.value[pair.__uid]
+}
+
+function togglePairAdvanced(pair) {
+  pairAdvanced.value[pair.__uid] = !pairAdvanced.value[pair.__uid]
+}
+
 const config = ref({
   enabled: false,
   listen_transfer: true,
@@ -614,6 +715,10 @@ const config = ref({
   // strm 观察宽限期：与后端 DEFAULT 及 _api_get_config 的兜底值保持 6.0 一致。
   // 这里必须显式声明：/config 未返回该字段时（例如宿主配置里从未存过），
   // v-model.number 绑定 undefined 会让输入框空白并写回 NaN。
+  // strm 交叉验证总开关：后端 _api_get_config 会返回该字段，但若宿主配置里
+  // 从未存过、或返回体缺字段，v-model 绑定 undefined 会让开关显示为关闭 ——
+  // 而实际默认是开启的。显式声明默认值，保持界面与后端一致。
+  strm_check_enabled: true,
   strm_grace_minutes: 5,
   strm_suspect_remind_hours: 2,
   strm_suspect_remind_start_hour: 9,
@@ -682,8 +787,19 @@ const rateConfigWarnings = computed(() => {
 })
 
 // 目录映射新增与限流换算无关，以下是原有逻辑
+
+// 折叠状态的稳定键：映射可能被删除、重排，用下标做键会让「展开第二个」在
+// 删掉第一个之后变成「展开新的第二个」。__uid 只在浏览器内存在，
+// 提交前由 saveConfig 剥离。
+let _pairUidSeq = 0
+function _nextPairUid() {
+  _pairUidSeq += 1
+  return `p${_pairUidSeq}`
+}
+
 function addPair() {
   config.value.sync_pairs.push({
+    __uid: _nextPairUid(),
     name: '',
     src: '',
     dest: '',
@@ -695,7 +811,12 @@ function addPair() {
 }
 
 function removePair(index) {
+  const removed = config.value.sync_pairs[index]
   config.value.sync_pairs.splice(index, 1)
+  // 折叠状态跟着映射一起消失，避免残留键无限增长
+  if (removed && removed.__uid) {
+    delete pairAdvanced.value[removed.__uid]
+  }
 }
 
 function notifyClose() {
@@ -715,10 +836,25 @@ async function loadConfig() {
     const res = await props.api.get('plugin/Rsync115Sync/config')
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data)
+      // 从后端读回的映射没有 __uid（后端不认识这个字段），补一个让折叠状态可用。
+      // 只补在浏览器侧，提交时剥离。
+      for (const p of config.value.sync_pairs || []) {
+        if (!p.__uid) p.__uid = _nextPairUid()
+      }
     }
   } catch (e) {
     console.error('读取配置失败:', e)
   }
+}
+
+// 去掉只属于浏览器 UI 的临时键，使 POST 出去的 sync_pairs 与后端存储结构一致。
+// 用深拷贝而不是就地 delete：就地改会污染表单自身，后续再切回该映射时 __uid 就没了。
+function _payloadForBackend() {
+  const payload = JSON.parse(JSON.stringify(config.value))
+  for (const p of payload.sync_pairs || []) {
+    delete p.__uid
+  }
+  return payload
 }
 
 async function saveConfig() {
@@ -726,7 +862,7 @@ async function saveConfig() {
   error.value = null
   successMessage.value = null
   try {
-    const res = await props.api.post('plugin/Rsync115Sync/config', config.value)
+    const res = await props.api.post('plugin/Rsync115Sync/config', _payloadForBackend())
     if (res && res.success) {
       successMessage.value = '配置已成功保存！'
     } else {
@@ -840,6 +976,24 @@ onMounted(() => {
 .pair-card {
   background: rgba(var(--v-theme-on-surface), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+/* 映射内的「高级设置」折叠抓手：与 CollapsibleNote 的标题行同一套交互语义
+   （整行可点、可键盘操作、有焦点样式），但视觉上更轻 —— 它从属于上方的
+   三个必填字段，不是一段独立说明。 */
+.pair-advanced-head {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.pair-advanced-head:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* 折叠区上边线：把「可选字段」与「必填字段」在视觉上分开，
+   避免用户以为 strm 目录也是必填。 */
+.pair-advanced-body {
+  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .empty-hint-box {
   border: 1px dashed rgba(var(--v-theme-on-surface), 0.16);

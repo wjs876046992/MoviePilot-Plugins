@@ -730,27 +730,33 @@ class StrmOpsMixin:
                     f"{[b.get('text') for b in oversized[:3]]}")
                 buttons = None
 
+            # ⚠️ 文案原则：**成功/常规短，失败/需处置长**。
+            #
+            # 这里曾经是 672 字符：正文里写了 ①②③ 四行「按钮使用教程」，
+            # 而那段教程讲的正是**紧挨在正文下方的按钮自己**。用户不需要先读
+            # 一段说明才知道「先试补生成」按钮是干什么的 —— 按钮上的字已经说了。
+            # 催办提醒更糟：它每 2 小时把同一段教程重发一遍，而唯一的新信息
+            # 只有「还剩几条」。
+            #
+            # 现在：正文只说**发生了什么**，处置动作交给按钮。真正需要解释的
+            # 因果（为什么缺 .strm 就代表上传失败）放在配置页说明里。
             if is_reminder:
-                title = "115同步：发现疑似上传异常（未处理提醒）"
-                head_line = f"⏰ 待处理提醒：当前仍有 {total} 个疑似上传异常尚未处理：\n"
-                reason_line = "判定依据：同步已报告成功，但在 strm 目录未检测到对应指针文件。"
+                title = "115同步：仍有疑似异常待处理"
+                head_line = f"⏰ 已有 {total} 个疑似上传异常尚未处理：\n"
+                reason_line = ""
             else:
-                title = "115同步：发现疑似上传异常"
-                head_line = f"⚠️ 本次新发现 {len(suspects)} 个疑似上传异常（清单共 {total} 个）：\n"
-                reason_line = f"判定依据：同步已报告成功，但 {self._strm_grace_minutes} 分钟内未在 strm 目录生成对应文件。"
+                title = f"115同步：{len(suspects)} 个文件缺 strm"
+                head_line = f"本次新发现 {len(suspects)} 个（清单共 {total} 个）：\n"
+                reason_line = (f"\n同步已成功，但 {self._strm_grace_minutes} 分钟内"
+                               f"未生成对应 .strm 文件。")
 
             self.post_message(
                 mtype=mtype,
                 title=title,
                 text=(
                     f"{head_line}"
-                    f"{listed}{more}\n\n"
-                    f"{reason_line}\n\n"
-                    f"按下面按钮处理即可（点一下直接执行）：\n"
-                    f"① 先点「先试补生成」—— strm 插件漏生成的话，这一步就够了；\n"
-                    f"   等 1~2 分钟再点「检查结果」确认。\n"
-                    f"② 补生成后仍无 strm，才点「⚠️ 删旧重传」（存在多条异常时可点「⚠️ 全部删旧重传」）。\n"
-                    f"③ 确认这个文件本就不该有 strm，点「误报忽略」。"
+                    f"{listed}{more}"
+                    f"{reason_line}"
                 ),
                 buttons=buttons,
             )
@@ -795,9 +801,8 @@ class StrmOpsMixin:
                     try:
                         self.post_message(
                             mtype=mtype,
-                            title="115同步：strm 疑似异常已全部解决",
-                            text="✅ 之前报告的 strm 疑似上传异常文件已全部恢复"
-                                 "（strm 已生成或已完成重传），无需再处理。",
+                            title="115同步：疑似异常已全部解决",
+                            text="✅ 之前报告的 strm 异常已全部恢复（已生成或已重传），无需处理。",
                         )
                     except Exception as e:
                         logger.error(f"[Rsync115Sync] strm 恢复通知发送失败: {e}")
@@ -930,33 +935,29 @@ class StrmOpsMixin:
         cooling_pruned = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects()
 
-        msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm 的文件"
+        # 文案原则：计数一行、每个跳过原因一行。此前是 6 段带括号解释的长句
+        # 加一段理论说明，用户读完仍然只知道「缺 2 个」。
+        msg = (f"已检查 {checked} 个文件，发现 {len(candidates)} 个缺 strm"
                f"（新增 {added} 个）。")
         if cooling_pruned:
-            msg += (f"\n🧊 另有 {len(cooling_pruned)} 个疑似条目其实**还在冷却队列**"
-                    f"（尚未上传，按定义不可能有 strm），已移出待处理清单。")
+            msg += (f"\n🧊 {len(cooling_pruned)} 个疑似其实还在冷却队列"
+                    f"（尚未上传），已移出。")
         if resolved:
-            msg += (f"\n✅ 另有 {len(resolved)} 个疑似条目的 strm 已存在"
-                    f"（可能是助手自己生成的、或你已处理过），已移出待处理清单。")
+            msg += f"\n✅ {len(resolved)} 个的 strm 已出现，已移出。"
         if skipped_cooling:
             # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
-            # 而是**还没轮到上传** —— 冷却期结束、同步跑过之后才会有 .strm。
-            msg += (f"\n🧊 另有 {skipped_cooling} 个文件仍在**冷却队列**（尚未上传），"
-                    f"未计入疑似 —— 它们此刻必然没有 strm，属正常等待。")
+            # 而是还没轮到上传 —— 冷却期结束、同步跑过之后才会有 .strm。
+            msg += f"\n🧊 {skipped_cooling} 个仍在冷却队列，未计入。"
         if skipped_watching:
-            # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
-            # 而是**故意**交给观察期自己判定（可能是刚请求补生成、也可能是
-            # 刚同步成功还没生成）。
-            msg += (f"\n⏳ 另有 {skipped_watching} 个文件已处于观察期（刚同步成功或"
-                    f"已请求补生成），未重复计入疑似 —— 它们由观察窗口自行判定。")
+            # 同上：它们是被**故意**交给观察期判定的，不是漏掉。
+            msg += f"\n⏳ {skipped_watching} 个在观察期，未重复计入。"
         if skipped_ignored:
-            msg += f"\n🚫 其中 {skipped_ignored} 个已命中忽略规则，未计入疑似。"
+            msg += f"\n🚫 {skipped_ignored} 个命中忽略规则。"
         if truncated:
-            msg += (f"\n⚠️ 已达到单次上限 {limit} 个，结果被截断 ——"
-                    f"若这个数字很大，更可能是 strm 插件本身没在工作，"
-                    f"请先确认它的开关与媒体识别是否正常。")
-        msg += "\n💡 注意：缺 strm 也可能是「从未上传过的存量文件」，"
-        msg += "这类应使用补传而不是删旧重传。"
+            msg += (f"\n⚠️ 已达单次上限 {limit} 个，结果被截断 ——"
+                    f"数字很大时更可能是 strm 插件没在工作。")
+        # 这一句保留：它挡住一种**破坏性误操作**（对从未上传的存量文件删旧重传）。
+        msg += "\n💡 从未上传过的存量文件应补传，而不是删旧重传。"
         # ⚠️ `candidates` 必须一并回传：看板要靠它显示「缺哪几个」。
         # 只回计数的话，用户看到「缺 2 个、新增 0 个」却查不到是哪两个
         # —— 而这个功能的全部意义就是告诉他哪个文件该处理。
@@ -1047,7 +1048,6 @@ class StrmOpsMixin:
                            f"新增疑似 {added} 个: {_brief_paths(missing)}")
 
         lines = [f"📺 strm 检查「{keyword}」",
-                 f"--------------------------------",
                  f"命中文件: {len(result['matched'])} 个",
                  f"✅ 已有 strm: {len(present)} 个",
                  f"❌ 缺 strm  : {len(missing)} 个（新增疑似 {added} 个）"]
@@ -1059,21 +1059,18 @@ class StrmOpsMixin:
             # 字幕等非视频文件不会有 .strm，本就不该参与检查；明确告知而非静默丢弃
             lines.append(f"⏭️ 非视频文件（字幕等，不会生成 strm），已跳过: {len(non_video)} 个")
         if skipped_watching:
-            lines.append(f"⏳ 已在观察期（刚同步成功或已请求补生成），未重复计入疑似: {skipped_watching} 个")
+            lines.append(f"⏳ 观察期中，未重复计入: {skipped_watching} 个")
         if skipped_ignored:
-            lines.append(f"🚫 命中忽略规则，未计入疑似: {skipped_ignored} 个")
+            lines.append(f"🚫 命中忽略规则: {skipped_ignored} 个")
         if missing:
-            lines.append("--------------------------------")
-            lines.append("缺 strm 的文件：")
+            lines.append("\n缺 strm 的文件：")
             for k in missing[:_MAX_LOGGED_PATHS]:
                 lines.append(f"• {k}")
             if len(missing) > _MAX_LOGGED_PATHS:
                 lines.append(f"…（共 {len(missing)} 个）")
-            lines.append("")
-            lines.append("💡 可能是「从未上传」或「上传了但 CD2 假成功」。")
-            lines.append("   已在看板「strm 疑似异常」标签内，可勾选批量处理：")
-            lines.append("   ① 先点「先尝试生成 strm」，漏生成的话这一步就够了；")
-            lines.append("   ② 仍无 strm 再「删旧重传」。")
+            # 只留一句防误操作的提示：处置动作（补生成 → 删旧重传）已在看板
+            # 与通知按钮上，命令回复里再讲一遍就是第三次重复同一段教程。
+            lines.append("\n💡 看板「strm 疑似异常」标签内可批量处理。")
         self._post_reply(event, "\n".join(lines))
 
     def _check_watch_now(self, keys: List[str]) -> Dict[str, Any]:
@@ -1190,12 +1187,10 @@ class StrmOpsMixin:
             gen_base = [r["key"] for r in results
                         if r["state"] == _strm.SUSPECT and r.get("clock") == "gen"]
             if gen_base:
-                msg = (f"⚠️ 补生成后仍未见 strm：{len(gen_base)} 个已转入疑似清单 —— "
-                       f"生成动作已经做过而指针文件仍不出现，云端确实缺该文件的可能性很高，"
-                       f"此时「删旧重传」的正当性比首次疑似充分得多")
+                msg = (f"⚠️ 补生成后仍无 strm：{len(gen_base)} 个已转入疑似清单，"
+                       f"可直接删旧重传")
             else:
-                msg = (f"⚠️ 宽限期已过且仍无 strm：{len(suspects)} 个已转入疑似异常清单"
-                       f"（此时才需要判断是否删旧重传）")
+                msg = (f"⚠️ 窗口已过仍无 strm：{len(suspects)} 个已转入疑似清单")
         elif gone:
             msg = f"🗑️ 源端文件已不存在：{len(gone)} 个已移出观察（无从验证也无从重传）"
         elif no_dir:
@@ -1362,7 +1357,7 @@ class StrmOpsMixin:
                            f"请先安装并启用它（本功能借它生成 strm）")
         try:
             if not bool(instance.get_state()):
-                return False, (f"「{_P115_STRM_HELPER_PLUGIN}」已加载但处于**停用**状态，"
+                return False, (f"「{_P115_STRM_HELPER_PLUGIN}」已加载但处于停用状态，"
                                f"它收不到本插件发出的命令。请到它的配置页启用后重试")
         except Exception:
             # 探不到状态说明对方实例形态与预期不同（旧版本宿主/桩环境）——
@@ -1536,11 +1531,8 @@ class StrmOpsMixin:
                 mtype=mtype,
                 title="115同步：strm 助手未运行",
                 text=(f"⚠️ {reason}\n\n"
-                      f"当前没有插件在生成 .strm 指针文件，因此同步成功的文件会在宽限期"
-                      f"（{getattr(self, '_strm_grace_minutes', 0)} 分钟）后集中进入"
-                      f"「疑似上传异常」—— 这些告警**很可能全是误报**，请先确认助手状态，"
-                      f"不要急着删旧重传。\n\n"
-                      f"若你使用其它 strm 插件生成指针文件，本条可忽略。"),
+                      f"没有它生成 .strm，疑似告警可能全是误报。先启用助手，再处理清单。\n"
+                      f"（若你用别的 strm 插件，本条可忽略。）"),
             )
             self._helper_health_notified = True
             logger.info("[Rsync115Sync] 📨 已推送 strm 助手掉线通知")
@@ -1786,13 +1778,12 @@ class StrmOpsMixin:
         if rejected:
             listed = "\n".join(f"• {d}" for d in rejected[:_MAX_LOGGED_PATHS])
             return {"success": False,
-                    "message": f"这些网盘目录不在 P115StrmHelper 的「全量同步路径」里，"
-                               f"发过去会被它拒绝（未发出任何命令）：\n{listed}\n\n"
-                               f"该助手只接受它自己「全量同步路径」中的路径。\n"
-                               f"它当前配置的网盘目录：\n"
+                    "message": f"这些网盘目录不在助手的「全量同步路径」里，"
+                               f"发过去会被拒绝（未发出任何命令）：\n{listed}\n\n"
+                               f"助手当前配置的网盘目录：\n"
                                + "\n".join(f"• {p}" for p in accepted[:_MAX_LOGGED_PATHS])
-                               + f"\n\n请在助手配置页为这些网盘目录补上对应映射行，"
-                                 f"或在本插件里把该映射的「网盘目录」改成上面已有的路径。"}
+                               + f"\n\n请在助手配置页补上对应映射行，"
+                                 f"或把本插件的「网盘目录」改成上面已有的路径。"}
 
         # ⚠️ 上限命中时**整批拒绝**，而不是「处理前 N 个、剩下的留给用户猜」。
         # 达到上限说明疑似条目已散布到很多目录，此时逐目录触发的总开销可能已超过
@@ -1804,10 +1795,10 @@ class StrmOpsMixin:
             return {"success": False,
                     "message": f"本次涉及 {len(dirs)}+ 个不同目录，超过单次上限 "
                                f"{STRM_GEN_DIR_LIMIT} 个，已整批拒绝（未发出任何命令）。\n"
-                               f"达到这个量级时逐个目录触发已不划算，请先缩小范围：\n"
-                               f"• 用「清理无效项」移除已不可能恢复的条目\n"
-                               f"• 或在看板上勾选一部分（同一目录的会更划算）分批处理\n"
-                               f"• 若确实是一批文件上传失败，直接用「删旧重传」更合适"}
+                               f"请先缩小范围：\n"
+                               f"• 用「清理无效项」移除不可能恢复的条目\n"
+                               f"• 或勾选同一目录的一部分分批处理\n"
+                               f"• 若确是一批上传失败，直接「删旧重传」更合适"}
 
         sent_dirs = [target for target in dirs if self._send_helper_command(target)]
         if not sent_dirs:
@@ -1842,26 +1833,17 @@ class StrmOpsMixin:
 
         logger.info(f"[Rsync115Sync] 📺 已请 strm 助手补生成：{len(sent_dirs)} 个目录 / "
                     f"{len(matched)} 个文件（已移回观察期，等待结果）")
-        msg = (f"已向 strm 助手发出 {len(sent_dirs)} 条补生成命令，覆盖 {len(matched)} 个文件，"
-               f"它们已移回「观察中」。\n"
-               f"• strm 助手会按目录遍历云端并重新生成指针文件\n"
-               f"• strm 一出现就自动判为正常；若 {_strm.REGRACE_HOURS:g} 小时后仍未出现，"
-               f"会回到疑似清单（此时才是「生成过仍没有」，判定更硬）\n"
-               f"• 不必干等：在观察期点「检查 strm」即可立即比对结果\n"
-               f"• 若助手报「匹配目录失败」，说明该网盘路径不在它的「全量同步路径」里，"
-               f"请在助手配置页补上（详见配置页说明）\n"
-               f"助手是异步长任务，生成需要时间。\n\n"
-               # ⚠️ 这里曾有一整段「云端可见性」的说法（「看板会给出探测结论帮你
-               # 区分「可见且大小一致」…」）。那套判定已在 v0.3.0 整条删除 ——
-               # 它对**改名失败**这个主成因必然判错（残留与正式文件字节数相同，
-               # 挂载视图照样显示「可见、大小一致」），留着这段文案等于承诺一个
-               # 不存在的功能，而且它给的"先别删"建议正是被证明会把人引向错误
-               # 动作的那一条。现在只说**唯一成立的判据**。
-               f"若窗口到了仍没有 strm，说明这次上传没有真正完成，"
-               f"直接「删旧重传」即可：\n"
-               f"• .strm 是助手在视频**正确上传后**才生成的，它不出现就是判据本身\n"
-               f"• 云端没有文件时删除是空操作，不会白删\n"
-               f"• 传过一半 / 只剩改名失败残留的情况，删旧重传也都是对症的")
+        # 成功路径只说「做了什么、接下来看哪儿」。原先这里塞了 8 条 bullet
+        # 与一段「为什么删旧重传是对的」论证 —— 那是**失败**时才需要的说服，
+        # 成功时读它的人只会滚过去。「匹配目录失败」的提示也移到失败分支。
+        #
+        # ⚠️ 曾有一整段「云端可见性」说法，v0.3.0 已整条删除：那套判定对
+        # 「CD2 改名失败」这个主成因必然判错（残留与正式文件字节数相同，
+        # 挂载视图照样显示「可见、大小一致」），留着等于承诺一个不存在的功能。
+        msg = (f"已请助手补生成 {len(matched)} 个文件（{len(sent_dirs)} 个目录），"
+               f"已移回观察期。\n"
+               f"{_strm.REGRACE_HOURS:g} 小时内出现即自动解除；仍无则点「检查结果」或"
+               f"「删旧重传」——.strm 不出现就是「没有真正上传成功」的判据。")
         if unmatched:
             msg += (f"\n\n⚠️ 另有 {len(unmatched)} 个文件本次未处理"
                     f"（所属映射未配置「网盘目录」），它们仍留在疑似清单中。")
@@ -1989,9 +1971,8 @@ class StrmOpsMixin:
             logger.warning(f"[Rsync115Sync] ⛔ 删旧重传未执行{who}（{blocked_reason}），"
                            f"未删除任何文件")
             return {"success": False,
-                    "message": f"本次删旧重传未执行，未删除任何文件。\n\n原因：{blocked_reason}\n\n"
-                               f"（先把这道闸门挡在前面，是为了避免「文件已删、却没传上去」"
-                               f"—— 等条件满足后重新发起即可。）"}
+                    "message": f"未执行删旧重传（未删除任何文件）：{blocked_reason}\n"
+                               f"条件满足后重新发起即可。"}
 
         deleted, undeletable = self._delete_dest_files_for_retry(keys)
         # 细分不可处理原因，绝不把「本地源文件缺失」误报成「CD2 挂载未就绪」

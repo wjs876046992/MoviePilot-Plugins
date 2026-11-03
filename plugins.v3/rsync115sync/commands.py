@@ -142,27 +142,27 @@ class CommandsMixin:
         Keep in sync with get_command(); a stale reference teaches users to call
         things that do not exist.
         """
+        # ⚠️ 每条命令**一行**：`test_help_lists_every_registered_command` 要求
+        # 覆盖 get_command() 的全部命令，所以行不能删，只能把「※」子注与
+        # 分隔线去掉 —— 那些是把一份速查表写成了一篇说明文档。
+        # `**` 也一并去掉：宿主 standardize() 会把纯文本里的 Markdown 标记
+        # 转义，Telegram 上显示成字面星号。
         return (
             f"📖 115 网盘同步助手 · 指令一览\n"
-            f"===============================\n"
             f"【查看状态】\n"
-            f"/rsync_status —— 同步状态报告：冷却队列、异常清单、扫描健康度\n"
+            f"/rsync_status —— 状态报告：冷却队列、异常清单、扫描健康度\n"
             f"/rsync_help —— 这条帮助\n"
             f"\n"
             f"【触发同步】\n"
-            f"/rsync_sync —— 同步已达冷却时间的入库媒体（冷却时长见配置页）\n"
-            f"/rsync_sync <文件名> —— ⚡ 不等冷却，立即上传该文件（会自动移出冷却队列）\n"
-            f"/rsync_force —— 全量只读对账：逐文件比对源端与 CD2 挂载点的大小，\n"
-            f"                仅对不一致的文件重传（⚠️ 它比的是挂载视图，不是云端）\n"
-            f"                （不绕过冷却、共享限流配额、7 天冷却）\n"
-            f"/rsync_backfill —— 补传存量媒体（源端有、本插件从未处理过的）\n"
+            f"/rsync_sync —— 同步已达冷却时间的媒体（冷却时长见配置页）\n"
+            f"/rsync_sync <文件名> —— ⚡ 不等冷却，立即上传该文件\n"
+            f"/rsync_force —— 全量只读对账，仅重传不一致的文件（只比挂载视图，非云端）\n"
+            f"/rsync_backfill —— 补传存量媒体（源端有、从未处理过的）\n"
             f"/rsync_backfill_clear —— 清空补传队列\n"
             f"\n"
             f"【处理异常】\n"
             f"/rsync_retry —— 重试缺失/残缺文件\n"
-            f"/rsync_retry <文件名> —— 定向重传（先删旧文件再传）\n"
-            f"   ※ 按**源端**搜索，命中多个则全部处理（单次上限 15）\n"
-            f"   ※ 与 /rsync_strm retry 的区别：这个不看清单、也不挑唯一条目\n"
+            f"/rsync_retry <文件名> —— 定向重传（先删旧文件再传，按源端搜、上限 15）\n"
             f"/rsync_search <关键字> —— 在源端查文件，生成候选清单\n"
             f"/rsync_confirm <序号|all> —— 确认执行上一步查找到的文件\n"
             f"\n"
@@ -172,8 +172,7 @@ class CommandsMixin:
             f"/rsync_strm list —— 列出疑似清单（带序号）\n"
             f"/rsync_strm check —— 立即检查观察期（不等下一轮巡检）\n"
             f"/rsync_strm gen —— 请助手补生成 strm（多数问题的第一步）\n"
-            f"/rsync_strm retry <序号|关键字> —— 删旧重传（⚠️ 先删挂载点旧文件再传，破坏性）\n"
-            f"   ※ 只作用于**疑似清单内**的条目，且关键字多命中时会拒绝并列出候选\n"
+            f"/rsync_strm retry <序号|关键字> —— 删旧重传（⚠️ 先删旧文件再传）\n"
             f"/rsync_strm ignore <序号|关键字> —— 误报，不再提醒\n"
             f"/rsync_strm prune —— 清理无效项（非视频/已忽略/源端已删）\n"
             f"/rsync_strm clear —— 清空两个清单\n"
@@ -184,9 +183,8 @@ class CommandsMixin:
             f"/rsync_ignore remove <序号> —— 移除某条\n"
             f"/rsync_ignore clear —— 清空全部\n"
             f"\n"
-            f"===============================\n"
-            f"💡 看板「配置 → 插件页面」有同样的全部功能，且能看到文件清单。\n"
-            f"💡 疑似清单的处理顺序：先 /rsync_strm gen，仍无 strm 再 retry。"
+            f"💡 看板「配置 → 插件页面」有同样的功能，且能看到文件清单。\n"
+            f"💡 疑似清单的处理顺序：先 gen，仍无 strm 再 retry。"
         )
 
     # ---- 疑似清单的命令侧处理 / suspect handling over chat ---------------
@@ -206,20 +204,22 @@ class CommandsMixin:
         if not keys:
             return "✅ 当前没有 strm 疑似异常。\n💡 /rsync_strm 可全量扫描一次。"
 
-        shown = keys[:_STRM_CMD_LIST_LIMIT]
+        # 上限从 `_STRM_CMD_LIST_LIMIT` 收到 10：带序号的清单在手机上一条占
+        # 两三行，30 条就接近宿主 4096 字符的拆分边界，拆开后的续条会丢掉
+        # 尾部的破坏性操作警告。少列几条、让用户用关键字指定，比列表被截半好。
+        shown = keys[:min(_STRM_CMD_LIST_LIMIT, 10)]
         lines = [f"{i+1}. {k}" for i, k in enumerate(shown)]
-        reply = (f"📺 strm 疑似异常（共 {len(keys)} 个）：\n"
-                 f"--------------------------------\n"
-                 + "\n".join(lines))
+        reply = f"📺 strm 疑似异常（共 {len(keys)} 个）：\n" + "\n".join(lines)
         if len(keys) > len(shown):
             reply += (f"\n… 其余 {len(keys) - len(shown)} 个未列出"
-                      f"（可用关键字直接指定，不必看全清单）")
+                      f"（可用关键字直接指定）")
+        # 保留 gen/retry/ignore 三行（它们是操作入口）与**破坏性操作警告**
+        # （这一句不能省：retry 会真的删云端文件）。
         reply += (
-            f"\n--------------------------------\n"
-            f"• 先试补生成（多数情况够用）: /rsync_strm gen\n"
-            f"• 确认是上传失败 → 删旧重传: /rsync_strm retry <序号>\n"
-            f"• 误报，不想再提醒 → 忽略: /rsync_strm ignore <序号>\n"
-            f"※ retry 会**先删挂载点上的旧文件**（经 CD2 转发 115 删除）再重传，请先确认。"
+            f"\n\n/rsync_strm gen —— 先试补生成（多数够用）\n"
+            f"/rsync_strm retry <序号|关键字> —— 删旧重传\n"
+            f"/rsync_strm ignore <序号|关键字> —— 误报，不再提醒\n"
+            f"⚠️ retry 会先删云端旧文件再重传，请先确认。"
         )
         return reply
 
@@ -952,15 +952,15 @@ class CommandsMixin:
             # 用户从通知/文件名里直接抄一段就能用。
             cooling_items = self._pending_queue_entries(now_ts, threshold)
             if cooling_items:
-                shown = cooling_items[:_STRM_CMD_LIST_LIMIT]
-                reply += "--------------------------------\n🧊 冷却中（可不等冷却、立即上传）：\n"
+                # 与疑似清单同一理由：明细只列 10 条，避免逼近宿主 4096 拆分边界。
+                shown = cooling_items[:min(_STRM_CMD_LIST_LIMIT, 10)]
+                reply += "\n🧊 冷却中（可不等冷却、立即上传）：\n"
                 for item in shown:
                     reply += f"• {item['key']}（还需 {item['remaining_min']} 分钟）\n"
                 if len(cooling_items) > len(shown):
                     reply += f"… 其余 {len(cooling_items) - len(shown)} 个未列出\n"
                 reply += (f"⚡ 提前上传：/rsync_sync <上面某一行的片段>\n"
-                          f"   例：/rsync_sync {self._example_cmd_target(shown, cooling_items)}\n"
-                          f"   （冷却的现职是等文件写完 / 等外挂字幕到齐；确认它已安顿好再用。）\n")
+                          f"   例：/rsync_sync {self._example_cmd_target(shown, cooling_items)}\n")
             # 源端扫描（主通道）健康度：游标落后 = 新文件不会被发现。
             # 这与「队列里有多少」是两件事，必须分别报告 —— 队列空可能是
             # 「没有新文件」，也可能是「扫描根本没在跑」，用户没法从计数区分。
