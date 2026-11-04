@@ -689,40 +689,44 @@ def test_advanced_zone_is_collapsed_by_default():
         )
 
 
-def test_pair_advanced_fields_collapse_per_pair():
+def test_pair_fields_fully_expanded_and_layout():
     """
-    每个目录映射里的可选字段必须独立折叠，且状态**不写进 pair 对象**。
-
-    ## 为什么按映射独立折叠
-
-    只填「名称 / 源目录 / 目标目录」就能用，而 strm 目录、网盘目录是可选增强。
-    展开态固定时，3 个映射会白白多出 ~600px 高度 —— 手机端尤其明显。
-
-    ## 为什么折叠状态不能存在 pair 里
-
-    `saveConfig` 把整个 `config` POST 给后端，而后端把 `sync_pairs` **原样**存下来。
-    任何加在 pair 对象上的 UI 键（`__uid`、`_expanded` …）都会被持久化，
-    再读回时混进真实配置，甚至可能被当作未知字段写进宿主配置。
-    因此折叠态必须放在独立的 `pairAdvanced` 里，且提交前剥离临时键。
+    目录映射任务板块默认全部展开，无多余折叠层级，布局符合直觉：
+    1. 不设「高级设置」独立折叠抓手（映射任务板块默认全部展开，无需内嵌折叠）；
+    2. strm 目录与网盘目录并排处于同一行（sm="6"）；
+    3. 「同步所有文件类型」置于映射卡片底部（在 strm 目录与网盘目录之后）；
+    4. 提交前剥离浏览器侧临时键（UI 状态不污染 sync_pairs）。
     """
     src = _read_component("Config.vue")
     script = _script(src)
     body = src[src.find("<template>"):src.rfind("</template>")]
 
-    assert re.search(r"const pairAdvanced = ref\(\{\}\)", script), (
-        "映射内的折叠状态必须存在独立的 pairAdvanced 里，不能塞进 pair 对象"
+    # 1. 映射任务板块内不再有高级设置折叠
+    assert "isPairAdvanced" not in script, (
+        "映射板块要求默认全部展开、无高级设置折叠，不应再残留 isPairAdvanced 状态"
     )
-    assert re.search(r"function (?:isPairAdvanced|togglePairAdvanced)", script), (
-        "缺少映射折叠的开合方法"
+    assert "pair-advanced-head" not in body, (
+        "映射卡片内不应残留「高级设置」折叠标题按钮"
     )
-    # 折叠容器用 v-show（与全局高级区同一条理由：折叠后仍可搜索）
-    assert re.search(r'v-show="isPairAdvanced\(pair\)"', body), (
-        "映射内的可选字段必须用 v-show=\"isPairAdvanced(pair)\" 控制收起"
+
+    # 2. strm 目录和网盘目录放一行（同一 v-row 内各占 6 列）
+    strm_pos = body.find("pair.strm_dir")
+    pan_pos = body.find("pair.pan_dir")
+    assert strm_pos > 0 and pan_pos > 0, "未找到 strm_dir 或 pan_dir 字段"
+
+    strm_window = body[max(0, strm_pos - 300):strm_pos]
+    pan_window = body[max(0, pan_pos - 300):pan_pos]
+    assert 'sm="6"' in strm_window, "strm 目录应设为 sm=\"6\" 与网盘目录并排"
+    assert 'sm="6"' in pan_window, "网盘目录应设为 sm=\"6\" 与 strm 目录并排"
+
+    # 3. 「同步所有文件类型」放最下面（位置在 strm_dir 和 pan_dir 之后）
+    all_ext_pos = body.find("pair.all_ext")
+    assert all_ext_pos > 0, "未找到 pair.all_ext 字段"
+    assert all_ext_pos > strm_pos and all_ext_pos > pan_pos, (
+        "「同步所有文件类型」必须放在 strm 目录与网盘目录之后（卡片最底部）"
     )
-    # 提交前必须剥离浏览器侧的临时键
-    assert "delete p.__uid" in script or "delete pair.__uid" in script, (
-        "saveConfig 提交前必须剥离 __uid —— 否则它会被后端写进 sync_pairs"
-    )
+
+    # 4. 提交前必须剥离浏览器侧的临时键
     assert "_payloadForBackend" in script or "delete p.__uid" in script, (
         "提交前剥离临时键的处理缺失，UI 状态会泄漏进后端配置"
     )

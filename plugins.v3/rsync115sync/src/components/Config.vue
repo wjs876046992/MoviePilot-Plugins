@@ -194,10 +194,6 @@
                 但会让旧的异常清单条目失去对应关系，建议一次定好。</div>
               <div class="mt-1"><b>本地源目录</b>：NAS 上的媒体目录，需在容器内可访问。</div>
               <div class="mt-1"><b>CD2 挂载 115 目录</b>：上面对应的网盘目标目录。</div>
-              <div class="mt-1"><b>同步所有文件类型</b>：关闭时只传下方「同步的扩展名」白名单里的文件
-                （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别：
-                收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）——
-                否则「全都要上传」就变成了「只传被点到名的那一个」。</div>
               <div class="mt-1"><b>strm 目录</b>：可选。填了才对该映射启用上传结果交叉验证 ——
                 同步成功后进入观察期，到期仍未生成对应 <code>.strm</code> 会标记为「疑似上传异常」。
                 看板可先请 STRM 助手补生成（成本低、多半直接解决），确认无效后再删旧重传。
@@ -210,6 +206,10 @@
                 注意助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配会被拒绝
                 （提示路径匹配错误）。<b>依赖 P115StrmHelper</b>；留空只是该映射不能用补生成，
                 不影响同步、对账、观察与删旧重传。</div>
+              <div class="mt-1"><b>同步所有文件类型</b>：关闭时只传下方「同步的扩展名」白名单里的文件
+                （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别：
+                收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）——
+                否则「全都要上传」就变成了「只传被点到名的那一个」。</div>
           </CollapsibleNote>
 
         <div v-if="config.sync_pairs.length" class="d-flex flex-column ga-3 mb-4">
@@ -233,48 +233,26 @@
                 <div class="stacked-label text-caption text-medium-emphasis">CD2 挂载 115 目录</div>
                 <v-text-field v-model="pair.dest" variant="outlined" density="compact" placeholder="/volume2/CloudNAS/115/TV"></v-text-field>
               </v-col>
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">strm 目录（可选，启用上传结果交叉验证）</div>
+                <v-text-field
+                  v-model="pair.strm_dir"
+                  variant="outlined"
+                  density="compact"
+                  placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">网盘目录（可选，仅「先尝试生成 strm」需要）</div>
+                <v-text-field
+                  v-model="pair.pan_dir"
+                  variant="outlined"
+                  density="compact"
+                  placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"></v-text-field>
+              </v-col>
+              <v-col cols="12">
+                <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
+              </v-col>
             </v-row>
-
-            <!-- 每个映射的可选设置独立折叠：只填「名称 / 源 / 目标」时卡片高度
-                 从 280px+ 降到约 90px，多映射用户在手机端不再需要长距离滚动。
-                 ⚠️ 折叠状态存在 `pairAdvanced`（按映射的稳定 id 索引），
-                 **不写进 pair 对象本身** —— 否则 saveConfig 会把 __uid 之类的
-                 临时键一起 POST 给后端，污染 sync_pairs。 -->
-            <div
-              class="pair-advanced-head d-flex align-center text-caption text-primary"
-              role="button"
-              tabindex="0"
-              :aria-expanded="isPairAdvanced(pair) ? 'true' : 'false'"
-              @click="togglePairAdvanced(pair)"
-              @keydown.enter.prevent="togglePairAdvanced(pair)"
-              @keydown.space.prevent="togglePairAdvanced(pair)"
-            >
-              <v-icon size="16" class="mr-1">{{ isPairAdvanced(pair) ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
-              {{ isPairAdvanced(pair) ? '收起高级设置' : '高级设置（文件类型过滤、strm 验证）' }}
-            </div>
-            <div v-show="isPairAdvanced(pair)" class="mt-2 pt-2 pair-advanced-body">
-              <v-row density="compact">
-                <v-col cols="12">
-                  <v-checkbox v-model="pair.all_ext" label="同步所有文件类型（含 nfo、图片等）" density="compact" hide-details color="primary"></v-checkbox>
-                </v-col>
-                <v-col cols="12">
-                  <div class="stacked-label text-caption text-medium-emphasis">strm 目录（可选，启用上传结果交叉验证）</div>
-                  <v-text-field
-                    v-model="pair.strm_dir"
-                    variant="outlined"
-                    density="compact"
-                    placeholder="例如 /vol1/strm/TV —— 留空则不启用该映射的验证"></v-text-field>
-                </v-col>
-                <v-col cols="12">
-                  <div class="stacked-label text-caption text-medium-emphasis">网盘目录（可选，仅「先尝试生成 strm」需要）</div>
-                  <v-text-field
-                    v-model="pair.pan_dir"
-                    variant="outlined"
-                    density="compact"
-                    placeholder="例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"></v-text-field>
-                </v-col>
-              </v-row>
-            </div>
           </div>
         </div>
         <div v-else class="empty-hint-box text-center py-6 radius-lg mb-4 text-caption text-disabled">
@@ -666,18 +644,6 @@ const successMessage = ref(null)
 // 不持久化：它是阅读辅助而非配置项，且后端没有对应字段。
 const showAdvanced = ref(false)
 
-// 每个目录映射的可选字段（文件类型 / strm 目录 / 网盘目录）的折叠状态。
-// ⚠️ 用映射下标做键，且在 removePair 里随之重排 —— 若直接把标记写进
-// `pair` 对象，saveConfig 会把临时键一起 POST 给后端，污染 sync_pairs。
-const pairAdvanced = ref({})
-
-function isPairAdvanced(pair) {
-  return !!pairAdvanced.value[pair.__uid]
-}
-
-function togglePairAdvanced(pair) {
-  pairAdvanced.value[pair.__uid] = !pairAdvanced.value[pair.__uid]
-}
 
 const config = ref({
   enabled: false,
@@ -788,35 +754,20 @@ const rateConfigWarnings = computed(() => {
 
 // 目录映射新增与限流换算无关，以下是原有逻辑
 
-// 折叠状态的稳定键：映射可能被删除、重排，用下标做键会让「展开第二个」在
-// 删掉第一个之后变成「展开新的第二个」。__uid 只在浏览器内存在，
-// 提交前由 saveConfig 剥离。
-let _pairUidSeq = 0
-function _nextPairUid() {
-  _pairUidSeq += 1
-  return `p${_pairUidSeq}`
-}
-
 function addPair() {
   config.value.sync_pairs.push({
-    __uid: _nextPairUid(),
     name: '',
     src: '',
     dest: '',
-    all_ext: false,
     strm_dir: '',
     // 115 网盘侧的目录，供「先尝试生成 strm」拼参数用；与 strm_dir 是两棵独立的树
     pan_dir: '',
+    all_ext: false,
   })
 }
 
 function removePair(index) {
-  const removed = config.value.sync_pairs[index]
   config.value.sync_pairs.splice(index, 1)
-  // 折叠状态跟着映射一起消失，避免残留键无限增长
-  if (removed && removed.__uid) {
-    delete pairAdvanced.value[removed.__uid]
-  }
 }
 
 function notifyClose() {
@@ -836,11 +787,6 @@ async function loadConfig() {
     const res = await props.api.get('plugin/Rsync115Sync/config')
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data)
-      // 从后端读回的映射没有 __uid（后端不认识这个字段），补一个让折叠状态可用。
-      // 只补在浏览器侧，提交时剥离。
-      for (const p of config.value.sync_pairs || []) {
-        if (!p.__uid) p.__uid = _nextPairUid()
-      }
     }
   } catch (e) {
     console.error('读取配置失败:', e)
@@ -976,24 +922,6 @@ onMounted(() => {
 .pair-card {
   background: rgba(var(--v-theme-on-surface), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
-}
-/* 映射内的「高级设置」折叠抓手：与 CollapsibleNote 的标题行同一套交互语义
-   （整行可点、可键盘操作、有焦点样式），但视觉上更轻 —— 它从属于上方的
-   三个必填字段，不是一段独立说明。 */
-.pair-advanced-head {
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-}
-.pair-advanced-head:focus-visible {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-/* 折叠区上边线：把「可选字段」与「必填字段」在视觉上分开，
-   避免用户以为 strm 目录也是必填。 */
-.pair-advanced-body {
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 .empty-hint-box {
   border: 1px dashed rgba(var(--v-theme-on-surface), 0.16);

@@ -1548,13 +1548,15 @@ strm 相关功能了。」
 **关键取舍**：折叠用 `v-show` 而非 `v-if`。用户排查配置时会 Ctrl+F 搜「cron」
 「限流」，把内容移出 DOM 会让搜索无结果 —— 与 `CollapsibleNote` 同一取向。
 
-##### ② 每个映射独立折叠，但状态不进入提交体
+##### ② 映射任务板块扁平化与字段排版
 
-`saveConfig` 把整个 `config` POST 给后端，后端将 `sync_pairs` **原样**存下来。
-任何加在 pair 对象上的 UI 键都会被持久化。因此折叠状态存在独立的
-`pairAdvanced`（以 `__uid` 为键），提交前由 `_payloadForBackend()` 深拷贝并
-`delete p.__uid`。回归护栏见
-`test_config_layout_no_overflow.py::test_pair_advanced_fields_collapse_per_pair`。
+映射任务卡片最初曾尝试内嵌「高级设置」折叠，但实测中增加了用户操作层级。
+根据使用反馈，映射板块调整为**默认全部展开**、去除内嵌高级设置：
+- 任务备注名称、本地源目录、CD2 挂载 115 目录置于首行（各占 4 列）；
+- `strm_dir`（strm 目录）与 `pan_dir`（网盘目录）并排在第二行（`sm="6"` 各占半行）；
+- `all_ext`（同步所有文件类型）复选框置于卡片最底部；
+- 提交前仍由 `_payloadForBackend()` 深拷贝并剥离临时键，防止 UI 状态泄漏进后端存储。
+回归护栏见 `test_config_layout_no_overflow.py::test_pair_fields_fully_expanded_and_layout`。
 
 ##### ③ 文案原则：成功短、失败长
 

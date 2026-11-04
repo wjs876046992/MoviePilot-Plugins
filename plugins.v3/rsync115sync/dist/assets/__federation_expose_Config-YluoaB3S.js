@@ -1,7 +1,7 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
-const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,withModifiers:_withModifiers$1,withKeys:_withKeys$1,renderSlot:_renderSlot,vShow:_vShow$1,withDirectives:_withDirectives$1,createBlock:_createBlock$1} = await importShared('vue');
+const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,withModifiers:_withModifiers,withKeys:_withKeys,renderSlot:_renderSlot,vShow:_vShow$1,withDirectives:_withDirectives$1,createBlock:_createBlock$1} = await importShared('vue');
 
 
 const _hoisted_1$1 = ["aria-expanded", "onKeydown"];
@@ -47,8 +47,8 @@ return (_ctx, _cache) => {
         "aria-expanded": open.value ? 'true' : 'false',
         onClick: toggle,
         onKeydown: [
-          _withKeys$1(_withModifiers$1(toggle, ["prevent"]), ["enter"]),
-          _withKeys$1(_withModifiers$1(toggle, ["prevent"]), ["space"])
+          _withKeys(_withModifiers(toggle, ["prevent"]), ["enter"]),
+          _withKeys(_withModifiers(toggle, ["prevent"]), ["space"])
         ]
       }, [
         _createVNode$1(_component_v_icon, {
@@ -79,7 +79,7 @@ return (_ctx, _cache) => {
 };
 const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-b0f1714d"]]);
 
-const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,vShow:_vShow,withDirectives:_withDirectives,renderList:_renderList,Fragment:_Fragment,withModifiers:_withModifiers,withKeys:_withKeys} = await importShared('vue');
+const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,vShow:_vShow,withDirectives:_withDirectives,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
 const _hoisted_1 = { class: "plugin-config" };
@@ -107,42 +107,40 @@ const _hoisted_17 = {
 };
 const _hoisted_18 = { class: "d-flex align-center justify-space-between mb-3" };
 const _hoisted_19 = { class: "font-weight-bold text-body-2 text-primary" };
-const _hoisted_20 = ["aria-expanded", "onClick", "onKeydown"];
-const _hoisted_21 = { class: "mt-2 pt-2 pair-advanced-body" };
-const _hoisted_22 = {
+const _hoisted_20 = {
   key: 1,
   class: "empty-hint-box text-center py-6 radius-lg mb-4 text-caption text-disabled"
 };
+const _hoisted_21 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
+const _hoisted_22 = { class: "settings-group-card radius-lg overflow-hidden pa-4 mb-4" };
 const _hoisted_23 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_24 = { class: "settings-group-card radius-lg overflow-hidden pa-4 mb-4" };
-const _hoisted_25 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_26 = { class: "settings-group-card radius-lg overflow-hidden pa-4" };
-const _hoisted_27 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
-const _hoisted_28 = { class: "settings-group-card radius-lg overflow-hidden" };
-const _hoisted_29 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
-const _hoisted_30 = {
+const _hoisted_24 = { class: "settings-group-card radius-lg overflow-hidden pa-4" };
+const _hoisted_25 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4" };
+const _hoisted_26 = { class: "settings-group-card radius-lg overflow-hidden" };
+const _hoisted_27 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
+const _hoisted_28 = {
   key: 0,
   class: "row-pad-x py-2 batch-bar"
 };
-const _hoisted_31 = { class: "d-flex align-center flex-wrap ga-2" };
-const _hoisted_32 = { class: "text-caption text-medium-emphasis" };
-const _hoisted_33 = {
+const _hoisted_29 = { class: "d-flex align-center flex-wrap ga-2" };
+const _hoisted_30 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_31 = {
   key: 0,
   class: "text-caption text-warning font-weight-medium mt-1"
 };
-const _hoisted_34 = { class: "row-pad-x py-3" };
-const _hoisted_35 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
-const _hoisted_36 = { class: "dep-split radius-sm mb-3" };
-const _hoisted_37 = { class: "dep-split-row" };
-const _hoisted_38 = { class: "dep-split-row" };
-const _hoisted_39 = { class: "settings-group-card radius-lg overflow-hidden" };
-const _hoisted_40 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
-const _hoisted_41 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
-const _hoisted_42 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
-const _hoisted_43 = { class: "text-caption text-primary mt-1" };
-const _hoisted_44 = { class: "wrap-anywhere" };
-const _hoisted_45 = { class: "wrap-anywhere" };
-const _hoisted_46 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3" };
+const _hoisted_32 = { class: "row-pad-x py-3" };
+const _hoisted_33 = { class: "font-weight-bold text-subtitle-2 d-flex align-center mb-2" };
+const _hoisted_34 = { class: "dep-split radius-sm mb-3" };
+const _hoisted_35 = { class: "dep-split-row" };
+const _hoisted_36 = { class: "dep-split-row" };
+const _hoisted_37 = { class: "settings-group-card radius-lg overflow-hidden" };
+const _hoisted_38 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b" };
+const _hoisted_39 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
+const _hoisted_40 = { class: "setting-row setting-row-stacked row-pad-x py-3 border-b" };
+const _hoisted_41 = { class: "text-caption text-primary mt-1" };
+const _hoisted_42 = { class: "wrap-anywhere" };
+const _hoisted_43 = { class: "wrap-anywhere" };
+const _hoisted_44 = { class: "setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3" };
 const {ref,computed,onMounted} = await importShared('vue');
 
 
@@ -169,18 +167,6 @@ const successMessage = ref(null);
 // 不持久化：它是阅读辅助而非配置项，且后端没有对应字段。
 const showAdvanced = ref(false);
 
-// 每个目录映射的可选字段（文件类型 / strm 目录 / 网盘目录）的折叠状态。
-// ⚠️ 用映射下标做键，且在 removePair 里随之重排 —— 若直接把标记写进
-// `pair` 对象，saveConfig 会把临时键一起 POST 给后端，污染 sync_pairs。
-const pairAdvanced = ref({});
-
-function isPairAdvanced(pair) {
-  return !!pairAdvanced.value[pair.__uid]
-}
-
-function togglePairAdvanced(pair) {
-  pairAdvanced.value[pair.__uid] = !pairAdvanced.value[pair.__uid];
-}
 
 const config = ref({
   enabled: false,
@@ -291,35 +277,20 @@ const rateConfigWarnings = computed(() => {
 
 // 目录映射新增与限流换算无关，以下是原有逻辑
 
-// 折叠状态的稳定键：映射可能被删除、重排，用下标做键会让「展开第二个」在
-// 删掉第一个之后变成「展开新的第二个」。__uid 只在浏览器内存在，
-// 提交前由 saveConfig 剥离。
-let _pairUidSeq = 0;
-function _nextPairUid() {
-  _pairUidSeq += 1;
-  return `p${_pairUidSeq}`
-}
-
 function addPair() {
   config.value.sync_pairs.push({
-    __uid: _nextPairUid(),
     name: '',
     src: '',
     dest: '',
-    all_ext: false,
     strm_dir: '',
     // 115 网盘侧的目录，供「先尝试生成 strm」拼参数用；与 strm_dir 是两棵独立的树
     pan_dir: '',
+    all_ext: false,
   });
 }
 
 function removePair(index) {
-  const removed = config.value.sync_pairs[index];
   config.value.sync_pairs.splice(index, 1);
-  // 折叠状态跟着映射一起消失，避免残留键无限增长
-  if (removed && removed.__uid) {
-    delete pairAdvanced.value[removed.__uid];
-  }
 }
 
 function notifyClose() {
@@ -339,11 +310,6 @@ async function loadConfig() {
     const res = await props.api.get('plugin/Rsync115Sync/config');
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data);
-      // 从后端读回的映射没有 __uid（后端不认识这个字段），补一个让折叠状态可用。
-      // 只补在浏览器侧，提交时剥离。
-      for (const p of config.value.sync_pairs || []) {
-        if (!p.__uid) p.__uid = _nextPairUid();
-      }
     }
   } catch (e) {
     console.error('读取配置失败:', e);
@@ -393,8 +359,8 @@ return (_ctx, _cache) => {
   const _component_v_switch = _resolveComponent("v-switch");
   const _component_v_text_field = _resolveComponent("v-text-field");
   const _component_v_col = _resolveComponent("v-col");
-  const _component_v_row = _resolveComponent("v-row");
   const _component_v_checkbox = _resolveComponent("v-checkbox");
+  const _component_v_row = _resolveComponent("v-row");
   const _component_v_textarea = _resolveComponent("v-textarea");
   const _component_v_card_text = _resolveComponent("v-card-text");
   const _component_v_spacer = _resolveComponent("v-spacer");
@@ -735,10 +701,6 @@ return (_ctx, _cache) => {
                   _createTextVNode("：上面对应的网盘目标目录。")
                 ], -1),
                 _createElementVNode("div", { class: "mt-1" }, [
-                  _createElementVNode("b", null, "同步所有文件类型"),
-                  _createTextVNode("：关闭时只传下方「同步的扩展名」白名单里的文件 （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别： 收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）—— 否则「全都要上传」就变成了「只传被点到名的那一个」。")
-                ], -1),
-                _createElementVNode("div", { class: "mt-1" }, [
                   _createElementVNode("b", null, "strm 目录"),
                   _createTextVNode("：可选。填了才对该映射启用上传结果交叉验证 —— 同步成功后进入观察期，到期仍未生成对应 "),
                   _createElementVNode("code", null, ".strm"),
@@ -757,6 +719,10 @@ return (_ctx, _cache) => {
                   _createTextVNode(" CD2 挂载路径）；本地 strm 目录与 网盘目录是两棵独立的树，无法自动推导，所以要单独填。 注意助手只接受它自己「全量同步路径」里配置过的网盘路径，填了但助手没配会被拒绝 （提示路径匹配错误）。"),
                   _createElementVNode("b", null, "依赖 P115StrmHelper"),
                   _createTextVNode("；留空只是该映射不能用补生成， 不影响同步、对账、观察与删旧重传。")
+                ], -1),
+                _createElementVNode("div", { class: "mt-1" }, [
+                  _createElementVNode("b", null, "同步所有文件类型"),
+                  _createTextVNode("：关闭时只传下方「同步的扩展名」白名单里的文件 （推荐）；开启后该映射下的 nfo、图片等一律上传。开启后还有一个区别： 收到「推来单个文件」的通知时，同目录下的其它文件会一并入队（不递归子目录）—— 否则「全都要上传」就变成了「只传被点到名的那一个」。")
                 ], -1)
               ]))]),
               _: 1
@@ -837,85 +803,60 @@ return (_ctx, _cache) => {
                               }, null, 8, ["modelValue", "onUpdate:modelValue"])
                             ]),
                             _: 2
+                          }, 1024),
+                          _createVNode(_component_v_col, {
+                            cols: "12",
+                            sm: "6"
+                          }, {
+                            default: _withCtx(() => [
+                              _cache[50] || (_cache[50] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "strm 目录（可选，启用上传结果交叉验证）", -1)),
+                              _createVNode(_component_v_text_field, {
+                                modelValue: pair.strm_dir,
+                                "onUpdate:modelValue": $event => ((pair.strm_dir) = $event),
+                                variant: "outlined",
+                                density: "compact",
+                                placeholder: "例如 /vol1/strm/TV —— 留空则不启用该映射的验证"
+                              }, null, 8, ["modelValue", "onUpdate:modelValue"])
+                            ]),
+                            _: 2
+                          }, 1024),
+                          _createVNode(_component_v_col, {
+                            cols: "12",
+                            sm: "6"
+                          }, {
+                            default: _withCtx(() => [
+                              _cache[51] || (_cache[51] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "网盘目录（可选，仅「先尝试生成 strm」需要）", -1)),
+                              _createVNode(_component_v_text_field, {
+                                modelValue: pair.pan_dir,
+                                "onUpdate:modelValue": $event => ((pair.pan_dir) = $event),
+                                variant: "outlined",
+                                density: "compact",
+                                placeholder: "例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"
+                              }, null, 8, ["modelValue", "onUpdate:modelValue"])
+                            ]),
+                            _: 2
+                          }, 1024),
+                          _createVNode(_component_v_col, { cols: "12" }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_v_checkbox, {
+                                modelValue: pair.all_ext,
+                                "onUpdate:modelValue": $event => ((pair.all_ext) = $event),
+                                label: "同步所有文件类型（含 nfo、图片等）",
+                                density: "compact",
+                                "hide-details": "",
+                                color: "primary"
+                              }, null, 8, ["modelValue", "onUpdate:modelValue"])
+                            ]),
+                            _: 2
                           }, 1024)
                         ]),
                         _: 2
-                      }, 1024),
-                      _createElementVNode("div", {
-                        class: "pair-advanced-head d-flex align-center text-caption text-primary",
-                        role: "button",
-                        tabindex: "0",
-                        "aria-expanded": isPairAdvanced(pair) ? 'true' : 'false',
-                        onClick: $event => (togglePairAdvanced(pair)),
-                        onKeydown: [
-                          _withKeys(_withModifiers($event => (togglePairAdvanced(pair)), ["prevent"]), ["enter"]),
-                          _withKeys(_withModifiers($event => (togglePairAdvanced(pair)), ["prevent"]), ["space"])
-                        ]
-                      }, [
-                        _createVNode(_component_v_icon, {
-                          size: "16",
-                          class: "mr-1"
-                        }, {
-                          default: _withCtx(() => [
-                            _createTextVNode(_toDisplayString(isPairAdvanced(pair) ? 'mdi-chevron-up' : 'mdi-chevron-down'), 1)
-                          ]),
-                          _: 2
-                        }, 1024),
-                        _createTextVNode(" " + _toDisplayString(isPairAdvanced(pair) ? '收起高级设置' : '高级设置（文件类型过滤、strm 验证）'), 1)
-                      ], 40, _hoisted_20),
-                      _withDirectives(_createElementVNode("div", _hoisted_21, [
-                        _createVNode(_component_v_row, { density: "compact" }, {
-                          default: _withCtx(() => [
-                            _createVNode(_component_v_col, { cols: "12" }, {
-                              default: _withCtx(() => [
-                                _createVNode(_component_v_checkbox, {
-                                  modelValue: pair.all_ext,
-                                  "onUpdate:modelValue": $event => ((pair.all_ext) = $event),
-                                  label: "同步所有文件类型（含 nfo、图片等）",
-                                  density: "compact",
-                                  "hide-details": "",
-                                  color: "primary"
-                                }, null, 8, ["modelValue", "onUpdate:modelValue"])
-                              ]),
-                              _: 2
-                            }, 1024),
-                            _createVNode(_component_v_col, { cols: "12" }, {
-                              default: _withCtx(() => [
-                                _cache[50] || (_cache[50] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "strm 目录（可选，启用上传结果交叉验证）", -1)),
-                                _createVNode(_component_v_text_field, {
-                                  modelValue: pair.strm_dir,
-                                  "onUpdate:modelValue": $event => ((pair.strm_dir) = $event),
-                                  variant: "outlined",
-                                  density: "compact",
-                                  placeholder: "例如 /vol1/strm/TV —— 留空则不启用该映射的验证"
-                                }, null, 8, ["modelValue", "onUpdate:modelValue"])
-                              ]),
-                              _: 2
-                            }, 1024),
-                            _createVNode(_component_v_col, { cols: "12" }, {
-                              default: _withCtx(() => [
-                                _cache[51] || (_cache[51] = _createElementVNode("div", { class: "stacked-label text-caption text-medium-emphasis" }, "网盘目录（可选，仅「先尝试生成 strm」需要）", -1)),
-                                _createVNode(_component_v_text_field, {
-                                  modelValue: pair.pan_dir,
-                                  "onUpdate:modelValue": $event => ((pair.pan_dir) = $event),
-                                  variant: "outlined",
-                                  density: "compact",
-                                  placeholder: "例如 /HomeTheater/TV —— 填 115 网盘里的真实路径，留空则该映射不支持补生成"
-                                }, null, 8, ["modelValue", "onUpdate:modelValue"])
-                              ]),
-                              _: 2
-                            }, 1024)
-                          ]),
-                          _: 2
-                        }, 1024)
-                      ], 512), [
-                        [_vShow, isPairAdvanced(pair)]
-                      ])
+                      }, 1024)
                     ]))
                   }), 128))
                 ]))
-              : (_openBlock(), _createElementBlock("div", _hoisted_22, " 暂未配置任何目录映射，点击上方按钮添加你的本地媒体目录与 CD2 挂载路径 ")),
-            _createElementVNode("div", _hoisted_23, [
+              : (_openBlock(), _createElementBlock("div", _hoisted_20, " 暂未配置任何目录映射，点击上方按钮添加你的本地媒体目录与 CD2 挂载路径 ")),
+            _createElementVNode("div", _hoisted_21, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
@@ -928,7 +869,7 @@ return (_ctx, _cache) => {
               }),
               _cache[53] || (_cache[53] = _createTextVNode(" 入库冷却缓冲与调度 ", -1))
             ]),
-            _createElementVNode("div", _hoisted_24, [
+            _createElementVNode("div", _hoisted_22, [
               _createVNode(_component_v_row, { density: "comfortable" }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_col, { cols: "12" }, {
@@ -971,7 +912,7 @@ return (_ctx, _cache) => {
                 _: 1
               })
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_25, [
+            _withDirectives(_createElementVNode("div", _hoisted_23, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
@@ -986,7 +927,7 @@ return (_ctx, _cache) => {
             ], 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_26, [
+            _withDirectives(_createElementVNode("div", _hoisted_24, [
               _createVNode(_component_v_row, { density: "compact" }, {
                 default: _withCtx(() => [
                   _createVNode(_component_v_col, {
@@ -1063,7 +1004,7 @@ return (_ctx, _cache) => {
             ], 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_27, [
+            _withDirectives(_createElementVNode("div", _hoisted_25, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "primary",
@@ -1097,8 +1038,8 @@ return (_ctx, _cache) => {
             }, 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_28, [
-              _createElementVNode("div", _hoisted_29, [
+            _withDirectives(_createElementVNode("div", _hoisted_26, [
+              _createElementVNode("div", _hoisted_27, [
                 _cache[65] || (_cache[65] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用上传限流"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "按时间窗口限制上传文件数，防止小文件高频上传触发 115 风控")
@@ -1113,8 +1054,8 @@ return (_ctx, _cache) => {
                 }, null, 8, ["modelValue"])
               ]),
               (config.value.rate_limit_enabled)
-                ? (_openBlock(), _createElementBlock("div", _hoisted_30, [
-                    _createElementVNode("div", _hoisted_31, [
+                ? (_openBlock(), _createElementBlock("div", _hoisted_28, [
+                    _createElementVNode("div", _hoisted_29, [
                       _createVNode(_component_v_chip, {
                         size: "small",
                         color: "primary",
@@ -1135,10 +1076,10 @@ return (_ctx, _cache) => {
                         ]),
                         _: 1
                       }),
-                      _createElementVNode("span", _hoisted_32, " 即每 " + _toDisplayString(windowHumanText.value) + " 最多上传 " + _toDisplayString(config.value.upload_max_per_window || 0) + " 个文件 ", 1)
+                      _createElementVNode("span", _hoisted_30, " 即每 " + _toDisplayString(windowHumanText.value) + " 最多上传 " + _toDisplayString(config.value.upload_max_per_window || 0) + " 个文件 ", 1)
                     ]),
                     (rateConfigWarnings.value.length)
-                      ? (_openBlock(), _createElementBlock("div", _hoisted_33, [
+                      ? (_openBlock(), _createElementBlock("div", _hoisted_31, [
                           (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(rateConfigWarnings.value, (w, i) => {
                             return (_openBlock(), _createElementBlock("div", { key: i }, "⚠️ " + _toDisplayString(w), 1))
                           }), 128))
@@ -1146,7 +1087,7 @@ return (_ctx, _cache) => {
                       : _createCommentVNode("", true)
                   ]))
                 : _createCommentVNode("", true),
-              _createElementVNode("div", _hoisted_34, [
+              _createElementVNode("div", _hoisted_32, [
                 _createVNode(_component_v_row, { density: "compact" }, {
                   default: _withCtx(() => [
                     _createVNode(_component_v_col, {
@@ -1271,7 +1212,7 @@ return (_ctx, _cache) => {
             ], 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_35, [
+            _withDirectives(_createElementVNode("div", _hoisted_33, [
               _createVNode(_component_v_icon, {
                 size: "18",
                 color: "warning",
@@ -1329,8 +1270,8 @@ return (_ctx, _cache) => {
             }, 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_36, [
-              _createElementVNode("div", _hoisted_37, [
+            _withDirectives(_createElementVNode("div", _hoisted_34, [
+              _createElementVNode("div", _hoisted_35, [
                 _createVNode(_component_v_chip, {
                   size: "x-small",
                   color: "success",
@@ -1348,7 +1289,7 @@ return (_ctx, _cache) => {
                   _createTextVNode("、状态通知 ")
                 ], -1))
               ]),
-              _createElementVNode("div", _hoisted_38, [
+              _createElementVNode("div", _hoisted_36, [
                 _createVNode(_component_v_chip, {
                   size: "x-small",
                   color: "info",
@@ -1398,8 +1339,8 @@ return (_ctx, _cache) => {
             }, 512), [
               [_vShow, showAdvanced.value]
             ]),
-            _withDirectives(_createElementVNode("div", _hoisted_39, [
-              _createElementVNode("div", _hoisted_40, [
+            _withDirectives(_createElementVNode("div", _hoisted_37, [
+              _createElementVNode("div", _hoisted_38, [
                 _cache[82] || (_cache[82] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用 strm 交叉验证"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 关闭后不再观察与扫描，已有的疑似清单保留不动 ")
@@ -1413,7 +1354,7 @@ return (_ctx, _cache) => {
                   density: "compact"
                 }, null, 8, ["modelValue"])
               ]),
-              _createElementVNode("div", _hoisted_41, [
+              _createElementVNode("div", _hoisted_39, [
                 _cache[83] || (_cache[83] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "观察宽限期（分钟）"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, [
@@ -1435,7 +1376,7 @@ return (_ctx, _cache) => {
                   "hide-details": ""
                 }, null, 8, ["modelValue"])
               ]),
-              _createElementVNode("div", _hoisted_42, [
+              _createElementVNode("div", _hoisted_40, [
                 _cache[89] || (_cache[89] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "未解决疑似异常催办提醒"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 当存在未解决的疑似上传异常时，定期在指定时段重新推送通知提醒（带快捷操作按钮），避免通知被新消息顶掉后遗忘。 填 0 表示仅在首次发现时提醒一次；默认每 2 小时提醒一次。 ")
@@ -1510,13 +1451,13 @@ return (_ctx, _cache) => {
                   ]),
                   _: 1
                 }),
-                _createElementVNode("div", _hoisted_43, [
+                _createElementVNode("div", _hoisted_41, [
                   (config.value.strm_suspect_remind_hours > 0)
                     ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                         _cache[87] || (_cache[87] = _createTextVNode(" 当前设置：每天 ", -1)),
-                        _createElementVNode("code", _hoisted_44, _toDisplayString(config.value.strm_suspect_remind_start_hour) + ":00", 1),
+                        _createElementVNode("code", _hoisted_42, _toDisplayString(config.value.strm_suspect_remind_start_hour) + ":00", 1),
                         _cache[88] || (_cache[88] = _createTextVNode(" 至 ", -1)),
-                        _createElementVNode("code", _hoisted_45, _toDisplayString(config.value.strm_suspect_remind_end_hour) + ":00", 1),
+                        _createElementVNode("code", _hoisted_43, _toDisplayString(config.value.strm_suspect_remind_end_hour) + ":00", 1),
                         _createTextVNode("， 每 " + _toDisplayString(config.value.strm_suspect_remind_hours) + " 小时催办一次（其余时间免打扰） ", 1)
                       ], 64))
                     : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
@@ -1524,7 +1465,7 @@ return (_ctx, _cache) => {
                       ], 64))
                 ])
               ]),
-              _createElementVNode("div", _hoisted_46, [
+              _createElementVNode("div", _hoisted_44, [
                 _cache[90] || (_cache[90] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "当前状态"),
                   _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, " 处于观察期的文件数会在看板顶部提示，疑似异常清单在独立的「strm 疑似异常」标签页内。 ")
@@ -1602,6 +1543,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b8816ddc"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-54affdd5"]]);
 
 export { Config as default };
