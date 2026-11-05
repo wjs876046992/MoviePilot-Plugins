@@ -260,6 +260,7 @@ export function usePathManagement(config) {
       ...parsePairLines(config.increment_sync_mp_mediaserver_paths),
       ...parsePairLines(config.monitor_life_mp_mediaserver_paths),
       ...parsePairLines(config.api_strm_mp_mediaserver_paths),
+      ...parsePairLines(config.share_strm_mp_mediaserver_paths),
     ];
     allMpSources.forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
@@ -380,6 +381,9 @@ export function usePathManagement(config) {
       config.monitor_life_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'monitorLifeMp');
       monitorLifeMpPaths.value = validUnifiedMp.length > 0 ? JSON.parse(JSON.stringify(validUnifiedMp)) : [{ local: '', remote: '' }];
     }
+
+    // 分享 STRM 场景的媒体服务器路径转换同步分发
+    config.share_strm_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'share-mp');
   };
 
   // ============================================================

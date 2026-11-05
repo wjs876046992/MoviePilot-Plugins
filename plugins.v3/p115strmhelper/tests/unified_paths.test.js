@@ -306,6 +306,22 @@ test('syncAllPathsToConfig defaults API STRM paths to unified mapping', () => {
     { local_path: '/media/strms/TV', pan_path: '/HomeTheater/TV' },
   ]);
   assert.equal(config.api_strm_mp_mediaserver_paths, '/emby/strm#/mnt/strm');
+  // 分享 STRM 场景的 MP 转换也默认同步
+  assert.equal(config.share_strm_mp_mediaserver_paths, '/emby/strm#/mnt/strm');
+});
+
+test('reconcileUnifiedPaths includes share_strm_mp_mediaserver_paths into unifiedMpPaths', () => {
+  const config = makeConfig({
+    transfer_mp_mediaserver_paths: '',
+    share_strm_mp_mediaserver_paths: '/emby/share#/mnt/share',
+  });
+
+  const pathMgmt = usePathManagement(config);
+  pathMgmt.reconcileUnifiedPaths();
+
+  assert.equal(pathMgmt.unifiedMpPaths.value.length, 1);
+  assert.equal(pathMgmt.unifiedMpPaths.value[0].local, '/emby/share');
+  assert.equal(pathMgmt.unifiedMpPaths.value[0].remote, '/mnt/share');
 });
 
 test('syncAllPathsToConfig respects customApiStrmPaths override', () => {

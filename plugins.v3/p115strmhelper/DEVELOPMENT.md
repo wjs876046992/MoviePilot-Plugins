@@ -19,7 +19,7 @@
 | 增量同步 | `increment_sync_strm_paths` | `本地#网盘` |
 | 监控 115 生活事件 | `monitor_life_paths` | `本地#网盘` |
 | API STRM 生成 | `api_strm_config` | `[{local_path, pan_path}]` |
-| 媒体服务器路径转换 | `transfer_/increment_sync_/monitor_life_/api_strm_mp_mediaserver_paths` | `媒体服务器#MP` |
+| 媒体服务器路径转换 | `transfer_` / `increment_sync_` / `monitor_life_` / `api_strm_` / `share_strm_mp_mediaserver_paths` | `媒体服务器#MP` |
 
 后果有二：
 
@@ -92,6 +92,14 @@ reconcileUnifiedPaths();   // ← 此刻 config.* 已有值，但 refs 还是初
 `unifiedMpPaths`，与其它场景一致；`customApiStrmPaths` 打开后使用专属配置。
 此前该页签仍有一套独立路径输入框，等于把「重复配置」这个问题留在最不常用的
 角落里 —— 现在它不再默认展示了。
+
+### 2.1 媒体服务器路径转换的真实定位
+
+它**不是媒体目录映射**，而是容器维度的**路径翻译表**（格式：`媒体服务器路径#MP路径`）：
+- **左边** = Emby/Jellyfin 容器内部目录（如 `/mnt/strms`）
+- **右边** = MoviePilot 容器内部目录（如 `/media/strms`）
+- **何时使用**：仅当调用媒体服务器 API（刷新媒体库 / 提取媒体信息）时，将 MP 本地路径动态替换为 Emby 认得的路径；两端挂载路径一致时直接留空；
+- **全场景统一**：v3.4.5 起将 `share_strm_mp_mediaserver_paths` 一并收编进统一映射，整理、增量、生活、API 与分享转存全场景自动单点生效。
 
 ---
 

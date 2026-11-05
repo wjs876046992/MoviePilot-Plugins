@@ -11,23 +11,25 @@
 
 ### P115StrmHelper（`plugins.v3/p115strmhelper/`）
 
-**版本：** v3.3.0 → v3.4.4（本仓改动，未同步上游）
+**版本：** v3.3.0 → v3.4.5（本仓改动，未同步上游）
 
-**提交：** `9f1fe2c` → `b75a3f1` → `b3614f2` → `855df37` → `ab868d5`
+**提交：** `9f1fe2c` → `b75a3f1` → `b3614f2` → `855df37` → `ab868d5` → `待提交`
 
 #### 统一媒体库目录映射
 
 上游把路径配置按功能拆成 `transfer_monitor_paths` / `full_sync_strm_paths` /
-`increment_sync_strm_paths` / `monitor_life_paths` / `api_strm_config` 等多个字段，
+`increment_sync_strm_paths` / `monitor_life_paths` / `api_strm_config` /
+`share_strm_mp_mediaserver_paths` 等多个字段，
 同一个媒体库目录要在 4~5 个页签重复填写。除了配置冗余，还导致跨插件静默失败：
 `Rsync115Sync` 的「补生成 strm」只认助手的 `full_sync_strm_paths`，用户只在增量里
 配过目录时命令会被助手拒绝，而拒绝提示只发到助手侧，表现为「点了按钮没反应」。
 
 采用**前端统一表 + 双向无损融合**，后端 Python 代码零改动：
 
-- Load：解析四个 legacy 字符串 → 路径归一化 → 按 `local:::remote` 并集聚合为
+- Load：解析五个 legacy 字符串 → 路径归一化 → 按 `local:::remote` 并集聚合为
   `unifiedPaths`，还原每个目录在四个场景的启用状态；
 - Save：按勾选条件分发回原字段，CD2 前缀只拼一次，全量未勾选仍写 `#0` 保留命令匹配；
+- 媒体服务器路径转换（容器映射翻译）：集中维护 Emby ⇄ MoviePilot 路径映射，统一分发至整理、增量、生活、API 与分享转存全场景；
 - 各场景页签保留「独立自定义路径」开关作为逃生通道。
 
 #### v3.4.1 修掉的一个会清空配置的 bug

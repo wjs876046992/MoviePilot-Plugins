@@ -88,10 +88,12 @@
           <v-divider class="my-4"></v-divider>
           <div class="text-subtitle-2 mb-1 font-weight-bold d-flex align-center">
             <v-icon size="small" class="mr-1" color="primary">mdi-swap-horizontal</v-icon>
-            媒体服务器路径转换（统一）
+            媒体服务器路径转换（容器映射翻译）
           </div>
           <div class="text-caption text-medium-emphasis mb-3">
-            当媒体服务器（Emby 等）中映射的挂载路径与 MoviePilot 容器内映射路径不一致时配置，统一自动应用到所有 STRM 场景。若两端一致可留空。
+            Emby / Jellyfin 容器与 MoviePilot 容器挂载同一目录的<strong>路径不同</strong>时配置，插件调用媒体服务器 API（刷新媒体库 / 提取媒体信息）时自动换算。<br>
+            • <strong>两端挂载路径一致请直接留空</strong>；仅在开启「媒体服务器刷新」或「Emby 媒体信息提取」时才需要配置。<br>
+            • 本配置将统一自动应用至所有 STRM 生成场景（整理监听、增量同步、生活事件、API、分享转存）。
           </div>
 
           <div class="d-flex flex-column ga-2">
@@ -105,13 +107,13 @@
               </div>
               <v-row dense>
                 <v-col cols="12" sm="6">
-                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
-                  <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器内部路径 (Emby / Jellyfin 容器内)</div>
+                  <v-text-field v-model="pair.local" placeholder="例如：/mnt/strms" density="compact" variant="outlined"
                     hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
                 <v-col cols="12" sm="6">
-                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
-                  <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 内部路径 (主程序容器内)</div>
+                  <v-text-field v-model="pair.remote" placeholder="例如：/media/strms" density="compact" variant="outlined"
                     hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
               </v-row>

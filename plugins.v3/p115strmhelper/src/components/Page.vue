@@ -821,9 +821,10 @@
             </v-row>
             <v-row class="mt-2">
               <v-col cols="12">
-                <v-textarea v-model="shareDialog.globalMpMediaserverPaths" label="MP-媒体库 目录转换"
-                  hint="格式：媒体库路径#MP路径，多个用换行分隔。应用于所有分享配置" persistent-hint variant="outlined" density="compact" rows="3"
-                  auto-grow placeholder="例如:&#10;/media#/mp&#10;/nas#/movie"></v-textarea>
+                <v-textarea v-model="shareDialog.globalMpMediaserverPaths" label="MP-媒体库 目录转换（只读，统一维护）"
+                  hint="已由配置页「媒体服务器路径转换（统一）」统一维护并自动应用到所有场景，此处仅展示当前生效值。如需修改请前往插件配置页。"
+                  persistent-hint variant="outlined" density="compact" rows="3" auto-grow readonly
+                  placeholder="（当前未配置，两端挂载路径一致时无需配置）"></v-textarea>
               </v-col>
             </v-row>
             <v-divider class="my-4"></v-divider>
