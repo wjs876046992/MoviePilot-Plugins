@@ -1,5 +1,5 @@
 <template>
-  <v-card-text class="pa-0">
+  <v-card-text class="pa-0 strm-sync-section">
     <!-- 子标签页 -->
     <v-tabs v-model="strmSubTab" color="primary" class="sub-category-tabs" slider-color="primary">
       <v-tab value="tab-unified" class="sub-tab">
@@ -39,41 +39,41 @@
 
           <div class="d-flex flex-column">
             <div v-for="(pair, index) in unifiedPaths" :key="`unified-${index}`"
-              class="mb-3 pa-3 border rounded" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+              class="mb-3 pa-3 border rounded unified-pair-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="font-weight-bold text-caption text-primary">媒体库目录 #{{ index + 1 }}</span>
+                <v-btn icon size="x-small" variant="text" color="error" @click="removePath(index, 'unified')" title="删除此目录映射">
+                  <v-icon size="18">mdi-trash-can-outline</v-icon>
+                </v-btn>
+              </div>
+
               <v-row dense align="center">
-                <v-col cols="12" :md="config.transfer_monitor_clouddrive2_enabled ? 5 : 5">
+                <v-col cols="12" sm="5">
                   <v-text-field v-model="pair.local" label="本地 STRM 目录" density="compact" variant="outlined"
                     append-icon="mdi-folder" hide-details="auto"
                     @click:append="openDirSelector(index, 'local', 'unified')"></v-text-field>
                 </v-col>
-                <v-col cols="12" md="1" class="text-center d-none d-md-block">
+                <v-col cols="12" sm="1" class="text-center d-none d-sm-block">
                   <v-icon color="primary">mdi-pound</v-icon>
                 </v-col>
-                <v-col cols="12" :md="config.transfer_monitor_clouddrive2_enabled ? 4 : 6">
+                <v-col cols="12" :sm="config.transfer_monitor_clouddrive2_enabled ? 4 : 6">
                   <v-text-field v-model="pair.remote" label="115 网盘媒体库目录" density="compact" variant="outlined"
                     append-icon="mdi-folder-network" hide-details="auto"
                     @click:append="openDirSelector(index, 'remote', 'unified')"></v-text-field>
                 </v-col>
-                <v-col v-if="config.transfer_monitor_clouddrive2_enabled" cols="12" md="2">
+                <v-col v-if="config.transfer_monitor_clouddrive2_enabled" cols="12" sm="2">
                   <v-text-field v-model="pair.cd2Prefix" label="CD2 挂载前缀 (可选)" density="compact" variant="outlined"
                     placeholder="/115open" hide-details="auto"></v-text-field>
                 </v-col>
               </v-row>
 
-              <v-row dense align="center" class="mt-2">
-                <v-col cols="12" sm="10" class="d-flex align-center flex-wrap ga-3">
-                  <span class="text-caption text-medium-emphasis">生效场景：</span>
-                  <v-checkbox v-model="pair.enable_transfer" label="监控整理" density="compact" hide-details color="info"></v-checkbox>
-                  <v-checkbox v-model="pair.enable_full" label="全量同步" density="compact" hide-details color="primary"></v-checkbox>
-                  <v-checkbox v-model="pair.enable_inc" label="增量同步" density="compact" hide-details color="success"></v-checkbox>
-                  <v-checkbox v-model="pair.enable_life" label="生活事件" density="compact" hide-details color="secondary"></v-checkbox>
-                </v-col>
-                <v-col cols="12" sm="2" class="d-flex justify-end align-center">
-                  <v-btn icon size="small" color="error" variant="text" @click="removePath(index, 'unified')">
-                    <v-icon>mdi-delete</v-icon>
-                  </v-btn>
-                </v-col>
-              </v-row>
+              <div class="unified-scene-row d-flex align-center flex-wrap ga-x-4 ga-y-1 mt-2 pt-2 border-t">
+                <span class="text-caption text-medium-emphasis flex-shrink-0 mr-1">生效场景：</span>
+                <v-checkbox v-model="pair.enable_transfer" label="监控整理" density="compact" hide-details color="info" class="scene-checkbox"></v-checkbox>
+                <v-checkbox v-model="pair.enable_full" label="全量同步" density="compact" hide-details color="primary" class="scene-checkbox"></v-checkbox>
+                <v-checkbox v-model="pair.enable_inc" label="增量同步" density="compact" hide-details color="success" class="scene-checkbox"></v-checkbox>
+                <v-checkbox v-model="pair.enable_life" label="生活事件" density="compact" hide-details color="secondary" class="scene-checkbox"></v-checkbox>
+              </div>
             </div>
 
             <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" color="primary" class="mt-1 align-self-start"
@@ -92,20 +92,28 @@
             当媒体服务器（Emby 等）中映射的挂载路径与 MoviePilot 容器内映射路径不一致时配置，统一自动应用到所有 STRM 场景。若两端一致可留空。
           </div>
 
-          <div class="d-flex flex-column">
-            <div v-for="(pair, index) in unifiedMpPaths" :key="`unified-mp-${index}`" class="mb-2 d-flex align-center">
-              <div class="flex-grow-1 mr-2">
-                <v-text-field v-model="pair.local" label="媒体库服务器映射目录" density="compact" variant="outlined"
-                  placeholder="/media/strm" hide-details="auto"></v-text-field>
+          <div class="d-flex flex-column ga-2">
+            <div v-for="(pair, index) in unifiedMpPaths" :key="`unified-mp-${index}`"
+              class="pa-3 border rounded mb-2 unified-mp-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="text-caption font-weight-medium text-medium-emphasis">转换规则 #{{ index + 1 }}</span>
+                <v-btn icon size="x-small" color="error" variant="text" @click="removePath(index, 'unified-mp')" title="删除转换规则">
+                  <v-icon size="18">mdi-trash-can-outline</v-icon>
+                </v-btn>
               </div>
-              <v-icon>mdi-pound</v-icon>
-              <div class="flex-grow-1 ml-2">
-                <v-text-field v-model="pair.remote" label="MoviePilot 映射目录" density="compact" variant="outlined"
-                  placeholder="/mnt/strm" hide-details="auto"></v-text-field>
-              </div>
-              <v-btn icon size="small" color="error" variant="text" class="ml-2" @click="removePath(index, 'unified-mp')">
-                <v-icon>mdi-delete</v-icon>
-              </v-btn>
+              <v-row dense align="center">
+                <v-col cols="12" sm="5">
+                  <v-text-field v-model="pair.local" label="媒体服务器路径 (Emby)" density="compact" variant="outlined"
+                    placeholder="/media/strm" hide-details="auto"></v-text-field>
+                </v-col>
+                <v-col cols="12" sm="2" class="text-center d-none d-sm-block">
+                  <v-icon color="primary" size="small">mdi-swap-horizontal</v-icon>
+                </v-col>
+                <v-col cols="12" sm="5">
+                  <v-text-field v-model="pair.remote" label="MoviePilot 路径" density="compact" variant="outlined"
+                    placeholder="/mnt/strm" hide-details="auto"></v-text-field>
+                </v-col>
+              </v-row>
             </div>
 
             <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
@@ -228,19 +236,19 @@
             </v-col>
           </v-row>
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="mb-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
+          <div class="inheritance-banner mb-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
             <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center">
-                <v-icon color="primary" class="mr-2">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium">
+              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
+                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
+                <span class="text-body-2 font-weight-medium text-break">
                   {{ !customTransferPaths ? `已继承统一媒体库目录映射（当前生效 ${activeTransferCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
               </div>
-              <div class="d-flex align-center ga-2">
-                <v-btn v-if="!customTransferPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'">
+              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
+                <v-btn v-if="!customTransferPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
                   修改统一映射
                 </v-btn>
-                <v-switch v-model="customTransferPaths" label="独立自定义路径（高级）" color="warning" density="compact" hide-details></v-switch>
+                <v-switch v-model="customTransferPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
               </div>
             </div>
           </div>
@@ -404,19 +412,19 @@
             </v-row>
 
             <!-- 统一映射继承提示 / 场景独立自定义 -->
-            <div class="my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
+            <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
               <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-                <div class="d-flex align-center">
-                  <v-icon color="primary" class="mr-2">mdi-check-circle-outline</v-icon>
-                  <span class="text-body-2 font-weight-medium">
+                <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
+                  <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
+                  <span class="text-body-2 font-weight-medium text-break">
                     {{ !customFullSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeFullCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                   </span>
                 </div>
-                <div class="d-flex align-center ga-2">
-                  <v-btn v-if="!customFullSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'">
+                <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
+                  <v-btn v-if="!customFullSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
                     修改统一映射
                   </v-btn>
-                  <v-switch v-model="customFullSyncPaths" label="独立自定义路径（高级）" color="warning" density="compact" hide-details></v-switch>
+                  <v-switch v-model="customFullSyncPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
                 </div>
               </div>
             </div>
@@ -615,19 +623,19 @@
           </v-row>
 
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
+          <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
             <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center">
-                <v-icon color="primary" class="mr-2">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium">
+              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
+                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
+                <span class="text-body-2 font-weight-medium text-break">
                   {{ !customIncrementSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeIncCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
               </div>
-              <div class="d-flex align-center ga-2">
-                <v-btn v-if="!customIncrementSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'">
+              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
+                <v-btn v-if="!customIncrementSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
                   修改统一映射
                 </v-btn>
-                <v-switch v-model="customIncrementSyncPaths" label="独立自定义路径（高级）" color="warning" density="compact" hide-details></v-switch>
+                <v-switch v-model="customIncrementSyncPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
               </div>
             </div>
           </div>
@@ -923,19 +931,19 @@
           </v-row>
 
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
+          <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
             <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center">
-                <v-icon color="primary" class="mr-2">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium">
+              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
+                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
+                <span class="text-body-2 font-weight-medium text-break">
                   {{ !customMonitorLifePaths ? `已继承统一媒体库目录映射（当前生效 ${activeLifeCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
               </div>
-              <div class="d-flex align-center ga-2">
-                <v-btn v-if="!customMonitorLifePaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'">
+              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
+                <v-btn v-if="!customMonitorLifePaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
                   修改统一映射
                 </v-btn>
-                <v-switch v-model="customMonitorLifePaths" label="独立自定义路径（高级）" color="warning" density="compact" hide-details></v-switch>
+                <v-switch v-model="customMonitorLifePaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
               </div>
             </div>
           </div>
@@ -1505,6 +1513,55 @@ const lifeMoveMatrixRows = computed(() => {
 
   .life-logic-panels :deep(.v-expansion-panel-text__wrapper) {
     padding: 8px 10px 12px;
+  }
+}
+
+/* 统一映射生效场景行防挤压 */
+.strm-sync-section .unified-scene-row :deep(.v-checkbox) {
+  flex: 0 0 auto !important;
+}
+
+.strm-sync-section .unified-scene-row :deep(.v-selection-control) {
+  min-height: 28px !important;
+}
+
+.strm-sync-section .unified-scene-row :deep(.v-label) {
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  font-size: 0.8125rem !important;
+}
+
+/* 场景独立自定义开关防折字 */
+.strm-sync-section .custom-path-switch :deep(.v-switch) {
+  flex: 0 0 auto !important;
+}
+
+.strm-sync-section .custom-path-switch :deep(.v-label) {
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  font-size: 0.8125rem !important;
+}
+
+@media (max-width: 600px) {
+  /* 移动端标签文字严格防纵向折行 */
+  .strm-sync-section :deep(.v-label) {
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+  }
+
+  /* 解决移动端两个输入框并排挤压消失的问题：移动端各占满一行 */
+  .strm-sync-section .path-selector {
+    width: 100% !important;
+    min-width: 100% !important;
+    margin-right: 0 !important;
+    margin-left: 0 !important;
+    margin-bottom: 6px !important;
+  }
+
+  /* 消除移动端标签页内部过大的左右 padding */
+  .strm-sync-section {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
   }
 }
 </style>

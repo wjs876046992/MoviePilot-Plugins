@@ -2911,6 +2911,12 @@ provide('machineId', machineId);
     font-size: 0.75rem !important;
   }
 
+  /* 移动端标签文字防挤压与防单字折行 */
+  .plugin-config :deep(.v-label) {
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+  }
+
   /* 对话框在小屏幕上全屏 - 保持镜面效果 */
   :deep(.v-dialog) {
     max-width: 100vw !important;
