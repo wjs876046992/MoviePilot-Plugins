@@ -67,12 +67,14 @@
                 </v-col>
               </v-row>
 
-              <div class="unified-scene-row d-flex align-center flex-wrap ga-x-4 ga-y-1 mt-2 pt-2 border-t">
-                <span class="text-caption text-medium-emphasis flex-shrink-0 mr-1">生效场景：</span>
-                <v-checkbox v-model="pair.enable_transfer" label="监控整理" density="compact" hide-details color="info" class="scene-checkbox"></v-checkbox>
-                <v-checkbox v-model="pair.enable_full" label="全量同步" density="compact" hide-details color="primary" class="scene-checkbox"></v-checkbox>
-                <v-checkbox v-model="pair.enable_inc" label="增量同步" density="compact" hide-details color="success" class="scene-checkbox"></v-checkbox>
-                <v-checkbox v-model="pair.enable_life" label="生活事件" density="compact" hide-details color="secondary" class="scene-checkbox"></v-checkbox>
+              <div class="unified-scene-row mt-2 pt-2 border-t">
+                <div class="text-caption font-weight-medium text-medium-emphasis mb-1">生效场景：</div>
+                <div class="d-flex align-center flex-wrap ga-x-4 ga-y-1">
+                  <v-checkbox v-model="pair.enable_transfer" label="监控整理" density="compact" hide-details color="info" class="scene-checkbox"></v-checkbox>
+                  <v-checkbox v-model="pair.enable_full" label="全量同步" density="compact" hide-details color="primary" class="scene-checkbox"></v-checkbox>
+                  <v-checkbox v-model="pair.enable_inc" label="增量同步" density="compact" hide-details color="success" class="scene-checkbox"></v-checkbox>
+                  <v-checkbox v-model="pair.enable_life" label="生活事件" density="compact" hide-details color="secondary" class="scene-checkbox"></v-checkbox>
+                </div>
               </div>
             </div>
 
@@ -235,19 +237,35 @@
             </v-col>
           </v-row>
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="inheritance-banner mb-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
-            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
-                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium text-break">
-                  {{ !customTransferPaths ? `已继承统一媒体库目录映射（当前生效 ${activeTransferCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
+          <div class="inheritance-banner mb-4 pa-3 border rounded">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center flex-wrap ga-2">
+                <v-icon :color="!customTransferPaths ? 'success' : 'warning'" size="20" class="flex-shrink-0">
+                  {{ !customTransferPaths ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                </v-icon>
+                <span class="text-body-2 font-weight-medium">
+                  {{ !customTransferPaths ? `已继承统一媒体库目录映射（当前生效 ${activeTransferCount} 条）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
-              </div>
-              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
-                <v-btn v-if="!customTransferPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
-                  修改统一映射
+                <v-btn
+                  v-if="!customTransferPaths"
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  class="ml-1"
+                  @click="strmSubTab = 'tab-unified'"
+                >
+                  去修改
                 </v-btn>
-                <v-switch v-model="customTransferPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
+              </div>
+              <div class="d-flex align-center flex-shrink-0">
+                <v-switch
+                  v-model="customTransferPaths"
+                  label="独立自定义路径"
+                  color="warning"
+                  density="compact"
+                  hide-details
+                  class="custom-path-switch"
+                ></v-switch>
               </div>
             </div>
           </div>
@@ -411,19 +429,35 @@
             </v-row>
 
             <!-- 统一映射继承提示 / 场景独立自定义 -->
-            <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
-              <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-                <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
-                  <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
-                  <span class="text-body-2 font-weight-medium text-break">
-                    {{ !customFullSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeFullCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
+            <div class="inheritance-banner my-4 pa-3 border rounded">
+              <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+                <div class="d-flex align-center flex-wrap ga-2">
+                  <v-icon :color="!customFullSyncPaths ? 'success' : 'warning'" size="20" class="flex-shrink-0">
+                    {{ !customFullSyncPaths ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                  </v-icon>
+                  <span class="text-body-2 font-weight-medium">
+                    {{ !customFullSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeFullCount} 条）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                   </span>
-                </div>
-                <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
-                  <v-btn v-if="!customFullSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
-                    修改统一映射
+                  <v-btn
+                    v-if="!customFullSyncPaths"
+                    size="x-small"
+                    variant="tonal"
+                    color="primary"
+                    class="ml-1"
+                    @click="strmSubTab = 'tab-unified'"
+                  >
+                    去修改
                   </v-btn>
-                  <v-switch v-model="customFullSyncPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
+                </div>
+                <div class="d-flex align-center flex-shrink-0">
+                  <v-switch
+                    v-model="customFullSyncPaths"
+                    label="独立自定义路径"
+                    color="warning"
+                    density="compact"
+                    hide-details
+                    class="custom-path-switch"
+                  ></v-switch>
                 </div>
               </div>
             </div>
@@ -622,19 +656,35 @@
           </v-row>
 
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
-            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
-                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium text-break">
-                  {{ !customIncrementSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeIncCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
+          <div class="inheritance-banner my-4 pa-3 border rounded">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center flex-wrap ga-2">
+                <v-icon :color="!customIncrementSyncPaths ? 'success' : 'warning'" size="20" class="flex-shrink-0">
+                  {{ !customIncrementSyncPaths ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                </v-icon>
+                <span class="text-body-2 font-weight-medium">
+                  {{ !customIncrementSyncPaths ? `已继承统一媒体库目录映射（当前生效 ${activeIncCount} 条）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
-              </div>
-              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
-                <v-btn v-if="!customIncrementSyncPaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
-                  修改统一映射
+                <v-btn
+                  v-if="!customIncrementSyncPaths"
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  class="ml-1"
+                  @click="strmSubTab = 'tab-unified'"
+                >
+                  去修改
                 </v-btn>
-                <v-switch v-model="customIncrementSyncPaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
+              </div>
+              <div class="d-flex align-center flex-shrink-0">
+                <v-switch
+                  v-model="customIncrementSyncPaths"
+                  label="独立自定义路径"
+                  color="warning"
+                  density="compact"
+                  hide-details
+                  class="custom-path-switch"
+                ></v-switch>
               </div>
             </div>
           </div>
@@ -930,19 +980,35 @@
           </v-row>
 
           <!-- 统一映射继承提示 / 场景独立自定义 -->
-          <div class="inheritance-banner my-4 pa-3 border rounded" style="background-color: rgba(var(--v-theme-primary), 0.04);">
-            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
-              <div class="d-flex align-center flex-grow-1" style="min-width: 180px;">
-                <v-icon color="primary" class="mr-2 flex-shrink-0">mdi-check-circle-outline</v-icon>
-                <span class="text-body-2 font-weight-medium text-break">
-                  {{ !customMonitorLifePaths ? `已继承统一媒体库目录映射（当前生效 ${activeLifeCount} 个目录）` : '已开启本场景独立路径配置（不继承统一映射）' }}
+          <div class="inheritance-banner my-4 pa-3 border rounded">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center flex-wrap ga-2">
+                <v-icon :color="!customMonitorLifePaths ? 'success' : 'warning'" size="20" class="flex-shrink-0">
+                  {{ !customMonitorLifePaths ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                </v-icon>
+                <span class="text-body-2 font-weight-medium">
+                  {{ !customMonitorLifePaths ? `已继承统一媒体库目录映射（当前生效 ${activeLifeCount} 条）` : '已开启本场景独立路径配置（不继承统一映射）' }}
                 </span>
-              </div>
-              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-1 mt-sm-0 flex-shrink-0">
-                <v-btn v-if="!customMonitorLifePaths" size="small" variant="text" color="primary" prepend-icon="mdi-pencil" @click="strmSubTab = 'tab-unified'" class="px-2">
-                  修改统一映射
+                <v-btn
+                  v-if="!customMonitorLifePaths"
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  class="ml-1"
+                  @click="strmSubTab = 'tab-unified'"
+                >
+                  去修改
                 </v-btn>
-                <v-switch v-model="customMonitorLifePaths" label="独立自定义路径" color="warning" density="compact" hide-details class="custom-path-switch"></v-switch>
+              </div>
+              <div class="d-flex align-center flex-shrink-0">
+                <v-switch
+                  v-model="customMonitorLifePaths"
+                  label="独立自定义路径"
+                  color="warning"
+                  density="compact"
+                  hide-details
+                  class="custom-path-switch"
+                ></v-switch>
               </div>
             </div>
           </div>
@@ -1160,83 +1226,119 @@
 
           <v-divider class="my-4"></v-divider>
 
-          <div class="text-subtitle-2 mb-2">路径映射配置:</div>
-          <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information">
-            <div class="text-caption">配置网盘路径到本地路径的映射关系。当 API 请求中未指定 local_path 时，系统会根据此配置自动匹配路径。</div>
-          </v-alert>
-
-          <v-row>
-            <v-col cols="12">
-              <div class="d-flex flex-column">
-                <div v-for="(pair, index) in apiStrmPaths" :key="`api-strm-${index}`"
-                  class="mb-3 pa-3 border rounded unified-pair-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
-                  <div class="d-flex align-center justify-space-between mb-2">
-                    <span class="font-weight-bold text-caption text-primary">API 路径映射 #{{ index + 1 }}</span>
-                    <v-btn icon size="x-small" variant="text" color="error" @click="removePath(index, 'apiStrm')" title="删除此路径">
-                      <v-icon size="18">mdi-trash-can-outline</v-icon>
-                    </v-btn>
-                  </div>
-                  <v-row dense>
-                    <v-col cols="12" sm="6">
-                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">本地 STRM 目录</div>
-                      <v-text-field v-model="pair.local" placeholder="例如：/media/strms/Movies" density="compact" variant="outlined"
-                        append-icon="mdi-folder" hide-details="auto" class="full-width-path-field"
-                        @click:append="openDirSelector(index, 'local', 'apiStrm')"></v-text-field>
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">网盘媒体库目录</div>
-                      <v-text-field v-model="pair.remote" placeholder="例如：/HomeTheater/Movies" density="compact" variant="outlined"
-                        append-icon="mdi-folder-network" hide-details="auto" class="full-width-path-field"
-                        @click:append="openDirSelector(index, 'remote', 'apiStrm')"></v-text-field>
-                    </v-col>
-                  </v-row>
-                </div>
-                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
-                  @click="addPath('apiStrm')">
-                  添加路径
+          <!-- 统一映射继承提示 / 场景独立自定义 -->
+          <div class="inheritance-banner mb-4 pa-3 border rounded">
+            <div class="d-flex align-center justify-space-between flex-wrap ga-3">
+              <div class="d-flex align-center flex-wrap ga-2">
+                <v-icon :color="!customApiStrmPaths ? 'success' : 'warning'" size="20" class="flex-shrink-0">
+                  {{ !customApiStrmPaths ? 'mdi-check-circle' : 'mdi-alert-circle' }}
+                </v-icon>
+                <span class="text-body-2 font-weight-medium">
+                  {{ !customApiStrmPaths ? `已继承统一媒体库目录映射（当前生效 ${activeApiCount} 条）` : '已开启 API 场景独立路径配置（不继承统一映射）' }}
+                </span>
+                <v-btn
+                  v-if="!customApiStrmPaths"
+                  size="x-small"
+                  variant="tonal"
+                  color="primary"
+                  class="ml-1"
+                  @click="strmSubTab = 'tab-unified'"
+                >
+                  去修改
                 </v-btn>
               </div>
-            </v-col>
-          </v-row>
-
-          <v-divider class="my-4"></v-divider>
-
-          <div class="text-subtitle-2 mb-2">MoviePilot-媒体库 目录转换:</div>
-          <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information">
-            <div class="text-caption">媒体服务器映射路径和MP映射路径不一样时请配置此项，如果不配置则无法正常刷新或Emby提取媒体信息</div>
-          </v-alert>
-
-          <v-row>
-            <v-col cols="12">
-              <div class="d-flex flex-column ga-2">
-                <div v-for="(pair, index) in apiStrmMPPaths" :key="`api-strm-mp-${index}`"
-                  class="pa-3 border rounded mb-2 unified-mp-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
-                  <div class="d-flex align-center justify-space-between mb-2">
-                    <span class="text-caption font-weight-medium text-medium-emphasis">转换规则 #{{ index + 1 }}</span>
-                    <v-btn icon size="x-small" color="error" variant="text" @click="removePath(index, 'apiStrm-mp')" title="删除转换规则">
-                      <v-icon size="18">mdi-trash-can-outline</v-icon>
-                    </v-btn>
-                  </div>
-                  <v-row dense>
-                    <v-col cols="12" sm="6">
-                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
-                      <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
-                        hide-details="auto" class="full-width-path-field"></v-text-field>
-                    </v-col>
-                    <v-col cols="12" sm="6">
-                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
-                      <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
-                        hide-details="auto" class="full-width-path-field"></v-text-field>
-                    </v-col>
-                  </v-row>
-                </div>
-                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
-                  @click="addPath('apiStrm-mp')">
-                  添加路径
-                </v-btn>
+              <div class="d-flex align-center flex-shrink-0">
+                <v-switch
+                  v-model="customApiStrmPaths"
+                  label="独立自定义路径"
+                  color="warning"
+                  density="compact"
+                  hide-details
+                  class="custom-path-switch"
+                ></v-switch>
               </div>
-            </v-col>
-          </v-row>
+            </div>
+          </div>
+
+          <template v-if="customApiStrmPaths">
+            <div class="text-subtitle-2 mb-2">路径映射配置:</div>
+            <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information">
+              <div class="text-caption">配置网盘路径到本地路径的映射关系。当 API 请求中未指定 local_path 时，系统会根据此配置自动匹配路径。</div>
+            </v-alert>
+
+            <v-row>
+              <v-col cols="12">
+                <div class="d-flex flex-column">
+                  <div v-for="(pair, index) in apiStrmPaths" :key="`api-strm-${index}`"
+                    class="mb-3 pa-3 border rounded unified-pair-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                      <span class="font-weight-bold text-caption text-primary">API 路径映射 #{{ index + 1 }}</span>
+                      <v-btn icon size="x-small" variant="text" color="error" @click="removePath(index, 'apiStrm')" title="删除此路径">
+                        <v-icon size="18">mdi-trash-can-outline</v-icon>
+                      </v-btn>
+                    </div>
+                    <v-row dense>
+                      <v-col cols="12" sm="6">
+                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">本地 STRM 目录</div>
+                        <v-text-field v-model="pair.local" placeholder="例如：/media/strms/Movies" density="compact" variant="outlined"
+                          append-icon="mdi-folder" hide-details="auto" class="full-width-path-field"
+                          @click:append="openDirSelector(index, 'local', 'apiStrm')"></v-text-field>
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">网盘媒体库目录</div>
+                        <v-text-field v-model="pair.remote" placeholder="例如：/HomeTheater/Movies" density="compact" variant="outlined"
+                          append-icon="mdi-folder-network" hide-details="auto" class="full-width-path-field"
+                          @click:append="openDirSelector(index, 'remote', 'apiStrm')"></v-text-field>
+                      </v-col>
+                    </v-row>
+                  </div>
+                  <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
+                    @click="addPath('apiStrm')">
+                    添加路径
+                  </v-btn>
+                </div>
+              </v-col>
+            </v-row>
+
+            <v-divider class="my-4"></v-divider>
+
+            <div class="text-subtitle-2 mb-2">MoviePilot-媒体库 目录转换:</div>
+            <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information">
+              <div class="text-caption">媒体服务器映射路径和MP映射路径不一样时请配置此项，如果不配置则无法正常刷新或Emby提取媒体信息</div>
+            </v-alert>
+
+            <v-row>
+              <v-col cols="12">
+                <div class="d-flex flex-column ga-2">
+                  <div v-for="(pair, index) in apiStrmMPPaths" :key="`api-strm-mp-${index}`"
+                    class="pa-3 border rounded mb-2 unified-mp-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                      <span class="text-caption font-weight-medium text-medium-emphasis">转换规则 #{{ index + 1 }}</span>
+                      <v-btn icon size="x-small" color="error" variant="text" @click="removePath(index, 'apiStrm-mp')" title="删除转换规则">
+                        <v-icon size="18">mdi-trash-can-outline</v-icon>
+                      </v-btn>
+                    </div>
+                    <v-row dense>
+                      <v-col cols="12" sm="6">
+                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
+                        <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
+                          hide-details="auto" class="full-width-path-field"></v-text-field>
+                      </v-col>
+                      <v-col cols="12" sm="6">
+                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
+                        <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
+                          hide-details="auto" class="full-width-path-field"></v-text-field>
+                      </v-col>
+                    </v-row>
+                  </div>
+                  <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
+                    @click="addPath('apiStrm-mp')">
+                    添加路径
+                  </v-btn>
+                </div>
+              </v-col>
+            </v-row>
+          </template>
         </v-card-text>
       </v-window-item>
     </v-window>
@@ -1258,6 +1360,7 @@ const customTransferPaths = inject('customTransferPaths');
 const customFullSyncPaths = inject('customFullSyncPaths');
 const customIncrementSyncPaths = inject('customIncrementSyncPaths');
 const customMonitorLifePaths = inject('customMonitorLifePaths');
+const customApiStrmPaths = inject('customApiStrmPaths');
 
 const activeTransferCount = computed(() =>
   (unifiedPaths?.value || []).filter(p => p.enable_transfer && (p.local?.trim() || p.remote?.trim())).length
@@ -1270,6 +1373,9 @@ const activeIncCount = computed(() =>
 );
 const activeLifeCount = computed(() =>
   (unifiedPaths?.value || []).filter(p => p.enable_life && (p.local?.trim() || p.remote?.trim())).length
+);
+const activeApiCount = computed(() =>
+  (unifiedPaths?.value || []).filter(p => p.local?.trim() || p.remote?.trim()).length
 );
 
 const transferPaths = inject('transferPaths');
@@ -1558,15 +1664,32 @@ const lifeMoveMatrixRows = computed(() => {
   font-size: 0.8125rem !important;
 }
 
-/* 场景独立自定义开关防折字 */
-.strm-sync-section .custom-path-switch :deep(.v-switch) {
-  flex: 0 0 auto !important;
+/* 继承横幅与场景独立自定义开关对齐防错位 */
+.strm-sync-section .inheritance-banner {
+  background-color: rgba(var(--v-theme-primary), 0.04);
+}
+
+.strm-sync-section .custom-path-switch {
+  display: flex !important;
+  align-items: center !important;
+}
+
+.strm-sync-section .custom-path-switch :deep(.v-input__control) {
+  display: flex !important;
+  align-items: center !important;
+}
+
+.strm-sync-section .custom-path-switch :deep(.v-selection-control) {
+  min-height: unset !important;
+  align-items: center !important;
 }
 
 .strm-sync-section .custom-path-switch :deep(.v-label) {
   white-space: nowrap !important;
   word-break: keep-all !important;
   font-size: 0.8125rem !important;
+  padding-left: 6px !important;
+  opacity: 0.85 !important;
 }
 
 @media (max-width: 600px) {

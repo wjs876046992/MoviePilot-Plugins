@@ -494,7 +494,7 @@ const message = reactive({
 const pathMgmt = usePathManagement(config);
 const {
   unifiedPaths, unifiedMpPaths,
-  customTransferPaths, customFullSyncPaths, customIncrementSyncPaths, customMonitorLifePaths,
+  customTransferPaths, customFullSyncPaths, customIncrementSyncPaths, customMonitorLifePaths, customApiStrmPaths,
   reconcileUnifiedPaths, syncAllPathsToConfig,
   transferPaths, transferMpPaths, fullSyncPaths, incrementSyncPaths, incrementSyncMPPaths,
   monitorLifePaths, monitorLifeMpPaths, apiStrmPaths, apiStrmMPPaths, panTransferPaths,
@@ -773,10 +773,6 @@ const saveConfig = async () => {
     config.monitor_life_min_file_size = parseSize(monitorLifeMinFileSizeFormattedRef.value) || 0;
     // 统一媒体库路径映射分发至各场景 (方案 A)
     syncAllPathsToConfig();
-    config.api_strm_config = apiStrmPaths.value
-      .filter(p => p.local?.trim() && p.remote?.trim())
-      .map(p => ({ local_path: p.local.trim(), pan_path: p.remote.trim() }));
-    config.api_strm_mp_mediaserver_paths = generatePathsConfig(apiStrmMPPaths.value, 'apiStrm-mp');
     config.sync_del_p115_library_path = syncDelLibraryPaths.value
       .filter(p => p.mediaserver?.trim() || p.moviepilot?.trim() || p.p115?.trim())
       .map(p => `${p.mediaserver || ''}#${p.moviepilot || ''}#${p.p115 || ''}`)
@@ -1298,6 +1294,7 @@ provide('customTransferPaths', customTransferPaths);
 provide('customFullSyncPaths', customFullSyncPaths);
 provide('customIncrementSyncPaths', customIncrementSyncPaths);
 provide('customMonitorLifePaths', customMonitorLifePaths);
+provide('customApiStrmPaths', customApiStrmPaths);
 provide('reconcileUnifiedPaths', reconcileUnifiedPaths);
 provide('syncAllPathsToConfig', syncAllPathsToConfig);
 provide('transferPaths', transferPaths);

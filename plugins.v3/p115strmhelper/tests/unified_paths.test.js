@@ -276,3 +276,69 @@ test('parse helpers honor the legacy field formats', () => {
   assert.deepEqual(parsePairLines(''), []);
   assert.deepEqual(parsePairLines(null), []);
 });
+
+test('syncAllPathsToConfig defaults API STRM paths to unified mapping', () => {
+  const config = makeConfig({
+    api_strm_config: [],
+    api_strm_mp_mediaserver_paths: '',
+  });
+
+  const pathMgmt = usePathManagement(config);
+  pathMgmt.unifiedPaths.value = [
+    {
+      local: '/media/strms/TV',
+      remote: '/HomeTheater/TV',
+      cd2Prefix: '',
+      enable_transfer: true,
+      enable_full: true,
+      enable_inc: true,
+      enable_life: true,
+    },
+  ];
+  pathMgmt.unifiedMpPaths.value = [
+    { local: '/emby/strm', remote: '/mnt/strm' },
+  ];
+
+  pathMgmt.syncAllPathsToConfig();
+
+  // API STRM 应默认继承统一映射
+  assert.deepEqual(config.api_strm_config, [
+    { local_path: '/media/strms/TV', pan_path: '/HomeTheater/TV' },
+  ]);
+  assert.equal(config.api_strm_mp_mediaserver_paths, '/emby/strm#/mnt/strm');
+});
+
+test('syncAllPathsToConfig respects customApiStrmPaths override', () => {
+  const config = makeConfig({
+    api_strm_config: [],
+    api_strm_mp_mediaserver_paths: '',
+  });
+
+  const pathMgmt = usePathManagement(config);
+  pathMgmt.unifiedPaths.value = [
+    {
+      local: '/media/strms/TV',
+      remote: '/HomeTheater/TV',
+      cd2Prefix: '',
+      enable_transfer: true,
+      enable_full: true,
+      enable_inc: true,
+      enable_life: true,
+    },
+  ];
+  pathMgmt.customApiStrmPaths.value = true;
+  pathMgmt.apiStrmPaths.value = [
+    { local: '/custom/local', remote: '/custom/remote' },
+  ];
+  pathMgmt.apiStrmMPPaths.value = [
+    { local: '/custom/emby', remote: '/custom/mp' },
+  ];
+
+  pathMgmt.syncAllPathsToConfig();
+
+  // 开启独立自定义后使用专属配置
+  assert.deepEqual(config.api_strm_config, [
+    { local_path: '/custom/local', pan_path: '/custom/remote' },
+  ]);
+  assert.equal(config.api_strm_mp_mediaserver_paths, '/custom/emby#/custom/mp');
+});

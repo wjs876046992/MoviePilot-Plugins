@@ -127,6 +127,7 @@ export function usePathManagement(config) {
   const customFullSyncPaths = ref(false);
   const customIncrementSyncPaths = ref(false);
   const customMonitorLifePaths = ref(false);
+  const customApiStrmPaths = ref(false);
 
   const generatePathsConfig = (paths, key) => {
     const configText = paths.map(p => {
@@ -225,6 +226,17 @@ export function usePathManagement(config) {
         item.enable_life = true;
       }
     });
+
+    // 5. API STRM 生成配置 (api_strm_config)
+    if (Array.isArray(config.api_strm_config)) {
+      config.api_strm_config.forEach(p => {
+        const l = p.local_path || p.local || '';
+        const r = p.pan_path || p.remote || '';
+        if (l.trim() || r.trim()) {
+          ensureItem(l, r);
+        }
+      });
+    }
 
     const merged = Array.from(map.values());
     if (merged.length === 0) {
@@ -331,8 +343,31 @@ export function usePathManagement(config) {
       }
     }
 
-    // 5. MP-MediaServer 转换路径 (未开启自定义时分发至各子项)
+    // 5. API STRM 生成路径 (api_strm_config 与 api_strm_mp_mediaserver_paths)
     const validUnifiedMp = unifiedMpPaths.value.filter(p => p.local?.trim() || p.remote?.trim());
+    if (customApiStrmPaths.value) {
+      config.api_strm_config = (apiStrmPaths.value || [])
+        .filter(p => p.local?.trim() && p.remote?.trim())
+        .map(p => ({ local_path: p.local.trim(), pan_path: p.remote.trim() }));
+      config.api_strm_mp_mediaserver_paths = generatePathsConfig(apiStrmMPPaths.value, 'apiStrm-mp');
+    } else {
+      const list = unifiedPaths.value
+        .filter(p => p.local?.trim() && p.remote?.trim())
+        .map(p => ({
+          local_path: p.local.trim(),
+          pan_path: p.remote.trim(),
+        }));
+      config.api_strm_config = list;
+      config.api_strm_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'apiStrm-mp');
+      if (list.length > 0) {
+        apiStrmPaths.value = list.map(p => ({ local: p.local_path, remote: p.pan_path }));
+      }
+      if (validUnifiedMp.length > 0) {
+        apiStrmMPPaths.value = JSON.parse(JSON.stringify(validUnifiedMp));
+      }
+    }
+
+    // 6. MP-MediaServer 转换路径 (未开启自定义时分发至各子项)
     if (!customTransferPaths.value) {
       config.transfer_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'mp');
       transferMpPaths.value = validUnifiedMp.length > 0 ? JSON.parse(JSON.stringify(validUnifiedMp)) : [{ local: '', remote: '' }];
@@ -858,6 +893,7 @@ export function usePathManagement(config) {
     customFullSyncPaths,
     customIncrementSyncPaths,
     customMonitorLifePaths,
+    customApiStrmPaths,
     reconcileUnifiedPaths,
     syncAllPathsToConfig,
     // Path refs
