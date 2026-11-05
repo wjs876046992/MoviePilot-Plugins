@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-11-05
+
+**分支：** `main`
+**涉及插件：** P115StrmHelper
+
+### P115StrmHelper（`plugins.v3/p115strmhelper/`）
+
+**版本：** v3.3.0 → v3.4.4（本仓改动，未同步上游）
+
+**提交：** `9f1fe2c` → `b75a3f1` → `b3614f2` → `855df37` → `ab868d5`
+
+#### 统一媒体库目录映射
+
+上游把路径配置按功能拆成 `transfer_monitor_paths` / `full_sync_strm_paths` /
+`increment_sync_strm_paths` / `monitor_life_paths` / `api_strm_config` 等多个字段，
+同一个媒体库目录要在 4~5 个页签重复填写。除了配置冗余，还导致跨插件静默失败：
+`Rsync115Sync` 的「补生成 strm」只认助手的 `full_sync_strm_paths`，用户只在增量里
+配过目录时命令会被助手拒绝，而拒绝提示只发到助手侧，表现为「点了按钮没反应」。
+
+采用**前端统一表 + 双向无损融合**，后端 Python 代码零改动：
+
+- Load：解析四个 legacy 字符串 → 路径归一化 → 按 `local:::remote` 并集聚合为
+  `unifiedPaths`，还原每个目录在四个场景的启用状态；
+- Save：按勾选条件分发回原字段，CD2 前缀只拼一次，全量未勾选仍写 `#0` 保留命令匹配；
+- 各场景页签保留「独立自定义路径」开关作为逃生通道。
+
+#### v3.4.1 修掉的一个会清空配置的 bug
+
+首版在 `loadConfig()` 里 `Object.assign(config, data)` 之后**同步**调用聚合函数，
+而它读的是由异步 watcher 填充的 refs —— 那一瞬间 refs 还是空数组，已有配置被读成
+「一行空白」。用户若此时点保存，会把 `full_sync_strm_paths` 等字段覆盖成空串。
+
+修法：聚合改为直接解析 `config.*` 原始字符串，与时序无关；四种格式的解析抽成
+纯函数由 watcher 与聚合共用。回归测试里那条用例**故意不 await nextTick**，
+以此钉住该场景。
+
+#### 移动端排版
+
+- 路径输入框一律去掉 `label=`，改为框外 `.stacked-label` + 框内 `placeholder`，
+  把横向空间全部让给路径文本；
+- 复选框 / 开关标签强制 `nowrap` + `keep-all`，消除「一行一个字」的纵向折字；
+- 窄屏下两列路径改为各占整行，不再用 flex 硬挤（挤压后输入框会缩到看不见）；
+- 继承提示条统一垂直居中，修复开关错位。
+
+#### 小结（可复用的结论）
+
+1. **Vue watcher 是异步的** —— 在 `Object.assign` 之后同步读取由 watcher 派生的
+   状态，读到的一定是旧值。要么改读源数据，要么 `await nextTick()`。
+2. **"渲染出来再藏掉" vs "让它压根不渲染"** —— 与同仓 `Rsync115Sync` 的结论一致：
+   后者稳。不给 `label` 就不会有 Vuetify 的双份 label 与边框缺口问题。
+3. 改动集中在 `src/components/composables/usePathManagement.js`，上游升级后端时冲突面最小。
+
+详细设计与测试说明见 `plugins.v3/p115strmhelper/DEVELOPMENT.md`。
+
+---
+
 ## 2026-09-14
 
 **提交：** `cd159e7`  
