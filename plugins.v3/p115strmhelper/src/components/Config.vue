@@ -493,6 +493,9 @@ const message = reactive({
 // 使用 composables
 const pathMgmt = usePathManagement(config);
 const {
+  unifiedPaths, unifiedMpPaths,
+  customTransferPaths, customFullSyncPaths, customIncrementSyncPaths, customMonitorLifePaths,
+  reconcileUnifiedPaths, syncAllPathsToConfig,
   transferPaths, transferMpPaths, fullSyncPaths, incrementSyncPaths, incrementSyncMPPaths,
   monitorLifePaths, monitorLifeMpPaths, apiStrmPaths, apiStrmMPPaths, panTransferPaths,
   shareReceivePaths, offlineDownloadPaths, transferExcludePaths, incrementSyncExcludePaths,
@@ -741,6 +744,9 @@ const loadConfig = async () => {
       fullSyncMinFileSizeFormattedRef.value = (config.full_sync_min_file_size > 0) ? formatBytes(config.full_sync_min_file_size) : '';
       incrementSyncMinFileSizeFormattedRef.value = (config.increment_sync_min_file_size > 0) ? formatBytes(config.increment_sync_min_file_size) : '';
       monitorLifeMinFileSizeFormattedRef.value = (config.monitor_life_min_file_size > 0) ? formatBytes(config.monitor_life_min_file_size) : '';
+
+      // 聚合融合统一媒体库路径映射 (方案 A)
+      reconcileUnifiedPaths();
     }
   } catch (err) {
     console.error('加载配置失败:', err);
@@ -765,13 +771,8 @@ const saveConfig = async () => {
     config.full_sync_min_file_size = parseSize(fullSyncMinFileSizeFormattedRef.value) || 0;
     config.increment_sync_min_file_size = parseSize(incrementSyncMinFileSizeFormattedRef.value) || 0;
     config.monitor_life_min_file_size = parseSize(monitorLifeMinFileSizeFormattedRef.value) || 0;
-    config.transfer_monitor_paths = generatePathsConfig(transferPaths.value, 'transfer');
-    config.transfer_mp_mediaserver_paths = generatePathsConfig(transferMpPaths.value, 'mp');
-    config.full_sync_strm_paths = generatePathsConfig(fullSyncPaths.value, 'fullSync');
-    config.increment_sync_strm_paths = generatePathsConfig(incrementSyncPaths.value, 'incrementSync');
-    config.increment_sync_mp_mediaserver_paths = generatePathsConfig(incrementSyncMPPaths.value, 'increment-mp');
-    config.monitor_life_paths = generatePathsConfig(monitorLifePaths.value, 'monitorLife');
-    config.monitor_life_mp_mediaserver_paths = generatePathsConfig(monitorLifeMpPaths.value, 'monitorLifeMp');
+    // 统一媒体库路径映射分发至各场景 (方案 A)
+    syncAllPathsToConfig();
     config.api_strm_config = apiStrmPaths.value
       .filter(p => p.local?.trim() && p.remote?.trim())
       .map(p => ({ local_path: p.local.trim(), pan_path: p.remote.trim() }));
@@ -926,7 +927,7 @@ const triggerFullSync = async () => {
   try {
     if (!config.enabled) throw new Error('插件未启用，请先启用插件');
     if (!config.cookies || config.cookies.trim() === '') throw new Error('请先设置115 Cookie');
-    config.full_sync_strm_paths = generatePathsConfig(fullSyncPaths.value, 'fullSync');
+    syncAllPathsToConfig();
     if (!config.full_sync_strm_paths) throw new Error('请先配置全量同步路径');
 
     const result = await props.api.post(`plugin/${PLUGIN_ID}/full_sync`);
@@ -1291,6 +1292,14 @@ provide('mediaservers', mediaservers);
 provide('embyMediaservers', embyMediaservers);
 
 // Path refs
+provide('unifiedPaths', unifiedPaths);
+provide('unifiedMpPaths', unifiedMpPaths);
+provide('customTransferPaths', customTransferPaths);
+provide('customFullSyncPaths', customFullSyncPaths);
+provide('customIncrementSyncPaths', customIncrementSyncPaths);
+provide('customMonitorLifePaths', customMonitorLifePaths);
+provide('reconcileUnifiedPaths', reconcileUnifiedPaths);
+provide('syncAllPathsToConfig', syncAllPathsToConfig);
 provide('transferPaths', transferPaths);
 provide('transferMpPaths', transferMpPaths);
 provide('fullSyncPaths', fullSyncPaths);

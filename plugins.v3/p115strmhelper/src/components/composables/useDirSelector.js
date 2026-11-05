@@ -11,6 +11,7 @@ import { reactive } from 'vue';
  */
 export function useDirSelector(api, config, message, PLUGIN_ID, pathRefs) {
   const {
+    unifiedPaths,
     transferPaths,
     fullSyncPaths,
     incrementSyncPaths,
@@ -106,7 +107,12 @@ export function useDirSelector(api, config, message, PLUGIN_ID, pathRefs) {
     dirDialog.originalIndexBackup = -1;
 
     // 设置初始路径
-    if (pathType === 'syncDelLibrary' && index >= 0 && syncDelLibraryPaths.value[index] && fieldKey) {
+    if (pathType === 'unified' && index >= 0 && unifiedPaths?.value?.[index]) {
+      const currentPath = dirDialog.isLocal
+        ? (unifiedPaths.value[index].local || '/')
+        : (unifiedPaths.value[index].remote || '/');
+      dirDialog.currentPath = currentPath;
+    } else if (pathType === 'syncDelLibrary' && index >= 0 && syncDelLibraryPaths.value[index] && fieldKey) {
       const currentPath = syncDelLibraryPaths.value[index][fieldKey] || '/';
       dirDialog.currentPath = currentPath;
     } else if (pathType === 'backupItems' && index >= 0 && fieldKey) {
@@ -202,6 +208,13 @@ export function useDirSelector(api, config, message, PLUGIN_ID, pathRefs) {
     }
     else if (dirDialog.index >= 0 && dirDialog.type !== 'excludePath') {
       switch (dirDialog.type) {
+        case 'unified':
+          if (dirDialog.index >= 0 && unifiedPaths?.value?.[dirDialog.index]) {
+            dirDialog.isLocal
+              ? unifiedPaths.value[dirDialog.index].local = processedPath
+              : unifiedPaths.value[dirDialog.index].remote = processedPath;
+          }
+          break;
         case 'transfer': dirDialog.isLocal ? transferPaths.value[dirDialog.index].local = processedPath : transferPaths.value[dirDialog.index].remote = processedPath; break;
         case 'fullSync': dirDialog.isLocal ? fullSyncPaths.value[dirDialog.index].local = processedPath : fullSyncPaths.value[dirDialog.index].remote = processedPath; break;
         case 'incrementSync': dirDialog.isLocal ? incrementSyncPaths.value[dirDialog.index].local = processedPath : incrementSyncPaths.value[dirDialog.index].remote = processedPath; break;

@@ -1,5 +1,36 @@
 import { ref, watch } from 'vue';
 
+// ============================================================
+// 纯函数与工具函数（便于单元测试与跨组件复用）
+// ============================================================
+
+/** 路径归一化：消除多余斜杠、反斜杠、尾部斜杠，保留根目录单个 / */
+export const normalizePath = (p) => {
+  if (!p || typeof p !== 'string') return '';
+  let s = p.trim().replace(/\\/g, '/');
+  s = s.replace(/\/+/g, '/');
+  if (s.length > 1 && s.endsWith('/')) {
+    s = s.slice(0, -1);
+  }
+  return s;
+};
+
+export const getPathKey = (local, remote) => {
+  return `${normalizePath(local)}:::${normalizePath(remote)}`;
+};
+
+export const getMpKey = (local, remote) => {
+  return `${normalizePath(local)}:::${normalizePath(remote)}`;
+};
+
+/** 规范化路径拼接，避免双斜杠，保留前缀的绝对路径（前导 /） */
+export const normalizePathJoin = (prefix, rest) => {
+  const a = (prefix || '').trim().replace(/\/+$/, '');
+  const b = (rest || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!b) return a || '';
+  return a ? `${a}/${b}` : b;
+};
+
 /**
  * 路径管理 Composable
  * 管理所有路径数组的状态、双向同步监听和增删操作
@@ -27,16 +58,24 @@ export function usePathManagement(config) {
   const fuseStrmTakeoverRules = ref([{ extensions: '', names: '', paths: '', _use_extensions: false, _use_names: false, _use_paths: false }]);
 
   // ============================================================
-  // 工具函数
+  // 统一媒体库路径映射（方案 A：无损双向融合）
   // ============================================================
+  const unifiedPaths = ref([{
+    local: '',
+    remote: '',
+    cd2Prefix: '',
+    enable_transfer: true,
+    enable_full: true,
+    enable_inc: true,
+    enable_life: true,
+  }]);
+  const unifiedMpPaths = ref([{ local: '', remote: '' }]);
 
-  /** 规范化路径拼接，避免双斜杠，保留前缀的绝对路径（前导 /） */
-  const normalizePathJoin = (prefix, rest) => {
-    const a = (prefix || '').trim().replace(/\/+$/, '');
-    const b = (rest || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
-    if (!b) return a || '';
-    return a ? `${a}/${b}` : b;
-  };
+  // 各场景独立自定义路径开关（高级逃生通道）
+  const customTransferPaths = ref(false);
+  const customFullSyncPaths = ref(false);
+  const customIncrementSyncPaths = ref(false);
+  const customMonitorLifePaths = ref(false);
 
   const generatePathsConfig = (paths, key) => {
     const configText = paths.map(p => {
@@ -70,6 +109,184 @@ export function usePathManagement(config) {
     }).join('\n');
 
     return configText;
+  };
+
+  /**
+   * 存量路径双向无损融合：将旧版各个独立场景的路径聚合成统一映射表
+   */
+  const reconcileUnifiedPaths = () => {
+    const map = new Map();
+
+    const ensureItem = (local, remote) => {
+      const key = getPathKey(local, remote);
+      if (!map.has(key)) {
+        map.set(key, {
+          local: (local || '').trim(),
+          remote: (remote || '').trim(),
+          cd2Prefix: '',
+          enable_transfer: false,
+          enable_full: false,
+          enable_inc: false,
+          enable_life: false,
+        });
+      }
+      return map.get(key);
+    };
+
+    // 1. 监控MP整理 (transferPaths)
+    (transferPaths.value || []).forEach(p => {
+      if (p.local?.trim() || p.remote?.trim()) {
+        const item = ensureItem(p.local, p.remote);
+        item.enable_transfer = true;
+        if (p.cd2Prefix?.trim() && !item.cd2Prefix) {
+          item.cd2Prefix = p.cd2Prefix.trim();
+        }
+      }
+    });
+
+    // 2. 全量同步 (fullSyncPaths)
+    (fullSyncPaths.value || []).forEach(p => {
+      if (p.local?.trim() || p.remote?.trim()) {
+        const item = ensureItem(p.local, p.remote);
+        item.enable_full = p.enabled !== false;
+      }
+    });
+
+    // 3. 增量同步 (incrementSyncPaths)
+    (incrementSyncPaths.value || []).forEach(p => {
+      if (p.local?.trim() || p.remote?.trim()) {
+        const item = ensureItem(p.local, p.remote);
+        item.enable_inc = true;
+      }
+    });
+
+    // 4. 监控115生活事件 (monitorLifePaths)
+    (monitorLifePaths.value || []).forEach(p => {
+      if (p.local?.trim() || p.remote?.trim()) {
+        const item = ensureItem(p.local, p.remote);
+        item.enable_life = true;
+      }
+    });
+
+    const merged = Array.from(map.values());
+    if (merged.length === 0) {
+      unifiedPaths.value = [{
+        local: '',
+        remote: '',
+        cd2Prefix: '',
+        enable_transfer: true,
+        enable_full: true,
+        enable_inc: true,
+        enable_life: true,
+      }];
+    } else {
+      unifiedPaths.value = merged;
+    }
+
+    // MP-MediaServer 转换路径合并 (transferMpPaths, incrementSyncMPPaths, monitorLifeMpPaths, apiStrmMPPaths)
+    const mpMap = new Map();
+    const allMpSources = [
+      ...(transferMpPaths.value || []),
+      ...(incrementSyncMPPaths.value || []),
+      ...(monitorLifeMpPaths.value || []),
+      ...(apiStrmMPPaths.value || []),
+    ];
+    allMpSources.forEach(p => {
+      if (p.local?.trim() || p.remote?.trim()) {
+        const key = getMpKey(p.local, p.remote);
+        if (!mpMap.has(key)) {
+          mpMap.set(key, { local: (p.local || '').trim(), remote: (p.remote || '').trim() });
+        }
+      }
+    });
+    const mergedMp = Array.from(mpMap.values());
+    unifiedMpPaths.value = mergedMp.length > 0 ? mergedMp : [{ local: '', remote: '' }];
+  };
+
+  /**
+   * 将统一映射表按勾选场景拆解分发写回 legacy 对应配置字段
+   */
+  const syncAllPathsToConfig = () => {
+    // 1. 监控MP整理 (transfer_monitor_paths)
+    if (customTransferPaths.value) {
+      config.transfer_monitor_paths = generatePathsConfig(transferPaths.value, 'transfer');
+    } else {
+      const list = unifiedPaths.value
+        .filter(p => p.enable_transfer && (p.local?.trim() || p.remote?.trim()))
+        .map(p => ({
+          local: p.local?.trim() || '',
+          remote: p.remote?.trim() || '',
+          cd2Prefix: (p.cd2Prefix || '').trim(),
+        }));
+      config.transfer_monitor_paths = generatePathsConfig(list, 'transfer');
+      if (list.length > 0) {
+        transferPaths.value = list;
+      }
+    }
+
+    // 2. 全量同步 (full_sync_strm_paths)
+    if (customFullSyncPaths.value) {
+      config.full_sync_strm_paths = generatePathsConfig(fullSyncPaths.value, 'fullSync');
+    } else {
+      const list = unifiedPaths.value
+        .filter(p => p.local?.trim() || p.remote?.trim())
+        .map(p => ({
+          local: p.local?.trim() || '',
+          remote: p.remote?.trim() || '',
+          enabled: !!p.enable_full,
+        }));
+      config.full_sync_strm_paths = generatePathsConfig(list, 'fullSync');
+      if (list.length > 0) {
+        fullSyncPaths.value = list;
+      }
+    }
+
+    // 3. 增量同步 (increment_sync_strm_paths)
+    if (customIncrementSyncPaths.value) {
+      config.increment_sync_strm_paths = generatePathsConfig(incrementSyncPaths.value, 'incrementSync');
+    } else {
+      const list = unifiedPaths.value
+        .filter(p => p.enable_inc && (p.local?.trim() || p.remote?.trim()))
+        .map(p => ({
+          local: p.local?.trim() || '',
+          remote: p.remote?.trim() || '',
+        }));
+      config.increment_sync_strm_paths = generatePathsConfig(list, 'incrementSync');
+      if (list.length > 0) {
+        incrementSyncPaths.value = list;
+      }
+    }
+
+    // 4. 监控115生活事件 (monitor_life_paths)
+    if (customMonitorLifePaths.value) {
+      config.monitor_life_paths = generatePathsConfig(monitorLifePaths.value, 'monitorLife');
+    } else {
+      const list = unifiedPaths.value
+        .filter(p => p.enable_life && (p.local?.trim() || p.remote?.trim()))
+        .map(p => ({
+          local: p.local?.trim() || '',
+          remote: p.remote?.trim() || '',
+        }));
+      config.monitor_life_paths = generatePathsConfig(list, 'monitorLife');
+      if (list.length > 0) {
+        monitorLifePaths.value = list;
+      }
+    }
+
+    // 5. MP-MediaServer 转换路径 (未开启自定义时分发至各子项)
+    const validUnifiedMp = unifiedMpPaths.value.filter(p => p.local?.trim() || p.remote?.trim());
+    if (!customTransferPaths.value) {
+      config.transfer_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'mp');
+      transferMpPaths.value = validUnifiedMp.length > 0 ? JSON.parse(JSON.stringify(validUnifiedMp)) : [{ local: '', remote: '' }];
+    }
+    if (!customIncrementSyncPaths.value) {
+      config.increment_sync_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'increment-mp');
+      incrementSyncMPPaths.value = validUnifiedMp.length > 0 ? JSON.parse(JSON.stringify(validUnifiedMp)) : [{ local: '', remote: '' }];
+    }
+    if (!customMonitorLifePaths.value) {
+      config.monitor_life_mp_mediaserver_paths = generatePathsConfig(validUnifiedMp, 'monitorLifeMp');
+      monitorLifeMpPaths.value = validUnifiedMp.length > 0 ? JSON.parse(JSON.stringify(validUnifiedMp)) : [{ local: '', remote: '' }];
+    }
   };
 
   // ============================================================
@@ -455,6 +672,20 @@ export function usePathManagement(config) {
 
   const addPath = (type) => {
     switch (type) {
+      case 'unified':
+        unifiedPaths.value.push({
+          local: '',
+          remote: '',
+          cd2Prefix: '',
+          enable_transfer: true,
+          enable_full: true,
+          enable_inc: true,
+          enable_life: true,
+        });
+        break;
+      case 'unified-mp':
+        unifiedMpPaths.value.push({ local: '', remote: '' });
+        break;
       case 'transfer': transferPaths.value.push({ local: '', remote: '', cd2Prefix: '' }); break;
       case 'mp': transferMpPaths.value.push({ local: '', remote: '' }); break;
       case 'fullSync': fullSyncPaths.value.push({ local: '', remote: '', enabled: true }); break;
@@ -472,6 +703,26 @@ export function usePathManagement(config) {
 
   const removePath = (index, type) => {
     switch (type) {
+      case 'unified':
+        unifiedPaths.value.splice(index, 1);
+        if (unifiedPaths.value.length === 0) {
+          unifiedPaths.value = [{
+            local: '',
+            remote: '',
+            cd2Prefix: '',
+            enable_transfer: true,
+            enable_full: true,
+            enable_inc: true,
+            enable_life: true,
+          }];
+        }
+        break;
+      case 'unified-mp':
+        unifiedMpPaths.value.splice(index, 1);
+        if (unifiedMpPaths.value.length === 0) {
+          unifiedMpPaths.value = [{ local: '', remote: '' }];
+        }
+        break;
       case 'transfer':
         transferPaths.value.splice(index, 1);
         if (transferPaths.value.length === 0) transferPaths.value = [{ local: '', remote: '', cd2Prefix: '' }];
@@ -542,6 +793,15 @@ export function usePathManagement(config) {
   };
 
   return {
+    // 统一媒体库路径映射 (方案 A)
+    unifiedPaths,
+    unifiedMpPaths,
+    customTransferPaths,
+    customFullSyncPaths,
+    customIncrementSyncPaths,
+    customMonitorLifePaths,
+    reconcileUnifiedPaths,
+    syncAllPathsToConfig,
     // Path refs
     transferPaths,
     transferMpPaths,
@@ -562,8 +822,11 @@ export function usePathManagement(config) {
     syncDelLibraryPaths,
     fuseStrmTakeoverRules,
     // Utility functions
+    normalizePath,
     normalizePathJoin,
     generatePathsConfig,
+    getPathKey,
+    getMpKey,
     // Add/remove functions
     addPath,
     removePath,
