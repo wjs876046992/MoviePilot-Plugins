@@ -32,6 +32,57 @@ export const normalizePathJoin = (prefix, rest) => {
 };
 
 /**
+ * 把换行分隔的 `local#remote[#extra]` 配置串解析成行数组。
+ *
+ * ⚠️ 必须与 `watch` 里的解析逻辑**逐字同源**：`reconcileUnifiedPaths` 直接读
+ * `config.*` 字符串而不是读 refs，因为 refs 由异步 watcher 填充 —— 在
+ * `loadConfig()` 里 `Object.assign` 之后同步调用本函数时，refs 还是初始的空
+ * 数组，会把「已存在的真实配置」当成「没有配置」，再在保存时把它覆盖成空串。
+ */
+export const parseLegacyLines = (raw) => {
+  if (!raw || typeof raw !== 'string') return [];
+  return raw.split('\n').filter(line => line.trim());
+};
+
+/** 解析 `local#remote` 两段式（增量同步 / 生活事件 / mp_mediaserver） */
+export const parsePairLines = (raw) =>
+  parseLegacyLines(raw).map(line => {
+    const parts = line.split('#');
+    return { local: parts[0] || '', remote: parts[1] || '' };
+  });
+
+/** 解析 `local#remote#0|1` 三段式（全量同步） */
+export const parseFullSyncLines = (raw) =>
+  parseLegacyLines(raw).map(line => {
+    const parts = line.split('#');
+    // 无第三段（旧格式）或第三段非 '0' 时均为开启；仅第三段为 '0' 时为关闭
+    const enabled = parts.length < 3 || parts[2].trim() !== '0';
+    return { local: parts[0] || '', remote: parts[1] || '', enabled };
+  });
+
+/**
+ * 解析 `local#remote#cd2Prefix` 三段式（监控MP整理）。
+ * 第三段是 CD2 挂载前缀，需要从 remote 里剥离出来还原成「纯网盘路径」。
+ */
+export const parseTransferLines = (raw) =>
+  parseLegacyLines(raw).map(line => {
+    const parts = line.split('#');
+    const local = parts[0] || '';
+    const fullRemote = parts[1] || '';
+    const prefix = parts[2]?.trim() || '';
+    let remote = fullRemote;
+    if (prefix) {
+      const normPrefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
+      const normFull = fullRemote.replace(/^\/+/, '').replace(/\/+$/, '');
+      if (normFull === normPrefix || normFull.startsWith(normPrefix + '/')) {
+        const rest = normFull.slice(normPrefix.length);
+        remote = (rest.startsWith('/') ? rest : '/' + rest) || '';
+      }
+    }
+    return { local, remote, cd2Prefix: prefix };
+  });
+
+/**
  * 路径管理 Composable
  * 管理所有路径数组的状态、双向同步监听和增删操作
  * @param {object} config - 插件配置的 reactive 对象
@@ -113,6 +164,13 @@ export function usePathManagement(config) {
 
   /**
    * 存量路径双向无损融合：将旧版各个独立场景的路径聚合成统一映射表
+   *
+   * ⚠️ **数据源必须是 `config.*` 字符串，不能是下面那些 refs。**
+   * refs 由 `watch(..., { immediate: true })` 填充，而 Vue 的 watcher 是**异步**
+   * 的：`loadConfig()` 里 `Object.assign(config, data)` 之后同步调用本函数时，
+   * refs 还停留在初始的空数组。用 refs 做数据源会把「用户真实存在的配置」读成
+   * 空，并在保存时反手把 `config.full_sync_strm_paths` 等字段覆盖成空串 ——
+   * 即静默清空用户配置。直接解析字符串则与时序无关。
    */
   const reconcileUnifiedPaths = () => {
     const map = new Map();
@@ -133,8 +191,8 @@ export function usePathManagement(config) {
       return map.get(key);
     };
 
-    // 1. 监控MP整理 (transferPaths)
-    (transferPaths.value || []).forEach(p => {
+    // 1. 监控MP整理 (transfer_monitor_paths)
+    parseTransferLines(config.transfer_monitor_paths).forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
         const item = ensureItem(p.local, p.remote);
         item.enable_transfer = true;
@@ -144,24 +202,24 @@ export function usePathManagement(config) {
       }
     });
 
-    // 2. 全量同步 (fullSyncPaths)
-    (fullSyncPaths.value || []).forEach(p => {
+    // 2. 全量同步 (full_sync_strm_paths)
+    parseFullSyncLines(config.full_sync_strm_paths).forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
         const item = ensureItem(p.local, p.remote);
         item.enable_full = p.enabled !== false;
       }
     });
 
-    // 3. 增量同步 (incrementSyncPaths)
-    (incrementSyncPaths.value || []).forEach(p => {
+    // 3. 增量同步 (increment_sync_strm_paths)
+    parsePairLines(config.increment_sync_strm_paths).forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
         const item = ensureItem(p.local, p.remote);
         item.enable_inc = true;
       }
     });
 
-    // 4. 监控115生活事件 (monitorLifePaths)
-    (monitorLifePaths.value || []).forEach(p => {
+    // 4. 监控115生活事件 (monitor_life_paths)
+    parsePairLines(config.monitor_life_paths).forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
         const item = ensureItem(p.local, p.remote);
         item.enable_life = true;
@@ -183,13 +241,13 @@ export function usePathManagement(config) {
       unifiedPaths.value = merged;
     }
 
-    // MP-MediaServer 转换路径合并 (transferMpPaths, incrementSyncMPPaths, monitorLifeMpPaths, apiStrmMPPaths)
+    // MP-MediaServer 转换路径合并（同样读 config 字符串，理由见上）
     const mpMap = new Map();
     const allMpSources = [
-      ...(transferMpPaths.value || []),
-      ...(incrementSyncMPPaths.value || []),
-      ...(monitorLifeMpPaths.value || []),
-      ...(apiStrmMPPaths.value || []),
+      ...parsePairLines(config.transfer_mp_mediaserver_paths),
+      ...parsePairLines(config.increment_sync_mp_mediaserver_paths),
+      ...parsePairLines(config.monitor_life_mp_mediaserver_paths),
+      ...parsePairLines(config.api_strm_mp_mediaserver_paths),
     ];
     allMpSources.forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {

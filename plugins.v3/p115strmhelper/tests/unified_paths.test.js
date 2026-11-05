@@ -1,12 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { reactive } from 'vue';
 import {
   normalizePath,
   normalizePathJoin,
   getPathKey,
   getMpKey,
+  parseTransferLines,
+  parseFullSyncLines,
+  parsePairLines,
   usePathManagement,
 } from '../src/components/composables/usePathManagement.js';
+
+/**
+ * 造一个与真实 Config.vue 同构的 reactive config，供合成场景使用。
+ * 这里是 `reactive` 而不是普通对象 —— 与真实组件一致，保证 watcher 的
+ * 异步语义（也就是下面那条时序回归测试要防的东西）能被复现。
+ */
+const makeConfig = (overrides = {}) => reactive({
+  transfer_monitor_paths: '',
+  transfer_mp_mediaserver_paths: '',
+  full_sync_strm_paths: '',
+  increment_sync_strm_paths: '',
+  increment_sync_mp_mediaserver_paths: '',
+  monitor_life_paths: '',
+  monitor_life_mp_mediaserver_paths: '',
+  api_strm_mp_mediaserver_paths: '',
+  ...overrides,
+});
 
 test('normalizePath cleans slashes and whitespace', () => {
   assert.equal(normalizePath(''), '');
@@ -188,4 +209,70 @@ test('syncAllPathsToConfig respects custom scene overrides', () => {
   assert.equal(config.transfer_monitor_paths, '/custom/transfer#/custom/pan#');
   // full should still use unifiedPaths
   assert.equal(config.full_sync_strm_paths, '/strm/Default#/115/Default#1');
+});
+
+// ---------------------------------------------------------------------------
+// 时序回归：loadConfig 里 Object.assign 之后**同步**调 reconcile 的场景
+// ---------------------------------------------------------------------------
+
+test('reconcileUnifiedPaths reads config strings, not the async watcher refs', () => {
+  // 用户 NAS 上的真实形态（取自线上配置）：
+  //   全量 / 增量 / 生活事件都配了同一对目录；整理监听没配。
+  const config = makeConfig({
+    full_sync_strm_paths: '/media/strms/Movies#/HomeTheater/Movies#1\n'
+      + '/media/strms/TV#/HomeTheater/TV#1',
+    increment_sync_strm_paths: '/media/strms/TV#/HomeTheater/TV\n'
+      + '/media/strms/Movies#/HomeTheater/Movies',
+    monitor_life_paths: '/media/strms/TV#/HomeTheater/TV\n'
+      + '/media/strms/Movies#/HomeTheater/Movies',
+  });
+
+  const pathMgmt = usePathManagement(config);
+
+  // ⚠️ 关键：**不 await nextTick()**。Vue 的 watcher 是异步的，这里模拟的正是
+  //    `loadConfig()` 里 `Object.assign(config, data)` 之后立即调用 reconcile
+  //    的那一瞬间 —— 此时 `fullSyncPaths` 等 refs 还都是初始的空数组。
+  //    旧实现读 refs，会把已有配置读成「一行空白」，用户点保存就被清空。
+  pathMgmt.reconcileUnifiedPaths();
+
+  assert.equal(pathMgmt.unifiedPaths.value.length, 2, '两条已存在的目录都必须被读出来');
+  const movies = pathMgmt.unifiedPaths.value.find(p => p.remote === '/HomeTheater/Movies');
+  assert.ok(movies, 'Movies 行不得丢失');
+  assert.equal(movies.local, '/media/strms/Movies');
+  assert.equal(movies.enable_full, true);
+  assert.equal(movies.enable_inc, true);
+  assert.equal(movies.enable_life, true);
+  assert.equal(movies.enable_transfer, false, '整理监听未配置，不应被点亮');
+});
+
+test('save after load must not wipe existing paths (round-trip safety)', () => {
+  // 这条是上一条的后果断言：读对了还不够，写回时必须逐字还原。
+  const original = {
+    full_sync_strm_paths: '/media/strms/TV#/HomeTheater/TV#1',
+    increment_sync_strm_paths: '/media/strms/TV#/HomeTheater/TV',
+    monitor_life_paths: '/media/strms/TV#/HomeTheater/TV',
+  };
+  const config = makeConfig(original);
+  const pathMgmt = usePathManagement(config);
+
+  pathMgmt.reconcileUnifiedPaths();
+  pathMgmt.syncAllPathsToConfig();
+
+  assert.equal(config.full_sync_strm_paths, original.full_sync_strm_paths);
+  assert.equal(config.increment_sync_strm_paths, original.increment_sync_strm_paths);
+  assert.equal(config.monitor_life_paths, original.monitor_life_paths);
+});
+
+test('parse helpers honor the legacy field formats', () => {
+  assert.deepEqual(parsePairLines('/a#/b\n/c#/d'), [
+    { local: '/a', remote: '/b' },
+    { local: '/c', remote: '/d' },
+  ]);
+  assert.deepEqual(parseFullSyncLines('/a#/b#0'), [{ local: '/a', remote: '/b', enabled: false }]);
+  assert.deepEqual(parseFullSyncLines('/a#/b'), [{ local: '/a', remote: '/b', enabled: true }]);
+  assert.deepEqual(parseTransferLines('/l#/115open/pan#/115open'), [
+    { local: '/l', remote: '/pan', cd2Prefix: '/115open' },
+  ]);
+  assert.deepEqual(parsePairLines(''), []);
+  assert.deepEqual(parsePairLines(null), []);
 });
