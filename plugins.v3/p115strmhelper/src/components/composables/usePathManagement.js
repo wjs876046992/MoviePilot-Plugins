@@ -264,9 +264,15 @@ export function usePathManagement(config) {
     ];
     allMpSources.forEach(p => {
       if (p.local?.trim() || p.remote?.trim()) {
-        const key = getMpKey(p.local, p.remote);
+        const l = (p.local || '').trim();
+        const r = (p.remote || '').trim();
+        // 自动清洗历史误配置：strm 目录与 emby 目录互指的无效规则
+        if (l.includes('/strms/') && r.includes('/emby/')) {
+          return;
+        }
+        const key = getMpKey(l, r);
         if (!mpMap.has(key)) {
-          mpMap.set(key, { local: (p.local || '').trim(), remote: (p.remote || '').trim() });
+          mpMap.set(key, { local: l, remote: r });
         }
       }
     });

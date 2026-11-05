@@ -821,8 +821,8 @@
             </v-row>
             <v-row class="mt-2">
               <v-col cols="12">
-                <v-textarea v-model="shareDialog.globalMpMediaserverPaths" label="MP-媒体库 目录转换（只读，统一维护）"
-                  hint="已由配置页「媒体服务器路径转换（统一）」统一维护并自动应用到所有场景，此处仅展示当前生效值。如需修改请前往插件配置页。"
+                <v-textarea v-model="shareDialog.globalMpMediaserverPaths" label="媒体服务器路径转换（只读，统一维护）"
+                  hint="通知 Emby / Jellyfin 刷新时使用。已由配置页统一维护并应用到所有场景，如需修改请前往插件配置页。"
                   persistent-hint variant="outlined" density="compact" rows="3" auto-grow readonly
                   placeholder="（当前未配置，两端挂载路径一致时无需配置）"></v-textarea>
               </v-col>

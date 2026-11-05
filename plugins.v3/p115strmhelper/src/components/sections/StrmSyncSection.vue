@@ -88,12 +88,10 @@
           <v-divider class="my-4"></v-divider>
           <div class="text-subtitle-2 mb-1 font-weight-bold d-flex align-center">
             <v-icon size="small" class="mr-1" color="primary">mdi-swap-horizontal</v-icon>
-            媒体服务器路径转换（容器映射翻译）
+            媒体服务器路径转换
           </div>
           <div class="text-caption text-medium-emphasis mb-3">
-            Emby / Jellyfin 容器与 MoviePilot 容器挂载同一目录的<strong>路径不同</strong>时配置，插件调用媒体服务器 API（刷新媒体库 / 提取媒体信息）时自动换算。<br>
-            • <strong>两端挂载路径一致请直接留空</strong>；仅在开启「媒体服务器刷新」或「Emby 媒体信息提取」时才需要配置。<br>
-            • 本配置将统一自动应用至所有 STRM 生成场景（整理监听、增量同步、生活事件、API、分享转存）。
+            通知 Emby / Jellyfin 刷新时使用。仅在两端容器挂载路径不一致时配置（一致请留空，自动应用到所有场景）。
           </div>
 
           <div class="d-flex flex-column ga-2">
@@ -107,13 +105,13 @@
               </div>
               <v-row dense>
                 <v-col cols="12" sm="6">
-                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器内部路径 (Emby / Jellyfin 容器内)</div>
-                  <v-text-field v-model="pair.local" placeholder="例如：/mnt/strms" density="compact" variant="outlined"
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
+                  <v-text-field v-model="pair.local" placeholder="例如：/data/HomeTheater" density="compact" variant="outlined"
                     hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
                 <v-col cols="12" sm="6">
-                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 内部路径 (主程序容器内)</div>
-                  <v-text-field v-model="pair.remote" placeholder="例如：/media/strms" density="compact" variant="outlined"
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 路径</div>
+                  <v-text-field v-model="pair.remote" placeholder="例如：/media" density="compact" variant="outlined"
                     hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
               </v-row>
@@ -1304,10 +1302,10 @@
 
             <v-divider class="my-4"></v-divider>
 
-            <div class="text-subtitle-2 mb-2">MoviePilot-媒体库 目录转换:</div>
-            <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information">
-              <div class="text-caption">媒体服务器映射路径和MP映射路径不一样时请配置此项，如果不配置则无法正常刷新或Emby提取媒体信息</div>
-            </v-alert>
+            <div class="text-subtitle-2 mb-1 font-weight-bold">媒体服务器路径转换:</div>
+            <div class="text-caption text-medium-emphasis mb-3">
+              通知 Emby / Jellyfin 刷新时使用。仅在两端容器挂载路径不一致时配置（一致请留空）。
+            </div>
 
             <v-row>
               <v-col cols="12">
@@ -1323,12 +1321,12 @@
                     <v-row dense>
                       <v-col cols="12" sm="6">
                         <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
-                        <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
+                        <v-text-field v-model="pair.local" placeholder="例如：/data/HomeTheater" density="compact" variant="outlined"
                           hide-details="auto" class="full-width-path-field"></v-text-field>
                       </v-col>
                       <v-col cols="12" sm="6">
-                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
-                        <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
+                        <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 路径</div>
+                        <v-text-field v-model="pair.remote" placeholder="例如：/media" density="compact" variant="outlined"
                           hide-details="auto" class="full-width-path-field"></v-text-field>
                       </v-col>
                     </v-row>

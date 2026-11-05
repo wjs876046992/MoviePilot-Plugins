@@ -358,3 +358,17 @@ test('syncAllPathsToConfig respects customApiStrmPaths override', () => {
   ]);
   assert.equal(config.api_strm_mp_mediaserver_paths, '/custom/emby#/custom/mp');
 });
+
+test('reconcileUnifiedPaths filters out invalid strms to emby cross-directory rules', () => {
+  const config = makeConfig({
+    increment_sync_mp_mediaserver_paths: '/media/strms/TV#/media/emby/TV\n/media/strms/Movies#/media/emby/Movies',
+    transfer_mp_mediaserver_paths: '/data/HomeTheater#/media',
+  });
+
+  const pathMgmt = usePathManagement(config);
+  pathMgmt.reconcileUnifiedPaths();
+
+  assert.equal(pathMgmt.unifiedMpPaths.value.length, 1);
+  assert.equal(pathMgmt.unifiedMpPaths.value[0].local, '/data/HomeTheater');
+  assert.equal(pathMgmt.unifiedMpPaths.value[0].remote, '/media');
+});
