@@ -47,23 +47,23 @@
                 </v-btn>
               </div>
 
-              <v-row dense align="center">
-                <v-col cols="12" sm="5">
-                  <v-text-field v-model="pair.local" label="本地 STRM 目录" density="compact" variant="outlined"
-                    append-icon="mdi-folder" hide-details="auto"
+              <v-row dense>
+                <v-col cols="12" sm="6">
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">本地 STRM 目录</div>
+                  <v-text-field v-model="pair.local" placeholder="例如：/media/strms/Movies" density="compact" variant="outlined"
+                    append-icon="mdi-folder" hide-details="auto" class="full-width-path-field"
                     @click:append="openDirSelector(index, 'local', 'unified')"></v-text-field>
                 </v-col>
-                <v-col cols="12" sm="1" class="text-center d-none d-sm-block">
-                  <v-icon color="primary">mdi-pound</v-icon>
-                </v-col>
-                <v-col cols="12" :sm="config.transfer_monitor_clouddrive2_enabled ? 4 : 6">
-                  <v-text-field v-model="pair.remote" label="115 网盘媒体库目录" density="compact" variant="outlined"
-                    append-icon="mdi-folder-network" hide-details="auto"
+                <v-col cols="12" sm="6">
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">115 网盘媒体库目录</div>
+                  <v-text-field v-model="pair.remote" placeholder="例如：/HomeTheater/Movies" density="compact" variant="outlined"
+                    append-icon="mdi-folder-network" hide-details="auto" class="full-width-path-field"
                     @click:append="openDirSelector(index, 'remote', 'unified')"></v-text-field>
                 </v-col>
-                <v-col v-if="config.transfer_monitor_clouddrive2_enabled" cols="12" sm="2">
-                  <v-text-field v-model="pair.cd2Prefix" label="CD2 挂载前缀 (可选)" density="compact" variant="outlined"
-                    placeholder="/115open" hide-details="auto"></v-text-field>
+                <v-col v-if="config.transfer_monitor_clouddrive2_enabled" cols="12">
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">CD2 挂载前缀 (可选，仅整理监听使用)</div>
+                  <v-text-field v-model="pair.cd2Prefix" placeholder="例如：/115open" density="compact" variant="outlined"
+                    hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
               </v-row>
 
@@ -101,17 +101,16 @@
                   <v-icon size="18">mdi-trash-can-outline</v-icon>
                 </v-btn>
               </div>
-              <v-row dense align="center">
-                <v-col cols="12" sm="5">
-                  <v-text-field v-model="pair.local" label="媒体服务器路径 (Emby)" density="compact" variant="outlined"
-                    placeholder="/media/strm" hide-details="auto"></v-text-field>
+              <v-row dense>
+                <v-col cols="12" sm="6">
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
+                  <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
+                    hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
-                <v-col cols="12" sm="2" class="text-center d-none d-sm-block">
-                  <v-icon color="primary" size="small">mdi-swap-horizontal</v-icon>
-                </v-col>
-                <v-col cols="12" sm="5">
-                  <v-text-field v-model="pair.remote" label="MoviePilot 路径" density="compact" variant="outlined"
-                    placeholder="/mnt/strm" hide-details="auto"></v-text-field>
+                <v-col cols="12" sm="6">
+                  <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
+                  <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
+                    hide-details="auto" class="full-width-path-field"></v-text-field>
                 </v-col>
               </v-row>
             </div>
@@ -1169,22 +1168,30 @@
           <v-row>
             <v-col cols="12">
               <div class="d-flex flex-column">
-                <div v-for="(pair, index) in apiStrmPaths" :key="`api-strm-${index}`" class="mb-2 d-flex align-center">
-                  <div class="path-selector flex-grow-1 mr-2">
-                    <v-text-field v-model="pair.local" label="本地STRM目录" density="compact" append-icon="mdi-folder"
-                      @click:append="openDirSelector(index, 'local', 'apiStrm')"></v-text-field>
+                <div v-for="(pair, index) in apiStrmPaths" :key="`api-strm-${index}`"
+                  class="mb-3 pa-3 border rounded unified-pair-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+                  <div class="d-flex align-center justify-space-between mb-2">
+                    <span class="font-weight-bold text-caption text-primary">API 路径映射 #{{ index + 1 }}</span>
+                    <v-btn icon size="x-small" variant="text" color="error" @click="removePath(index, 'apiStrm')" title="删除此路径">
+                      <v-icon size="18">mdi-trash-can-outline</v-icon>
+                    </v-btn>
                   </div>
-                  <v-icon>mdi-pound</v-icon>
-                  <div class="path-selector flex-grow-1 ml-2">
-                    <v-text-field v-model="pair.remote" label="网盘媒体库目录" density="compact"
-                      append-icon="mdi-folder-network"
-                      @click:append="openDirSelector(index, 'remote', 'apiStrm')"></v-text-field>
-                  </div>
-                  <v-btn icon size="small" color="error" class="ml-2" @click="removePath(index, 'apiStrm')">
-                    <v-icon>mdi-delete</v-icon>
-                  </v-btn>
+                  <v-row dense>
+                    <v-col cols="12" sm="6">
+                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">本地 STRM 目录</div>
+                      <v-text-field v-model="pair.local" placeholder="例如：/media/strms/Movies" density="compact" variant="outlined"
+                        append-icon="mdi-folder" hide-details="auto" class="full-width-path-field"
+                        @click:append="openDirSelector(index, 'local', 'apiStrm')"></v-text-field>
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">网盘媒体库目录</div>
+                      <v-text-field v-model="pair.remote" placeholder="例如：/HomeTheater/Movies" density="compact" variant="outlined"
+                        append-icon="mdi-folder-network" hide-details="auto" class="full-width-path-field"
+                        @click:append="openDirSelector(index, 'remote', 'apiStrm')"></v-text-field>
+                    </v-col>
+                  </v-row>
                 </div>
-                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-2 align-self-start"
+                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
                   @click="addPath('apiStrm')">
                   添加路径
                 </v-btn>
@@ -1201,21 +1208,29 @@
 
           <v-row>
             <v-col cols="12">
-              <div class="d-flex flex-column">
+              <div class="d-flex flex-column ga-2">
                 <div v-for="(pair, index) in apiStrmMPPaths" :key="`api-strm-mp-${index}`"
-                  class="mb-2 d-flex align-center">
-                  <div class="path-selector flex-grow-1 mr-2">
-                    <v-text-field v-model="pair.local" label="媒体库服务器映射目录" density="compact"></v-text-field>
+                  class="pa-3 border rounded mb-2 unified-mp-card" style="background-color: rgba(var(--v-theme-on-surface), 0.02);">
+                  <div class="d-flex align-center justify-space-between mb-2">
+                    <span class="text-caption font-weight-medium text-medium-emphasis">转换规则 #{{ index + 1 }}</span>
+                    <v-btn icon size="x-small" color="error" variant="text" @click="removePath(index, 'apiStrm-mp')" title="删除转换规则">
+                      <v-icon size="18">mdi-trash-can-outline</v-icon>
+                    </v-btn>
                   </div>
-                  <v-icon>mdi-pound</v-icon>
-                  <div class="path-selector flex-grow-1 ml-2">
-                    <v-text-field v-model="pair.remote" label="MP映射目录" density="compact"></v-text-field>
-                  </div>
-                  <v-btn icon size="small" color="error" class="ml-2" @click="removePath(index, 'apiStrm-mp')">
-                    <v-icon>mdi-delete</v-icon>
-                  </v-btn>
+                  <v-row dense>
+                    <v-col cols="12" sm="6">
+                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">媒体服务器路径 (Emby / Jellyfin)</div>
+                      <v-text-field v-model="pair.local" placeholder="例如：/media/strm" density="compact" variant="outlined"
+                        hide-details="auto" class="full-width-path-field"></v-text-field>
+                    </v-col>
+                    <v-col cols="12" sm="6">
+                      <div class="stacked-label text-caption font-weight-medium text-medium-emphasis mb-1">MoviePilot 映射目录</div>
+                      <v-text-field v-model="pair.remote" placeholder="例如：/mnt/strm" density="compact" variant="outlined"
+                        hide-details="auto" class="full-width-path-field"></v-text-field>
+                    </v-col>
+                  </v-row>
                 </div>
-                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-2 align-self-start"
+                <v-btn size="small" prepend-icon="mdi-plus" variant="outlined" class="mt-1 align-self-start"
                   @click="addPath('apiStrm-mp')">
                   添加路径
                 </v-btn>
@@ -1517,6 +1532,18 @@ const lifeMoveMatrixRows = computed(() => {
 }
 
 /* 统一映射生效场景行防挤压 */
+.strm-sync-section .stacked-label {
+  display: block;
+  font-size: 0.8125rem;
+  line-height: 1.3;
+}
+
+.strm-sync-section .full-width-path-field :deep(.v-field__input) {
+  min-height: 40px !important;
+  font-family: monospace, monospace;
+  font-size: 0.8125rem !important;
+}
+
 .strm-sync-section .unified-scene-row :deep(.v-checkbox) {
   flex: 0 0 auto !important;
 }
