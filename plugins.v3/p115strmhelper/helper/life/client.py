@@ -1,6 +1,5 @@
 from filecmp import cmp as files_equal
 from shutil import move as shutil_move, rmtree
-from collections import defaultdict
 from threading import Timer, Event, Thread, Lock, current_thread
 from time import sleep, strftime, localtime, time, monotonic
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -29,6 +28,7 @@ from ...helper.mediainfo_download import MediaInfoDownloader
 from ...helper.mediasyncdel import MediaSyncDelHelper
 from ...helper.mediaserver import MediaServerRefresh, emby_mediainfo_queue
 from .transfer_wait import wait_for_transfer_complete
+from .notification import NotificationBatch
 
 from urllib.error import HTTPError
 
@@ -80,6 +80,8 @@ class MonitorLife:
     WAIT_TIME_OUT: int = 15
     SLEEP_TIME: int = 10
     WEB_FALLBACK_DURATION: int = 24 * 60 * 60
+    # 合并通知里每个类别最多列出多少个文件，其余只报数量
+    _NOTIFICATION_ITEM_LIMIT: int = 10
 
     def __init__(
         self,
@@ -102,8 +104,8 @@ class MonitorLife:
         self._stopping = False
 
         self._monitor_life_notification_timer = None
-        self._monitor_life_notification_queue = defaultdict(
-            lambda: {"strm_count": 0, "mediainfo_count": 0}
+        self._monitor_life_notification_batch = NotificationBatch(
+            self._NOTIFICATION_ITEM_LIMIT
         )
 
         self.rmt_mediaext: List = []
@@ -171,31 +173,21 @@ class MonitorLife:
         """
         发送合并后的通知
         """
-        if "life" not in self._monitor_life_notification_queue:
+        # 先摘下当前批次再换新，发送期间到达的事件会落进新批次，不会被这次重置吞掉
+        batch = self._monitor_life_notification_batch
+        self._monitor_life_notification_batch = NotificationBatch(
+            self._NOTIFICATION_ITEM_LIMIT
+        )
+        if batch.empty:
             return
 
-        counts = self._monitor_life_notification_queue["life"]
-        if counts["strm_count"] == 0 and counts["mediainfo_count"] == 0:
-            return
-
-        text_parts = []
-        if counts["strm_count"] > 0:
-            text_parts.append(f"📄 生成STRM文件 {counts['strm_count']} 个")
-        if counts["mediainfo_count"] > 0:
-            text_parts.append(f"⬇️ 下载媒体文件 {counts['mediainfo_count']} 个")
-
-        if text_parts and configer.get_config("notify"):
+        text = batch.render()
+        if text and configer.get_config("notify"):
             post_message(
                 mtype=MessageType.Plugin,
                 title=i18n.translate("life_sync_done_title"),
-                text="\n" + "\n".join(text_parts),
+                text="\n" + text,
             )
-
-        # 重置计数器
-        self._monitor_life_notification_queue["life"] = {
-            "strm_count": 0,
-            "mediainfo_count": 0,
-        }
 
     def _get_path_by_cid(self, cid: int) -> Optional[Path]:
         """
@@ -581,6 +573,9 @@ class MonitorLife:
             # 文件夹情况，遍历文件夹
             mediainfo_count = 0
             strm_count = 0
+            # 目录事件可能一次展开上千个文件，这里一边计数一边只留前若干条路径用于通知
+            strm_paths: List[str] = []
+            mediainfo_paths: List[str] = []
             _databasehelper.upsert_batch(
                 _databasehelper.process_life_dir_item(
                     event=event, file_path=file_path.as_posix()
@@ -671,6 +666,13 @@ class MonitorLife:
                                     download_url=download_url,
                                 )
                                 mediainfo_count += 1
+                                if (
+                                    len(mediainfo_paths)
+                                    < self._NOTIFICATION_ITEM_LIMIT
+                                ):
+                                    mediainfo_paths.append(
+                                        Path(file_path).as_posix()
+                                    )
                                 continue
 
                         if file_path.suffix.lower() not in self.rmt_mediaext_set:
@@ -727,6 +729,8 @@ class MonitorLife:
                             str(new_file_path),
                         )
                         strm_count += 1
+                        if len(strm_paths) < self._NOTIFICATION_ITEM_LIMIT:
+                            strm_paths.append(Path(new_file_path).as_posix())
                         scrape_metadata = True
                         if configer.get_config("monitor_life_scrape_metadata_enabled"):
                             if configer.get_config(
@@ -765,12 +769,12 @@ class MonitorLife:
                 _databasehelper.upsert_batch(processed)
             if configer.get_config("notify"):
                 if strm_count > 0 or mediainfo_count > 0:
-                    self._monitor_life_notification_queue["life"]["strm_count"] += (
-                        strm_count
+                    self._monitor_life_notification_batch.add(
+                        "strm_items", strm_paths, strm_count
                     )
-                    self._monitor_life_notification_queue["life"][
-                        "mediainfo_count"
-                    ] += mediainfo_count
+                    self._monitor_life_notification_batch.add(
+                        "mediainfo_items", mediainfo_paths, mediainfo_count
+                    )
                     self._schedule_notification()
         else:
             file_path_string = file_path.as_posix()
@@ -829,9 +833,9 @@ class MonitorLife:
                             download_url=download_url,
                         )
                         if configer.get_config("notify"):
-                            self._monitor_life_notification_queue["life"][
-                                "mediainfo_count"
-                            ] += 1
+                            self._monitor_life_notification_batch.add_one(
+                                "mediainfo_items", file_path
+                            )
                             self._schedule_notification()
                         return
 
@@ -886,7 +890,9 @@ class MonitorLife:
                     "【监控生活事件】生成 STRM 文件成功: %s", str(new_file_path)
                 )
                 if configer.get_config("notify"):
-                    self._monitor_life_notification_queue["life"]["strm_count"] += 1
+                    self._monitor_life_notification_batch.add_one(
+                        "strm_items", new_file_path
+                    )
                     self._schedule_notification()
                 scrape_metadata = True
                 if configer.get_config("monitor_life_scrape_metadata_enabled"):

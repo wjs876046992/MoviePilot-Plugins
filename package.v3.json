@@ -1321,7 +1321,7 @@
     "name": "115网盘STRM助手",
     "description": "115网盘STRM生成一条龙服务",
     "labels": "云盘",
-    "version": "3.4.6",
+    "version": "3.4.7",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem",
     "level": 1,
@@ -1329,6 +1329,7 @@
     "system_version": ">=3.0.0",
     "v3t": false,
     "history": {
+      "v3.4.7": "生活事件生成 STRM 的合并通知现在会列出具体文件名：\n- 正文在数量之外逐条列出生成/下载的文件路径，最多 10 条，其余折叠为「还有 N 个」\n- 计数与展示分离，目录事件一次展开上千个文件时也不会把通知撑爆或漏报数量\n- 计数逻辑抽到 helper/life/notification.py，可在无 MoviePilot 后端的环境下直接单测",
       "v3.4.6": "媒体服务器路径转换说明与标签精简：\n- 说明精炼为一句话：「通知 Emby / Jellyfin 刷新时使用。仅在两端容器挂载路径不一致时配置（一致请留空，自动应用到所有场景）」\n- 字段标签与占位符精简为「媒体服务器路径 (Emby / Jellyfin)」与「MoviePilot 路径」，示例对应真实宿主挂载关系",
       "v3.4.5": "媒体服务器路径转换语义理清与分享场景统一：\n- 统一路径转换明确标注为容器映射翻译（Emby 容器内部路径 ⇄ MoviePilot 容器内部路径），详尽说明两端一致时直接留空、仅在开刷新或提取时才需配置\n- 分享 STRM 场景的媒体服务器转换路径（share_strm_mp_mediaserver_paths）一并纳入统一表维护与双向融合分发\n- 补充分享转换覆盖单测并更新开发文档",
       "v3.4.4": "排版细节与 API STRM 统一继承优化：\n- 生效场景标题与 4 项复选框拆分为上下独立换行显示，标签与开关舒展清晰\n- 修复各场景继承提示横幅中「独立自定义路径」开关垂直对齐错位的问题，统一锁定高度与垂直居中\n- API STRM 生成场景全面接入统一媒体库映射：默认自动继承统一配置与媒体服务器转换，无需重复录入，并支持独立自定义",
