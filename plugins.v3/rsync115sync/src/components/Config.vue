@@ -12,7 +12,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.5</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.6</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -593,6 +593,59 @@
               <template v-else>当前设置：已禁用定期催办提醒（仅首次发现时通知一次）</template>
             </div>
           </div>
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">上传中文件不判疑似（查询 CD2 队列）</div>
+              <div class="text-caption text-medium-emphasis">
+                判定「疑似上传异常」前，先问 CD2 这个文件是否**正在上传**。
+                开着上传的不报警、也拒绝被「删旧重传」删除 ——
+                否则大文件传不完（宽限期默认 5 分钟，而 8 GB 要传几十分钟）
+                会被反复判疑似并删掉重传，每次作废已传的部分。
+                <br>
+                <b>需要在 CD2 网页「API Tokens」页生成一个 Token</b>。
+                查不到时一律按原有判据处理，不影响同步。
+              </div>
+            </div>
+            <v-switch v-model="config.cd2_query_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+          <div v-if="config.cd2_query_enabled" class="setting-row setting-row-stacked row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">CD2 API 地址与 Token</div>
+              <div class="text-caption text-medium-emphasis">
+                地址填**从 MoviePilot 容器能访问到的** CD2 端口，通常是宿主机 IP 加端口
+                （如 <code class="wrap-anywhere">http://192.168.1.8:19798</code>）。
+                填 <code class="wrap-anywhere">127.0.0.1</code> 一般不行 —— CD2 不在本容器的回环里。
+              </div>
+            </div>
+            <v-row density="compact" class="mt-2">
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">CD2 API 地址</div>
+                <v-text-field
+                  v-model="config.cd2_api_url"
+                  placeholder="http://192.168.1.8:19798"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">API Token</div>
+                <v-text-field
+                  v-model="config.cd2_api_token"
+                  :placeholder="config.cd2_api_token_set ? '已配置（留空表示保持不变）' : '粘贴 CD2 生成的 Token'"
+                  type="password"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  autocomplete="new-password"
+                ></v-text-field>
+              </v-col>
+            </v-row>
+            <div v-if="config.cd2_api_token_set && !config.cd2_api_token"
+                 class="text-caption text-success mt-1">
+              已保存 Token（出于安全不回显）。留空保存＝保持不变；如需清除请填入一个空格再删掉后保存。
+            </div>
+          </div>
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">当前状态</div>
@@ -689,6 +742,16 @@ const config = ref({
   strm_suspect_remind_hours: 2,
   strm_suspect_remind_start_hour: 9,
   strm_suspect_remind_end_hour: 21,
+  // CD2 上传队列查询：默认关闭（后端 _CD2_QUERY_ENABLED_DEFAULT 也是 False）。
+  // **必须在这里写同一份默认值** —— v-model 绑 undefined 会让开关显示为关闭，
+  // 而若后端默认是开启，界面就会与真实状态不一致（本文件已有同类教训）。
+  // ⚠️ `cd2_api_token` 初始为空串：后端**不回显**已保存的 token，
+  // 只回 `cd2_api_token_set` 布尔量。留空保存＝保持不变（后端按"键存在但为空"
+  // 判为清除，因此保存前不能把空串塞进 payload —— 见 saveConfig 的处理）。
+  cd2_query_enabled: false,
+  cd2_api_url: '',
+  cd2_api_token: '',
+  cd2_api_token_set: false,
 })
 
 // ---- 限流参数的实时可读化：把秒数/个数换算成用户能判断的速率与提示 ----
@@ -800,6 +863,25 @@ function _payloadForBackend() {
   for (const p of payload.sync_pairs || []) {
     delete p.__uid
   }
+  // ⚠️ CD2 token 的三态语义必须在**这里**落实，不能让空串原样发出去。
+  //
+  // 后端约定：键缺失 = 保持原值；空串 = 清除；非空 = 覆盖。
+  // 而界面上的输入框在"已配置"状态下本来就是空的（后端不回显 token），
+  // 所以「留空」在用户看来是"别动它"，在后端看来却是"清空"。
+  // 直接发空串会让用户每保存一次配置就静默丢掉一次 token。
+  // An empty field means "leave it alone" to the user but "clear" to the backend,
+  // so the key is dropped entirely when a token is already stored.
+  if (!payload.cd2_api_token) {
+    if (payload.cd2_api_token_set) {
+      delete payload.cd2_api_token
+    } else {
+      // 从未配置过且没填 —— 明确发空串，语义是"没有 token"
+      payload.cd2_api_token = ''
+    }
+  }
+  // 这两个是后端**回显**的只读状态，不是配置项，别回传。
+  delete payload.cd2_api_token_set
+  delete payload.cd2_last_error
   return payload
 }
 
@@ -811,6 +893,12 @@ async function saveConfig() {
     const res = await props.api.post('plugin/Rsync115Sync/config', _payloadForBackend())
     if (res && res.success) {
       successMessage.value = '配置已成功保存！'
+      // 保存后立刻清掉输入框里的 token 并刷新状态：
+      //  · 明文 token 没有理由继续留在表单/内存里（它已经进后端了）；
+      //  · `cd2_api_token_set` 需要重新读取才能把占位提示切成"已配置"。
+      // Clearing the field also prevents a later unrelated save from re-sending it.
+      config.value.cd2_api_token = ''
+      await loadConfig()
     } else {
       error.value = res?.message || '保存配置失败'
     }

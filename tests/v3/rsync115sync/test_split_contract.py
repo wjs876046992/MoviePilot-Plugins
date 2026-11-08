@@ -46,7 +46,7 @@ def test_mixins_are_stateless():
     **不会被重置**，两个虚拟分身会共用同一份清单/队列。因此拆分红线是：
     Mixin 里只允许方法定义与导入。
     """
-    for name in ("strm_ops", "sync_ops", "commands"):
+    for name in ("strm_ops", "sync_ops", "commands", "cd2_ops"):
         tree = ast.parse((_plugin_dir() / f"{name}.py").read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, (ast.Assign, ast.AugAssign)):

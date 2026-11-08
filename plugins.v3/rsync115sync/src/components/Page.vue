@@ -230,6 +230,22 @@
             <template v-else>
               属正常等待，无需处理。
             </template>
+            <!-- CD2 队列查询的实际生效状态：它**不是**默认开启的，
+                 所以必须显式告诉用户"这个保护有没有在工作"。
+                 否则用户看到「正在上传中」被移出清单，会误以为是别的机制做的。 -->
+            <div v-if="statusData.cd2_query_enabled && statusData.cd2_token_set" class="mt-1 text-caption">
+              📤 已启用 CD2 队列核对：正在上传的文件不会被判疑似，也不会被删旧重传。
+            </div>
+            <div v-else-if="statusData.cd2_query_enabled" class="mt-1 text-caption">
+              ⚠️ CD2 队列核对已开启，但**尚未填写 API Token**，因此实际未生效。
+            </div>
+            <div v-else class="mt-1 text-caption">
+              💡 大文件可能在宽限期内传不完而被反复判疑似。
+              <b>建议开启「上传中文件不判疑似」</b>（配置页 → strm 交叉验证）。
+            </div>
+            <div v-if="statusData.cd2_last_error" class="mt-1 text-caption text-warning">
+              CD2 查询失败（按原判据处理）：{{ statusData.cd2_last_error }}
+            </div>
           </div>
         </v-alert>
 
@@ -1058,6 +1074,12 @@ const statusData = ref({
   strm_regrace_hours: 1,
   strm_watching: 0,
   strm_grace_minutes: 5,
+  // CD2 上传队列核对的运行态（默认关闭 —— 与后端一致）。
+  // 看板据此区分「没开」「开了但没 token」「开了在跑」三种状态，
+  // 合并成布尔量会让"看起来在保护"和"实际没保护"无法分辨。
+  cd2_query_enabled: false,
+  cd2_token_set: false,
+  cd2_last_error: '',
   // 已请 strm 助手补生成过的 key → 时间戳；以及助手就绪状态（含不可用原因）
   strm_gen_requested: {},
   strm_gen_dir_limit: 20,

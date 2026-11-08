@@ -461,6 +461,15 @@ class StrmOpsMixin:
         # 它是**已经确定的误报**，而另一个要读文件系统。
         cooling_pruned = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects()
+        # 第三个清理出口：此刻**正在 CD2 上传**的疑似条目。
+        #
+        # 与上面两个的分工（三者成因完全不同，不能合并计数）：
+        #   · 冷却队列 —— 还没轮到（本插件自己的队列表，rsync 尚未开始）
+        #   · 已解决   —— .strm 出现了（其实成功了）
+        #   · 本方法   —— CD2 已经在传（**进展中**，只是宽限期不够长）
+        # 放在这里而不是只挡在"新发现"那一步，是因为条目可能早就进了清单：
+        # 用户上次扫描时它还没开始传，现在开始了。两个时机都要覆盖。
+        check_cd2_pruned = self._cd2_prune_in_flight_suspects()
 
         grace_secs = _strm.grace_secs_of(self._strm_grace_minutes)
         settled_ok: List[str] = []
@@ -510,12 +519,27 @@ class StrmOpsMixin:
             # 不清理的话这个字典只增不减，长期运行会把每次请求过的 key 全留着 ——
             # 而看板正是靠它标记「已请求生成」，陈旧标记会让新条目被误标。
             self._strm_gen_requested.pop(k, None)
+        # ⚠️ 转疑似**之前**先问 CD2：到期的条目里，有多少其实还在上传？
+        #
+        # 这一步是宽限期机制的兜底，而不是它的替代 —— 宽限期按"文件应该多久
+        # 出 strm"配，而一个 8 GB 文件的上传时间取决于网速，不是配置能预测的。
+        # 用户实测原话：「存在需要真实上传的，也会放疑似，不清楚情况时会一直
+        # 删除一直重传」。
+        #
+        # 被挡下的条目**留在观察期**（不 pop `_strm_watch`），下一轮继续判 ——
+        # 它既没有成功也没有失败，只是还没传完。让它一直在观察期是诚实的，
+        # 而把它标成"疑似"会引向删旧重传这个纯破坏性动作。
+        still_uploading = self._cd2_suppress_new_suspects(new_suspects)
         for k in new_suspects:
+            if k in still_uploading:
+                continue
             self._strm_watch.pop(k, None)
             self._strm_suspects[k] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
             # ⚠️ 有意**保留** _strm_gen_requested：这些条目正是「已经请助手生成过、
             # 宽限期到仍无 strm」的那批，标记必须留着，用户才知道这已经是补生成
             # 之后的结果（判定比首次疑似硬得多），而不是又一轮普通疑似。
+        if still_uploading:
+            new_suspects = [k for k in new_suspects if k not in still_uploading]
         if settled_ok or dropped or new_suspects:
             self.save_data("strm_watch", self._strm_watch)
             self.save_data("strm_suspects", self._strm_suspects)
@@ -539,7 +563,9 @@ class StrmOpsMixin:
         return {"checked": len(settled_ok) + len(new_suspects) + len(dropped),
                 "ok": len(settled_ok), "new_suspects": len(new_suspects),
                 "resolved": len(resolved),
-                "cooling_pruned": len(cooling_pruned)}
+                "cooling_pruned": len(cooling_pruned),
+                "cd2_in_flight": len(still_uploading),
+                "cd2_pruned": len(check_cd2_pruned)}
 
     def _check_suspect_remind(self, now_ts: float) -> None:
         """
@@ -915,25 +941,49 @@ class StrmOpsMixin:
             self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_SCAN}
             added += 1
 
+        # ⚠️ **新增之后**再问 CD2：本轮新加的条目里有哪些其实正在上传。
+        #
+        # 为什么不能在循环里逐条问：每调一次 `_cd2_in_flight_for` 都要取一次
+        # 上传列表（有缓存，但首次仍是一次 HTTP）。一次扫描可能新增几百条，
+        # 逐条问等于把一次查询变成几百次判断。批量问一次，再按 key 回筛。
+        # One batched query: the sweep can add hundreds of entries, and asking per
+        # entry would turn a single HTTP call into hundreds of lookups.
+        if added:
+            in_flight = self._cd2_suppress_new_suspects(
+                [k for k in candidates if k in self._strm_suspects])
+            for key in list(in_flight):
+                self._strm_suspects.pop(key, None)
+                added -= 1
+            if in_flight:
+                self.save_data("strm_suspects", self._strm_suspects)
+                skipped_uploading = len(in_flight)
+            else:
+                skipped_uploading = 0
+        else:
+            skipped_uploading = 0
+
         if added:
             self.save_data("strm_suspects", self._strm_suspects)
         logger.info(f"[Rsync115Sync] 📺 主动 strm 扫描（已检查 {checked} 个文件）："
                     f"发现 {len(candidates)} 个缺 strm，新增 {added} 个疑似"
                     f"{f'，因忽略规则跳过 {skipped_ignored} 个' if skipped_ignored else ''}"
                     f"{f'，{skipped_watching} 个仍在观察期未降级' if skipped_watching else ''}"
-                    f"{f'，{skipped_cooling} 个仍在冷却队列未上传' if skipped_cooling else ''}")
+                    f"{f'，{skipped_cooling} 个仍在冷却队列未上传' if skipped_cooling else ''}"
+                    f"{f'，{skipped_uploading} 个正在 CD2 上传中未计入' if skipped_uploading else ''}")
 
         if added:
             self._notify_strm_suspects(candidates[:added])
 
-        # 顺带清掉两类**确定的误报**。放在扫描里是因为用户点这个按钮的意图
+        # 顺带清掉三类**确定的误报**。放在扫描里是因为用户点这个按钮的意图
         # 正是「全面看一遍现在到底还有哪些问题」—— 只报新增而不清理失效的，
         # 清单会越看越不可信（挂着的问题其实早解决了 / 压根还没轮到）。
         #
         # ① 仍在冷却队列的（尚未上传 ⇒ 不可能有 strm）—— 用户实测反馈的这一类；
-        # ② `.strm` 已经出现的（上传其实成功了）。
+        # ② `.strm` 已经出现的（上传其实成功了）；
+        # ③ 正在 CD2 上传的（进展中，宽限期不够长而已）。
         cooling_pruned = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects()
+        cd2_pruned = self._cd2_prune_in_flight_suspects()
 
         # 文案原则：计数一行、每个跳过原因一行。此前是 6 段带括号解释的长句
         # 加一段理论说明，用户读完仍然只知道「缺 2 个」。
@@ -944,6 +994,11 @@ class StrmOpsMixin:
                     f"（尚未上传），已移出。")
         if resolved:
             msg += f"\n✅ {len(resolved)} 个的 strm 已出现，已移出。"
+        if cd2_pruned:
+            msg += (f"\n📤 {len(cd2_pruned)} 个疑似其实正在 CD2 上传中"
+                    f"（不是异常），已移出。")
+        if skipped_uploading:
+            msg += f"\n📤 {skipped_uploading} 个正在 CD2 上传中，未计入。"
         if skipped_cooling:
             # 必须说出来：否则用户会以为扫出来的这批漏掉了。它们不是漏掉，
             # 而是还没轮到上传 —— 冷却期结束、同步跑过之后才会有 .strm。
@@ -968,7 +1023,9 @@ class StrmOpsMixin:
                          "skipped_ignored": skipped_ignored,
                          "skipped_watching": skipped_watching,
                          "skipped_cooling": skipped_cooling,
+                         "skipped_uploading": skipped_uploading,
                          "resolved_suspects": resolved,
+                         "cd2_pruned_suspects": cd2_pruned,
                          "cooling_pruned_suspects": cooling_pruned}}
 
     def _reply_strm_keyword(self, event: Optional[Event], keyword: str) -> None:
@@ -1041,6 +1098,18 @@ class StrmOpsMixin:
                 continue
             self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_SCAN}
             added += 1
+        # 与全量扫描同口径：新增之后批量问一次 CD2，正在上传的不计入。
+        # 关键字查询命中的往往正是用户刚发现"怎么还没出 strm"的那几个大文件
+        # —— 恰恰是最可能正在上传的一批。
+        if added:
+            in_flight = self._cd2_suppress_new_suspects(
+                [k for k in missing if k in self._strm_suspects])
+            for key in list(in_flight):
+                self._strm_suspects.pop(key, None)
+                added -= 1
+            skipped_uploading = len(in_flight)
+        else:
+            skipped_uploading = 0
         if added:
             self.save_data("strm_suspects", self._strm_suspects)
             logger.warning(f"[Rsync115Sync] 📺 关键字 strm 检查「{keyword}」："
@@ -1051,6 +1120,8 @@ class StrmOpsMixin:
                  f"命中文件: {len(result['matched'])} 个",
                  f"✅ 已有 strm: {len(present)} 个",
                  f"❌ 缺 strm  : {len(missing)} 个（新增疑似 {added} 个）"]
+        if skipped_uploading:
+            lines.append(f"📤 正在 CD2 上传中，未计入疑似: {skipped_uploading} 个")
         if skipped_cooling:
             lines.append(f"🧊 仍在冷却队列（尚未上传）: {skipped_cooling} 个 —— 未计入疑似")
         if no_strm_dir:
@@ -1110,6 +1181,7 @@ class StrmOpsMixin:
             # 在最需要它的场景下恰好被跳过。
             cooling = self._prune_cooling_suspects()
             resolved = self._prune_resolved_suspects() if self._strm_suspects else []
+            uploading = self._cd2_prune_in_flight_suspects() if self._strm_suspects else []
             # ⚠️ 措辞对两个入口都得成立：看板传勾选的 key（"所选文件…"），
             # 命令侧传的是 watch 的全量 key（此时是"当前没有条目"）。
             # 单写前者会让 `/rsync_strm check` 在没有观察条目时回一句
@@ -1122,7 +1194,8 @@ class StrmOpsMixin:
             # 没变，看板据此提示"可能已被处理"）。
             return {"success": False,
                     "message": "当前没有处于观察期的条目（可能都已处理或解除）",
-                    "data": {"cooling_pruned": cooling, "resolved_suspects": resolved}}
+                    "data": {"cooling_pruned": cooling, "resolved_suspects": resolved,
+                             "cd2_pruned_suspects": uploading}}
 
         changed = False
         entered: List[str] = []          # 本次因到期而转入疑似的 key
@@ -1247,6 +1320,7 @@ class StrmOpsMixin:
         # 误报"（只查内存里的队列），而已解决要读文件系统。
         cooling = self._prune_cooling_suspects()
         resolved = self._prune_resolved_suspects() if self._strm_suspects else []
+        uploading = self._cd2_prune_in_flight_suspects() if self._strm_suspects else []
         # 结果挂进 data，由调用方（看板端点 / 命令侧）决定怎么措辞 ——
         # 本函数负责"清"，调用方负责"说"。
         return {"success": True, "message": msg,
@@ -1254,6 +1328,7 @@ class StrmOpsMixin:
                          "still_watching": still,
                          "removed": gone + no_dir, "results": results,
                          "cooling_pruned": cooling,
+                         "cd2_pruned_suspects": uploading,
                          "resolved_suspects": resolved}}
 
     def check_one(self, key: str, now_ts: float, grace_secs: float) -> Tuple[str, Optional[str]]:
@@ -1961,6 +2036,26 @@ class StrmOpsMixin:
             return {"success": False, "message": "未指定要重传的文件"}
 
         who = f"（{origin}）" if origin else ""
+
+        # ---- 闸门 0：正在 CD2 上传的文件一律不许删 ----
+        #
+        # ⚠️ 这是整个功能里**唯一不可省**的一步。前面所有"不报警"的改动都只是
+        # 减少误报，而这里挡住的是**真实的破坏**：删掉一个正在上传的文件，
+        # 已经传完的那几 GB 全部作废，然后从头再传 —— 而它传不完的原因
+        # （网速 vs 宽限期）一点都没变，于是下一轮还会再删一次。
+        # 用户实测原话：「不清楚情况时会一直删除一直重传」。
+        #
+        # 为什么挡在这里而不是只在判定处挡：入口太多 —— 看板勾选、
+        # `/rsync_strm retry <序号>`、`/rsync_retry <文件名>`、全部重传，
+        # 其中有些针对的是**早已在清单里**的条目，根本不经过"新发现"的判定。
+        # 删旧通道是它们唯一的共同必经点。
+        # This is the only gate that prevents real damage; every entry path passes
+        # through the delete step, and not all of them go through suspect creation.
+        cd2_blocked = self._cd2_block_retransfer(keys)
+        if cd2_blocked:
+            return {"success": False, "message": cd2_blocked,
+                    "data": {"deleted": [], "undeletable": list(keys),
+                             "blocked_in_flight": True}}
 
         # ---- 删之前先确认这轮传得动 ----
         # 顺序是承重的：先删后传的实现里，任何一条前置闸门（执行锁、风控退避、

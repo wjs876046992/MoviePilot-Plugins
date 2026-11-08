@@ -128,6 +128,9 @@ from . import strm as _strm  # noqa: E402
 from . import strm_ops as strm_ops_mod  # noqa: E402
 from .strm_ops import StrmOpsMixin  # noqa: E402
 from .sync_ops import SyncOpsMixin  # noqa: E402
+# CD2 上传队列查询：判疑似前先问一句「这个文件是不是还在传」，
+# 避免把大文件正在上传误判成异常、进而被删旧重传打断（见 cd2_ops 头注释）。
+from .cd2_ops import Cd2OpsMixin  # noqa: E402
 from . import commands as commands_mod  # noqa: E402
 from .commands import CommandsMixin  # noqa: E402
 # 组合根注入：宿主能力绑定以 __init__.py 为唯一真相（见 commands.py 头注释）。
@@ -147,6 +150,9 @@ from .constants import (  # noqa: E402
     LEGACY_DEFAULTS_ALL as _LEGACY_DEFAULTS_ALL,
     MAX_LOGGED_PATHS as _MAX_LOGGED_PATHS,
     MAX_PATH_CHARS as _MAX_PATH_CHARS,
+    # CD2 上传队列查询的默认值（见 constants 里该段的设计说明）
+    CD2_API_URL_DEFAULT as _CD2_API_URL_DEFAULT,
+    CD2_QUERY_ENABLED_DEFAULT as _CD2_QUERY_ENABLED_DEFAULT,
     SOURCE_CURSOR_OVERLAP_SECS as _SOURCE_CURSOR_OVERLAP_SECS,
     SOURCE_SCAN_CRON_DEFAULT as _SOURCE_SCAN_CRON_DEFAULT,
     SOURCE_SCAN_ENABLED_DEFAULT as _SOURCE_SCAN_ENABLED_DEFAULT,
@@ -198,11 +204,11 @@ def _is_video_file(path: str) -> bool:
     return _ext_of(path).lower() in _VIDEO_EXT_SET
 
 
-class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
+class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _PluginBase):
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.5"
+    plugin_version = "0.5.6"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -362,6 +368,25 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         # Keys already handed to the helper, so repeated clicks do not silently
         # re-trigger cloud traversals.
         self._strm_gen_requested: Dict[str, float] = {}
+
+        # ---- CD2 上传队列查询（v0.5.6）----
+        # 判疑似 / 执行删旧重传前，先问 CD2「这个文件此刻是不是还在上传」。
+        # 解决的是「大文件传不完 → 判疑似 → 删旧重传 → 从零重传」这个
+        # 自我维持的破坏环路，详见 cd2_ops.py 头注释。
+        #
+        # ⚠️ 默认关闭：它需要一个 CD2 API Token，且拿不到 token 时会静默失效。
+        # 一个"看起来在工作"的保护比没有保护更糟，所以必须由用户显式开启。
+        # Off by default — a safeguard that silently does nothing is worse than none.
+        self._cd2_query_enabled: bool = _CD2_QUERY_ENABLED_DEFAULT
+        self._cd2_api_url: str = _CD2_API_URL_DEFAULT
+        self._cd2_api_token: str = ""
+        # 运行态：查询缓存与失败静默期。**不持久化** —— 它们描述的是"此刻
+        # 这台机器能不能连上 CD2"，重启后必须重新探测，不能沿用旧结论。
+        # Runtime-only: connectivity must be re-probed after a reload.
+        self._cd2_cache: Dict[str, Any] = {}
+        self._cd2_mount_cache: Dict[str, Any] = {}
+        self._cd2_backoff_until: float = 0.0
+        self._cd2_last_error: str = ""
 
         # strm 助手健康检查的运行态（见 strm_ops._helper_health_check）。
         # ⚠️ 这两项**刻意不持久化、也不跨重载恢复**：
@@ -541,6 +566,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
             self._strm_suspect_remind_end_hour = max(
                 0, min(23, int(config.get("strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR)))
             )
+            # CD2 上传队列查询（默认关闭，见 constants 里该段说明）
+            self._cd2_query_enabled = bool(
+                config.get("cd2_query_enabled", _CD2_QUERY_ENABLED_DEFAULT))
+            self._cd2_api_url = str(config.get("cd2_api_url") or _CD2_API_URL_DEFAULT).strip()
+            self._cd2_api_token = str(config.get("cd2_api_token") or "").strip()
             self._warn_on_legacy_grace_unit(config)
             # 老配置迁移：把「从未调整过」的旧默认值平滑升到新默认值
             self._migrate_legacy_defaults(config)
@@ -2308,6 +2338,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "strm_suspect_remind_hours": self._strm_suspect_remind_hours,
                 "strm_suspect_remind_start_hour": self._strm_suspect_remind_start_hour,
                 "strm_suspect_remind_end_hour": self._strm_suspect_remind_end_hour,
+                # CD2 上传队列查询。**token 不回传完整值** —— 配置页只需要
+                # 知道"是否已填"，回传原值会让凭据出现在每一次配置读取的响应里
+                # （浏览器缓存、日志、代理）。已填时给一个哨兵串，前端据此显示
+                # 「已配置（留空表示保持不变）」。
+                # The token is never echoed; a sentinel tells the UI one is set.
+                "cd2_query_enabled": self._cd2_query_enabled,
+                "cd2_api_url": self._cd2_api_url,
+                "cd2_api_token_set": bool(self._cd2_api_token),
+                "cd2_last_error": self._cd2_last_error,
                 "notify": self._notify,
                 "delay_hours": self._delay_hours,
                 "cron": self._cron,
@@ -2364,6 +2403,26 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
         self._strm_suspect_remind_end_hour = max(
             0, min(23, int(config.get("strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR)))
         )
+        # CD2 上传队列查询（与 init_plugin 保持一致）
+        self._cd2_query_enabled = bool(
+            config.get("cd2_query_enabled", _CD2_QUERY_ENABLED_DEFAULT))
+        self._cd2_api_url = str(config.get("cd2_api_url") or _CD2_API_URL_DEFAULT).strip()
+        # ⚠️ token 的保存语义是**三态**，不能直接赋值：
+        #   · 字段缺失（老前端/未渲染）：保持原值；
+        #   · 空串：用户明确清空 ⇒ 清空；
+        #   · 非空：覆盖。
+        # 曾经这里是 `config.get(...) or ""`，而配置页在「已配置」状态下会把
+        # 输入框留空（因为我们不回传原值）—— 一次保存就静默清掉了 token，
+        # 而界面看不出任何变化。
+        # Empty means "clear" because the UI leaves the field blank when a token is
+        # already stored — but only when the key is present at all.
+        if "cd2_api_token" in config:
+            self._cd2_api_token = str(config.get("cd2_api_token") or "").strip()
+        # 配置变了，缓存的连通性结论立刻失效 —— 否则用户刚填对地址，
+        # 还要等缓存过期或静默期结束才生效，看起来像"填了没用"。
+        self._cd2_cache = {}
+        self._cd2_mount_cache = {}
+        self._cd2_backoff_until = 0.0
         self._warn_on_legacy_grace_unit(config)
         self.update_config(config)
         refreshed = self._refresh_scheduled_job()
@@ -2781,6 +2840,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, _PluginBase):
                 "strm_suspect_remind_hours": getattr(self, "_strm_suspect_remind_hours", self.DEFAULT_STRM_SUSPECT_REMIND_HOURS),
                 "strm_suspect_remind_start_hour": getattr(self, "_strm_suspect_remind_start_hour", self.DEFAULT_STRM_SUSPECT_REMIND_START_HOUR),
                 "strm_suspect_remind_end_hour": getattr(self, "_strm_suspect_remind_end_hour", self.DEFAULT_STRM_SUSPECT_REMIND_END_HOUR),
+                # CD2 上传队列查询的运行态。看板据此显示「这个保护到底有没有
+                # 在工作」—— 它与 strm 交叉验证是**两个独立的保护**，一个
+                # 开着不代表另一个也开着（默认就是关的）。
+                # getattr 兜底：__new__ 构造的最小实例没有这些属性。
+                "cd2_query_enabled": bool(getattr(self, "_cd2_query_enabled", False)),
+                "cd2_api_url": getattr(self, "_cd2_api_url", ""),
+                "cd2_token_set": bool(getattr(self, "_cd2_api_token", "")),
+                "cd2_last_error": getattr(self, "_cd2_last_error", ""),
+                "cd2_backoff_remaining": max(
+                    0, int(float(getattr(self, "_cd2_backoff_until", 0.0) or 0.0) - now_ts)),
                 # 已请 strm 助手补生成过的 key → 时间戳，看板据此标出
                 # 「已请求生成，等待结果」，避免用户重复点击（每次都会让助手
                 # 真的去遍历云端目录，是有成本的操作）。

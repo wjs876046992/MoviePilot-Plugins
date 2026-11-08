@@ -157,6 +157,44 @@ DEFAULT_STRM_SUSPECT_REMIND_HOURS = 2
 DEFAULT_STRM_SUSPECT_REMIND_START_HOUR = 9
 DEFAULT_STRM_SUSPECT_REMIND_END_HOUR = 21
 
+# ---- CD2 上传队列查询（v0.5.6）----
+# 判疑似前先问 CD2「这个文件此刻是否正在上传」，正在传的不报警、也不许删旧重传。
+#
+# 为什么必须做这一步（用户实测的真实环路）：宽限期默认 5 分钟，而一条 8 GB
+# 的文件在 CD2 侧要传几十分钟。于是同步报成功 → 5 分钟后判疑似 → 点「删旧重传」
+# → 删掉正在传的文件 → 从零重传 → 又传不完 → 又判疑似。用户原话：
+#   「存在需要真实上传的，也会放疑似，不清楚情况时会一直删除一直重传，
+#     目前我是人工去 cd2 确认的」
+# 这个配置块就是把那一步人工确认自动化。
+#
+# ⚠️ **默认关闭**。理由不是"没价值"，而是它需要一个 CD2 API Token：
+#   · 拿不到 token 时功能会静默失效，若默认开启，用户会以为它在工作；
+#   · token 是凭据，不该在我没告知的情况下开始被读取。
+# 打开后若连接失败，会**明确降级为原判据**并记一条限频 warning（见 cd2_ops）。
+# Off by default: it needs an API token, and a silently-inert safeguard is worse
+# than an absent one.
+CD2_QUERY_ENABLED_DEFAULT = False
+
+# CD2 HTTP API 地址。**从 MoviePilot 容器内**访问 —— 实测宿主机 IP、
+# `host.docker.internal` 与 docker 网桥网关都能连通，但 `127.0.0.1` 不行
+# （CD2 跑在宿主机/别处，不在本容器的回环里）。默认值取 127.0.0.1 是
+# 中性的占位，用户必须按自己的部署改成宿主机地址。
+# Reachability from inside the MP container was verified for the host IP,
+# host.docker.internal and the docker bridge gateway — but never 127.0.0.1.
+CD2_API_URL_DEFAULT = ""
+
+# 查询结果缓存时长（秒）。巡检一轮可能问几十条，逐条打一次 HTTP 不划算，
+# 且 CD2 的上传进度秒级变化对「要不要报警」毫无意义。
+# 30 秒足够让同一轮的多个条目共用一次查询，又不会让进度显示陈旧太多。
+# Cached for a round so a sweep with many entries makes one HTTP call, not dozens.
+CD2_QUERY_CACHE_SECS = 30
+
+# 连接失败后的静默期（秒）。CD2 没开、地址填错、token 过期都会导致每次
+# 巡检都失败；不设静默期会刷屏 warning 并拖慢判定路径。
+# 5 分钟内只试一次，之后自动恢复尝试。
+# Back-off after a failure: a wrong address must not turn into a warning per entry.
+CD2_FAILURE_BACKOFF_SECS = 300
+
 # ---- 源端游标扫描 / source-root cursor scan ----
 # 入库发现的**主通道**。取代了 2026-09-25 删除的宿主整理事件订阅，
 # 判据与 sync_115.sh 的 `find -newer <last_sync>` 同构：
