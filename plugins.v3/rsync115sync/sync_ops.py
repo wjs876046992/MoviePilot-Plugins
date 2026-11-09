@@ -237,7 +237,7 @@ class SyncOpsMixin:
         logger.warning(f"[Rsync115Sync] 🚫 触发风控退避：{reason}，"
                        f"暂停上传 {self._backoff_secs // 60} 分钟")
 
-    def _build_backfill_candidates(self) -> List[str]:
+    def _build_backfill_candidates(self, path_filter: str = "") -> List[str]:
         """
         扫描源端，构建“存量补传”候选清单。
 
@@ -257,6 +257,11 @@ class SyncOpsMixin:
         queued. Those are skipped by rsync's --size-only at transfer time, at the
         cost of one stat request per candidate.
         注意：候选规模即用户点击补传的最小 API 代价，故 UI 先预览再确认。
+
+        :param path_filter: 只保留相对路径包含该子串的候选（空=不筛选）。
+            用于「定向补传某一季/某一部」，避免为补 14 集而把整个库的存量
+            全部塞进队列 —— 那会真的按批次逐条上传，代价远超必要。
+            Narrow the candidate set to one season/show; empty means everything.
         """
         candidates: List[str] = []
         seen = set()
@@ -270,6 +275,7 @@ class SyncOpsMixin:
         #   2. O(目录数 × 规则行数) 的字符串包含判断，每层目录重算一遍。
         # 补传候选是最不该漏排的一路：它列出的每个文件都会被真的上传。
         excluded_dirs = _excluded_dir_names(self._exclude_patterns)
+        needle = (path_filter or "").strip()
         for pair in self._sync_pairs:
             src_dir = (pair.get("src") or "").strip().rstrip("/")
             pair_name = _pair_name(pair)
@@ -287,6 +293,10 @@ class SyncOpsMixin:
                     if not _valid_extension(pair, f, self._media_extensions):
                         continue
                     root_rel = os.path.relpath(os.path.join(root, f), src_dir)
+                    # 定向筛选：越早跳过越省事，且必须在幂等判据**之前**做 ——
+                    # 否则被筛掉的路径也会去查队列/忽略清单，白白放大开销。
+                    if needle and needle not in root_rel:
+                        continue
                     key = f"{pair_name}:{root_rel}"
                     if key in seen:
                         continue
@@ -310,7 +320,7 @@ class SyncOpsMixin:
                             candidates.append(sc_key)
         return candidates
 
-    def _api_backfill_scan(self):
+    def _api_backfill_scan(self, body: Optional[Dict[str, Any]] = None):
         """
         预览补传候选数量与样例，供用户在触发前评估规模。
 
@@ -324,6 +334,9 @@ class SyncOpsMixin:
         让它们叠加只会白白占用磁盘 IO。
         Concurrency guard: a large library scan can take tens of seconds.
         A second concurrent scan is rejected outright (results would be identical).
+
+        :param body: 可选 `{"filter": "<相对路径子串>"}`。只预览匹配的候选，
+            用于定向补传（例如补某一季漏掉的集）。
         """
         if self._is_running:
             return {"success": False,
@@ -331,8 +344,9 @@ class SyncOpsMixin:
         if not self._backfill_scan_lock.acquire(blocking=False):
             return {"success": False,
                     "message": "已有一次补传扫描正在进行，请等待其完成（结果相同，无需重复触发）"}
+        path_filter = str((body or {}).get("filter") or "").strip()
         try:
-            candidates = self._build_backfill_candidates()
+            candidates = self._build_backfill_candidates(path_filter)
         finally:
             # 必须在 finally 中释放：扫描抛异常若不释放，之后所有扫描与补传
             # 都会被这个锁永久挡住（重启插件才能恢复）
@@ -343,6 +357,7 @@ class SyncOpsMixin:
             "data": {
                 "count": len(candidates),
                 "sample": sample,
+                "filter": path_filter,
                 "batch_size": self._upload_batch_size,
                 "windows_needed": (
                     (len(candidates) + self._upload_max_per_window - 1) // self._upload_max_per_window
@@ -378,8 +393,9 @@ class SyncOpsMixin:
         if not self._backfill_scan_lock.acquire(blocking=False):
             return {"success": False,
                     "message": "有一次扫描正在进行（可能是刚才的预览），请等它结束后重试"}
+        path_filter = str((body or {}).get("filter") or "").strip()
         try:
-            candidates = self._build_backfill_candidates()
+            candidates = self._build_backfill_candidates(path_filter)
         finally:
             self._backfill_scan_lock.release()
         if not candidates:
@@ -391,13 +407,14 @@ class SyncOpsMixin:
         self.save_data("backfill_queue", self._backfill_queue)
         self.save_data("backfill_total", self._backfill_total)
 
-        logger.info(f"[Rsync115Sync] 📦 已建立存量补传队列：{len(candidates)} 个文件"
+        scope = f"（筛选：{path_filter}）" if path_filter else ""
+        logger.info(f"[Rsync115Sync] 📦 已建立存量补传队列{scope}：{len(candidates)} 个文件"
                     f"（其中含伴生字幕），按每批 {self._upload_batch_size} 个、"
                     f"每窗口 {self._upload_max_per_window} 个推进")
         self._start_sync_thread(mode="backfill", custom_files=list(candidates))
         return {
             "success": True,
-            "message": f"已启动存量补传：{len(candidates)} 个文件，"
+            "message": f"已启动存量补传{scope}：{len(candidates)} 个文件，"
                        f"受批次与限流约束将分多轮完成",
         }
 

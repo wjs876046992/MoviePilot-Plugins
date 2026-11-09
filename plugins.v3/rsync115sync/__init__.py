@@ -112,6 +112,51 @@ def _today_start_ts(now_ts: Optional[float] = None) -> float:
     return midnight.timestamp()
 
 
+def _ingest_stamp(file_path: str) -> float:
+    """
+    文件「落入源端目录」的时刻 —— 取 mtime 与 ctime 中**较晚**的那个。
+
+    When a file appeared in the source tree: the later of mtime and ctime.
+
+    ## 为什么不能只看 mtime（v0.5.10 实测的永久漏扫）
+
+    源端扫描的判据是 `mtime > 游标`，而游标每轮推进到扫描时刻。硬链接、
+    `cp -p`、`rsync -t`、以及绝大多数媒体整理工具（qBittorrent 做种时的
+    硬链接、Trash/Link 类工具）都会**保留源端 mtime**：
+
+        2026-11-08 09:25–09:36  20 个 mkv 以 mtime 09:25–09:36 落地
+        2026-11-08 09:45–09:58  其中 14 个才真正被硬链接进媒体库目录
+                                （ctime=09:45–09:58，mtime 仍是 09:32–09:36）
+
+    游标在 09:42:37 那一轮就推进到了扫描时刻。此后这 14 个文件的 mtime
+    永远早于游标，**每一轮扫描都判定它们"不新"，永久跳过** —— 它们从未
+    进过队列，于是既不上传、也不生成 strm、更不会触发任何告警。
+    实测结果：22 集里只有 6 集有 strm，缺的 14 集在系统里毫无痕迹。
+
+    ctime 无法被「保留」：任何建立硬链接、复制、改名的操作都会刷新它
+    （写 inode 元数据时由内核置为当前时刻）。所以对"何时出现"这个问题，
+    ctime 才是可靠信号，mtime 只反映"源端内容何时写入"。
+
+    ## 为什么取 max 而不是只用 ctime
+
+    有些场景 ctime 会**早于** mtime 而仍然有意义 —— 例如某些网络文件系统
+    或跨设备拷贝会把 mtime 设成当前时刻（`cp` 不带 `-p` 时 mtime=复制完成
+    时刻）。取两者较大值可以同时覆盖：
+      · 保留旧 mtime 的硬链接/`cp -p`  → ctime 兜住
+      · 正常拷贝（mtime 被设为当前）    → mtime 兜住
+
+    ## 代价
+
+    ctime 每次 stat 都要取，与 mtime 同一次 `os.stat` 调用即可拿到，开销为零。
+    风险在于**误收**：任何重新建立硬链接的操作都会刷新 ctime，让已同步的
+    文件再次成为候选。这是可以接受的 —— 队列按 key 幂等，rsync 又有
+    `--size-only`，重复候选是空操作。而漏扫是永久损失，两者代价不对称，
+    与 `SOURCE_CURSOR_OVERLAP_SECS` 的取舍理由完全一致。
+    """
+    st = os.stat(file_path)
+    return max(st.st_mtime, st.st_ctime)
+
+
 # ---- 已拆分到兄弟模块 / extracted to sibling modules ----
 # 阶段 1（纯逻辑，无状态）：constants.py / paths.py / ignore.py / strm.py
 # 阶段 2（Mixin 方法块，仍无状态）：strm_ops.py / sync_ops.py / commands.py
@@ -208,7 +253,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.9"
+    plugin_version = "0.5.10"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -1512,12 +1557,30 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         means the file is complete. The in-progress case carries "now" and is
         handled by min. Do not claim this function guards against cp -p.
 
+        ## 与「扫描用什么判据」的分工（v0.5.10，别把两者混为一谈）
+
+        这里刻意**继续用 mtime**，尽管源端扫描的入选判据已改为
+        `_ingest_stamp`（max(mtime, ctime)）。两者回答的是不同问题：
+
+          · **扫描判据**问「这个文件是不是新出现的」→ 用 ctime 兜底，
+            因为保留旧 mtime 的硬链接会让它永远落在游标之前（那正是
+            v0.5.10 修掉的整季 14 集漏扫）。
+          · **冷却基准**问「它的内容是不是写完了」→ 只能看 mtime。
+            ctime 在这里是**错的**：它反映"元数据何时被改"，一个 09:25
+            写完的文件在 09:56 被建立硬链接时 ctime 会刷新成 09:56，
+            用它算冷却会让已经完整的文件白等几小时，且与"等文件写完"
+            这个原始职责无关。
+
+        一句话：**ctime 回答"何时出现"，mtime 回答"何时写完"。**
+        用错哪一个都会产生一类静默错误。
+
         :param from_scan: 候选是否由**源端扫描**发现。它只影响下面这一个分支 ——
             `getmtime` 抛错（NFS/CD2 抖动、权限）时的兜底方向：
 
-              · **源端扫描**（from_scan=True）：候选是"mtime 落在窗口内"筛出来的，
-                正常不会 stat 失败。真失败说明这个文件此刻读不到元数据 —— 当作
-                "很久以前"立即就绪，让它在下一轮被重试，而不是白等一个冷却期。
+              · **源端扫描**（from_scan=True）：候选是"`_ingest_stamp` 落在窗口内"
+                筛出来的，正常不会 stat 失败。真失败说明这个文件此刻读不到元数据
+                —— 当作"很久以前"立即就绪，让它在下一轮被重试，而不是白等一个
+                冷却期。
               · **Webhook**（from_scan=False）：发送端主动点名了它，与 mtime 无关。
                 取"发现时刻"按普通冷却排队 —— 这是保守方向（晚传不丢数据）。
         """
@@ -1675,11 +1738,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 logger.info(f"[Rsync115Sync] [{pair_name}] 首次源端扫描：基线取当日 0 点"
                             f"（{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cursor))}）")
 
-            # 重叠窗口：`os.path.getmtime` 的比较是严格大于，而多个文件在同一秒
-            # 落盘很常见（整季批量拷贝、SMB 一次写入）。若某文件的 mtime 恰好
-            # 等于游标，严格比较会让它**每次都落在窗口外、永久跳过**。
+            # 重叠窗口：判据的比较是严格大于，而多个文件在同一秒落盘很常见
+            #（整季批量拷贝、SMB 一次写入）。若某文件的时间戳恰好等于游标，
+            # 严格比较会让它**每次都落在窗口外、永久跳过**。
             # 往后退一个窗口后，最坏情况只是重复扫到已入队的文件 —— 那由队列
             # 幂等吸收，代价为零；而漏掉是永久损失。代价不对称，故取重叠。
+            #
+            # ⚠️ 这个窗口只防"同一秒"，**防不住**"时间戳被保留但落地更晚"——
+            # 后者相差可达几十分钟，必须靠 `_ingest_stamp` 的 ctime 兜底。
+            # 两者是互补的，不要因为加了 ctime 就删掉它（同秒批量仍会重复扫到，
+            # 那正是窗口负责吸收的）。
             since = cursor - self._SOURCE_CURSOR_OVERLAP_SECS
             # getattr 兜底：本方法会被 service 直接调用，而 `__new__` 构造的实例
             # （单测）或跨版本的旧数据文件可能没有该属性 —— 缺属性时不该让
@@ -1694,7 +1762,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 for fn in filenames:
                     full = os.path.join(dirpath, fn)
                     try:
-                        if os.path.getmtime(full) <= since:
+                        # ⚠️ 判据是 `_ingest_stamp`（max(mtime, ctime)），**不是** mtime。
+                        # 只看 mtime 会让「保留旧时间戳的硬链接/cp -p」永久漏扫 ——
+                        # 文件落地时刻晚于游标、mtime 却早于游标，每轮都被判"不新"。
+                        # 实测漏掉过整季 14 集（v0.5.10）。详见 `_ingest_stamp` 的说明。
+                        if _ingest_stamp(full) <= since:
                             continue
                     except OSError:
                         continue
@@ -1703,7 +1775,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             if not candidates:
                 # 没有任何候选也要推进游标：否则一个安静期很长的映射会让游标
                 # 永远停在原地，下次一旦有新文件，窗口会往回退到很久以前，
-                # 把期间所有 mtime 落在窗口内的文件一次性全捞进来。
+                # 把期间所有落在窗口内的文件一次性全捞进来。
                 self._source_cursor[pair_name] = now_ts
                 continue
 
