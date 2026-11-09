@@ -500,6 +500,16 @@ no backend, so pytest reports many `ModuleNotFoundError: app` failures. Capture 
 sorted `FAILED` list against a stashed baseline and `diff` the two — equal counts
 can still be a one-for-one swap.
 
+**A simplified test harness proving a layout fix is not proof.** For frontend
+layout work, verify in a real browser against the **built** `dist/assets/*.css`
+plus the host's **actual** outer DOM (fetched from `MoviePilot-Frontend`, e.g.
+`src/components/dialog/PluginConfigDialog.vue` → `<VDialog scrollable>`), and judge
+success by measured element rects, not by "looks right". A hand-written mock CSS
+reported a fix that did not exist (missing `.v-dialog` class made `VDialog.css`
+selectors inert) and produced a wrong design plus a reversed guard test. Also:
+when extracting a Vue scoped hash from built CSS, exclude comment text — the first
+`[data-v-…]` match is often inside a comment.
+
 ## Documentation
 
 - `docs/Plugin_Dev_Workflow.md` — **the development process contract** (UI design →

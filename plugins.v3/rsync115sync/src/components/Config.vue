@@ -1,5 +1,16 @@
 <template>
-  <div class="plugin-config">
+  <!-- ⚠️ 根 div 的 `h-100` 与看板同源，是**承重的**。
+       宿主的配置弹窗是 `<VDialog scrollable>` → `<VCard>` → `<VCardText class="pa-0">`，
+       那一层 v-card-text 才是默认的滚动容器。根 div 若没有确定高度，
+       下面 v-card 的 `h-100` 就解析成 `auto`，于是：
+         · `.config-body` 的 `flex-grow + overflow-y` 拿不到确定高度 ⇒ 永不滚动；
+         · 滚动实际发生在外层宿主容器里 ⇒ 标题栏（连同里面的「高级设置」开关）
+           和底部保存按钮**一起被滚走**，用户想展开高级区得先滚回顶部。
+       补上 `h-100` 后卡片自己成为滚动容器，标题栏与操作栏是滚动区之外的同级
+       flex 项（`flex: none`），天然固定 —— 不需要 `position: sticky`，
+       而且**也不能**用它：卡片的 `overflow-hidden`（圆角裁剪所需）会成为
+       sticky 的最近滚动容器，而它自身不滚，sticky 会完全失效。 -->
+  <div class="plugin-config h-100">
     <v-card class="d-flex flex-column h-100 radius-lg overflow-hidden config-main-card" elevation="0" variant="outlined">
 
       <!-- 顶部标题栏 -->
@@ -12,7 +23,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.8</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.9</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -1053,6 +1064,10 @@ onMounted(() => {
 
 .plugin-config {
   width: 100%;
+  /* 高度链的**起点**：模板上的 `h-100`（= height:100%!important）让它填满
+     宿主 .v-card-text。这里的 `border-box` 是承重的 —— 不加它，18px 的上下
+     留白会叠在 100% 高度**之外**，卡片比可用高度多出 36px，
+     于是底部保存按钮被推出容器、卡片的 overflow-hidden 把它裁掉。 */
   box-sizing: border-box;
   /* 桌面端外边距。原为内联 style 且带 !important，
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
@@ -1061,6 +1076,11 @@ onMounted(() => {
 .config-main-card {
   background: rgb(var(--v-theme-surface));
   width: 100%;
+  /* 高度保底（第二道防线），与看板 .page-main-card 同值同理由：
+     宿主容器高度异常、或百分比链因别的改动断掉时，卡片也不会塌成 0。
+     ⚠️ 刻意用**绝对值**而不是 vh：宿主弹窗在移动端是 fullscreen（高度=视口），
+     用视口单位会让卡片比容器更高，等于用一个裁切换另一个裁切。 */
+  min-height: 240px;
 }
 .header-surface {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.08) 0%, rgba(var(--v-theme-primary), 0.02) 100%);
@@ -1093,7 +1113,87 @@ onMounted(() => {
    故直接按内容区类名设置，保证提示条出现时间距依然稳定。 */
 .config-body {
   margin-top: 16px;
+  /* ⚠️ 弹性子项默认 `min-height: auto`，会拒绝收缩到内容高度以下 ——
+     高度链正常时它也无害，但一旦内容变多，它会让本区**撑高整张卡片**
+     而不是自己滚动，标题栏与底栏随之被挤出可见区。
+     显式 `min-height: 0` 是 flex + overflow 组合的标准做法（与看板同源）。 */
+  min-height: 0;
 }
+/* ===== 固定顶栏与底栏（桌面端与移动端同一套） =====
+   用户要求：「配置页面，顶部 title 包含高级设置的按钮部分固定」。
+   底栏的「保存配置」同理 —— 表单有几十个字段，滚到下面想保存时按钮在手边。
+
+   ## 为什么不是 flex 高度链
+
+   第一版按看板 `Page.vue` 的写法做：根 div 加 `h-100`，让卡片自己成为滚动容器，
+   标题栏与底栏由 `flex: none` 自然固定。**在真实宿主里这条链不成立**：
+
+   宿主（`PluginConfigDialog.vue`）的结构是
+     `<VDialog scrollable>` → `.v-overlay__content` → `.v-card` →
+        `.v-card-text.pa-0` → 本组件根 div
+   实测（Chromium + 真实 Vuetify 样式表 + 我们构建出的 CSS，1280×900）：
+     · `#oc`        h=852  height=852px  display=flex   ← 确定高度
+     · 宿主 .v-card  h=852  height=852px  display=flex
+     · .v-card-text  h=852  height=852px  display=block  ← **百分比基准到这里就没了**
+     · 本组件根 div  h=2512 height=2512px                ← `h-100` 解析成 auto
+   `.v-card-text` 自身高度是 flex 决定的，CSS 里它没有可被百分比引用的
+   `height`，于是所有后代元素的 `height:100%` 都退化成 `auto`。
+   结果 `overflow-y: auto` 永不触发，**滚动实际发生在宿主 `.v-card-text` 上**
+   （实测 `hostScrolls: true`、`body: false`），标题栏与底栏一起被滚走。
+   移动端走 `fullscreen` 分支时更直接：滚动容器是 `.v-overlay__content`。
+
+   两端都是「祖先在滚、插件够不着」，所以 `h-100` 那条路在这里是死路，
+   根 div 上的 `h-100` 仅作为语义标记保留（无害）。
+
+   ## 实际做法：sticky，并放开**本卡片**的 overflow
+
+   `position: sticky` 是唯一能相对**祖先滚动容器**定位的机制。它要求从 sticky
+   元素到滚动容器之间没有 `overflow != visible` 的祖先，否则会被那个祖先截住。
+
+   实测（真实 Vuetify 样式表 + 1280×900，逐项放开 overflow 对比）：
+
+     | 放开哪一层        | 标题栏 | 保存条 |
+     | 都不放开          | ✗ top=-1636 | ✓ |
+     | 只放开本卡片 ✓     | ✓ top=24    | ✓ bottom=876 |
+     | 只放开宿主 .v-card | ✓          | ✗ bottom=2536 |
+     | 只放开宿主 .v-card-text | ✓     | ✗ bottom=2536 |
+
+   **只放开本卡片就够了**，而且必须只放开它：放开宿主那两层会让
+   `.v-overlay__content` 不再裁剪，底栏随之失效。所以只需 `.config-main-card`
+   一条规则 —— 本组件自己的类，不 `:deep()` 碰宿主的任何元素。
+
+   放开 `overflow:hidden` 的代价可以忽略：宿主给本弹窗 `.v-card` 的圆角是 4px
+   （移动端 fullscreen 更是强制 `border-radius: 0`），少了裁剪只是四角不再是
+   弧形；而"标题栏滚没、保存按钮找不到"是实打实的功能损失。
+
+   ## 实测结果（同一份构建产物，Chromium 158）
+
+     |           | 桌面 1280×900      | 移动 390×844       |
+     | 标题栏    | top=24（固定在视口）| top=0             |
+     | 保存条    | bottom=876 / 900   | bottom=844 / 844  |
+
+   修复前两端分别是 top=-1672 / top=-1704，即已完全滚出视口。
+
+   ⚠️ 这段规则**故意不带媒体查询**：桌面端同样需要它。曾经误以为桌面端由
+   flex 链解决、只有移动端要 sticky —— 那是测试 harness 少了 `.v-dialog`
+   类造成的假象，真实结构里两端都断在同一个位置。 */
+.config-main-card {
+  overflow: visible !important;
+}
+.header-surface {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  /* sticky 元素必须自身不透明，否则表单内容从下面透出来。
+     header-surface 本身是半透明渐变，这里补一层实色底。 */
+  background-color: rgb(var(--v-theme-surface));
+}
+.config-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+}
+
 .header-icon-box {
   width: 36px;
   height: 36px;
@@ -1216,6 +1316,12 @@ onMounted(() => {
   .plugin-config {
     padding: 10px 12px !important;
   }
+
+  /* ===== 移动端固定标题栏/底栏：与桌面端同一套规则，见文件末尾 =====
+     桌面端那份规则写在不带媒体查询的位置（两端都要），移动端这里只做
+     断点特有的补充。规则本身与理由集中写在 `/* ---- 固定顶栏与底栏 ---- *\/`
+     那一段，避免同一机制在两处各写一份、日后改一处漏一处。 */
+
   /* 同看板：.v-card-item 的 append 列按 max-content 固定宽度、不会收缩，
      窄屏下关闭按钮会被顶出卡片并被 overflow-hidden 裁掉。
      改为 minmax(0, max-content)，允许在宽度不足时收缩。 */

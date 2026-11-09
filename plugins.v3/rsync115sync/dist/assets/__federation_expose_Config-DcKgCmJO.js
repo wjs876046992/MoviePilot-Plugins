@@ -82,7 +82,7 @@ const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"dat
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,vShow:_vShow,withDirectives:_withDirectives,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
 
-const _hoisted_1 = { class: "plugin-config" };
+const _hoisted_1 = { class: "plugin-config h-100" };
 const _hoisted_2 = { class: "header-icon-box mr-3" };
 const _hoisted_3 = { class: "d-flex align-center ga-2 mr-1" };
 const _hoisted_4 = {
@@ -551,7 +551,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
-                      _createTextVNode("v0.5.8", -1)
+                      _createTextVNode("v0.5.9", -1)
                     ]))]),
                     _: 1
                   })
@@ -1732,6 +1732,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-b6013313"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a4040b78"]]);
 
 export { Config as default };

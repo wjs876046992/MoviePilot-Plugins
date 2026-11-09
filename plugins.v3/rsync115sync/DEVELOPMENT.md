@@ -1582,6 +1582,113 @@ strm 相关功能了。」
 
 ## 4. 新增能力
 
+### 4.0q 配置页顶栏/底栏固定（v0.5.9，用户要求「顶部 title 包含高级设置的按钮部分固定」）
+
+#### 问题
+
+配置页有几十个字段，往下滚动时顶部的标题栏（连同里面的「高级设置」开关）
+一路被滚出屏幕；底部「保存配置」同理。想展开高级区得先滚回顶部，
+想保存又得滚回底部。
+
+#### 根因（**实测**，不是推断）
+
+宿主把插件配置包在
+`<VDialog scrollable>` → `.v-overlay__content` → `.v-card` → `.v-card-text.pa-0` → 本组件。
+在 Chromium 里用**真实 Vuetify 样式表 + 我们构建出的 CSS** 逐层量计算样式（1280×900）：
+
+| 层 | 高度 | computed `height` | display |
+|---|---|---|---|
+| `.v-overlay__content` | 852 | `852px` | flex |
+| 宿主 `.v-card` | 852 | `852px` | flex |
+| 宿主 `.v-card-text` | 852 | `852px` | **block** |
+| 本组件根 div（`h-100`） | 2512 | `2512px` | block |
+
+关键：`.v-card-text` 的高度由 flex 决定，CSS 里没有可被百分比引用的 `height`，
+于是所有后代的 `height:100%` 都解析成 `auto`。`overflow-y:auto` 因此永不触发，
+**滚动发生在宿主 `.v-card-text` 上**（实测 `hostScrolls: true`、`bodyScrolls: false`），
+标题栏与底栏作为它的普通内容一起滚走。
+
+移动端宿主改走 `fullscreen` 分支（`:fullscreen="!mdAndUp"`），滚动容器换成
+`.v-overlay__content`（`height:100%; overflow-y:auto`），**同样在插件组件之外**。
+
+两端都是「祖先在滚、插件够不着」，所以看板 `Page.vue` 用的那条 flex 高度链
+（根 div `h-100` → 卡片 `h-100` → 内容区自己滚）**在这里不成立**。
+
+#### 走过的一条弯路（记下来，因为它当时看起来完全合理）
+
+第一版照搬看板写法，给根 div 加 `h-100` 就以为解决了。用一个简化 harness
+（手写 CSS 模拟宿主）测出来「桌面端修好了」，于是写下了
+「桌面走 flex 链、移动走 sticky」这种双机制设计，还写了一条测试断言
+**禁止使用 sticky**。
+
+真实结构下复测发现桌面端**根本没修好**。两个原因叠加：
+1. harness 缺了 `.v-dialog` 类 —— `VDialog.css` 的选择器是
+   `.v-dialog > .v-overlay__content`，缺类则整套尺寸规则不生效；
+2. scoped 哈希取错 —— 正则先命中了 CSS **注释文本**里的 `[data-v-xxxx]`。
+
+教训与 §3.5 同源：**外部系统的行为必须用真实结构 + 真实产物验证**。
+简化 harness 里"看起来对"等于没测。
+
+#### 做法
+
+`position: sticky` 是唯一能相对**祖先滚动容器**定位的机制：
+
+```css
+.config-main-card { overflow: visible !important; }  /* 放开继承来的裁剪 */
+.header-surface   { position: sticky; top: 0;    z-index: 3; background-color: rgb(var(--v-theme-surface)); }
+.config-actions   { position: sticky; bottom: 0; z-index: 3; }
+```
+
+**只放开本卡片这一层**，`overflow` 的放开范围是逐项实测决定的：
+
+| 放开哪一层 | 标题栏 | 保存条 |
+|---|---|---|
+| 都不放开 | ✗ top=-1636 | ✓ |
+| **只放开本卡片** | ✓ top=24 | ✓ bottom=876 |
+| 只放开宿主 `.v-card` | ✓ | ✗ bottom=2536 |
+| 只放开宿主 `.v-card-text` | ✓ | ✗ bottom=2536 |
+
+放开宿主那两层会改变滚动容器，**反而让底栏失效**。而且 `:deep(.v-card)`
+编译成 `[data-v-x] .v-card`（后代选择器），本就够不到作为**祖先**的宿主卡片 ——
+写了也是死代码。这一条写成了测试 `test_does_not_touch_host_overflow`。
+
+代价：卡片少了 `overflow:hidden`，圆角不再是裁切弧形。宿主给本弹窗的圆角是 4px、
+移动端 fullscreen 更是强制 `border-radius: 0`，肉眼不可见；
+对比之下「标题栏滚没、保存按钮找不到」是实打实的功能损失。
+
+#### 实测结果（同一份构建产物，Chromium 158）
+
+| | 桌面 1280×900 | 移动 390×844 |
+|---|---|---|
+| 修复前 标题栏 | ✗ `top=-1672` | ✗ `top=-1704` |
+| 修复后 标题栏 | ✓ `top=24` | ✓ `top=10` |
+| 修复后 保存条 | ✓ `bottom=858` / 900 | ✓ `bottom=844` / 844 |
+
+#### 边界
+
+- 这条规则**刻意不带媒体查询**：桌面端同样需要它。曾经误以为只有移动端要 sticky
+  —— 那是错误 harness 造成的假象。
+- 根 div 上的 `h-100` 保留但已不是承重的。它无害，且作为语义标记说明"本组件
+  期望填满容器"。`min-height: 240px` 保底同理保留（那是防"内容整块消失"的
+  第二道防线，与固定无关）。
+- 若宿主未来把滚动容器改成插件**内部**的（例如给 Vue 组件包一层固定高度的
+  flex 容器），`h-100` 那条链会重新成立，sticky 依然有效 —— 两套机制不冲突。
+
+#### 测试
+
+`tests/v3/rsync115sync/test_config_height_chain.py`（6 条，已用修复前的代码
+验证其中 3 条会失败）：
+
+1. 根 div 有 `h-100`；
+2. `.plugin-config` 是 `border-box`（100% 高度外再叠 18px 留白会裁掉底栏）；
+3. `.config-body` 有 `min-height: 0`；
+4. 标题栏/提示条/操作栏是滚动区的**兄弟**（结构前提，用标签配对解析而非正则猜）；
+5. sticky + 放开 overflow 的**组合**，且规则不在媒体查询内；
+6. 不得 `:deep()` 碰宿主 overflow（实测会让底栏失效 + 死代码）。
+
+`_strip_comments()` 是必需的：说明文字本身就会提到 `position: sticky`
+（解释为什么用它），不剥注释会把反面教材当成违规命中 —— 第一次写就踩了。
+
 ### 4.0f 入库发现层重构：抛弃事件订阅，改为源端游标扫描（alpha，2026-09-25）
 
 **起因**：用户反馈「订阅的入库事件似乎不全不及时」，随后明确两点：
