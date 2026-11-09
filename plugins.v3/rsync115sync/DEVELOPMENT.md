@@ -1677,6 +1677,15 @@ ctime 会因任何元数据变更而刷新，可能让已同步的文件再次�
 端点：`POST /backfill_scan {"filter": "..."}`（预览）、
 `POST /backfill_start {"filter": "..."}`（执行）。
 
+⚠️ **`/backfill_scan` 不得不从 GET 改为 POST**，这是真机验证才发现的：
+它从 `body: Optional[Dict]` 读 filter，而 FastAPI **不会**把 query string
+塞进 body 参数。GET 下实测返回 `"filter": ""` —— 参数被静默丢弃，
+筛选完全不生效，但 HTTP 200、`success: true`，看起来一切正常。
+
+这个缺陷单测抓不到：签名合法、逻辑正确、断言全过。只有对着**运行中的实例**
+真的打一次请求才会暴露。已加 `test_scan_endpoint_is_post_not_get` 固定方法，
+并在注释里写明原因，防止有人"顺手改回 GET"（它是只读的、看起来该用 GET）。
+
 #### 边界
 
 - 该修复只覆盖**源端扫描**。Webhook 通道不依赖 mtime，一直是正确的。

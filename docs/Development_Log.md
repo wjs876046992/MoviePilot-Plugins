@@ -70,6 +70,26 @@
 11 条新用例，其中 9 条已用修复前的代码验证会失败。含两条「接入点」断言
 （函数写对但没被调用 = 没修）。
 
+#### 一个只有真机才抓得到的缺陷
+
+定向补传做完、单测全绿之后，对着 NAS 实际打了一次请求：
+
+```
+POST /backfill_scan {"filter": "天蝎 (2014) .../Season 04"}
+→ {"success": true, "data": {"count": 20, "filter": "", ...}}   ← filter 是空的
+```
+
+`/backfill_scan` 原本注册成 **GET**，而它从 `body: Optional[Dict]` 读参数 ——
+FastAPI 不会把 query string 塞进 body 形参。于是筛选被静默丢弃，
+HTTP 200、`success: true`，**看起来完全正常**。
+
+签名合法、逻辑正确、5 条单测全过 —— 静态检查没有任何信号。
+改成 POST 后同一请求立刻返回 `count=20` 且样例正确。
+
+已加 `test_scan_endpoint_is_post_not_get`。这条经验的普适形式：
+**「参数传进去了吗」不是靠读代码能确认的事**，它取决于框架如何绑定，
+只能打一次真实请求看返回。
+
 ## 2026-11-09
 
 **分支：** `main`
