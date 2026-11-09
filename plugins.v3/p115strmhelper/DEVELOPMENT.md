@@ -145,7 +145,82 @@ word-break: keep-all !important;
 
 ---
 
-## 4. 测试
+## 4. 生活事件合并通知列出具体文件（v3.4.7）
+
+### 4.1 要解决的问题
+
+生活事件的合并推送原本只有一行正文：
+
+```
+✅【115网盘】生活事件生成 STRM 文件
+
+📄 生成STRM文件 1 个
+```
+
+N=1 时用户既不知道是哪个文件，也无法判断这次事件是不是自己在等的那个 ——
+只能再去翻 `moviepilot.log` 或插件日志。用户的原话是「这是通知，能具体到是哪个文件吗」。
+
+### 4.2 计数与展示分离
+
+生活事件里的**目录事件**（整季上传、整个目录复制）会一次展开上千个文件。两条极端
+都不行：全列会撑爆消息渠道，只列前几条又会让「N 个」这个数字失真。
+
+因此把两件事拆开：
+
+| 关注点 | 行为 |
+|---|---|
+| 计数 | **照常累加**，`📄 生成STRM文件 500 个` 永远是真实数量 |
+| 展示 | 路径只保留前 `_NOTIFICATION_ITEM_LIMIT`（默认 10）条，其余折成 `... 还有 490 个` |
+
+上限是 `MonitorLife._NOTIFICATION_ITEM_LIMIT`（`helper/life/client.py`），
+调一个数即可；设为 0 时只剩数量与汇总行，计数不会丢。
+
+### 4.3 ⚠️ 踩过的坑：先发送再重置会吞掉事件
+
+原实现是「取计数 → 发送 → 计数器归零」。发送是同步 HTTP 调用，可能耗时几百毫秒到
+几秒；这期间如果恰好有新事件进来并累加计数器，**归零会把它一起抹掉** ——
+那次事件不推送、不留痕，属于一类只在高并发生活事件下才偶发的静默丢失。
+
+现实现改为：
+
+```python
+batch = self._monitor_life_notification_batch          # 先摘下当前批次
+self._monitor_life_notification_batch = NotificationBatch(...)  # 立刻换新批次
+if not batch.empty:
+    post_message(...)                                  # 再发送，发送期间的累加落进新批次
+```
+
+这条时序约束由 `_send_notification` 的注释固定下来，改动时不要退回「先发送后重置」。
+
+### 4.4 代码组织
+
+计数与渲染抽到 `helper/life/notification.py` 的 `NotificationBatch`：
+
+- **只依赖标准库**（`pathlib` / `typing`），因此可以在没有 MoviePilot 后端的环境下
+  直接单测 —— 这是 `Client.py` 里加方法做不到的（导入即触发 `app.*`）。
+- `add(bucket, paths, count=None)` 一次追加一批（目录事件用），
+  `add_one(...)` 追加单个（文件事件用）；`count` 可大于 `len(paths)`，
+  用来表达「处理了 500 个，但只收集到 10 条路径」。
+- `render()` 负责小标题 / 缩进文件行 / 省略行，`empty` 供调用方提前跳过推送。
+
+`MonitorLife` 侧只保留两类调用点：目录分支在遍历时把前 10 条路径收进 `strm_paths` /
+`mediainfo_paths`，遍历结束一次性 `add(..., count=总数)`；文件分支直接 `add_one(...)`。
+
+### 4.5 测试
+
+`tests/v3/p115strmhelper/test_life_notification.py`（7 条，`--noconftest` 可跑）：
+
+| 用例 | 保护的东西 |
+|---|---|
+| `test_single_file_is_listed_by_path` | 单个文件时正文带完整路径，不只报数量 |
+| `test_items_over_limit_are_summarised` | 超限只列前 N 条，省略数量准确 |
+| `test_bulk_count_can_exceed_listed_paths` | 批量场景 `count` > 路径数时，汇总行按 `count` 算 |
+| `test_limit_of_zero_still_counts` | 上限为 0 时不丢计数 |
+| `test_unknown_bucket_is_rejected` | 未知类别报错，不静默丢弃 |
+
+---
+
+## 5. 测试
 
 前端逻辑有 Node 原生测试（不依赖 MoviePilot 后端，可直接跑）：
 
