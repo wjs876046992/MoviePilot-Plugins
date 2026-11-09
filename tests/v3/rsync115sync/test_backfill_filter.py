@@ -92,6 +92,36 @@ def test_api_endpoints_forward_the_filter():
         )
 
 
+def test_scan_endpoint_is_post_not_get():
+    """
+    `/backfill_scan` 必须注册为 **POST**。
+
+    ⚠️ 这条来自**真机实测**：它原本是 GET，而参数从 `body` 里读 ——
+    FastAPI 不会把 query string 塞进 `body: Optional[Dict]`，于是 GET 下
+    filter 被静默丢弃。实测返回里 `"filter": ""`，而同一请求改成 POST 后
+    正确返回了筛选结果。
+
+    这个缺陷单靠读代码发现不了（签名看着没问题，逻辑也对），
+    只有对着真机打一次请求才会暴露。所以把它钉成测试。
+    """
+    src = _init_py()
+    m = re.search(r'\{"path": "/backfill_scan"[^}]*\}', src)
+    assert m, "找不到 /backfill_scan 的路由注册"
+    route = m.group(0)
+    assert '"POST"' in route, (
+        "/backfill_scan 注册成了 GET —— 它从 body 读 filter，GET 下参数会被静默丢弃"
+    )
+    assert '"GET"' not in route, "/backfill_scan 不要同时注册 GET"
+
+
+def _init_py() -> str:
+    for parent in Path(__file__).resolve().parents:
+        p = parent / "plugins.v3" / "rsync115sync" / "__init__.py"
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    pytest.skip("__init__.py 未找到")
+
+
 def test_scan_endpoint_signature_is_fastapi_safe():
     """
     端点签名不得使用会被 FastAPI 当成响应模型的注解。

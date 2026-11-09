@@ -2253,7 +2253,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             {"path": "/ignored", "endpoint": self._api_get_ignored, "methods": ["GET"], "auth": "bear"},
             {"path": "/ignore", "endpoint": self._api_add_ignore, "methods": ["POST"], "auth": "bear"},
             {"path": "/unignore", "endpoint": self._api_remove_ignore, "methods": ["POST"], "auth": "bear"},
-            {"path": "/backfill_scan", "endpoint": self._api_backfill_scan, "methods": ["GET"], "auth": "bear"},
+            # ⚠️ /backfill_scan 从 GET 改为 POST（v0.5.10）：它现在接受 filter 参数，
+            # 而 FastAPI 不会把 query string 塞进 `body: Optional[Dict]`，GET 下
+            # 参数会被静默丢弃（真机实测：传了 filter，返回里 filter 仍是空串）。
+            # 它本来也不是幂等读取 —— 会遍历全库、还带并发锁 —— 动作型端点用 POST
+            # 语义上也更正确，与 /backfill_start 一致。
+            {"path": "/backfill_scan", "endpoint": self._api_backfill_scan, "methods": ["POST"], "auth": "bear"},
             {"path": "/backfill_start", "endpoint": self._api_backfill_start, "methods": ["POST"], "auth": "bear"},
             {"path": "/backfill_clear", "endpoint": self._api_backfill_clear, "methods": ["POST"], "auth": "bear"},
             # 注意：没有 /strm_suspects 端点。strm 疑似清单由 /status 的
