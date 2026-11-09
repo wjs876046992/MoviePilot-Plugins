@@ -30,23 +30,34 @@ import types
 
 import pytest
 
-# 构造最小桩环境以测试 commands 模块
-for _m in ["app", "app.core", "app.core.event", "app.sdk", "app.sdk.logging"]:
-    if _m not in sys.modules:
-        sys.modules[_m] = types.ModuleType(_m)
+# 构造最小桩环境以测试 commands 模块。
+# ⚠️ 先探测真实后端（同 test_helper_health.py）：桩是进程级污染，
+# `Event = _DummyEvent` 会让同一进程里走真实 handle_command 的测试行为分叉。
+try:
+    import importlib as _il
+    _real_event = _il.import_module("app.core.event")
+    _HAVE_REAL_EVENT = hasattr(_real_event, "Event") and _real_event.Event is not object
+except Exception:
+    _HAVE_REAL_EVENT = False
 
 class _DummyEvent:
+    """通知按钮回调用的最小事件载体；有真实后端时也用它构造回调事件。"""
     def __init__(self, event_type, event_data):
         self.event_type = event_type
         self.event_data = event_data
 
-sys.modules["app.core.event"].Event = _DummyEvent
-sys.modules["app.core.event"].EventType = types.SimpleNamespace(PluginAction=4, MessageAction=3)
-sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(register=lambda *a, **kw: lambda f: f)
-sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
-    info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
-    warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
-)
+if not _HAVE_REAL_EVENT:
+    for _m in ["app", "app.core", "app.core.event", "app.sdk", "app.sdk.logging"]:
+        if _m not in sys.modules:
+            sys.modules[_m] = types.ModuleType(_m)
+
+    sys.modules["app.core.event"].Event = _DummyEvent
+    sys.modules["app.core.event"].EventType = types.SimpleNamespace(PluginAction=4, MessageAction=3)
+    sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(register=lambda *a, **kw: lambda f: f)
+    sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
+        info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
+        warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
+    )
 
 _PLUGIN_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(

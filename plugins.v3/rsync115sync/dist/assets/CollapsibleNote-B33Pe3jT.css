@@ -1,0 +1,38 @@
+
+/* ---- 圆角：本组件自己定义，不用框架的 rounded-* ----
+   ⚠️ 为什么不覆盖 `.rounded-xl` / `.rounded-lg`：它们是 Vuetify 的全局实用类
+   **且带 `!important`**（xs2px / sm4px / md6px / lg8px / xl24px / 0）。
+   联邦插件与宿主共用同一个文档，覆盖它们会波及其它插件的界面，而且属于
+   "用 !important 改别人的东西"。改用本组件自己的类名表达自己的意图：
+     用户要求「圆角弧度减少一半」→ 24px 的卡片类收成 12px、8px 的按钮/块类收成 4px。 */
+.radius-lg[data-v-b0f1714d] {
+  border-radius: 12px !important;
+}
+.radius-sm[data-v-b0f1714d] {
+  border-radius: 4px !important;
+}
+.note-head[data-v-b0f1714d] {
+  cursor: pointer;
+  /* 点击热区上下各留一点，手机上更好按 */
+  padding: 2px 0;
+  user-select: none;
+}
+.note-head:hover .note-hint[data-v-b0f1714d] {
+  opacity: 1;
+}
+.note-hint[data-v-b0f1714d] {
+  font-weight: normal;
+  opacity: 0.75;
+  /* ③ 推到同一行最右端。用 margin-left:auto 而不是给标题行 justify-space-between：
+     后者在标题很长时会把它也一起推走，读起来像两个并列元素；
+     这里标题固定靠左跟随箭头，「（点击展开）」单独吸右。 */
+  margin-left: auto;
+  padding-left: 8px;
+  white-space: nowrap;
+}
+/* 折叠时标题行是唯一的抓手，给它一个明确的焦点样式（键盘用户） */
+.note-head[data-v-b0f1714d]:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 2px;
+  border-radius: 4px;
+}

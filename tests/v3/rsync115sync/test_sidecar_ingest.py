@@ -17,32 +17,43 @@ import types
 from pathlib import Path
 import pytest
 
-# 构造无宿主环境桩
-for mod in [
-    "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
-    "app.sdk.logging", "app.schemas", "app.schemas.types",
-    "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
-    "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron"
-]:
-    if mod not in sys.modules:
-        sys.modules[mod] = types.ModuleType(mod)
+# ⚠️ **先探测真实后端，再决定要不要装桩**（v0.8.0 教训，同 test_helper_health.py）：
+# 过去无条件把 `sys.modules["app.core.event"].Event = object`，同一 pytest 进程里
+# 任何后加载的测试构造 `Event(...)` 会炸 `TypeError`。真实后端在场时整块跳过。
+try:
+    import importlib as _il
+    _real_event = _il.import_module("app.core.event")
+    _HAVE_REAL_EVENT = (hasattr(_real_event, "Event")
+                        and _real_event.Event is not object)
+except Exception:
+    _HAVE_REAL_EVENT = False
 
-sys.modules["app.plugins"]._PluginBase = object
-sys.modules["app.core.event"].Event = object
-sys.modules["app.core.event"].EventType = types.SimpleNamespace(
-    CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
-    TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
-    WebhookMessage=8
-)
-sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
-    send_event=lambda *a, **kw: None,
-    register=lambda *a, **kw: (lambda fn: fn)
-)
-sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
-    info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
-    warning=lambda *a, **kw: None, error=lambda *a, **kw: None
-)
-sys.modules["apscheduler.triggers.cron"].CronTrigger = object
+if not _HAVE_REAL_EVENT:
+    for mod in [
+        "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
+        "app.sdk.logging", "app.schemas", "app.schemas.types",
+        "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
+        "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron"
+    ]:
+        if mod not in sys.modules:
+            sys.modules[mod] = types.ModuleType(mod)
+
+    sys.modules["app.plugins"]._PluginBase = object
+    sys.modules["app.core.event"].Event = object
+    sys.modules["app.core.event"].EventType = types.SimpleNamespace(
+        CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
+        TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
+        WebhookMessage=8
+    )
+    sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
+        send_event=lambda *a, **kw: None,
+        register=lambda *a, **kw: (lambda fn: fn)
+    )
+    sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
+        info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
+        warning=lambda *a, **kw: None, error=lambda *a, **kw: None
+    )
+    sys.modules["apscheduler.triggers.cron"].CronTrigger = object
 
 import importlib.util
 _plugin_dir = os.path.abspath(

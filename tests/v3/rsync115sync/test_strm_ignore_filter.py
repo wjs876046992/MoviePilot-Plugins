@@ -428,8 +428,8 @@ def test_prune_runs_automatically_on_plugin_load():
     assert "电视剧:bad.mkv" in plugin._strm_suspects
 
 
-def test_strm_command_clear_and_prune_modes():
-    """/rsync_strm clear 与 prune 必须真的生效（而非落到搜索分支）。"""
+def test_strm_command_clear_mode():
+    """/rsync_strm clear 必须真的生效（看板没有清空入口，命令是唯一途径）。"""
     import importlib
 
     module = importlib.import_module("app.plugins.rsync115sync")
@@ -454,27 +454,8 @@ def test_strm_command_clear_and_prune_modes():
     assert any("清空" in r for r in replies)
 
 
-def test_strm_command_prune_mode():
-    import importlib
-
-    module = importlib.import_module("app.plugins.rsync115sync")
-    root = tempfile.mkdtemp()
-    _make_src(root, ["a.mkv"])
-    plugin = _plugin(root)
-    plugin._strm_suspects = {
-        "电视剧:a.mkv": {"ts": 1.0, "origin": "scan"},
-        "电视剧:poster.jpg": {"ts": 1.0, "origin": "scan"},
-    }
-    replies = []
-    plugin._post_reply = lambda ev, text: replies.append(text)
-
-    class _Ev:
-        event_data = {"action": "strm", "arg_str": "prune"}
-
-    plugin.handle_command(_Ev())
-
-    assert list(plugin._strm_suspects) == ["电视剧:a.mkv"]
-    assert any("清理" in r for r in replies)
+# v0.8.0：`/rsync_strm prune` 子命令已删除（看板 /strm_prune 是唯一入口），
+# 上面的 prune 命令用例随之移除。清理逻辑本身（_api_strm_prune）仍在。
 
 
 # --------------------------------------------------------------------------

@@ -21,31 +21,46 @@ import types
 import pytest
 
 # 构造无宿主环境桩
-for _m in [
-    "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
-    "app.sdk.logging", "app.schemas", "app.schemas.types",
-    "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
-    "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron",
-]:
-    if _m not in sys.modules:
-        sys.modules[_m] = types.ModuleType(_m)
+# ⚠️ 先探测真实后端（同 test_helper_health.py）：桩是进程级污染，
+# `Event = object` 会让同进程走真实 handle_command 的测试炸 TypeError。
+try:
+    import importlib as _il
+    _real_event = _il.import_module("app.core.event")
+    _HAVE_REAL_EVENT = hasattr(_real_event, "Event") and _real_event.Event is not object
+except Exception:
+    _HAVE_REAL_EVENT = False
+# 桩已由更早的测试文件装上（`app` 是普通 ModuleType）→ 视为无真实后端，
+# 沿用既有桩；绝不能再 import app.plugins（会以 "'app' is not a package" 炸收集）。
+_ALREADY_STUBBED = ("app" in sys.modules
+                    and not hasattr(sys.modules.get("app"), "__path__"))
+_HAVE_REAL_EVENT = _HAVE_REAL_EVENT and not _ALREADY_STUBBED
 
-sys.modules["app.plugins"]._PluginBase = object
-sys.modules["app.core.event"].Event = object
-sys.modules["app.core.event"].EventType = types.SimpleNamespace(
-    CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
-    TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
-    WebhookMessage=8,
-)
-sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
-    send_event=lambda *a, **kw: None,
-    register=lambda *a, **kw: (lambda fn: fn),
-)
-sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
-    info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
-    warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
-)
-sys.modules["apscheduler.triggers.cron"].CronTrigger = object
+if not _HAVE_REAL_EVENT:
+  for _m in [
+      "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
+      "app.sdk.logging", "app.schemas", "app.schemas.types",
+      "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
+      "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron",
+  ]:
+      if _m not in sys.modules:
+          sys.modules[_m] = types.ModuleType(_m)
+
+  sys.modules["app.plugins"]._PluginBase = object
+  sys.modules["app.core.event"].Event = object
+  sys.modules["app.core.event"].EventType = types.SimpleNamespace(
+      CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
+      TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
+      WebhookMessage=8,
+  )
+  sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
+      send_event=lambda *a, **kw: None,
+      register=lambda *a, **kw: (lambda fn: fn),
+  )
+  sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
+      info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
+      warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
+  )
+  sys.modules["apscheduler.triggers.cron"].CronTrigger = object
 
 _PLUGIN_DIR = os.path.abspath(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),

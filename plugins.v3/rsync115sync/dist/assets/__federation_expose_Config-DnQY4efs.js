@@ -1,83 +1,5 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
-import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
-
-const {toDisplayString:_toDisplayString$1,createTextVNode:_createTextVNode$1,resolveComponent:_resolveComponent$1,withCtx:_withCtx$1,createVNode:_createVNode$1,createElementVNode:_createElementVNode$1,openBlock:_openBlock$1,createElementBlock:_createElementBlock$1,createCommentVNode:_createCommentVNode$1,withModifiers:_withModifiers,withKeys:_withKeys,renderSlot:_renderSlot,vShow:_vShow$1,withDirectives:_withDirectives$1,createBlock:_createBlock$1} = await importShared('vue');
-
-
-const _hoisted_1$1 = ["aria-expanded", "onKeydown"];
-const _hoisted_2$1 = { class: "font-weight-bold" };
-const _hoisted_3$1 = {
-  key: 0,
-  class: "text-medium-emphasis note-hint"
-};
-const _hoisted_4$1 = { class: "mt-1" };
-
-const {ref: ref$1} = await importShared('vue');
-
-
-
-const _sfc_main$1 = {
-  __name: 'CollapsibleNote',
-  props: {
-  title: { type: String, required: true },
-},
-  setup(__props) {
-
-
-
-const open = ref$1(false);
-function toggle() { open.value = !open.value; }
-
-return (_ctx, _cache) => {
-  const _component_v_icon = _resolveComponent$1("v-icon");
-  const _component_v_alert = _resolveComponent$1("v-alert");
-
-  return (_openBlock$1(), _createBlock$1(_component_v_alert, {
-    type: "info",
-    variant: "tonal",
-    density: "compact",
-    icon: false,
-    class: "radius-sm text-body-2 collapsible-note"
-  }, {
-    default: _withCtx$1(() => [
-      _createElementVNode$1("div", {
-        class: "note-head d-flex align-center",
-        role: "button",
-        tabindex: "0",
-        "aria-expanded": open.value ? 'true' : 'false',
-        onClick: toggle,
-        onKeydown: [
-          _withKeys(_withModifiers(toggle, ["prevent"]), ["enter"]),
-          _withKeys(_withModifiers(toggle, ["prevent"]), ["space"])
-        ]
-      }, [
-        _createVNode$1(_component_v_icon, {
-          size: "16",
-          class: "mr-1 flex-shrink-0"
-        }, {
-          default: _withCtx$1(() => [
-            _createTextVNode$1(_toDisplayString$1(open.value ? 'mdi-chevron-up' : 'mdi-chevron-down'), 1)
-          ]),
-          _: 1
-        }),
-        _createElementVNode$1("span", _hoisted_2$1, _toDisplayString$1(__props.title), 1),
-        (!open.value)
-          ? (_openBlock$1(), _createElementBlock$1("span", _hoisted_3$1, "（点击展开）"))
-          : _createCommentVNode$1("", true)
-      ], 40, _hoisted_1$1),
-      _withDirectives$1(_createElementVNode$1("div", _hoisted_4$1, [
-        _renderSlot(_ctx.$slots, "default", {}, undefined, true)
-      ], 512), [
-        [_vShow$1, open.value]
-      ])
-    ]),
-    _: 3
-  }))
-}
-}
-
-};
-const CollapsibleNote = /*#__PURE__*/_export_sfc(_sfc_main$1, [['__scopeId',"data-v-b0f1714d"]]);
+import { _ as _export_sfc, C as CollapsibleNote } from './CollapsibleNote-Dm7CLcF_.js';
 
 const {createTextVNode:_createTextVNode,resolveComponent:_resolveComponent,withCtx:_withCtx,createVNode:_createVNode,createElementVNode:_createElementVNode,toDisplayString:_toDisplayString,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock,vShow:_vShow,withDirectives:_withDirectives,renderList:_renderList,Fragment:_Fragment} = await importShared('vue');
 
@@ -553,7 +475,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
-                      _createTextVNode("v0.7.0", -1)
+                      _createTextVNode("v0.8.0", -1)
                     ]))]),
                     _: 1
                   })
@@ -1738,6 +1660,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-d13a8be6"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-75503f8d"]]);
 
 export { Config as default };

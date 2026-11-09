@@ -34,31 +34,49 @@ import pytest
 # 在无后端的开发机上完全跑不起来，而本次改动的关键判据（get_state 那一层）
 # 恰恰需要**变异验证**才能真正确认它在起作用。桩宿主让用例在任何机器上可跑。
 # 与 test_sidecar_ingest.py 同一手法。
-for _m in [
-    "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
-    "app.sdk.logging", "app.schemas", "app.schemas.types",
-    "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
-    "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron",
-]:
-    if _m not in sys.modules:
-        sys.modules[_m] = types.ModuleType(_m)
+# ⚠️ **先探测真实后端，再决定要不要装桩**（v0.8.0 教训）：过去这里无条件把
+# `sys.modules["app.core.event"].Event = object`，同一 pytest 进程里任何后加载
+# 的测试（如 test_strm_commands 走真实 `handle_command`）构造 `Event(...)` 时
+# 会炸出 `TypeError: object() takes no arguments` —— 桩是**进程级污染**。
+# 真实后端在场时整块跳过；`--noconftest` 且无后端的开发机上照旧。
+try:
+    _real_event = importlib.import_module("app.core.event")
+    _HAVE_REAL_EVENT = hasattr(_real_event, "Event") and _real_event.Event is not object
+except Exception:
+    _HAVE_REAL_EVENT = False
+# ⚠️ 桩已由更早的测试文件装上（notify_buttons / sidecar 的最小桩）：`app` 已是
+# 普通 ModuleType，此时**绝不能**再 import app.plugins —— 会以
+# "'app' is not a package" 炸掉收集。视为"无真实后端"，沿用既有桩。
+_ALREADY_STUBBED = ("app" in sys.modules
+                    and not hasattr(sys.modules.get("app"), "__path__"))
+_HAVE_REAL_EVENT = _HAVE_REAL_EVENT and not _ALREADY_STUBBED
 
-sys.modules["app.plugins"]._PluginBase = object
-sys.modules["app.core.event"].Event = object
-sys.modules["app.core.event"].EventType = types.SimpleNamespace(
-    CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
-    TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
-    WebhookMessage=8,
-)
-sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
-    send_event=lambda *a, **kw: None,
-    register=lambda *a, **kw: (lambda fn: fn),
-)
-sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
-    info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
-    warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
-)
-sys.modules["apscheduler.triggers.cron"].CronTrigger = object
+if not _HAVE_REAL_EVENT:
+    for _m in [
+        "app", "app.core", "app.core.event", "app.plugins", "app.sdk",
+        "app.sdk.logging", "app.schemas", "app.schemas.types",
+        "app.schemas.mediaserver", "app.sdk.scheduler", "app.sdk.plugins",
+        "apscheduler", "apscheduler.triggers", "apscheduler.triggers.cron",
+    ]:
+        if _m not in sys.modules:
+            sys.modules[_m] = types.ModuleType(_m)
+
+    sys.modules["app.plugins"]._PluginBase = object
+    sys.modules["app.core.event"].Event = object
+    sys.modules["app.core.event"].EventType = types.SimpleNamespace(
+        CommandExcute=1, PluginReload=2, MessageAction=3, PluginAction=4,
+        TransferComplete=5, SubtitleTransferComplete=6, AudioTransferComplete=7,
+        WebhookMessage=8,
+    )
+    sys.modules["app.core.event"].eventmanager = types.SimpleNamespace(
+        send_event=lambda *a, **kw: None,
+        register=lambda *a, **kw: (lambda fn: fn),
+    )
+    sys.modules["app.sdk.logging"].logger = types.SimpleNamespace(
+        info=lambda *a, **kw: None, debug=lambda *a, **kw: None,
+        warning=lambda *a, **kw: None, error=lambda *a, **kw: None,
+    )
+    sys.modules["apscheduler.triggers.cron"].CronTrigger = object
 
 _PLUGIN_DIR = os.path.abspath(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),

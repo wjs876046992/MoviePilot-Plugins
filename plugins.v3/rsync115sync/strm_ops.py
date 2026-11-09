@@ -813,17 +813,6 @@ class StrmOpsMixin:
         except Exception as e:
             logger.error(f"[Rsync115Sync] strm 疑似异常通知发送失败: {e}")
 
-    def _strm_suspect_commands_text(self, new_suspects: List[str]) -> str:
-        """
-        疑似通知里那段处理命令的**薄包装**；拼装逻辑在 `strm.suspect_commands_text`。
-
-        Thin wrapper over the pure renderer in `strm`: this plugin keeps the
-        copy-ready command text next to the rest of the strm logic so it stays
-        unit-testable without a MoviePilot backend (the whole point of `strm.py`
-        being I/O- and host-free).
-        """
-        return _strm.suspect_commands_text(new_suspects, self._sync_pairs)
-
     def _reset_strm_notified_if_clear(self) -> None:
         """
         疑似清单清空后重置通知标志，使下次新发现能再次提醒，并推送「已全部解决」。
@@ -1189,7 +1178,7 @@ class StrmOpsMixin:
         唯一实现，而"检查"的完整语义包含「把已经不自洽的疑似条目清出去」。
         漏掉这一步的后果是：条目进了疑似清单就再也不会因为"其实还在冷却、
         还没上传"而自动退场 —— 而通知正文里已经把 `/rsync_strm check` 写成了
-        第①步之后的标准动作（见 `strm.suspect_commands_text`），
+        第①步之后的标准动作（疑似通知的按钮，见 `strm.suspect_command_buttons`），
         用户照着敲却什么都没变，会以为命令没生效。
         """
         now_ts = time.time()
@@ -2130,7 +2119,8 @@ class StrmOpsMixin:
                 more = f"\n（另有 {len(src_missing) - _MAX_LOGGED_PATHS} 个未列出）" if len(src_missing) > _MAX_LOGGED_PATHS else ""
                 reasons.append(f"{len(src_missing)} 个文件因本地源文件不存在已跳过（未删除云端旧文件，防误删）：\n"
                                f"{listed}{more}\n"
-                               f"（提示：本地文件可能已被移动、改名或删除；可使用 /rsync_strm prune 清理无效条目）")
+                               f"（提示：本地文件可能已被移动、改名或删除；"
+                               f"源端已删的失败文件会在重试时自动移出失败清单）")
             if mount_failed:
                 listed = "\n".join(f"• {k}" for k in mount_failed[:_MAX_LOGGED_PATHS])
                 more = f"\n（另有 {len(mount_failed) - _MAX_LOGGED_PATHS} 个未列出）" if len(mount_failed) > _MAX_LOGGED_PATHS else ""
@@ -2149,7 +2139,7 @@ class StrmOpsMixin:
         # 部分失败：传能传的，但把失败的明确分类列出来，不静默吞掉
         note_parts = []
         if src_missing:
-            note_parts.append(f"{len(src_missing)} 个本地缺失已跳过（可使用 /rsync_strm prune 清理）")
+            note_parts.append(f"{len(src_missing)} 个本地缺失已跳过（源端已删的失败文件会在重试时自动移出清单）")
         if mount_failed:
             note_parts.append(f"{len(mount_failed)} 个目标端删除失败已跳过（挂载点可能未就绪）")
         if unmapped:

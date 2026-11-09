@@ -436,6 +436,48 @@
           </div>
         </div>
 
+        <!-- 状态图例：解决用户原话「不清楚文件状态，不知道应该用哪个操作」。
+             每个状态一行：叫什么 / 什么意思 / 下一步点哪里；默认折叠，手机上一屏
+             能放下的内容不被说明挤掉。
+             ⚠️ 这里只**点名**操作，不再放一份按钮 —— 按钮就在每一行条目上，
+             图例里重复会出现「两个都能点、该点哪个」的新歧义。 -->
+        <CollapsibleNote title="文件状态说明与下一步操作" class="mb-3">
+          <!-- ⚠️ 图例里的状态名必须与行内 chip **逐字一致**（review 发现过
+               「图例写冷却中、行里是缓冲中」的对不上 —— 用户还是无法映射）。 -->
+          <div class="d-flex flex-column ga-1">
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="warning" variant="tonal" class="font-weight-bold legend-state">缓冲中</v-chip>
+              <span class="text-medium-emphasis">刚入库，还在等冷却时间走完</span>
+              <span class="legend-next">· 想立刻传就点该行的「立即同步」</span>
+            </div>
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="success" variant="tonal" class="font-weight-bold legend-state">已就绪</v-chip>
+              <span class="text-medium-emphasis">冷却时间已到，可以上传</span>
+              <span class="legend-next">· 点上方「同步已就绪媒体」，或该行的「立即同步」</span>
+            </div>
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="info" variant="tonal" class="font-weight-bold legend-state">观察中</v-chip>
+              <span class="text-medium-emphasis">已同步成功，还在等 .strm 指针文件生成</span>
+              <span class="legend-next">· 不用处理；想马上确认就点「检查 strm」</span>
+            </div>
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="warning" variant="tonal" class="font-weight-bold legend-state">疑似异常</v-chip>
+              <span class="text-medium-emphasis">同步报告成功，但观察期内一直没看到 .strm</span>
+              <span class="legend-next">· 先点「先尝试生成 strm」；仍未生成再「删旧重传」</span>
+            </div>
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="error" variant="tonal" class="font-weight-bold legend-state">待同步 / 文件残缺</v-chip>
+              <span class="text-medium-emphasis">对账发现 115 端缺失或大小残缺</span>
+              <span class="legend-next">· 点该行的「重试」</span>
+            </div>
+            <div class="legend-row d-flex flex-wrap align-center ga-x-2 ga-y-1">
+              <v-chip size="x-small" color="secondary" variant="tonal" class="font-weight-bold legend-state">已完成</v-chip>
+              <span class="text-medium-emphasis">已同步成功，只累计在上方数字里，不再列出</span>
+              <span class="legend-next">· 无需操作</span>
+            </div>
+          </div>
+        </CollapsibleNote>
+
         <!-- 选项卡切换：冷却队列 vs 异常对账清单 vs 已忽略 -->
         <v-tabs v-model="currentTab" color="primary" density="compact" show-arrows class="mb-3 border-b">
           <v-tab value="queue">
@@ -469,19 +511,23 @@
                 <div class="overflow-hidden">
                   <div class="font-weight-bold text-body-2 text-truncate">{{ item.key }}</div>
                   <div class="text-caption text-medium-emphasis mt-0.5">
-                    入库时间: {{ item.enter_time }}
-                    <span v-if="!item.is_ready" class="ml-2 text-warning font-weight-medium">
-                      (还需冷却等待 {{ Math.ceil(item.remaining_seconds / 60) }} 分钟)
+                    <!-- v0.8.0：`/queue`（唯一提供 enter_time 的端点）已删除，
+                         `/items` 从不下发这个字段 —— 此前这里渲染成永久的空串。
+                         冷却基准改由 remaining_seconds 表达，它本来就是用户要的答案。 -->
+                    <span v-if="item.state !== 'ready'" class="text-warning font-weight-medium">
+                      还需冷却等待 {{ Math.ceil(item.remaining_seconds / 60) }} 分钟
                     </span>
-                    <span v-else class="ml-2 text-success font-weight-medium">
-                      (已达到冷却时间，随时可同步)
+                    <span v-else class="text-success font-weight-medium">
+                      已达到冷却时间，随时可同步
                     </span>
                   </div>
                 </div>
               </div>
               <div class="list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0">
-                <v-chip size="x-small" :color="item.is_ready ? 'success' : 'warning'" variant="tonal" class="font-weight-bold">
-                  {{ item.is_ready ? '已就绪' : '缓冲中' }}
+                <!-- 就绪与否直接读统一列表的 state（ready / cooling）——
+                     后端不再下发 is_ready，同一个事实只保留一份真相。 -->
+                <v-chip size="x-small" :color="item.state === 'ready' ? 'success' : 'warning'" variant="tonal" class="font-weight-bold">
+                  {{ item.state === 'ready' ? '已就绪' : '缓冲中' }}
                 </v-chip>
                 <v-btn
                   size="x-small"
@@ -1053,6 +1099,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import CollapsibleNote from './CollapsibleNote.vue'
 
 const props = defineProps({
   model: { type: Object, default: () => ({}) },
@@ -1083,13 +1130,9 @@ const statusData = ref({
   source_scan_last: 0,
   source_scan_enabled: true,
   source_scan_cron: '*/30 * * * *',
-  strm_suspects: {},
-  strm_watch_detail: {},
-  // key → 'sync' | 'gen'：该观察条目的计时基准。补生成移回观察期的条目用的是
-  // 「请求时刻 + strm_regrace_hours」，不是宽限期配置值。
-  strm_watch_clocks: {},
+  // 观察条目的计时基准（`/items` 的 clock 字段）分两种：补生成移回观察期的条目
+  // 用的是「请求时刻 + strm_regrace_hours」，不是宽限期配置值。
   strm_regrace_hours: 1,
-  strm_watching: 0,
   strm_grace_minutes: 5,
   // CD2 上传队列核对的运行态（默认关闭 —— 与后端一致）。
   // 看板据此区分「没开」「开了但没 token」「开了在跑」三种状态，
@@ -1097,8 +1140,8 @@ const statusData = ref({
   cd2_query_enabled: false,
   cd2_token_set: false,
   cd2_last_error: '',
-  // 已请 strm 助手补生成过的 key → 时间戳；以及助手就绪状态（含不可用原因）
-  strm_gen_requested: {},
+  // 助手就绪状态（含不可用原因）。哪些文件已请求过补生成，由 `/items` 的
+  // suspect 条目（gen_requested）携带，不再单独下发一份映射。
   strm_gen_dir_limit: 20,
   strm_helper_ok: { ready: false, reason: '' },
   // 助手健康（有无人在生成 .strm）。与 strm_helper_ok 是两个问题：
@@ -1305,7 +1348,7 @@ const failedCount = computed(() => brokenCount.value)
 const strmSuspectCount = computed(() => itemsData.value.states.suspect || 0)
 
 // 观察期计数：同样读统一列表的 states，与 strmWatchingEntries 同源。
-// 此前读 /status 的 `strm_watching`，而明细走 /status 的另一个字段 ——
+// 此前计数与明细分别读 /status 的两个字段 ——
 // 计数与明细是两条取数路径，一旦漂移就会出现「说 3 个在观察、只列出 2 个」。
 const watchingCount = computed(() => itemsData.value.states.watching || 0)
 
@@ -1320,9 +1363,8 @@ const watchingCount = computed(() => itemsData.value.states.watching || 0)
 // 5 小时、下一轮巡检却已判到期转疑似」—— 两边各自都自洽，用户完全无从判断
 // 该信谁，而这正是双钟问题最难排查的地方。
 const strmWatchingEntries = computed(() => {
-  // ⚠️ 来源改为统一列表（`state === 'watching'`），不再读 /status 的
-  // `strm_watch_detail` + 另一个 `strm_watch_clocks` 拼装 —— 那是同一件事的
-  // 第二份真相，两份对不上时看板会自己跟自己矛盾。
+  // ⚠️ 来源改为统一列表（`state === 'watching'`），不再读 /status 的观察明细
+  // 与计时字段拼装 —— 那是同一件事的第二份真相，两份对不上时看板会自己跟自己矛盾。
   const watching = itemsByState('watching')
   const graceSync = (Number(statusData.value.strm_grace_minutes) || 5) * 60
   const graceGen = (Number(statusData.value.strm_regrace_hours) || 1) * 3600
@@ -1378,7 +1420,7 @@ const helperHealthReason = computed(
 // 把「命令已发出」当成「生成已失败」，会诱导用户去删掉一个好文件。
 // 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
 // ⚠️ 来源改为统一列表的 suspect 条目（`gen_requested` 字段）。
-// 原先是 /status 的 `strm_gen_requested`，与列表各算各的 —— 同一件事两份真相。
+// 原先是 /status 的一份独立映射，与列表各算各的 —— 同一件事两份真相。
 const genRequested = computed(() => {
   const out = {}
   for (const it of itemsByState('suspect')) {
@@ -2206,6 +2248,19 @@ onUnmounted(() => {
 .action-strip {
   background: rgba(var(--v-theme-on-surface), 0.025);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.06);
+}
+/* 状态图例的每一行：窄屏放不下时自动换行（flex-wrap），不靠省略号截断 ——
+   被截掉的恰好是「下一步点哪里」，那正是这一块存在的理由。
+   状态名给固定最小宽度，多行之间才能纵向对齐、扫一眼就找到自己关心的那个。 */
+.legend-row {
+  line-height: 1.6;
+}
+.legend-state {
+  min-width: 4.75rem;
+}
+/* 「下一步」用主色点出来：这一块要回答的就是「点哪里」，不该和含义文字同权重。 */
+.legend-next {
+  color: rgb(var(--v-theme-primary));
 }
 .queue-item-card {
   background: rgb(var(--v-theme-surface));

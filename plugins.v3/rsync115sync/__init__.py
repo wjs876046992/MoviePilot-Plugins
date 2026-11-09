@@ -253,7 +253,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.7.0"
+    plugin_version = "0.8.0"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -535,7 +535,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         self._pending_queue: Dict[str, float] = {}
 
         # 待确认的交互重试列表（关键字查找结果）：[{"key": "...", "path": "..."}]
-        self._waiting_confirm_retries: List[str] = []
 
         # 冷却队列等待期错过的入库事件：{"任务名:相对路径": 首次错过时间戳}
         #
@@ -2194,10 +2193,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             # 统一条目列表：一行一个文件 + state 字段（存储层早就统一了，
             # 这里把真相直接透给界面，见 `_api_get_items` 的说明）。
             {"path": "/items", "endpoint": self._api_get_items, "methods": ["GET"], "auth": "bear"},
-            # ⚠️ `/queue` 保留：旧版看板与外部调用还在用它，删掉会让它们空白。
-            # 它返回的是「冷却队列」这一种 state 的明细，等价于 /items 过滤
-            # state ∈ {cooling, ready}。等界面全部切到 /items 后再考虑移除。
-            {"path": "/queue", "endpoint": self._api_get_queue, "methods": ["GET"], "auth": "bear"},
+            # ⚠️ `/queue` 已于 v0.8.0 删除：界面与外部调用都已切到 `/items`
+            # （按 `state` 过滤等价于旧 `/queue`），留着它只是同一事实的第二份
+            # 取数路径。实测 grep 全仓已无调用方。
             {"path": "/config", "endpoint": self._api_get_config, "methods": ["GET"], "auth": "bear"},
             {"path": "/config", "endpoint": self._api_save_config, "methods": ["POST"], "auth": "bear"},
             {"path": "/sync", "endpoint": self._api_trigger_sync, "methods": ["POST"], "auth": "bear"},
@@ -3013,23 +3011,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 # 于是上面那份带兜底的写法被悄悄架空 —— `__new__` 构造的实例调本方法
                 # 仍会 AttributeError。重复键是这类"看起来已经修了"的典型来源，
                 # 加字段时务必先 grep 确认该键不存在。
-                # strm 交叉验证状态（看板展示与重传操作的数据源）
-                "strm_suspects": self._strm_suspects,
-                # 观察期明细：key → 同步成功时间戳。
-                # 之前只返回数量（strm_watching），用户看到「1 个文件处于观察期」
-                # 却不知道是哪个文件、等了多久 —— 明细让观察状态可见、可预期
-                # （对照宽限期就能算出还剩多久出结果）。
-                "strm_watch_detail": {k: ts for k, ts in self._strm_watch.items()},
-                # 每个观察条目的计时基准：key → "sync" | "gen"。
-                # 看板必须用它决定「还剩多久」以及该跟哪个窗口比 —— 补生成重新
-                # 计时过的条目若仍按同步时刻算，用户会看到「入口说还有 5 小时、
-                # 另一个入口说已到期」。判定与显示走同一个 strm.watch_state_of。
-                "strm_watch_clocks": {
-                    k: _strm.watch_state_of(k, self._strm_watch,
-                                            self._strm_gen_requested, time.time())[0]
-                    for k in self._strm_watch},
+                # strm 交叉验证：只给**配置与非逐条运行态**。
+                # ⚠️ v0.8.0 删除了五份逐条视图（strm_suspects / strm_watch_detail /
+                # strm_watch_clocks / strm_watching / strm_gen_requested）：看板早已
+                # 改从 `/items` 的 `state` 派生同一批数据，这五份是同一事实的第二套
+                # 取数路径。`/status` 保留的是"配置与整体健康"，不属于某个文件。
                 "strm_regrace_hours": _strm.REGRACE_HOURS,
-                "strm_watching": len(self._strm_watch),
                 "strm_grace_minutes": self._strm_grace_minutes,
                 "strm_check_enabled": self._strm_check_enabled,
                 "strm_suspect_remind_hours": getattr(self, "_strm_suspect_remind_hours", self.DEFAULT_STRM_SUSPECT_REMIND_HOURS),
@@ -3045,10 +3032,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 "cd2_last_error": getattr(self, "_cd2_last_error", ""),
                 "cd2_backoff_remaining": max(
                     0, int(float(getattr(self, "_cd2_backoff_until", 0.0) or 0.0) - now_ts)),
-                # 已请 strm 助手补生成过的 key → 时间戳，看板据此标出
-                # 「已请求生成，等待结果」，避免用户重复点击（每次都会让助手
-                # 真的去遍历云端目录，是有成本的操作）。
-                "strm_gen_requested": dict(self._strm_gen_requested),
                 "strm_gen_dir_limit": STRM_GEN_DIR_LIMIT,
                 "strm_helper_ok": self._strm_helper_ready(),
                 # 助手健康（有无人在生成 .strm）——与上面的"补生成是否可用"是两个问题：
@@ -3246,10 +3229,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             elapsed = now_ts - float(basis)
             state = "ready" if elapsed >= threshold else "cooling"
             extra["remaining_seconds"] = int(max(0, threshold - elapsed))
-            # `is_ready` 与 state 冗余，但保留：它是旧 `/queue` 的字段名，
-            # 看板与外部调用都在读。同一个事实给两个名字是不理想的，
-            # 但改名的收益远小于"让所有读者同步改一遍"的风险 —— 记在 TODO 里。
-            extra["is_ready"] = state == "ready"
+            # 不再输出 `is_ready`（v0.8.0 删除）：它与 `state` 是同一事实的两个
+            # 名字。看板已改用 `state === 'ready'`，留着只会让下一个读者
+            # 猜"这两个字段会不会不一致"。
         elif status == _store_mod.STATUS_PENDING_VERIFY:
             # 台账 status 是 `pending_verify`，但那是**实现语言**（"待验证"）；
             # 用户看到的是"刚传完，在等 strm 出来"，因此对外统一叫 `watching`。
@@ -3284,27 +3266,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             "notes": [],
             **extra,
         }
-
-    def _api_get_queue(self):
-        now_ts = time.time()
-        threshold = self._delay_hours * 3600
-        items = []
-        for key, basis_ts in sorted(self._pending_queue.items(), key=lambda x: x[1]):
-            # ⚠️ 队列里存的是**冷却基准**（min(发现时刻, mtime)），不是入队时刻。
-            # 对一个"入库时间早于发现时间"的文件（插件重载期间错过的），
-            # 基准会明显早于它真正进队列的时刻 —— 因此下面这个时间字段命名为
-            # 「冷却基准」而不是「入队时间」，否则用户会看到「入队时间 3 小时前」
-            # 却不知道那个时间是文件自己的 mtime（这正是它已就绪的原因）。
-            elapsed = now_ts - basis_ts
-            remaining = max(0, threshold - elapsed)
-            items.append({
-                "key": key,
-                "basis_time": datetime.fromtimestamp(basis_ts).strftime("%Y-%m-%d %H:%M:%S"),
-                "enter_time": datetime.fromtimestamp(basis_ts).strftime("%Y-%m-%d %H:%M:%S"),
-                "is_ready": elapsed >= threshold,
-                "remaining_seconds": int(remaining)
-            })
-        return {"success": True, "data": items}
 
     def _api_trigger_sync(self):
         if self._is_running:

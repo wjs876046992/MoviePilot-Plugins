@@ -1,13 +1,10 @@
 """
-补传候选口径、确认序号解析、旧默认值迁移、退出码分类、伴生字幕匹配。
+补传候选口径、旧默认值迁移、退出码分类、伴生字幕匹配。
+Back-fill candidate criteria, legacy-default migration, exit-code
+classification, and sidecar subtitle matching.
 
-Back-fill candidate criteria, confirm-index parsing, legacy-default migration,
-exit-code classification, and sidecar subtitle matching — the five remaining
-P1 unit-test targets from TODO.md.
-
-它们共同的特点是**判据写在运行时、边界容易写错，而错了不会报错**：
-候选多一个白耗一次 stat、序号解析错一位传错文件、迁移写坏会覆盖用户配置、
-退出码分类错会把失败谎报成成功、字幕多纳一个会跨集误传。
+（`/rsync_confirm` 的序号解析已于 v0.8.0 随命令面收敛删除 —— 命令侧不再保存
+搜索上下文，重试改为「关键字预览 → 显式 all/序号」。）
 """
 
 import importlib
@@ -16,61 +13,6 @@ import os
 import pytest
 
 from app.plugins.rsync115sync import constants, paths
-
-
-# ==========================================================================
-# _parse_confirm_indices —— /rsync_confirm 的序号解析
-# ==========================================================================
-
-def _parse(arg, total):
-    module = importlib.import_module("app.plugins.rsync115sync")
-    return module.Rsync115Sync._parse_confirm_indices(arg, total)
-
-
-def test_confirm_all_forms_select_everything():
-    for arg in ("", "all", "ALL", "全部"):
-        assert _parse(arg, 3) == [0, 1, 2], arg
-
-
-def test_confirm_single_and_multiple():
-    assert _parse("2", 5) == [1]
-    assert _parse("1,3", 5) == [0, 2]
-    assert _parse("1 3", 5) == [0, 2]
-
-
-def test_confirm_range_and_mixed():
-    assert _parse("1-3", 5) == [0, 1, 2]
-    assert _parse("1~3", 5) == [0, 1, 2]
-    assert _parse("1-2 4", 5) == [0, 1, 3]
-
-
-def test_confirm_full_width_comma_and_tilde():
-    """中文标点与 `~` 都要认 —— 手机上很容易打出全角逗号。"""
-    assert _parse("1，3", 5) == [0, 2]
-    assert _parse("2~3", 5) == [1, 2]
-
-
-def test_confirm_deduplicates_and_sorts():
-    """重复与乱序都要归一，否则调用方按下标取值会重复重传同一个文件。"""
-    assert _parse("3,1,3", 5) == [0, 2]
-    assert _parse("2 1", 5) == [0, 1]
-
-
-def test_confirm_out_of_range_is_dropped_not_clamped():
-    """
-    越界序号**丢弃**而不是夹到边界。
-
-    夹边界会把「用户打错了」变成「静默重传了最后一个文件」—— 而这一步的后果
-    是删旧重传（破坏性）。宁可少选，也不替用户猜他想要哪个。
-    """
-    assert _parse("0", 3) == []
-    assert _parse("4", 3) == []
-    assert _parse("2-9", 3) == [1, 2]      # 范围内的保留，越界的丢掉
-    assert _parse("abc", 3) == []
-
-
-def test_confirm_reversed_range_is_normalised():
-    assert _parse("3-1", 5) == [0, 1, 2]
 
 
 # ==========================================================================
