@@ -463,8 +463,47 @@ script, its test, or `plugin-gate.yml` changes.
 `<plugin_dir_lower>_v<version>.zip`, skipped when the plugin directory is unchanged since the last
 tag of the same plugin.
 
+## Plugin Development Workflow (mandatory)
+
+**Every plugin change follows this order — UI design first, then a written plan, then code.**
+Not a suggestion: `docs/Plugin_Dev_Workflow.md` is the full contract; the short form is:
+
+1. **Design the UI before writing code.** Produce a page sketch, place every new
+   control (first screen vs. advanced), and write all four states of every status
+   (not enabled / enabled-but-missing-prerequisite / running / failed). A backend
+   capability the user cannot find on the page does not exist for them.
+   - First-screen test: *does a new user's first decision depend on this control?*
+   - Never put "enable X" on the first screen while X's key parameters sit behind
+     「显示高级设置」 — the user fills the entry point and never sees the parameters.
+   - Attach a status message to **the thing it describes**, never to a neighbour
+     that merely co-occurs. (Symptom to avoid: an alert explaining a protection
+     vanishes exactly when the protection starts working, because it was nested
+     under the counter that the protection zeroes out.)
+2. **Write the plan as a checklist** before coding: goal, **non-goals**, tasks each
+   independently verifiable, verification method per task, and risks/dependencies.
+   Resolve external facts (host behaviour, third-party API shapes) from **real data
+   or source**, not from docs or protocol files — the plan step is where that lands.
+3. **Only then implement**, and record documentation in the same commit batch.
+
+**Mobile rules that have already cost three failed attempts each** — apply without
+re-deriving: input rows must be vertical (`setting-row-stacked`); labels go outside
+the field via `.stacked-label`, never `label=`; wrap long unbreakable tokens in
+`class="wrap-anywhere"`.
+
+**User-facing text red lines:** no Markdown (`**bold**`, backticks) anywhere that
+reaches the dashboard's plain-text block, `window.confirm`, or chat replies —
+those render plain text. Use `<b>` inside templates and 【】 in plain strings.
+`**` inside `logger.*` is fine and deliberately kept.
+
+**Regression signal is the failure *set*, not the count.** This machine often has
+no backend, so pytest reports many `ModuleNotFoundError: app` failures. Capture the
+sorted `FAILED` list against a stashed baseline and `diff` the two — equal counts
+can still be a one-for-one swap.
+
 ## Documentation
 
+- `docs/Plugin_Dev_Workflow.md` — **the development process contract** (UI design →
+  plan → implement; what to record and where). Read before starting any plugin work.
 - `docs/Plugin_Development.md` — primary V3 plugin development guide (read first)
 - `docs/V3_Plugin_Adaptation.md` — migrating V2 plugins to V3 (imports, media identity, transactions)
 - `docs/V3_API_Response_Adaptation.md` — plugin API and host API response contract
