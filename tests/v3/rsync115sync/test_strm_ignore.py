@@ -46,7 +46,9 @@ def _plugin(root, *, suspects=None):
     plugin._strm_gen_requested = {}
     plugin._strm_watch = {}
     plugin._strm_suspects = dict(suspects or {})
-    # _last_status 里放一条同映射的缺失文件，验证 _add_ignore_rule 的联动清理
+    # failed 视图里放一条同映射的失败文件，验证 _add_ignore_rule 的联动清理
+    # （v0.7.0：对账失败的唯一真相源是 `_failed_files`，不再是 _last_status 数组）
+    plugin._failed_files = {KEY: {"ts": 1.0, "reason": "missing"}}
     plugin._last_status = {"missing_files": [KEY], "corrupt_files": []}
     plugin._notify = False
     plugin._is_running = False
@@ -89,15 +91,17 @@ def test_ignore_does_not_touch_unrelated_entries(tmp_path):
 
 
 def test_ignore_purges_missing_files_list_too(tmp_path):
-    """忽略走 _add_ignore_rule 的完整联动：missing 清单里的同 key 也被剔除。"""
+    """忽略走 _add_ignore_rule 的完整联动：失败清单里的同 key 也被剔除。"""
     plugin = _plugin(str(tmp_path), suspects={KEY: {"dest": "ok"}})
-    assert KEY in plugin._last_status["missing_files"]
+    assert KEY in plugin._failed_files
 
     plugin._api_strm_ignore({"keys": [KEY]})
 
-    assert KEY not in plugin._last_status["missing_files"], (
-        "忽略必须联动清理缺失清单，否则同文件仍显示在对账异常里"
+    assert KEY not in plugin._failed_files, (
+        "忽略必须联动清理失败清单，否则同文件仍显示在对账异常里"
     )
+    # 兼容投影同步更新
+    assert KEY not in plugin._last_status["missing_files"]
 
 
 def test_ignore_resets_notify_latch_when_list_drains(tmp_path):

@@ -3,25 +3,26 @@
 
 One dashboard data source: one row per file, one `state` field.
 
-## 这个文件钉的结构（②）
+## v0.7.0 的结构变化（本文件同步更新）
 
-插件此前有**五个并列的清单**（冷却 / 对账异常 / strm 疑似 / 观察期 / 忽略），
-各有一套 API、命令与看板标签 —— 而它们在**存储层早就统一了**：
-全部是 `files` 表里 `status` 的不同取值。也就是说同一份数据被界面上切成五块，
-用户要分别理解五个地方。
+- `ignored` **不再是文件状态**：忽略的真相源是 `_ignored_rules`（规则），
+  台账里不再有 `status='ignored'` 的行。
+- 对账失败**不再与台账正交**：缺失/残缺就是 `status='failed'`（`fail_reason`
+  区分成因），由台账直接透出，不再从 `_last_status` 的两份数组叠加。
+  只有台账不可用时才退回读 `_last_status` 投影。
+- 对外仍叫 `state = "broken"`：看板失败标签一直用这个名字，改名只会让
+  前端与既有断言一起失效，而用户看到的东西没有区别。
 
-`/items` 把存储层已有的真相直接透出来。本用例钉四件事：
+本用例钉五件事：
 
-1. 六种 `state` 都能出现，且与台账 status 的对应关系正确；
+1. 五种 `state` 都能出现，且与台账 status 的对应关系正确；
 2. `cooling` / `ready` 是**同一个 status 按冷却时间拆的**，判据必须与
    `_count_queue` / `_execute_sync` 一致（三处漂移会让看板说"可传"而同步不传）；
-3. 对账发现的问题若**台账里已有该文件**，只补注记、**不重复出一行**
-   （同一文件在界面上出现两次正是混淆来源）；
-4. 台账不可用 / 读取失败时降级为空列表，不炸整个看板。
+3. 失败行只出现**一次**，并带上 `detail`（缺失/残缺）；
+4. 台账可用时不再读 `_last_status`（避免同一事实两份来源）；
+5. 台账不可用时降级为 `_last_status` 投影，不炸整个看板。
 
-⚠️ 需要 MoviePilot 后端，本机 skip；逻辑已用等价脚本在真机上验证过
-（当时的输出：cooling/ready/watching/suspect/ignored/broken 六种齐出，
-且 suspect 那条正确带上了 `['对账残缺']` 注记）。
+⚠️ 需要 MoviePilot 后端，本机 skip。
 """
 
 import os
@@ -53,8 +54,8 @@ def _plugin(tmp_path, *, missing=None, corrupt=None):
     return p, ledger, store
 
 
-def test_all_six_states_are_representable(tmp_path):
-    """六种 state 都要能表达出来 —— 这是"一个列表顶五个清单"的前提。"""
+def test_all_five_states_are_representable(tmp_path):
+    """五种 state 都要能表达出来 —— 这是"一个列表顶五个清单"的前提。"""
     p, led, st = _plugin(tmp_path)
     now = time.time()
     led.upsert("电视剧:cool.mkv", st.STATUS_CANDIDATE, pair="电视剧",
@@ -65,12 +66,12 @@ def test_all_six_states_are_representable(tmp_path):
                rel_path="watch.mkv", enqueued_at=now - 60)
     led.upsert("电视剧:susp.mkv", st.STATUS_SUSPECT, pair="电视剧",
                rel_path="susp.mkv", origin="watch")
-    led.upsert("电视剧:ign.mkv", st.STATUS_IGNORED, pair="电视剧",
-               rel_path="ign.mkv")
+    led.upsert("电视剧:bad.mkv", st.STATUS_FAILED, pair="电视剧",
+               rel_path="bad.mkv", fail_reason=st.FAIL_MISSING)
 
     data = p._api_get_items()["data"]
     assert set(data["states"]) == {"cooling", "ready", "watching",
-                                   "suspect", "ignored"}, data["states"]
+                                   "suspect", "broken"}, data["states"]
 
 
 def test_cooling_and_ready_split_by_the_same_predicate_as_the_sync(tmp_path):
@@ -107,35 +108,35 @@ def test_pending_verify_is_exposed_as_watching(tmp_path):
     assert [it["state"] for it in items] == ["watching"]
 
 
-def test_face_off_reconciliation_does_not_duplicate_an_existing_row(tmp_path):
-    """
-    对账发现的问题若台账里已有该文件，**只补注记，不重复出一行**。
-
-    ⚠️ 同一文件在界面上出现两次，正是"五个清单各说各话"的典型形态：
-    用户在"疑似"看到它、又在"异常"看到它，不知道是不是两件事。
-    """
-    p, led, st = _plugin(tmp_path, missing=["电视剧:gone.mkv"],
-                         corrupt=["电视剧:susp.mkv"])
-    led.upsert("电视剧:susp.mkv", st.STATUS_SUSPECT, pair="电视剧",
-               rel_path="susp.mkv", origin="watch")
+def test_failed_rows_are_one_row_with_a_reason(tmp_path):
+    """失败行只出现一次，并带 detail —— 不再从两份数组叠加。"""
+    p, led, st = _plugin(tmp_path)
+    led.upsert("电视剧:gone.mkv", st.STATUS_FAILED, pair="电视剧",
+               rel_path="gone.mkv", fail_reason=st.FAIL_MISSING)
+    led.upsert("电视剧:cut.mkv", st.STATUS_FAILED, pair="电视剧",
+               rel_path="cut.mkv", fail_reason=st.FAIL_CORRUPT)
 
     items = p._api_get_items()["data"]["items"]
     keys = [it["key"] for it in items]
-    assert keys.count("电视剧:susp.mkv") == 1, "同一文件出了两行"
-    row = next(it for it in items if it["key"] == "电视剧:susp.mkv")
-    assert row["state"] == "suspect"
-    assert "对账残缺" in row["notes"], row
-    # 台账里没有的那个才单独成行
-    assert "电视剧:gone.mkv" in keys
+    assert keys.count("电视剧:gone.mkv") == 1
+    by_key = {it["key"]: it for it in items}
+    assert by_key["电视剧:gone.mkv"]["state"] == "broken"
+    assert by_key["电视剧:gone.mkv"]["detail"] == "缺失"
+    assert by_key["电视剧:cut.mkv"]["detail"] == "残缺"
 
 
-def test_broken_state_comes_from_reconciliation_not_the_ledger(tmp_path):
-    """对账问题与台账 status **正交** —— 台账里没有它也要能显示出来。"""
-    p, led, st = _plugin(tmp_path, missing=["电视剧:gone.mkv"])
+def test_ledger_mode_ignores_the_legacy_arrays(tmp_path):
+    """
+    台账可用时 `_last_status` 的两份数组不再参与取数。
+
+    ⚠️ 这正是 v0.7.0 要消灭的重复真相源：此前同一件事一份在台账、一份在
+    `_last_status`，看板与命令各读各的，取消忽略/恢复后两边对不上。
+    """
+    p, led, st = _plugin(tmp_path, missing=["电视剧:legacy_only.mkv"])
     data = p._api_get_items()["data"]
-    assert data["states"].get("broken") == 1
-    row = next(it for it in data["items"] if it["key"] == "电视剧:gone.mkv")
-    assert row["state"] == "broken"
+    # 台账里没有 failed 行 → 即使旧数组里有，也不该出现
+    assert data["items"] == []
+    assert data["states"] == {}
 
 
 def test_missing_ledger_degrades_to_reconciliation_only(tmp_path):

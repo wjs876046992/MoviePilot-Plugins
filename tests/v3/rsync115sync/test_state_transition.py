@@ -239,6 +239,150 @@ def test_done_has_no_in_memory_view(ledger):
 
 
 # --------------------------------------------------------------------------
+# v0.7.0：failed 是唯一的传输失败状态
+# --------------------------------------------------------------------------
+
+def test_failed_is_active_and_ignored_is_gone():
+    """失败态参与取数与巡检；忽略不再是文件状态（规则才是它的真相源）。"""
+    assert store.STATUS_FAILED in store.ACTIVE_STATUSES
+    assert store.STATUS_FAILED in store.ALL_STATUSES
+    assert not hasattr(store, "STATUS_IGNORED")
+    assert "ignored" not in store.ALL_STATUSES
+
+
+def test_failed_view_preserves_orthogonal_columns(ledger):
+    """failed 行必须能保留 synced_at / gen_requested_at / ingest_source。"""
+    key = "TV:S01E08.mkv"
+    ledger.upsert(key, store.STATUS_PENDING_VERIFY, ingest_source="scan",
+                  synced_at=222.0, gen_requested_at=333.0)
+    failed = store.LedgerMapping(ledger, store.STATUS_FAILED,
+                                 ts_field="verified_at",
+                                 extra_from_value={"reason": "fail_reason"})
+    failed[key] = {"ts": 444.0, "reason": store.FAIL_CORRUPT}
+
+    failed2 = store.LedgerMapping(ledger, store.STATUS_FAILED,
+                                  ts_field="verified_at",
+                                  extra_from_value={"reason": "fail_reason"})
+    assert key in failed2
+    assert failed2[key]["reason"] == "corrupt"
+    row = ledger.get(key)
+    assert row["status"] == store.STATUS_FAILED
+    assert row["fail_reason"] == "corrupt"
+    assert row["synced_at"] == 222.0
+    assert row["gen_requested_at"] == 333.0
+    assert row["ingest_source"] == "scan"
+
+
+def test_clear_fail_reason_can_write_null(ledger):
+    """upsert 的 COALESCE 写不了 NULL，成因必须能单独清空。"""
+    key = "TV:S01E09.mkv"
+    ledger.upsert(key, store.STATUS_FAILED, fail_reason=store.FAIL_MISSING)
+    assert ledger.get(key)["fail_reason"] == "missing"
+    ledger.clear_fail_reason(key)
+    assert ledger.get(key)["fail_reason"] is None
+    # 不传 fail_reason 的普通状态更新不该覆盖已有成因
+    ledger.upsert(key, store.STATUS_FAILED, fail_reason=store.FAIL_CORRUPT)
+    ledger.upsert(key, store.STATUS_FAILED, enqueued_at=1.0)
+    assert ledger.get(key)["fail_reason"] == "corrupt"
+
+
+def test_retry_candidates_come_from_the_failed_view():
+    """retry 的候选必须读 failed 清单，而不是旧的 last_status 数组。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    assert "list(self._failed_files.keys())" in body
+    assert 'self._last_status.get("missing_files")' not in body
+
+
+def test_ready_failure_leaves_the_cooling_queue_without_deleting_the_row():
+    """ready 失败项离开冷却队列时只摘缓存 —— pop 会删掉整行。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    assert "forget_key(self._pending_queue" in body
+
+
+def test_scheduled_cycle_retries_failed_files():
+    """定时巡检必须把 failed 清单纳入重试节奏（ready → failed → backfill）。"""
+    body = _func_src("__init__.py", "_scheduled_sync")
+    assert "self._failed_files" in body
+    # ast.unparse 把引号归一化成单引号
+    assert "mode='retry'" in body
+
+
+def test_items_no_longer_merges_the_legacy_anomaly_lists():
+    """/items 在台账可用时不该再拼 _last_status 的两份数组（会重复/分叉）。"""
+    body = _func_src("__init__.py", "_api_get_items")
+    assert "if ledger is None:" in body
+    assert 'self._last_status.get(kind)' in body, "降级分支仍需保留"
+
+
+def test_ignore_no_longer_writes_ledger_rows():
+    """新增忽略不该再写台账 status='ignored'（该状态已删除）。"""
+    body = _func_src("__init__.py", "_add_ignore_rule")
+    assert "_failed_files" in body or "_prune_ignored_failed" in body
+    assert 'STATUS_IGNORED' not in body
+
+
+# --------------------------------------------------------------------------
+# v0.7.0 review 回归：几条只靠"读代码"就能钉住的顺序/存在性不变量
+# --------------------------------------------------------------------------
+
+def test_ignored_rows_migrate_only_after_rules_are_loaded():
+    """
+    F1：迁移会 `save_data("ignored_files", ...)`，必须在规则**载入之后**跑。
+
+    若放在 `_open_store()`（早于 `saved_ignored` 的载入），规则列表还是空的 ——
+    用户原有的 contains 规则会被"只含迁移结果"的列表覆盖，永久丢失。
+    """
+    src = _read("__init__.py")
+    init_src = _func_src("__init__.py", "init_plugin")
+    assert "_migrate_ignored_rows_to_rules()" in init_src
+    # 载入规则 → 再迁移：用源码顺序断言（AST 里两行都是调用/赋值，位置可比）
+    assert init_src.index("saved_ignored") < init_src.index(
+        "_migrate_ignored_rows_to_rules()")
+    # 旧的迁移入口不得再提前调用它
+    legacy = _func_src("__init__.py", "_migrate_legacy_state_once")
+    assert "_migrate_ignored_rows_to_rules" not in legacy
+
+
+def test_legacy_failed_migration_uses_its_own_marker():
+    """F2：不能复用 legacy_migrated —— 老用户那一步早已置位，会静默丢数据。"""
+    body = _func_src("__init__.py", "_migrate_legacy_failed_once")
+    assert "legacy_failed_migrated" in body
+    assert "legacy_migrated" not in body
+
+
+def test_scheduled_retry_yields_to_backfill_when_stalled():
+    """F4：失败清单不能永久独占 cron，否则补传队列被一个坏条目卡死。"""
+    body = _func_src("__init__.py", "_scheduled_sync")
+    assert "_failed_retry_stalled_until" in body
+
+
+def test_mark_failed_evicts_the_same_key_from_other_views():
+    """F6：一行只有 status 一列，改 failed 时必须摘掉其它视图的缓存。"""
+    body = _func_src("__init__.py", "_mark_failed")
+    for view in ("_pending_queue", "_strm_watch", "_strm_suspects"):
+        assert view in body
+    assert "forget_key" in body
+
+
+def test_force_registers_pre_audit_before_the_early_continues():
+    """F7：force 的预对账覆盖整棵树，必须在"全盘通过/配额耗尽"的 continue 之前登记。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    pre = body.index("audited_pairs.add(pair_name)")
+    # 预对账之后的所有 continue 都应在登记之后
+    assert pre < body.index("force 全量对账通过") or "force 全量对账通过" not in body
+    assert pre < body.index("audited_keys.update(attempted_keys)")
+
+
+def test_recovered_failed_entries_are_retired_not_just_forgotten():
+    """F3：force/backfill/非视频的成功项不会再写 status，必须显式落 done。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    assert "retire_key(self._failed_files" in body
+    assert "clear_fail_reason" in body
+
+
+
+
+# --------------------------------------------------------------------------
 # 业务侧哨兵：具体函数必须用迁移原语，不得 pop
 # --------------------------------------------------------------------------
 

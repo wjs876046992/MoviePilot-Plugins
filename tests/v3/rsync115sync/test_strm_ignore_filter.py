@@ -38,6 +38,7 @@ def _plugin(root, *, rules=None, pair_name="电视剧", all_ext=False):
     plugin._strm_watch = {}
     plugin._strm_suspects = {}
     plugin._ignored_rules = rules or []
+    plugin._failed_files = {}
     plugin._last_status = {"missing_files": [], "corrupt_files": []}
     plugin._notify = False
     plugin.saved = {}
@@ -198,15 +199,21 @@ def test_add_rule_purges_existing_strm_lists():
 
 
 def test_add_rule_also_purges_missing_and_corrupt():
-    """原有行为不能被破坏：missing/corrupt 仍要清理。"""
+    """原有行为不能被破坏：失败清单（含两种成因）仍要联动清理。"""
     root = tempfile.mkdtemp()
     _make_src(root, ["a.mkv"])
     plugin = _plugin(root)
+    # v0.7.0：唯一真相源是 `_failed_files`（缺失/残缺用 reason 区分）
+    plugin._failed_files = {
+        "电视剧:a.mkv": {"ts": 1.0, "reason": "corrupt"},
+        "电视剧:b.mkv": {"ts": 1.0, "reason": "missing"},
+    }
     plugin._last_status = {
         "missing_files": ["电视剧:a.mkv", "电视剧:b.mkv"],
         "corrupt_files": ["电视剧:a.mkv"],
     }
     plugin._add_ignore_rule("a.mkv")
+    assert set(plugin._failed_files) == {"电视剧:b.mkv"}
     assert plugin._last_status["missing_files"] == ["电视剧:b.mkv"]
     assert plugin._last_status["corrupt_files"] == []
 

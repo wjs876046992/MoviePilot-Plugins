@@ -5,8 +5,8 @@ const currentImports = {};
       dynamicLoadingCss(["__federation_expose_Page-Tu_jk1Jq.css"], false, './Page');
       return __federation_import('./__federation_expose_Page-o_ot7G46.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Config":()=>{
-      dynamicLoadingCss(["__federation_expose_Config-DRwRg2Oc.css"], false, './Config');
-      return __federation_import('./__federation_expose_Config-BzKCUI-n.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
+      dynamicLoadingCss(["__federation_expose_Config-BINLa6jp.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-Cl_koGPU.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
       const seen = {};
       const dynamicLoadingCss = (cssFilePaths, dontAppendStylesToHead, exposeItemName) => {
         const metaUrl = import.meta.url;

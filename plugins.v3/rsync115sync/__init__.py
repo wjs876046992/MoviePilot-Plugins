@@ -253,7 +253,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.6.0"
+    plugin_version = "0.7.0"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -398,6 +398,22 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         # 旧格式（纯 float）在 _load 时自动迁移，见 init_plugin。
         # Value shape changed from float to dict to record the suspect's origin.
         self._strm_suspects: Dict[str, Dict[str, Any]] = {}
+
+        # ---- 对账失败清单（v0.7.0 收敛为台账 failed 状态）----
+        # key → {"ts": 判失败时刻, "reason": "missing"|"corrupt"}
+        # 此前对账失败散在两处并行清单（`_last_status["missing_files"/
+        # "corrupt_files"]` 内存 + `save_data` 落盘各一份），且 ready 与
+        # backfill 的失败语义相反：ready 失败项留在冷却队列里**无限重试**，
+        # backfill 失败项进清单后**只能等人工**。现在统一为：失败进这份清单
+        # （台账 status=failed），retry 模式的候选就是它 —— 两条路径共一个预算。
+        # One failure list in the ledger; retry candidates come from it.
+        self._failed_files: Dict[str, Dict[str, Any]] = {}
+        # 失败清单的重试**不能**独占每一轮 cron：只要队列非空就 return 的话，
+        # 一个永远修不好的条目（例如源文件已被删除）会让补传队列永久排队。
+        # 若一轮 retry 既没恢复任何条目、也没有实际传输，就把重试推迟到
+        # 这个时刻之后，把中间几轮让给补传。
+        self._failed_retry_stalled_until: float = 0.0
+
         self._strm_grace_minutes: int = 5              # 宽限期（分钟），可配置
         self._strm_check_enabled: bool = True          # 总开关（有 strm_dir 的映射才实际生效）
         self._strm_last_check: float = 0.0             # 上次巡检时间（节流）
@@ -639,11 +655,36 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         saved_queue = self.get_data("pending_queue") or {}
         if isinstance(saved_queue, dict):
             self._seed_ledger_from_saved(self._pending_queue, saved_queue, "enqueued_at")
-        self._last_status["missing_files"] = self.get_data("missing_files") or []
-        self._last_status["corrupt_files"] = self.get_data("corrupt_files") or []
+        # v0.7.0：旧的两份对账异常清单一次性迁入 failed 视图。
+        # ⚠️ 判据**不能**用 `_allow_legacy_seed`（等价于 legacy_migrated != 1）：
+        # 所有已有台账的老用户都已经跑过那一步（=1），升级后第一次启动会被判成
+        # "无需迁移"，随后 `_LEDGER_OWNED_DATA_KEYS` 又删掉旧键 —— 失败清单
+        # 静默丢失。这里用**独立的** meta 标记，保证对老用户也真的执行一次。
+        self._migrate_legacy_failed_once()
+        # last_status 里的两个数组保留为**兼容投影**（/status 对外形状不变、
+        # 前端与测试仍在读），每轮结算后由 failed 视图重建 —— 它们不再被
+        # 当作独立状态写入。
+        saved_failed = self.get_data("failed_files") or {}
+        if isinstance(saved_failed, dict) and saved_failed:
+            if getattr(self, "_ledger", None) is None:
+                # 降级模式：普通 dict 就是真相源，必须**每次**恢复，
+                # 不能沿用 `_allow_legacy_seed` 的一次性判据（那是给台账
+                # 首启迁移用的）。
+                self._failed_files = {
+                    k: v for k, v in saved_failed.items() if isinstance(v, dict)}
+            else:
+                self._seed_ledger_from_saved(self._failed_files, saved_failed,
+                                             "verified_at")
+        self._sync_failed_projection()
         saved_ignored = self.get_data("ignored_files") or []
         if isinstance(saved_ignored, list):
             self._ignored_rules = saved_ignored
+        # ⚠️ 必须在 `_ignored_rules` **载入之后**再做迁移：迁移会往规则列表里
+        # 追加条目并 `save_data("ignored_files", ...)`。若在 `_open_store()` 里
+        # 提前执行（它早于本段），列表还是空的 —— 用户原有的 contains 规则会被
+        # 那份"只含迁移结果"的列表覆盖，永久丢失。
+        self._migrate_ignored_rows_to_rules()
+        self._prune_ignored_failed()
         # 恢复源端扫描游标（主通道的「看到了哪里」，必须跨重载续上）
         saved_cursor = self.get_data("source_cursor") or {}
         if isinstance(saved_cursor, dict):
@@ -848,19 +889,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         return _ignore_is_ignored(key, self._ignored_rules)
 
     def _add_ignore_rule(self, rule: str, match: str = "contains", created_by: str = "", source: str = "chat") -> bool:
-        """添加一条忽略规则，并同步剔除已存在于缺失/残缺清单里的项。"""
+        """添加一条忽略规则，并同步剔除已存在于失败/疑似/观察清单里的项。"""
         if not _ignore_add_rule(self._ignored_rules, rule, match, created_by, source):
             return False
         self.save_data("ignored_files", self._ignored_rules)
 
-        # 立即联动剔除已有的 missing/corrupt：否则被忽略的文件仍会显示在异常
-        # 清单里直到下一轮同步，用户会以为「忽略了没用」。
-        self._last_status["missing_files"] = _ignore_filter(
-            self._last_status.get("missing_files", []), self._ignored_rules)
-        self._last_status["corrupt_files"] = _ignore_filter(
-            self._last_status.get("corrupt_files", []), self._ignored_rules)
-        self.save_data("missing_files", self._last_status["missing_files"])
-        self.save_data("corrupt_files", self._last_status["corrupt_files"])
+        # 立即联动剔除已判失败的条目：否则被忽略的文件仍会显示在失败清单里
+        # 直到下一轮同步，用户会以为「忽略了没用」。
+        # ⚠️ 这里用 `pop`（删行）：`/items` 按台账 status 取数，只摘缓存的话
+        # 行仍会出现在看板上，重载后还会被重新载入。见 `_prune_ignored_failed`。
+        self._prune_ignored_failed()
 
         # strm 疑似清单与待观察清单同样要清理 —— 否则用户忽略之后，
         # 清单里那些条目还挂着（看板照旧显示、还可被「全部删旧重传」波及），
@@ -894,102 +932,20 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
 
     def _remove_ignore_rule(self, index_or_rule: Any) -> bool:
         """
-        移除指定忽略规则（按序号或规则文本），**并同步删掉台账里的对应行**。
+        移除指定忽略规则（按序号或规则文本）。
 
-        Remove an ignore rule and drop its ledger row.
+        Remove an ignore rule.
 
-        ## 为什么必须同时清台账（2026-09-28 发现）
-
-        忽略有**两份存储**，而移除只清了其中一份：
-
-            _ignored_rules（save_data）  用户写的**规则**，支持 contains 模糊匹配
-            台账 status='ignored' 的行   具体**文件**的忽略状态
-
-        添加时两处都写（`_add_ignore_rule` 里 `upsert(..., STATUS_IGNORED)`），
-        移除时却只删前者 —— 于是台账里永远留着 `status='ignored'` 的行。
-
-        这个残留此前**看不见**（旧看板「已忽略」读的是 `_ignored_rules`，
-        台账只做计数），因此潜伏了很久；`/items` 把台账行直接透出来之后，
-        它立刻变成用户可见的错误：**取消忽略后，那个文件仍显示在「已忽略」里**。
-
-        ⚠️ 这里**按规则文本匹配**而不是按 key 精确匹配：规则可能是 `contains`
-        （如「繁花」），一条规则对应多个文件行。先取出规则原文，再删所有匹配的行。
-        `_ignore_remove_rule` 会就地修改列表，因此要**先**把原文读出来。
+        ⚠️ v0.7.0 起忽略只有**一份**真相源（`_ignored_rules` 规则），台账里
+        不再有 `status='ignored'` 的文件行。此前那份额外的行带来过一个真实的
+        不一致：新增忽略只写规则不写行，`/items` 仍会把文件显示成"已忽略"，
+        而取消忽略又只删规则 —— 两边永远对不上。遗留行由
+        `_migrate_ignored_rows_to_rules` 一次性转成 exact 规则并删除。
         """
-        # 先取原文：_ignore_remove_rule 成功后会把它从列表里删掉
-        target = self._ignore_rule_at(index_or_rule)
         if not _ignore_remove_rule(self._ignored_rules, index_or_rule):
             return False
         self.save_data("ignored_files", self._ignored_rules)
-        if target:
-            self._drop_ledger_ignored(target)
         return True
-
-    def _ignore_rule_at(self, index_or_rule: Any) -> Optional[Dict[str, Any]]:
-        """
-        取出 `_ignore_remove_rule` **将要删掉**的那条规则原文；取不到返回 None。
-
-        Peek the rule that `ignore.remove_rule` is about to remove.
-
-        ⚠️ 判据必须与 `ignore.remove_rule` **逐条对齐**，否则会出现
-        「这里取到 A、那边删掉 B」—— 台账删的是 A 的行，而规则删的是 B，
-        两边都不报错，状态悄悄错位。`ignore.remove_rule` 的实际口径是：
-
-            int        → 按序号，**从 0 起**
-            str        → 按**规则文本**（大小写不敏感），**不看数字**
-
-        注意第二行：字符串 `"1"` 在那个函数里是**规则文本**，不是序号
-        （只有真的 `int` 才当序号）。我起初想当然按"1 起的数字字符串"实现，
-        真机一测就错了 —— 这类"两个函数对同一个参数的解释不同"正是
-        最该逐字核对的一类。命令侧传进来的是 `text_arg`（**字符串**），
-        因此实际生效的是「按规则文本」那一支。
-        """
-        rules = self._ignored_rules or []
-        if isinstance(index_or_rule, int):
-            # 与 ignore.remove_rule 一致：int 才是序号，且从 0 起
-            if 0 <= index_or_rule < len(rules):
-                return rules[index_or_rule]
-            return None
-        if isinstance(index_or_rule, str):
-            target = index_or_rule.strip().lower()
-            for r in rules:
-                if (r.get("rule") or "").lower() == target:
-                    return r
-            # 与那边不同的一处：它对未命中的 str 返回 False（不删任何东西），
-            # 所以这里返回 None 即可 —— 两边都不会有副作用。
-            return None
-        return None
-
-    def _drop_ledger_ignored(self, rule: Dict[str, Any]) -> int:
-        """
-        删掉台账里由这条规则覆盖的 `ignored` 行，返回删除行数。
-
-        ⚠️ `match` 语义必须与 `ignore.py` 的判据一致：`exact` 只删 key 完全相同的，
-        `contains` 删所有**包含**该文本的行。口径不一致会造成两种错误之一：
-        漏删（取消忽略后文件还在清单里）或**误删**（把同名的别的文件也解除了忽略）。
-        """
-        ledger = getattr(self, "_ledger", None)
-        if ledger is None:
-            return 0
-        text = (rule or {}).get("rule") or ""
-        if not text:
-            return 0
-        exact = ((rule or {}).get("match") or "contains") == "exact"
-        try:
-            rows = ledger.by_status(_store_mod.STATUS_IGNORED)
-        except Exception as e:
-            logger.warning(f"[Rsync115Sync] 读取台账忽略行失败（跳过清理）: {e}")
-            return 0
-        removed = 0
-        for row in rows:
-            key = str(row.get("key") or "")
-            hit = (key == text) if exact else (text in key)
-            if hit and ledger.delete(key):
-                removed += 1
-        if removed:
-            logger.info(f"[Rsync115Sync] 🚫 已从台账移除 {removed} 个忽略条目"
-                        f"（规则 {rule.get('match')}: {text}）")
-        return removed
 
     # ================= 入库入口一览（改动前必读） =================
     #
@@ -2656,6 +2612,64 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             logger.warning(f"[Rsync115Sync] 事件流水裁剪失败（已忽略）: {e}")
         self._bind_ledger_maps()
 
+    def _sync_failed_projection(self) -> None:
+        """
+        把 failed 视图重建成 `_last_status` 的两个数组投影（v0.7.0）。
+
+        `missing_files` / `corrupt_files` 是**对外形状**（/status、通知、若干
+        测试都在读），但不再是独立状态 —— 真相源是台账 status=failed +
+        fail_reason。任何写入都改 `_failed_files`，然后调用本函数同步投影。
+        Rebuild the legacy arrays as a projection of the failed view; they are
+        an output shape, not a second source of truth.
+        """
+        # ⚠️ getattr 兜底：`__new__` 构造的最小实例（单测与若干内部路径）没有
+        # `_failed_files`，直接取会 AttributeError。
+        now_failed = getattr(self, "_failed_files", None) or {}
+        self._last_status["missing_files"] = [
+            k for k, v in now_failed.items()
+            if isinstance(v, dict) and v.get("reason") == _store_mod.FAIL_MISSING]
+        self._last_status["corrupt_files"] = [
+            k for k, v in now_failed.items()
+            if isinstance(v, dict) and v.get("reason") == _store_mod.FAIL_CORRUPT]
+
+    def _mark_failed(self, key: str, reason: str, ts: Optional[float] = None) -> None:
+        """
+        写 failed 状态，并把同一个 key 从其它活跃视图的缓存里摘掉。
+
+        ⚠️ 一个 key 只有一行、status 是单值的。把一行改成 failed 时，若它还留在
+        `_pending_queue` / `_strm_watch` / `_strm_suspects` 的**缓存**里，
+        台账与缓存就分叉了：`/status` 按缓存说"在观察"，`/items` 按台账说
+        "失败"；重载后观察状态直接消失（strm 不再复核）。所以统一在这里做
+        「写目标 + 摘源缓存」—— 只摘缓存，不删行。
+        """
+        self._failed_files[key] = {"ts": ts if ts else time.time(), "reason": reason}
+        for view_name in ("_pending_queue", "_strm_watch", "_strm_suspects"):
+            view = getattr(self, view_name, None)
+            if view is not None:
+                _store_mod.forget_key(view, key)
+
+    def _prune_ignored_failed(self) -> None:
+        """
+        把命中忽略规则的条目从 failed 视图里**删掉**（不是只摘缓存）。
+
+        ⚠️ 为什么必须是 `pop`：`/items` 直接按台账 status 取数，只摘缓存的话
+        行仍然是 `failed`，看板立刻又会显示成 `broken`，重载后还会被重新载入 ——
+        表现正是用户报过的「忽略了没用」。「忽略」的语义是**不再跟踪这个文件**；
+        以后取消忽略时，补传/全量对账会把它重新发现。
+        """
+        failed = getattr(self, "_failed_files", None)
+        if not failed:
+            return
+        removed = 0
+        for key in list(failed.keys()):
+            if _ignore_is_ignored(key, self._ignored_rules):
+                failed.pop(key, None)
+                removed += 1
+        if removed:
+            self._sync_failed_projection()
+            self.save_data("failed_files", failed)
+            logger.info(f"[Rsync115Sync] 🚫 已从失败清单移除 {removed} 个命中忽略规则的文件")
+
     def _bind_ledger_maps(self) -> None:
         """
         把四类「与文件有关的状态」换成台账替身（dict 接口不变，真相源变为 SQLite）。
@@ -2679,11 +2693,20 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         | candidate | `_pending_queue` | `enqueued_at` | 裸 float（入队时刻）|
         | pending_verify | `_strm_watch` | `enqueued_at` | 裸 float（同步成功时刻）|
         | suspect | `_strm_suspects` | `verified_at`（= 首次疑似时刻）| dict `{ts, origin, dest}` |
+        | failed | `_failed_files` | `verified_at`（= 判失败时刻）| dict `{ts, reason}` |
         | ignored | `_ignored_rules` | —— | **不替换**，见下 |
 
         ⚠️ 忽略清单**不换成替身**：它存的是**规则**（支持 `contains` 关键字匹配），
         不是"某个文件的状态" —— 台账的 key 是具体文件路径，装不下"某剧名"这种
         模式规则。它继续走 `save_data`，台账里那份只是迁移时留的快照。
+
+        ⚠️ `failed` 视图（v0.7.0）取代了 `_last_status["missing_files"]` /
+        `["corrupt_files"]` 两份并行清单：同一件事（对账失败）此前有两个真相源
+        —— 内存字典与 `save_data` 各一份，retry 候选、通知判据、看板 broken
+        各读各的。收敛后 ready 与 backfill 的失败**共用**这一份清单（此前
+        ready 失败项留在冷却队列里无限重试、backfill 失败项进清单后由 retry
+        人工接手，两条路径的重试语义相反 —— 现在统一为「失败进清单，
+        retry 自动取清单候选」）。`reason` 列区分缺失/残缺。
         """
         if self._ledger is None:
             # 台账不可用：保持原有字典（功能不受影响，只是没有持久化台账）。
@@ -2709,6 +2732,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                                      ts_field="verified_at",
                                      extra_from_value={"origin": "origin"},
                                      events={"origin": "suspect"}))
+        self._failed_files = self._adopt_into_ledger(
+            getattr(self, "_failed_files", None),
+            _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_FAILED,
+                                     ts_field="verified_at",
+                                     extra_from_value={"reason": "fail_reason"},
+                                     events={"reason": "fail"}))
         # 「已请助手补生成过」这一列**与 status 正交**（一个文件可以既在冷却队列
         # 又被补生成过），因此它走**列视图**而不是某个 status 替身 —— 见
         # store.LedgerFieldMap 的说明。调用点仍是普通的 dict 用法，一行不用改。
@@ -2720,6 +2749,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     # ⚠️ 它们必须在下一次加载前**清掉**，理由见 `_seed_ledger_from_saved` 的说明。
     _LEDGER_OWNED_DATA_KEYS = (
         "pending_queue", "strm_watch", "strm_suspects", "strm_gen_requested",
+        # v0.7.0：failed 成为台账状态；旧的 missing/corrupt 数组在迁移后
+        # 也不能再留着，否则下一次首启会被当成"新数据"再迁一遍。
+        "failed_files", "missing_files", "corrupt_files",
     )
 
     def _seed_ledger_from_saved(self, mapping, saved: Dict[str, Any],
@@ -2799,6 +2831,80 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 mapping[k] = v
         return mapping
 
+    def _migrate_legacy_failed_once(self) -> None:
+        """
+        把旧的 `missing_files` / `corrupt_files` 两份数组一次性迁入 failed 视图。
+
+        ⚠️ 用**独立的** ledger meta 标记，不复用 `legacy_migrated`：后者在
+        v0.5/v0.6 就已经置位，老用户升级时会被误判成"已经迁过"，而紧接着
+        `_LEDGER_OWNED_DATA_KEYS` 又会删掉旧键 —— 失败清单静默消失，
+        看板与 `/status` 显示 0。
+        """
+        ledger = getattr(self, "_ledger", None)
+        if ledger is None:
+            return          # 降级模式由 `init_plugin` 的 failed_files 恢复分支处理
+        try:
+            if ledger.get_meta("legacy_failed_migrated") == "1":
+                return
+        except Exception:
+            return
+        now_ts = time.time()
+        seeded = 0
+        for kind, reason in (("corrupt_files", _store_mod.FAIL_CORRUPT),
+                             ("missing_files", _store_mod.FAIL_MISSING)):
+            saved = self.get_data(kind) or []
+            if not isinstance(saved, list):
+                continue
+            for k in saved:
+                if not isinstance(k, str) or k in self._failed_files:
+                    continue
+                self._failed_files[k] = {"ts": now_ts, "reason": reason}
+                seeded += 1
+        ledger.set_meta("legacy_failed_migrated", "1")
+        if seeded:
+            logger.info(f"[Rsync115Sync] 已把旧异常清单迁入台账 failed "
+                        f"状态: {seeded} 个")
+
+    def _migrate_ignored_rows_to_rules(self) -> None:
+        """
+        把台账里遗留的 `status='ignored'` 文件行一次性转成 exact 规则并删行。
+
+        v0.7.0 起忽略只有一份真相源：`_ignored_rules`（规则）。旧版本曾把
+        「映射名:相对路径」形式的规则同时写一份台账文件行，于是同一个"已忽略"
+        有两份存储；新增忽略只写规则不写行，两份长期不一致。这里做**反向迁移**：
+        每一行转成一条 exact 规则（key 原样作为规则文本），然后删行。
+
+        幂等且只做一次（ledger meta 标记）；`_ignore_add_rule` 自带去重，
+        因此即使标记丢失重复执行也不会产生重复规则。
+        """
+        if self._ledger is None:
+            return
+        if self._ledger.get_meta("ignored_rows_to_rules") == "1":
+            return
+        # ⚠️ 不能用 `self._ledger._query`：它**吞掉异常返回空列表**，读失败会被
+        # 当成"没有遗留行"，随后 `set_meta` 把迁移标记置位，从此再也不会重试。
+        # 这里直接用连接，异常时**不写标记**，下次启动再试。
+        try:
+            with self._ledger._connect() as conn:
+                rows = list(conn.execute(
+                    "SELECT key FROM files WHERE status = 'ignored'"))
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] 读取遗留忽略行失败（下次启动重试）: {e}")
+            return
+        added = 0
+        for row in rows:
+            key = str(row["key"])
+            if _ignore_add_rule(self._ignored_rules, key, "exact",
+                                created_by="migration", source="ledger"):
+                added += 1
+            self._ledger.delete(key)
+        if added:
+            self.save_data("ignored_files", self._ignored_rules)
+        self._ledger.set_meta("ignored_rows_to_rules", "1")
+        if rows:
+            logger.info(f"[Rsync115Sync] 📒 已把 {len(rows)} 条遗留忽略行转为规则"
+                        f"（新增 {added} 条，其余已存在）")
+
     def _migrate_legacy_state_once(self) -> None:
         """
         把旧版 `save_data` 字典里**无法重建**的那部分导入台账，只做一次。
@@ -2834,21 +2940,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
 
         # ① 忽略规则：**不可重建**，必须迁
         #
-        # ⚠️ 只迁「形如 映射名:相对路径」的规则。忽略规则也支持纯关键字
-        # （contains 模式，例如 `/rsync_ignore 某剧名`），那种规则没有对应的
-        # 单个文件 —— 它不是"某个文件的状态"，仍由 `_ignored_rules` 承担。
-        # 把关键字硬塞进台账会在 files 表里造出一批虚构路径。
+        # ⚠️ v0.7.0 起**不再写台账行**：忽略的真相源就是 `_ignored_rules`
+        # （规则支持 exact / contains，台账的 key 装不下"某剧名"这种模式）。
+        # 此前这里把「形如 映射名:相对路径」的规则同时写一份 `status='ignored'`
+        # 的文件行，于是同一个"已忽略"有两份存储，而新增忽略只写规则不写行 ——
+        # `/items` 与「已忽略」页长期不一致。规则本身已经由 `init_plugin`
+        # 从 save_data 载入，这里无需再动。
         rules = self.get_data("ignored_files") or []
         if isinstance(rules, list):
-            for rule in rules:
-                text = rule if isinstance(rule, str) else (
-                    (rule or {}).get("rule") or (rule or {}).get("pattern") or "")
-                text = str(text).strip()
-                if not text or ":" not in text:
-                    continue
-                if self._ledger.upsert(text, _store_mod.STATUS_IGNORED,
-                                      ingest_source=_store_mod.SOURCE_LEGACY):
-                    migrated["ignored"] += 1
+            migrated["ignored"] = 0
 
         # ② strm 疑似清单：可重建，但迁移能保住原始时间戳
         suspects = self.get_data("strm_suspects") or {}
@@ -3048,14 +3148,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         | `watching` | 刚传完，等 strm | 等（或 `strm scan` 立即判定） |
         | `suspect` | strm 没出来 | `strm gen` → 仍无再 `retry` |
         | `broken` | 对账发现缺失/残缺 | `retry` |
-        | `ignored` | 已忽略 | 不用管 |
 
         ⚠️ `cooling` / `ready` 是**同一个 status（candidate）按冷却时间拆的**
         —— 存储层不存"是否就绪"，那是时间的函数，每次读取时算（与
         `_count_queue` 的判据逐字相同，两处不能漂移）。
-        ⚠️ `broken` 来自**对账结果**（`_last_status`），不是台账 status：
-        它是"这一轮对账发现的问题"，与文件在生命周期里的位置正交。
-        （把它收敛进台账是 0.7.0 的事，本轮不动。）
+        ⚠️ `broken` 是台账 `status='failed'` 的对外名（v0.7.0 起）：缺失/残缺
+        是**文件状态**，由 `fail_reason` 区分成因，不再是从 `_last_status`
+        叠加的第二份清单。只有台账不可用时才退回读那份投影。
+        ⚠️ 没有 `ignored` state：忽略是**规则**（`_ignored_rules`），不是文件状态。
 
         ## 取数范围与分页（v0.6.0）
 
@@ -3086,19 +3186,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 # 台账读取失败降级为空列表（不炸整个看板）—— 与 _ledger_overview 同取向
                 logger.debug(f"[Rsync115Sync] 台账条目读取失败（已忽略）: {e}")
 
-        # ---- 对账结果（broken）：与台账状态**正交**，因此单独叠加 ----
-        seen = {it["key"] for it in items}
-        for kind, label in (("missing_files", "缺失"), ("corrupt_files", "残缺")):
-            for key in (self._last_status.get(kind) or []):
-                if key in seen:
-                    # 已在台账里（例如同时是 suspect）→ 只补一个"对账也发现问题"的注记，
-                    # 不另起一行：同一个文件在界面上出现两次是混淆的主要来源之一。
-                    for it in items:
-                        if it["key"] == key:
-                            it.setdefault("notes", []).append(f"对账{label}")
-                    continue
-                items.append({"key": key, "state": "broken", "detail": label,
-                              "pair": "", "rel_path": "", "notes": []})
+        # ---- 对账失败（v0.7.0）：已是台账 status=failed，不再是独立清单 ----
+        # 只有台账不可用时才从降级字典补投影，避免同一文件出现两次。
+        if ledger is None:
+            for kind, label in (("missing_files", "缺失"), ("corrupt_files", "残缺")):
+                for key in (self._last_status.get(kind) or []):
+                    items.append({"key": key, "state": "broken", "detail": label,
+                                  "pair": "", "rel_path": "", "notes": []})
 
         # 计数按全量活跃集合算，再过滤/分页 —— 否则角标会随翻页变化。
         states = self._state_counts(items)
@@ -3170,6 +3264,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             extra["origin"] = r.get("origin") or ""
             # 补生成标记与 status 正交（列视图），但界面上要显示"已经请过助手"
             extra["gen_requested"] = bool(r.get("gen_requested_at"))
+        elif status == _store_mod.STATUS_FAILED:
+            # 对账失败（v0.7.0 起是台账状态，不再是正交清单）。
+            # 对外仍叫 `broken`：这是看板失败标签一直在用的 state 名，
+            # 改名只会让前端与既有测试同时失效，而用户看到的东西没有区别。
+            state = "broken"
+            reason = r.get("fail_reason") or ""
+            extra["detail"] = {"missing": "缺失", "corrupt": "残缺"}.get(reason, reason)
+            extra["fail_reason"] = reason
         return {
             "key": r.get("key", ""),
             "state": state,
@@ -3614,6 +3716,16 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         if self._has_ready_files():
             self._start_sync_thread(mode="ready")
             return
+        # 失败清单重试（v0.7.0）：ready 与 backfill 的失败现在共用这一份清单，
+        # 节奏沿用同一个 cron 与风控闸（批次上限、窗口配额、退避）。
+        # 放在 ready 之后、补传之前：失败项是"本该传上去却没传成"的文件，
+        # 时效上比存量补传更接近 ready；配额不足时下一轮再来。
+        # ⚠️ 但不能**永远**独占：上一轮 retry 毫无进展时会让出 30 分钟，
+        # 否则一个修不好的条目会把补传队列永久卡住（见 `_failed_retry_stalled_until`）。
+        if self._failed_files and time.time() >= getattr(
+                self, "_failed_retry_stalled_until", 0.0):
+            self._start_sync_thread(mode="retry")
+            return
         if self._resume_backfill_if_pending():
             return
         # 两者都没活干：仍然跑一次 ready，让它完成队列清理（源端已消失的条目出队）
@@ -3872,6 +3984,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             transferred_total = 0
             # 本轮实际核对过的文件 key 集合（增量模式下用于与历史结果合并，避免误清空）
             audited_keys = set()
+            # 本轮**对账有效**的映射名（force 的移除判据按映射走：force 的
+            # 预对账覆盖整棵树，attempted_keys 只包含问题文件，单靠 key 判据
+            # 会把「预对账证明已恢复」的条目留在失败清单里）。
+            audited_pairs = set()
+            # 源/目标目录不可用、本轮**未真正结算**的 key。它们仍留在原状态
+            # （冷却队列/补传队列），只是无法判定 —— 绝不能写进失败清单，
+            # 否则台账行会被改成 failed，而队列缓存里还留着它，两处分叉。
+            unsettled_keys = set()
+            mount_errors: List[str] = []
             # 本轮开始前的异常集合快照，用于判断是否发生变化、抑制重复告警
             prev_anomaly_set = set(self._last_status.get("missing_files", []) or []) | \
                 set(self._last_status.get("corrupt_files", []) or [])
@@ -3959,6 +4080,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     # 全量遍历仍受命令入口的 7 天冷却约束；传输受窗口配额约束。
                     force_pre_missing, force_pre_corrupt = self._audit_files_integrity(
                         src, dest, pair_name, all_ext, rel_paths=None)
+                    # ⚠️ 预对账已经覆盖整棵树 —— 必须先登记为"本轮核对过"。
+                    # 下面两处 `continue`（全盘通过 / 配额耗尽）都会跳过传输段的
+                    # `audited_pairs.add`，若不在这里登记，一组"其实已经恢复"的
+                    # 历史失败项永远不会被移出 failed 清单，force 也永远不报成功。
+                    audited_pairs.add(pair_name)
                     pair_files = _force_problem_rel_paths(
                         pair_name, force_pre_missing, force_pre_corrupt)
                     if not pair_files:
@@ -4005,10 +4131,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     elif mode == "backfill":
                         raw_target_keys = []
                     else:
-                        raw_target_keys = list(set(
-                            (self._last_status.get("missing_files") or [])
-                            + (self._last_status.get("corrupt_files") or [])
-                        ))
+                        # 候选 = failed 清单（v0.7.0 唯一真相源）。此前读的是
+                        # `_last_status` 的两个数组，而 ready 失败项从不进那两个
+                        # 数组（它们留在冷却队列里），于是「重试」只覆盖 backfill
+                        # 与 force 的失败项，ready 的失败项永远走不到这里。
+                        raw_target_keys = list(self._failed_files.keys())
                     origin = ("（来自用户指定）" if custom_files
                               else ("（补传模式，无候选）" if mode == "backfill" else "（来自历史异常清单）"))
                     logger.info(f"[Rsync115Sync] [{pair_name}] 候选 {len(raw_target_keys)} 个{origin}")
@@ -4047,7 +4174,12 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                         rel_p = rel_p.lstrip("/")
                         # 确保源端文件确实存在才加入传输列表
                         if not os.path.exists(os.path.join(src, rel_p)):
-                            logger.warning(f"[Rsync115Sync] [{pair_name}] ⚠ 源文件已不存在，跳过重试: {rel_p}")
+                            logger.warning(f"[Rsync115Sync] [{pair_name}] ⚠ 源文件已不存在，"
+                                           f"移出失败清单: {rel_p}")
+                            # ⚠️ 必须真正移除（pop = 删行），否则它会永远留在
+                            # failed 里、每轮 cron 都让 retry 独占一轮 —— 补传
+                            # 队列会被一个"源文件都删了"的条目永久卡住。
+                            self._failed_files.pop(key, None)
                             continue
 
                         pair_files.append(rel_p)
@@ -4320,11 +4452,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     logger.warning(
                         f"[Rsync115Sync] [{pair_name}] ⚠ 源/目标目录不可用，跳过对账结算"
                         f"（不出队、不 arm strm、不改历史异常）: {src} -> {dest}")
+                    mount_errors.append(pair_name)
+                    unsettled_keys.update(attempted_keys)
                     if mode == "force":
                         total_missing.extend(force_pre_missing)
                         total_corrupt.extend(force_pre_corrupt)
                     elif mode in ("ready", "retry", "backfill"):
-                        # 保守：本批记为仍缺失，留待下轮/重试；不更新 audited_keys
+                        # 保守：本批记为仍缺失，仅用于本轮报告；**不写失败清单**
+                        # （它们仍留在原队列，下一轮继续判）
                         total_missing.extend(attempted_keys)
                     if mode == "backfill":
                         for rel_p in pair_files:
@@ -4344,6 +4479,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                                       )
                 m_list, c_list = self._audit_files_integrity(
                     src, dest, pair_name, all_ext, rel_paths=pair_files)
+                audited_pairs.add(pair_name)
+                audited_keys.update(attempted_keys)
                 if mode == "force":
                     final_m, final_c = _merge_force_anomalies(
                         force_pre_missing, force_pre_corrupt,
@@ -4354,7 +4491,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     synced_count += len(succeeded)
                 else:
                     synced_count += len(pair_files)
-                    audited_keys.update(attempted_keys)
                     total_missing.extend(m_list)
                     total_corrupt.extend(c_list)
 
@@ -4380,6 +4516,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
                         if k not in succeeded_keys:
+                            # 对账失败（v0.7.0 统一语义）：离开冷却队列，进 failed
+                            # 清单。此前 ready 失败项**留在队列里**每轮重传，
+                            # 而 backfill 失败项进异常清单后只能人工接手 ——
+                            # 两条路径的失败语义相反。现在两者都走「失败进清单、
+                            # retry 取清单候选」。
+                            # ⚠️ 只摘缓存：具体的 failed 状态由本轮结算末尾统一写
+                            # （同行改 status）；这里 pop 会删掉整行。
+                            _store_mod.forget_key(self._pending_queue, k)
                             continue
                         # ⚠️ 成功离开冷却队列是**状态迁移**，不是删行。
                         # 可观察的：这里只摘缓存，随后 arm_watch 把同一行改成
@@ -4437,39 +4581,92 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 logger.info(f"[Rsync115Sync] 📦 补传队列推进：{before} → {len(self._backfill_queue)}"
                             f"（本轮处理 {len(self._backfill_done_keys)} 个）")
 
-            # 结果合并：
+            # 结果合并（v0.7.0）：真相源是 `_failed_files`（台账 status=failed）。
             # - force 全量模式：以本轮全盘扫描结果为准，直接替换。
-            # - ready/retry 增量模式：本轮"已核对且恢复正常"的文件移出清单；
-            #   本轮未涉及的历史异常项予以保留，避免因为增量对账而误清空。
-            if mode == "force":
-                final_missing = list(dict.fromkeys(total_missing))
-                final_corrupt = list(dict.fromkeys(total_corrupt))
-            else:
-                prev_missing = self._last_status.get("missing_files", []) or []
-                prev_corrupt = self._last_status.get("corrupt_files", []) or []
-                # 保留：未被本轮核对过的历史项
-                kept_missing = [k for k in prev_missing if k not in audited_keys]
-                kept_corrupt = [k for k in prev_corrupt if k not in audited_keys]
-                final_missing = list(dict.fromkeys(kept_missing + total_missing))
-                final_corrupt = list(dict.fromkeys(kept_corrupt + total_corrupt))
+            # - ready/retry/backfill 增量模式：本轮"已核对且恢复正常"的移出；
+            #   本轮未涉及的历史失败项保留，避免因为增量对账而误清空。
+            # 忽略清单内的条目一律不进入失败清单。
+            round_failed: Dict[str, str] = {}
+            for k in dict.fromkeys(total_missing):
+                if k in unsettled_keys:
+                    continue      # 未结算（挂载不可用）—— 保持原状态，不写失败
+                if not self._is_ignored(k):
+                    round_failed[k] = _store_mod.FAIL_MISSING
+            for k in dict.fromkeys(total_corrupt):
+                if k in unsettled_keys:
+                    continue
+                if not self._is_ignored(k):
+                    round_failed[k] = _store_mod.FAIL_CORRUPT
 
-            # 忽略清单内的条目一律不进入异常列表
-            final_missing = [k for k in final_missing if not self._is_ignored(k)]
-            final_corrupt = [k for k in final_corrupt if not self._is_ignored(k)]
+            now_fail_ts = time.time()
 
-            self._last_status["missing_files"] = final_missing
-            self._last_status["corrupt_files"] = final_corrupt
-            self.save_data("missing_files", final_missing)
-            self.save_data("corrupt_files", final_corrupt)
+            def _was_audited(k: str) -> bool:
+                """这个 key 本轮的对账结果是否权威（而不是「没看到」）。"""
+                if k in audited_keys:
+                    return True
+                if mode == "force":
+                    # force 的预对账覆盖整棵树，attempted_keys 只含问题文件
+                    pair_of = str(k).partition(":")[0]
+                    return pair_of in audited_pairs
+                return False
+
+            # 本轮核对过、且已不在失败集合里的 → 移出 failed。
+            # ⚠️ 不能只 `forget_key`：force / backfill 的成功路径**不会**再写一次
+            # status（force 没有成功状态写入；backfill 不登记观察；非视频文件在
+            # arm_watch 里被跳过）。只摘缓存的话行仍是 failed，重载后原样复活、
+            # 无限重试。正确处置分两种：
+            #   · 已在观察期（retry 成功 → arm_watch 已改成 pending_verify）→ 摘缓存
+            #   · 其余成功项 → 落终态 done（并记 synced_at），永不复活
+            # 未核对的历史失败项保留：force 在挂载不可用/配额耗尽时会跳过某些
+            # 映射，不能因为"这轮没看到它"就当作已恢复。
+            recovered = 0
+            for k in list(self._failed_files.keys()):
+                if k in round_failed or not _was_audited(k):
+                    continue
+                if k in (getattr(self, "_strm_watch", None) or {}):
+                    _store_mod.forget_key(self._failed_files, k)
+                else:
+                    _store_mod.retire_key(self._failed_files, k,
+                                          synced_at=time.time())
+                recovered += 1
+                ledger = getattr(self, "_ledger", None)
+                if ledger is not None:
+                    try:
+                        ledger.clear_fail_reason(k)
+                    except Exception:
+                        pass
+            for k, reason in round_failed.items():
+                prev = self._failed_files.get(k)
+                # 保留首次判失败的时刻：它回答"这个问题存在多久了"
+                ts = (prev or {}).get("ts", now_fail_ts) if isinstance(prev, dict) else now_fail_ts
+                self._mark_failed(k, reason, ts)
+            # 失败清单的落盘：台账模式下值是 LedgerMapping，save_data 会被
+            # 护栏静默跳过（它已自行落库）；降级模式下是普通 dict，这里就是
+            # 唯一的持久化手段 —— 同一个调用在两种模式下都正确。
+            self.save_data("failed_files", self._failed_files)
+            self._sync_failed_projection()
+            if mode == "retry":
+                # 既没恢复任何条目、也没有实际传输 → 这一轮毫无进展。
+                # 让出 30 分钟给补传队列，避免一个修不好的条目永久独占 cron。
+                if recovered == 0 and transferred_total == 0:
+                    self._failed_retry_stalled_until = time.time() + 1800
+                else:
+                    self._failed_retry_stalled_until = 0.0
+            final_missing = self._last_status["missing_files"]
+            final_corrupt = self._last_status["corrupt_files"]
             total_missing, total_corrupt = final_missing, final_corrupt
 
-            logger.info(f"[Rsync115Sync] 📋 异常清单已更新: 缺失 {len(final_missing)} 个 / 残缺 {len(final_corrupt)} 个 "
+            logger.info(f"[Rsync115Sync] 📋 失败清单已更新: 缺失 {len(final_missing)} 个 / 残缺 {len(final_corrupt)} 个 "
                         f"(本轮核对 {len(audited_keys)} 个，模式 {mode})")
 
             end_time = datetime.now()
             duration = int((end_time - start_time).total_seconds())
             self._last_status["end_time"] = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
+            # 目录不可用不算「本轮无事发生」：必须让用户知道这批没结算，
+            # 否则会显示成一次干净的成功巡检。
+            if mount_errors:
+                has_error = True
             is_success = (not has_error and not total_missing and not total_corrupt)
             self._last_status["success"] = is_success
 
@@ -4520,35 +4717,34 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 # 但把两条重复的 💡 提示合并成一行 —— 它们在两个分支里
                 # 各出现一次，且说的是同一件事。
                 tips = "👉 /rsync_retry 重试 · /rsync_ignore <剧名> 忽略存量"
-                if synced_count > 0:
-                    # 有实际传输动作，但仍有未完成项 → 必须报告
+                if mount_errors:
+                    code_hint += f"⚠ 目录不可用、本批未结算: {', '.join(mount_errors)}\n"
+                # 通知判据（v0.7.0 统一）：只看**失败清单是否变化**，外加
+                # 致命退出码与目录不可用。此前是两条互相打架的规则：
+                # `synced_count > 0` 就必发（ready 失败项留在队列里每轮重传，
+                # 于是每 2 小时刷一次「存在未完成项」）；而 `synced_count == 0`
+                # 且清单未变就静默（backfill 失败项报一次后永久沉默）。
+                # 收敛后失败项只有一份清单，判据也就只剩一条。
+                if anomaly_changed or fatal_exit_codes or mount_errors:
+                    if not total_missing and not total_corrupt:
+                        head = "✅ 115同步失败清单已清空"
+                    else:
+                        head = "⚠️ 115同步失败清单有更新"
                     msg = (
-                        f"⚠️ 115同步存在未完成项\n"
+                        f"{head}\n"
                         f"耗时: {duration} 秒\n"
                         f"{code_hint}"
-                        # 同上：候选数与实际传输数是两回事，分开写
+                        # 候选数与实际传输数是两回事，分开写
                         f"📤 实际传输 {transferred_total} 个（核对 {synced_count} 个）\n"
                         f"🔍 缺失未同步 {len(total_missing)} 个 · "
                         f"大小残缺 {len(total_corrupt)} 个\n"
                         f"{tips}"
                     )
                     should_notify = True
-                elif anomaly_changed or fatal_exit_codes:
-                    # 异常项有变化，或 rsync 以致命退出码失败 → 报告
-                    # （后者即使异常清单无变化也必须上报，否则失败被静默吞掉）
-                    msg = (
-                        f"⚠️ 115同步异常清单有更新\n"
-                        f"耗时: {duration} 秒\n"
-                        f"{code_hint}"
-                        f"🔍 缺失未同步 {len(total_missing)} 个 · "
-                        f"大小残缺 {len(total_corrupt)} 个\n"
-                        f"{tips}"
-                    )
-                    should_notify = True
                 else:
-                    # 定时巡检：异常清单与上次完全一致，且本轮无任何传输动作 → 静默，不打扰用户
+                    # 定时巡检：失败清单与上次完全一致 → 静默，不打扰用户
                     msg = (
-                        f"ℹ️ 115定时巡检完成，异常清单无变化\n"
+                        f"ℹ️ 115定时巡检完成，失败清单无变化\n"
                         f"耗时: {duration} 秒\n"
                         f"🔍 仍待处理: 缺失 {len(total_missing)} 个 / 残缺 {len(total_corrupt)} 个"
                     )

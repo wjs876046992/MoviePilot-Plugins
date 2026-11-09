@@ -94,13 +94,19 @@ from typing import Any, Dict, Iterable, List, Optional
 # first, then forget the source cache. pop is only for genuine untracking.
 STATUS_CANDIDATE = "candidate"            # 已发现、正在等冷却结束
 STATUS_PENDING_VERIFY = "pending_verify"  # 已同步，等待宽限期后查 strm
-STATUS_SUSPECT = "suspect"                # 宽限期到仍无 strm —— 待人工处理
-STATUS_IGNORED = "ignored"                # 用户明确忽略，不再报警也不再处理
+STATUS_SUSPECT = "suspect"                # 宽限期到仍无 strm —— 待人工处理（自带完整告警/催办/恢复状态机，与 failed 分开）
+STATUS_FAILED = "failed"                  # 对账判定缺失/残缺 —— 唯一的传输失败态（fail_reason 区分成因）
 STATUS_DONE = "done"                      # 终态：已送达（strm 已出现，或本就不需要 strm）
 
+# ⚠️ 没有 `ignored` 状态（v0.7.0 删除）：忽略的真相源是 `_ignored_rules`
+# （支持 exact / contains 的**规则**），台账装不下"某剧名"这类模式规则。
+# 此前台账里另有一份 status='ignored' 的**文件行**，于是同一个"已忽略"有两份
+# 存储：新增忽略只写规则、不写行，`/items` 与「已忽略」页长期不一致。
+# 迁移方式：把遗留的 ignored 行一次性转成 exact 规则并删行（见 __init__
+# 的 `_migrate_ignored_rows_to_rules`）。
 ALL_STATUSES = (
     STATUS_CANDIDATE, STATUS_PENDING_VERIFY,
-    STATUS_SUSPECT, STATUS_IGNORED, STATUS_DONE,
+    STATUS_SUSPECT, STATUS_FAILED, STATUS_DONE,
 )
 
 # 「活跃」状态：需要被载入内存视图、需要被巡检与看板默认展示的那些。
@@ -108,8 +114,15 @@ ALL_STATUSES = (
 # Active statuses get an in-memory view; `done` deliberately does not.
 ACTIVE_STATUSES = (
     STATUS_CANDIDATE, STATUS_PENDING_VERIFY,
-    STATUS_SUSPECT, STATUS_IGNORED,
+    STATUS_SUSPECT, STATUS_FAILED,
 )
+
+# `failed` 的成因（fail_reason 列取值）。⚠️ `no_strm` **不在**这里 ——
+# 宽限期到仍无 strm 走 `suspect`，那套告警/催办/补生成/恢复状态机是独立的，
+# 并进 failed 会重写 strm_ops 全部按 suspect 分支的逻辑（0.7.0 有意不做，
+# 见 DEVELOPMENT §4.0t 的否决记录）。
+FAIL_MISSING = "missing"    # 目标端不存在
+FAIL_CORRUPT = "corrupt"    # 大小不一致 / stat 失败
 
 # 入库来源：两条并列的入库通道（见 __init__.py 的「入库入口一览」）。
 # 记下来是为了能回答"是扫描漏了还是 webhook 漏了"。
@@ -217,6 +230,9 @@ class Store:
                     gen_requested_at REAL,
                     retry_count      INTEGER NOT NULL DEFAULT 0,
                     last_error       TEXT,
+                    -- failed 的成因（missing / corrupt）。与 status 同生命周期：
+                    -- 成功离开 failed 时清空（clear_fail_reason）。
+                    fail_reason      TEXT,
                     -- 疑似来源（watch / scan）。改造前放在
                     -- `_strm_suspects[key]["origin"]`：这条疑点是同步后观察判出来的、
                     -- 还是主动扫描扫出来的 —— 可信度不同，看板要显示。
@@ -263,7 +279,7 @@ class Store:
         # 结论），它随那整套判定一起删了 —— 已经建过表的机器上那一列会留着，
         # 空着不碍事；这里不再补，免得新库上凭空多出一列没人写的字段。
         # Only columns the current build actually writes are added here.
-        want = {"files": [("origin", "TEXT")]}
+        want = {"files": [("origin", "TEXT"), ("fail_reason", "TEXT")]}
         try:
             with self._connect() as conn:
                 for table, cols in want.items():
@@ -304,7 +320,8 @@ class Store:
                verified_at: Optional[float] = None,
                gen_requested_at: Optional[float] = None,
                origin: Optional[str] = None,
-               last_error: Optional[str] = None) -> bool:
+               last_error: Optional[str] = None,
+               fail_reason: Optional[str] = None) -> bool:
         """
         插入或更新一行。**只覆盖显式传入的字段**（None 表示"不动"），
         因此调用方不必先读一遍再写 —— 避免读改写竞态。
@@ -317,6 +334,9 @@ class Store:
         `retry_count` 列保留在表里但**不再读写**：它从来没有写入者
         （`bump_retry` 无任何调用方），看板那一栏长期显示 0。删掉参数与自增，
         不做 DROP COLUMN 迁移 —— 留一个空列无害，迁移有风险。
+        `fail_reason`（v0.7.0）与 status `failed` 配套：记录缺失/残缺成因。
+        它与 status 同生命周期（成功离开 failed 时必须清空），所以走 upsert
+        而不是列视图 —— `clear_fail_reason` 负责清空。
         """
         now = time.time()
         if not pair or not rel_path:
@@ -329,9 +349,9 @@ class Store:
                     """
                     INSERT INTO files (key, pair, rel_path, status, ingest_source,
                                        src_mtime, enqueued_at, synced_at, verified_at,
-                                       gen_requested_at, last_error,
+                                       gen_requested_at, last_error, fail_reason,
                                        origin, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         status           = excluded.status,
                         -- COALESCE：新值为 NULL 时保留旧值（"不动"语义）
@@ -342,12 +362,14 @@ class Store:
                         verified_at      = COALESCE(excluded.verified_at, files.verified_at),
                         gen_requested_at = COALESCE(excluded.gen_requested_at, files.gen_requested_at),
                         last_error       = COALESCE(excluded.last_error, files.last_error),
+                        -- fail_reason：仅显式传值才覆盖（与"不动"语义一致）
+                        fail_reason      = COALESCE(excluded.fail_reason, files.fail_reason),
                         origin           = COALESCE(excluded.origin, files.origin),
                         updated_at       = excluded.updated_at
                     """,
                     (key, pair, rel_path, status, ingest_source or SOURCE_LEGACY,
                      src_mtime, enqueued_at,
-                     synced_at, verified_at, gen_requested_at, last_error,
+                     synced_at, verified_at, gen_requested_at, last_error, fail_reason,
                      origin, now,
                      # UPDATE 分支用的独立参数：None 才能表达"不动"
                      ingest_source),
@@ -355,6 +377,18 @@ class Store:
             return True
         except Exception:
             return False
+
+    def clear_fail_reason(self, key: str) -> bool:
+        """
+        清空 fail_reason（置 NULL）。
+
+        ⚠️ 为什么需要它：`upsert` 的 COALESCE 语义**没有任何办法**写 NULL
+        （同 `clear_field` 存在的理由）。文件成功离开 failed（重传成功、
+        被忽略、转终态）时必须清掉成因，否则下一次它再进 failed 时，
+        看板会把上一轮的旧成因与新判定混在一起。
+        """
+        return self._write(
+            "UPDATE files SET fail_reason = NULL WHERE key = ?", (key,))
 
     def set_field(self, key: str, field: str, value: Any) -> bool:
         """
