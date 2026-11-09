@@ -8,18 +8,35 @@
 
 ## P0 — 必须尽快处理
 
-### [ ] 0b. 真机验证：状态迁移与看板取数改造（v0.6.0，**尚未实机验证**）
+### [~] 0b. 真机验证：状态迁移与看板取数改造（v0.6.0，**部分完成**，2026-11-09）
 
+已在 NAS / `mp3` 上对真实的 `ledger.sqlite3` 验证（v0.6.0 正式版已发布）。
 单测靠「重建视图」模拟重载，桩宿主不会执行 `ON CONFLICT` 的 `COALESCE`，
-所以下面这些**只有真机能确认**（见 DEVELOPMENT §4.0s）：
+所以「重载后仍在」这类结论只有真机能确认（见 DEVELOPMENT §4.0s）。
 
-- [ ] 重载插件后：观察期条目仍在、`gen_requested_at` 仍在、`ingest_source` 没被重置
-      （这正是本轮修的两个 bug，必须用真实 SQLite 台账复现一次「重载前 / 后」对比）
-- [ ] `done` 留行后 `/status` 的 `ledger.synced_files` 变成单调递增，看板「已完成 N」读得通
+**已验通过**：
+
+- [x] 日志出现 `加载插件：Rsync115Sync 版本：0.6.0`，初始化无异常，游标恢复正确
+- [x] 新增索引 `idx_files_status_updated` 在**已存在**的台账上建立
+- [x] `/items` 新签名（`state/page/page_size`）正常注册 —— 没有出现「整条路由静默失败」；
+      无参时行为与旧版一致；`done` 不进列表、`done_total` 独立、`states` 仍是全量计数
+- [x] **真实文件走完整条链**：定向同步一个「源端 + 云端 + strm 齐全」的文件 →
+      生成 `pending_verify` + `synced_at` → strm 检查后变 `done`，**行与 `synced_at` 均保留**
+      （0.5.10 会在这一刻删行）
+- [x] **重载后数据仍在**：重启 `mp3`、插件重新初始化后，`done` 行、`candidate` 行、
+      `synced_files` 全部保留
+
+**仍待验证**（需要构造场景或更多自然流量，未在本次强行制造）：
+
+- [ ] `gen_requested_at` 跨「疑似 → 观察期」存活 + 重载（当时没有真实疑似条目）
+- [ ] `ingest_source` 在状态迁移后不被重置：本次验的那行由定向重试新建，本身就是
+      `legacy`，**没有覆盖「原本是 scan/webhook」的场景**
+- [ ] `synced_files` 单调递增：只观察到 1 次完成，不够证明多轮后不回退
 - [ ] 正在 CD2 上传的疑似条目移回观察期后**不会来回抖动**（疑似 → 观察 → 又疑似），
-      且卡死超过豁免上限后仍然会回到疑似并报警
+      且卡死超过 `CD2_SUPPRESS_MAX_HOURS` 后仍会回到疑似并报警
 - [ ] 十万级台账下看板首屏刷新耗时（排除 `done` + 分页的实际收益），以及翻页不丢条目
-- [ ] 日志出现 `加载插件：Rsync115Sync 版本：0.6.0`
+      —— 当前台账只有 3 行，测不出规模收益
+- [ ] 真实浏览器渲染看板（本次只验了 API 契约与构建产物；不是布局改动，但未见渲染）
 
 ### [x] ~~0a. 真实数据闭环验证：通知按钮~~（用户实测确认完成且有效）
 
@@ -233,14 +250,21 @@ strm 五态流转、忽略规则语义、主动扫描、补生成目标折算与
 - [x] ~~`_TOLERATED_EXIT_CODES` 退出码分类~~ → alpha
 - [x] ~~`_find_sidecar_files` 伴生字幕匹配~~ → alpha（含跨集误纳、目录冒充字幕两条边界）
 
-### [ ] 4. 修复 fork 推送不触发 Release 工作流
+### [x] ~~4. 修复 fork 推送不触发 Release 工作流~~（结论有误，已关闭）
 
-**背景**：本仓库是 fork，push 到 main 不触发 Plugin Release（0.2.0 发布时再次确认：
-push d66b905 后 runs 列表无新条目，仍需手动 dispatch），每次发版需手动
-`gh workflow run "Plugin Release"`。
+**原判断**：本仓库是 fork，push 到 main 不触发 Plugin Release（0.2.0 时
+push `d66b905` 后 runs 列表无新条目），每次发版需手动 dispatch。
 
-**方案**：在仓库 Settings → Actions 中开启 fork 的 push 触发（需仓库管理员权限，
-非代码改动）。
+**实测推翻（2026-11-09，v0.6.0）**：push `5759dcb` 后，fork 的 `Plugin Release`
+**自动触发并成功**（run `42644254228`，无需手动 dispatch）。
+
+**为什么会看错**：这个工作副本里 `gh` 把仓库解析成**上游** `jxxghp/MoviePilot-Plugins`
+（`gh repo view --json nameWithOwner` 可直接确认），于是 `gh run list` 列的是上游的
+运行记录 —— 自己 fork 的运行当然「不在列表里」。当时据此得出「不触发」，
+实际是看错了仓库。
+
+以后查运行 / 发版一律显式指定 fork：
+`gh run list -R wjs876046992/MoviePilot-Plugins`。无需再改 Settings。
 
 ### [ ] 5. 清理幽灵文件的能力（需谨慎评估）
 
