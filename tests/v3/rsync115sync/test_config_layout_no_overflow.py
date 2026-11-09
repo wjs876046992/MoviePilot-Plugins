@@ -663,8 +663,28 @@ def test_advanced_zone_is_collapsed_by_default():
     src = _read_component("Config.vue")
     script = _script(src)
 
-    assert re.search(r"const showAdvanced = ref\(false\)", script), (
-        "高级设置总开关必须默认关闭（showAdvanced 初始为 false），否则分级等于没做"
+    # ⚠️ 判据从「字面量 ref(false)」改为「首次使用者的默认值是 false」。
+    #
+    # 原断言绑死了 `const showAdvanced = ref(false)`，而该开关现在**持久化到
+    # localStorage**（见下方说明）—— 一行写法变了，但「新用户默认收起」这个
+    # 真正要保护的行为没变。把测试绑在写法上，会在一次合法的实现调整里
+    # 报出一条假红；本项目已多次记录这类"哨兵比被测代码更脆弱"的教训。
+    #
+    # 现在断言两件事：
+    #   1. 初值来自 `_readAdvanced()`，而该函数在"读不到"时返回 false；
+    #   2. 没有把默认值悄悄改成 true。
+    assert re.search(r"const showAdvanced = ref\(", script), (
+        "未找到 showAdvanced 的声明"
+    )
+    assert re.search(r"return localStorage\.getItem\(ADV_KEY\) === '1'", script), (
+        "showAdvanced 的持久化读取必须只在存过 '1' 时为真 —— 否则新用户一进来就是展开的"
+    )
+    assert re.search(r"\}\s*catch\s*\(_e\)\s*\{\s*return false", script), (
+        "localStorage 读取失败时必须回退为 false（隐私模式/禁用存储）—— "
+        "回退成 true 会让分级在所有受限环境下失效"
+    )
+    assert "const showAdvanced = ref(true)" not in script, (
+        "高级设置总开关不得默认展开，否则分级等于没做"
     )
 
     body = src[src.find("<template>"):src.rfind("</template>")]
@@ -676,10 +696,12 @@ def test_advanced_zone_is_collapsed_by_default():
     )
 
     # 高级区必须覆盖到这几个被认为「不该占用首屏」的模块。
-    # 判定方式：这些模块的标题或标志性文案，在同一行或所在容器上带 v-show。
-    # 用「附近是否有 v-show」的松散判据，避免把整块 HTML 结构写死进测试 ——
-    # 结构会随排版调整，而"这四块属于高级区"是本测试真正要保护的结论。
-    for marker in ("CD2 核心过滤与防假死参数", "上传限流与风控退避", "strm 交叉验证"):
+    #
+    # ⚠️ 「strm 交叉验证」已从本清单移除（v0.5.7）：它的核心项 ——
+    # 宽限期与 CD2 队列核对 —— 被上移到首屏，因为启用它的入口（映射里的
+    # 「strm 目录」）本来就在首屏，用户填完却找不到配套的开关。
+    # 该模块仍有**部分**内容属于高级区（催办提醒），下面单独断言。
+    for marker in ("CD2 核心过滤与防假死参数", "上传限流与风控退避"):
         idx = body.find(marker)
         assert idx > 0, f"未找到高级区标记「{marker}」"
         window = body[max(0, idx - 300):idx + 300]
@@ -687,6 +709,29 @@ def test_advanced_zone_is_collapsed_by_default():
             f"「{marker}」没有处在 showAdvanced 的控制范围内 —— "
             f"它会仍然出现在首屏，分级对用户就是失效的"
         )
+
+    # strm 模块：核心项必须**在**首屏，催办提醒仍属高级区。
+    for first_screen in ("启用 strm 交叉验证", "观察宽限期（分钟）",
+                         "上传中文件不判疑似（查询 CD2 队列）"):
+        idx = body.find(first_screen)
+        assert idx > 0, f"未找到「{first_screen}」"
+        # 该设置行本身不得带 v-show（向上找最近一个 setting-row 的开标签）
+        head = body[:idx]
+        row = None
+        for m in re.finditer(r"<div class=\"(setting-row[^\"]*)\"[^>]*>", head):
+            row = m
+        assert row, f"「{first_screen}」之前没有 setting-row"
+        assert "showAdvanced" not in row.group(0), (
+            f"「{first_screen}」必须首屏可见 —— 它是启用/调参的入口，"
+            f"藏进高级区会让用户以为功能不存在"
+        )
+
+    idx = body.find("未解决疑似异常催办提醒")
+    assert idx > 0, "未找到「未解决疑似异常催办提醒」"
+    window = body[max(0, idx - 400):idx + 200]
+    assert "showAdvanced" in window, (
+        "催办提醒属于「用一段时间后才想调」的参数，应留在高级区"
+    )
 
 
 def test_pair_fields_fully_expanded_and_layout():
@@ -757,3 +802,83 @@ def test_previously_missing_settings_are_now_exposed():
             f"配置页缺少 {binding}（{label}）—— 后端已支持但界面无入口，"
             f"用户无法调整，说明文字也可能指向不存在的控件"
         )
+
+
+# --------------------------------------------------------------------------
+# 面向用户的文案不得含 Markdown 标记（v0.5.7 回归）
+# --------------------------------------------------------------------------
+
+def test_rendered_text_has_no_literal_markdown():
+    """
+    模板里**会渲染给用户看的文本**不得出现 `**加粗**` / 反引号这类标记。
+
+    ## 为什么（真实缺陷，用户截图直接看出来的）
+
+    配置页与看板的说明文字都是 **Vue 文本插值**（`{{ }}` 或纯文本节点），
+    它们**不渲染 Markdown** —— 写成 `是否**正在上传**` 就会原样显示成
+    带星号的一串。用户截图里直接能看到 `**正在上传**`。
+
+    项目里早有一条同源约定（v0.2.4 修过聊天回复里的 `**`），但那条只覆盖
+    **后端返回的字符串**。本用例补上**前端模板**这一侧，且覆盖
+    `window.confirm()` 的原生弹窗文案 —— 那里同样不渲染 Markdown。
+
+    ⚠️ 判据必须**先剥注释再扫**。本文件里大量注释用 `**` 表示强调，
+    直接全文 grep 会命中注释、把一条正确的实现判红
+    （本项目已记录过三次同类：grep 命中注释 / 绑死引号 / 剥标签剥掉包裹）。
+    """
+    for name in ("Config.vue", "Page.vue"):
+        src = _read_component(name)
+        # 三层剥离，缺一层都会误报（本项目已四次踩"哨兵命中非目标"）：
+        #   1. /* */ 块注释   2. <!-- --> 模板注释   3. // 行注释
+        code = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+        code = re.sub(r"<!--.*?-->", " ", code, flags=re.DOTALL)
+        code = re.sub(r"^\s*//.*$", " ", code, flags=re.MULTILINE)
+        # 只保留**标签之间的文本**与模板属性值 —— 标签名、CSS 选择器里的星号
+        # 不是面向用户的文案。这里剥掉标签后剩下的就是渲染文本。
+        text_nodes = re.sub(r"<[^>]*>", " ", code)
+        bad = re.findall(r"\*\*[^*\n]{1,60}\*\*", text_nodes)
+        assert not bad, (
+            f"{name} 的面向用户文本里有 Markdown 加粗标记 {bad[:3]} —— "
+            f"Vue 文本插值与 window.confirm 都不渲染 Markdown，用户会看到字面星号。"
+            f"请改用 <b>…</b>（模板内）或直接去掉星号（confirm 文案内）。"
+        )
+
+
+def test_dashboard_cd2_status_is_not_nested_under_watching_count():
+    """
+    看板的「CD2 队列核对」状态提示**不得**嵌在 `v-if="watchingCount"` 里面。
+
+    ## 为什么（这正是它上一版的缺陷，且症状与意图完全相反）
+
+    这个保护的作用就是让文件**不进**疑似、观察期因此变短或归零。
+    而提示此前嵌在观察期区块内 —— 于是：
+
+        保护生效 → 观察期清空 → 解释「保护有没有在工作」的那行**跟着消失**
+
+    越有用越看不见。它描述的是"保护机制的健康状况"，
+    与"有没有文件正在观察"没有任何关系，必须与观察期区块同级。
+    """
+    src = _read_component("Page.vue")
+    body = src[src.find("<template>"):src.rfind("</template>")]
+
+    idx = body.find("cd2_query_enabled")
+    assert idx > 0, "看板未展示 CD2 队列核对状态"
+
+    # ⚠️ 判据必须是「**嵌套深度**」而不是「前一个 v-if 是什么」。
+    # 第一版取"向上最近的 v-if 块"，而 CD2 块现在是观察期块的**兄弟**、
+    # 只是排在它后面 —— 于是最近的那个 v-if 恰好还是 watchingCount，
+    # 一条正确的实现被自己的哨兵判红。
+    # 正确做法：从 body 开头走到 idx，用栈跟踪 div 的开合，
+    # 只要 watchingCount 那个块在 idx 处**仍未闭合**，才是真嵌套。
+    depth_stack = []
+    for m in re.finditer(r"<div\b[^>]*>|</div>", body[:idx]):
+        tok = m.group(0)
+        if tok.startswith("</"):
+            if depth_stack:
+                depth_stack.pop()
+        else:
+            depth_stack.append("watchingCount" if 'v-if="watchingCount"' in tok else "")
+    assert "watchingCount" not in depth_stack, (
+        "CD2 状态提示仍嵌在 `v-if=\"watchingCount\"` 的块**内部** —— "
+        "观察期归零时它会消失，而那正是这个保护生效时的状态"
+    )

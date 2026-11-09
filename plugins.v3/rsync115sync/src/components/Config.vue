@@ -12,11 +12,29 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.6</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.7</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
         <template #append>
+          <!-- 「显示高级设置」放在标题栏而不是单独一张卡片：
+               它只是一个阅读辅助开关，不是配置项 —— 单独占一整张卡片会挤掉
+               首屏近 80px 的高度，而且位置比「启用同步助手」还显眼，
+               让新用户以为它是必须先做的决定。
+               ⚠️ 用 title 属性而非 v-tooltip：这里的空间窄，tooltip 在移动端
+               需要长按，而标签本身在窄屏会被隐藏（见下方 .adv-label）。 -->
+          <div class="d-flex align-center ga-2 mr-1">
+            <span class="adv-label text-caption text-medium-emphasis">高级设置</span>
+            <v-switch
+              v-model="showAdvanced"
+              color="primary"
+              inset
+              hide-details
+              density="compact"
+              class="adv-switch flex-shrink-0"
+              title="显示调度周期、超时、限流、strm 等调优参数"
+            ></v-switch>
+          </div>
           <v-btn icon variant="text" size="small" class="radius-sm close-btn" @click="notifyClose">
             <v-icon size="18">mdi-close</v-icon>
             <v-tooltip activator="parent" location="bottom">关闭配置</v-tooltip>
@@ -36,21 +54,9 @@
 
       <!-- 表单主体滚动区 -->
       <v-card-text class="config-body card-pad-x py-4 overflow-y-auto">
-        <!-- 高级设置总开关：默认关闭，首屏只留「新用户必须决定的几件事」。
-             ⚠️ 用 v-show 而不是 v-if 包高级区：与 CollapsibleNote 同一取向 ——
-             折叠后内容仍在 DOM 里，Ctrl+F 能搜到关键词（用户排查配置时
-             恰恰会去搜索「cron」「限流」这类词）。 -->
-        <div class="settings-group-card radius-lg overflow-hidden mb-4">
-          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
-            <div>
-              <div class="font-weight-bold text-body-2">显示高级设置</div>
-              <div class="text-caption text-medium-emphasis">
-                调度周期、超时与排除规则、上传限流、strm 参数 —— 默认值已适配大多数场景
-              </div>
-            </div>
-            <v-switch v-model="showAdvanced" color="primary" inset hide-details density="compact"></v-switch>
-          </div>
-        </div>
+        <!-- ⚠️ 「显示高级设置」的开关已移到标题栏（见 #append）。
+             它此前单独占一整张 settings-group-card，位于首屏第二显眼的位置 ——
+             而它只是一个阅读辅助开关，不是配置项。 -->
 
         <!-- 模块 1：基础开关 -->
         <div class="settings-group-card radius-lg overflow-hidden mb-4">
@@ -436,15 +442,21 @@
           </div>
         </div>
 
-        <!-- 模块 6：strm 交叉验证 -->
-        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2" v-show="showAdvanced">
+        <!-- 模块 6：strm 交叉验证
+             ⚠️ 标题与下面那张「核心配置」卡片**不再受 showAdvanced 门控**。
+             原因：启用它的入口（映射卡片里的「strm 目录」）就在首屏，用户填了之后
+             就以为配完了 —— 而控制它的宽限期、以及决定误报率的 CD2 队列核对
+             全都被收在高级区里，界面上根本看不到。一个"建议开启"的保护如果
+             找不到开关，等于不存在。
+             只有真正调优用的部分（催办时段、依赖说明、补生成前提）仍在高级区。 -->
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2 mt-4">
           <v-icon size="18" color="warning" class="mr-1">mdi-television-classic</v-icon>
           strm 交叉验证
           <v-chip size="x-small" variant="tonal" color="success" class="ml-2 font-weight-bold">
             不依赖任何插件
           </v-chip>
         </div>
-        <CollapsibleNote title="它解决的是「假成功」—— 为什么对账看不出来" class="mb-3" v-show="showAdvanced">
+        <CollapsibleNote title="它解决的是「假成功」—— 为什么对账看不出来" class="mb-3">
           CD2 改名失败时，挂载视图会显示目标文件
           「存在且大小正常」，而 115 云端其实只有一份改名失败的半成品。此时双向对账
           与 rsync 的 --size-only 都会被蒙蔽，插件从自身视角<b>结构上看不见</b>这种失败。
@@ -497,7 +509,11 @@
           <b>不配也不影响上面「本插件独立完成」的任何一项</b>。
         </CollapsibleNote>
 
-        <div class="settings-group-card radius-lg overflow-hidden" v-show="showAdvanced">
+        <!-- 核心配置卡：**首屏可见**（见上方模块标题的说明）。
+             只放"要不要用它"与"判据松紧要多少"这两类决定 ——
+             宽限期直接决定误报率，CD2 队列核对直接决定会不会误删正在传的文件，
+             两个都不该藏在高级区。 -->
+        <div class="settings-group-card radius-lg overflow-hidden">
           <!-- strm 交叉验证总开关：后端 `_strm_check_enabled` 长期存在且会被
                `_strm_check` / 看板扫描检查，但界面上一直没有入口。放在本模块
                最前，语义是「这一整块要不要用」。 -->
@@ -514,10 +530,8 @@
             <div>
               <div class="font-weight-bold text-body-2">观察宽限期（分钟）</div>
               <div class="text-caption text-medium-emphasis">
-                strm 生成并不实时（可能还在上传或刮削中），因此同步成功后先等待一段时间再判定，
-                避免把「还没生成」误判为上传异常。最小 1 分钟。
-                <b>单位此前是小时，已改为分钟</b> —— 老配置的值不会自动换算，
-                请按分钟重设（启动日志里会提示）。
+                同步成功后先等多久再判定「缺 strm 就是异常」。设得比实际上传耗时短会误报，
+                <b>比它长则真异常要多等一会才报</b>。大文件多时适当调大（如 30~60）。
               </div>
             </div>
             <v-text-field
@@ -531,7 +545,76 @@
               hide-details
             ></v-text-field>
           </div>
-          <div class="setting-row setting-row-stacked row-pad-x py-3 border-b">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">上传中文件不判疑似（查询 CD2 队列）</div>
+              <div class="text-caption text-medium-emphasis">
+                判定「疑似上传异常」前，先问 CD2 这个文件是否<b>正在上传</b>。
+                开着上传的不报警、也拒绝被「删旧重传」删除 ——
+                否则大文件传不完（宽限期默认 5 分钟，而 8 GB 要传几十分钟）
+                会被反复判疑似并删掉重传，每次作废已传的部分。
+                <br>
+                <b>需要在 CD2 网页「API Tokens」页生成一个 Token</b>。
+                查不到时一律按原有判据处理，不影响同步。
+              </div>
+            </div>
+            <v-switch v-model="config.cd2_query_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+          <div v-if="config.cd2_query_enabled" class="setting-row setting-row-stacked row-pad-x py-3 border-b">
+            <div>
+              <div class="font-weight-bold text-body-2">CD2 API 地址与 Token</div>
+              <div class="text-caption text-medium-emphasis">
+                地址填<b>从 MoviePilot 容器能访问到的</b> CD2 端口，通常是宿主机 IP 加端口
+                （如 <code class="wrap-anywhere">http://192.168.1.8:19798</code>）。
+                填 <code class="wrap-anywhere">127.0.0.1</code> 一般不行 —— CD2 不在本容器的回环里。
+              </div>
+            </div>
+            <v-row density="compact" class="mt-2">
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">CD2 API 地址</div>
+                <v-text-field
+                  v-model="config.cd2_api_url"
+                  placeholder="http://192.168.1.8:19798"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                ></v-text-field>
+              </v-col>
+              <v-col cols="12" sm="6">
+                <div class="stacked-label text-caption text-medium-emphasis">API Token</div>
+                <v-text-field
+                  v-model="config.cd2_api_token"
+                  :placeholder="config.cd2_api_token_set ? '已配置（留空表示保持不变）' : '粘贴 CD2 生成的 Token'"
+                  type="password"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  autocomplete="new-password"
+                ></v-text-field>
+              </v-col>
+            </v-row>
+            <div v-if="config.cd2_api_token_set && !config.cd2_api_token"
+                 class="text-caption text-success mt-1">
+              已保存 Token（出于安全不回显）。留空保存＝保持不变；如需清除请填入一个空格再删掉后保存。
+            </div>
+          </div>
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
+            <div>
+              <div class="font-weight-bold text-body-2">当前状态</div>
+              <div class="text-caption text-medium-emphasis">
+                处于观察期的文件数会在看板顶部提示，疑似异常清单在独立的「strm 疑似异常」标签页内。
+              </div>
+            </div>
+            <v-chip size="small" variant="tonal" color="warning">
+              {{ config.sync_pairs.filter((p) => (p.strm_dir || '').trim()).length }} / {{ config.sync_pairs.length }} 个映射已配置
+            </v-chip>
+          </div>
+        </div>
+
+        <!-- 高级调优卡：催办节奏属于"用了一段时间之后才想调"的参数，
+             新用户不需要在首屏做这个决定。 -->
+        <div class="settings-group-card radius-lg overflow-hidden mt-4" v-show="showAdvanced">
+          <div class="setting-row setting-row-stacked row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">未解决疑似异常催办提醒</div>
               <div class="text-caption text-medium-emphasis">
@@ -593,70 +676,6 @@
               <template v-else>当前设置：已禁用定期催办提醒（仅首次发现时通知一次）</template>
             </div>
           </div>
-          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2">上传中文件不判疑似（查询 CD2 队列）</div>
-              <div class="text-caption text-medium-emphasis">
-                判定「疑似上传异常」前，先问 CD2 这个文件是否**正在上传**。
-                开着上传的不报警、也拒绝被「删旧重传」删除 ——
-                否则大文件传不完（宽限期默认 5 分钟，而 8 GB 要传几十分钟）
-                会被反复判疑似并删掉重传，每次作废已传的部分。
-                <br>
-                <b>需要在 CD2 网页「API Tokens」页生成一个 Token</b>。
-                查不到时一律按原有判据处理，不影响同步。
-              </div>
-            </div>
-            <v-switch v-model="config.cd2_query_enabled" color="primary" inset hide-details density="compact"></v-switch>
-          </div>
-          <div v-if="config.cd2_query_enabled" class="setting-row setting-row-stacked row-pad-x py-3 border-b">
-            <div>
-              <div class="font-weight-bold text-body-2">CD2 API 地址与 Token</div>
-              <div class="text-caption text-medium-emphasis">
-                地址填**从 MoviePilot 容器能访问到的** CD2 端口，通常是宿主机 IP 加端口
-                （如 <code class="wrap-anywhere">http://192.168.1.8:19798</code>）。
-                填 <code class="wrap-anywhere">127.0.0.1</code> 一般不行 —— CD2 不在本容器的回环里。
-              </div>
-            </div>
-            <v-row density="compact" class="mt-2">
-              <v-col cols="12" sm="6">
-                <div class="stacked-label text-caption text-medium-emphasis">CD2 API 地址</div>
-                <v-text-field
-                  v-model="config.cd2_api_url"
-                  placeholder="http://192.168.1.8:19798"
-                  variant="outlined"
-                  density="compact"
-                  hide-details
-                ></v-text-field>
-              </v-col>
-              <v-col cols="12" sm="6">
-                <div class="stacked-label text-caption text-medium-emphasis">API Token</div>
-                <v-text-field
-                  v-model="config.cd2_api_token"
-                  :placeholder="config.cd2_api_token_set ? '已配置（留空表示保持不变）' : '粘贴 CD2 生成的 Token'"
-                  type="password"
-                  variant="outlined"
-                  density="compact"
-                  hide-details
-                  autocomplete="new-password"
-                ></v-text-field>
-              </v-col>
-            </v-row>
-            <div v-if="config.cd2_api_token_set && !config.cd2_api_token"
-                 class="text-caption text-success mt-1">
-              已保存 Token（出于安全不回显）。留空保存＝保持不变；如需清除请填入一个空格再删掉后保存。
-            </div>
-          </div>
-          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
-            <div>
-              <div class="font-weight-bold text-body-2">当前状态</div>
-              <div class="text-caption text-medium-emphasis">
-                处于观察期的文件数会在看板顶部提示，疑似异常清单在独立的「strm 疑似异常」标签页内。
-              </div>
-            </div>
-            <v-chip size="small" variant="tonal" color="warning">
-              {{ config.sync_pairs.filter((p) => (p.strm_dir || '').trim()).length }} / {{ config.sync_pairs.length }} 个映射已配置
-            </v-chip>
-          </div>
         </div>
 
       </v-card-text>
@@ -679,7 +698,7 @@
 
 <script setup>
 import CollapsibleNote from './CollapsibleNote.vue'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 
 const props = defineProps({
   model: { type: Object, default: () => ({}) },
@@ -693,9 +712,31 @@ const error = ref(null)
 const successMessage = ref(null)
 
 // 高级设置总开关：默认关闭。新用户首屏只看到「总开关 + 两个入库开关 + 通知
-// + 目录映射 + 冷却时长」，其余全部收起 —— 这是本次「快速上手」改动的核心。
-// 不持久化：它是阅读辅助而非配置项，且后端没有对应字段。
-const showAdvanced = ref(false)
+// + 目录映射 + 冷却时长 + strm 核心项」，其余全部收起。
+//
+// ⚠️ **持久化到 localStorage**（此前注释写的是"刻意不持久化"，那个判断是错的）：
+// 它虽然不是后端配置项，但描述的是**这个人的阅读习惯** —— 会用高级参数的人
+// 每次打开配置页都要重新展开一遍，而这个页面字段多、展开后才能用 Ctrl+F 的
+// 内容也多。它属于「per-viewer 的便利性状态」，正是 localStorage 的用途。
+//
+// 读写全部包 try/catch：隐私模式、站点数据被清、被其它策略禁用时，读写都会抛，
+// 而这里抛异常的后果是**整个配置页打不开** —— 为一个开关付出的代价太大。
+const ADV_KEY = 'rsync115sync.showAdvanced'
+function _readAdvanced() {
+  try {
+    return localStorage.getItem(ADV_KEY) === '1'
+  } catch (_e) {
+    return false
+  }
+}
+const showAdvanced = ref(_readAdvanced())
+watch(showAdvanced, (v) => {
+  try {
+    localStorage.setItem(ADV_KEY, v ? '1' : '0')
+  } catch (_e) {
+    /* 存不下就算了，不影响页面功能 */
+  }
+})
 
 
 const config = ref({
@@ -834,6 +875,16 @@ function removePair(index) {
 }
 
 function notifyClose() {
+  // ⚠️ 未保存就关闭会**静默丢掉全部改动**，而本页字段有几十个 ——
+  // 尤其「目录映射」整块可能是用户一行行填进去的。
+  // 判据用「与最近一次成功保存/加载的快照比对」而不是逐字段 watch：
+  // 逐个 watch 会漏掉数组内新增元素、且要在每个字段上加一遍，迟早漂移。
+  // 快照比较一把梭，新增字段自动覆盖。
+  if (_isDirty() && !window.confirm(
+    '有未保存的修改，确定要关闭吗？\n\n关闭后这些改动会丢失。'
+  )) {
+    return
+  }
   emit('close')
 }
 
@@ -850,10 +901,41 @@ async function loadConfig() {
     const res = await props.api.get('plugin/Rsync115Sync/config')
     if (res && res.success && res.data) {
       Object.assign(config.value, res.data)
+      _snapshot = _serializeForDirty()
     }
   } catch (e) {
     console.error('读取配置失败:', e)
   }
+}
+
+// ---- 未保存改动检测 ----
+//
+// ⚠️ 快照只覆盖**后端真正保存的字段**，用 `_payloadForBackend()` 的同一套规整：
+//   · `__uid` 是浏览器端的临时键，加一个映射就变，不能算改动；
+//   · `cd2_api_token_set` / `cd2_last_error` 是后端**回显**的只读状态；
+//   · 空 token 在保存时会被删键（见 _payloadForBackend 的三态处理）。
+// 直接对 config 做 JSON 比较会因为这些字段出现"从没改过也被判定有改动"。
+let _snapshot = ''
+
+function _serializeForDirty() {
+  try {
+    const payload = _payloadForBackend()
+    // 只读回显字段不参与比较
+    delete payload.cd2_api_token_set
+    delete payload.cd2_last_error
+    // token 输入框本身也不该算改动：它是密码框，后端不回显，
+    // 用户没动过时它一定是空串；保存后会立刻清空重建。
+    delete payload.cd2_api_token
+    return JSON.stringify(payload)
+  } catch (_e) {
+    // 序列化失败时保守判定为「无改动」：宁可漏一次提醒，
+    // 也不要让关闭按钮变成永远弹框。
+    return _snapshot
+  }
+}
+
+function _isDirty() {
+  return _snapshot !== '' && _serializeForDirty() !== _snapshot
 }
 
 // 去掉只属于浏览器 UI 的临时键，使 POST 出去的 sync_pairs 与后端存储结构一致。
@@ -899,6 +981,9 @@ async function saveConfig() {
       // Clearing the field also prevents a later unrelated save from re-sending it.
       config.value.cd2_api_token = ''
       await loadConfig()
+      // loadConfig 内部会刷新 _snapshot；这里不必再显式赋值。
+      // （若 loadConfig 失败，_snapshot 保持旧值 —— 结果只是"关页面时多问一句"，
+      //  比反过来的"该问却没问"安全。）
     } else {
       error.value = res?.message || '保存配置失败'
     }
@@ -985,6 +1070,21 @@ onMounted(() => {
    保证 12px 中文文本的可读性 */
 .header-card-item .header-subtitle {
   margin-top: 6px;
+}
+/* 标题栏里的「高级设置」开关：Vuetify 的 v-switch 默认带上下 padding，
+   放进一行高的标题栏会把整栏撑高。这里只压掉外边距，不动尺寸 ——
+   开关本身的触控目标要保持可点。 */
+.adv-switch {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.adv-switch :deep(.v-input__control),
+.adv-switch :deep(.v-selection-control) {
+  min-height: 0;
+}
+.adv-switch :deep(.v-label) {
+  /* 开关右侧的文字标签不用（文字在 .adv-label 里），留空避免撑宽 */
+  display: none;
 }
 /* PopUp 内 Title 与下方 Content 的间距必须用 margin 实现：
    宿主默认给 .v-card-item + .v-card-text 设置了 padding-block-start: 0 !important，
@@ -1124,6 +1224,12 @@ onMounted(() => {
   }
   :deep(.v-card-item__content) {
     min-width: 0;
+  }
+  /* 标题栏里的「高级设置」开关：窄屏下省掉文字标签，只留开关本体。
+     标题栏宽度已经很紧（标题 + 徽标 + 开关 + 关闭按钮），
+     文字标签在这里是第一个该让位的东西 —— 开关本身仍带 title 属性。 */
+  .adv-label {
+    display: none;
   }
   /* 设置行：默认改为纵向排列，避免控件被挤出右边界 */
   .setting-row {

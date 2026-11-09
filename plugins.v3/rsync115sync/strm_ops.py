@@ -368,7 +368,7 @@ class StrmOpsMixin:
         skipped_non_video = 0
         now_ts = time.time()
         for k in keys:
-            watchable, skip_code, skip_text = self._strm_watchable(k)
+            watchable, skip_code, _skip_text = self._strm_watchable(k)
             if not watchable:
                 # 非视频文件（字幕/图片/元数据）永远不会有 .strm，登记观察只会
                 # 在宽限期后产出一条**永远无法解除**的疑似异常。计数而非静默
@@ -1216,7 +1216,7 @@ class StrmOpsMixin:
             # 「补生成后仍无」（后者判定硬得多），而这两种状态名都叫 suspect。
             clock = _strm.watch_state_of(
                 key, self._strm_watch, self._strm_gen_requested, now_ts)[0]
-            state, record = self.check_one(key, now_ts, grace_secs)
+            state, _record = self.check_one(key, now_ts, grace_secs)
             if state == _strm.SETTLED:
                 self._strm_watch.pop(key, None)
                 self._strm_gen_requested.pop(key, None)

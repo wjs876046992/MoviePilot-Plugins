@@ -230,22 +230,30 @@
             <template v-else>
               属正常等待，无需处理。
             </template>
-            <!-- CD2 队列查询的实际生效状态：它**不是**默认开启的，
-                 所以必须显式告诉用户"这个保护有没有在工作"。
-                 否则用户看到「正在上传中」被移出清单，会误以为是别的机制做的。 -->
-            <div v-if="statusData.cd2_query_enabled && statusData.cd2_token_set" class="mt-1 text-caption">
-              📤 已启用 CD2 队列核对：正在上传的文件不会被判疑似，也不会被删旧重传。
-            </div>
-            <div v-else-if="statusData.cd2_query_enabled" class="mt-1 text-caption">
-              ⚠️ CD2 队列核对已开启，但**尚未填写 API Token**，因此实际未生效。
-            </div>
-            <div v-else class="mt-1 text-caption">
-              💡 大文件可能在宽限期内传不完而被反复判疑似。
-              <b>建议开启「上传中文件不判疑似」</b>（配置页 → strm 交叉验证）。
-            </div>
+          </div>
+          <!-- CD2 队列核对的状态 —— ⚠️ **必须独立于 watchingCount**。
+               它此前嵌在上面那个 `v-if="watchingCount"` 里，于是出现了完全相反的
+               行为：这个保护的主要作用就是让文件不进疑似、观察期因此变短或归零，
+               而一旦归零，解释"这个保护有没有在工作"的那一行就**跟着消失**。
+               越是有用越看不见，等于白做。
+               它本身是"保护机制的健康状况"，与"有没有文件在观察"无关，
+               因此提升为同级独立块。 -->
+          <div v-if="statusData.cd2_query_enabled" class="mt-1">
+            <template v-if="statusData.cd2_token_set">
+              📤 CD2 队列核对已启用：正在上传的文件不会被判疑似，也不会被删旧重传。
+            </template>
+            <template v-else>
+              ⚠️ CD2 队列核对已开启，但<b>尚未填写 API Token</b>，实际未生效。
+            </template>
             <div v-if="statusData.cd2_last_error" class="mt-1 text-caption text-warning">
-              CD2 查询失败（按原判据处理）：{{ statusData.cd2_last_error }}
+              上次查询失败（已按原判据处理）：{{ statusData.cd2_last_error }}
             </div>
+          </div>
+          <!-- 未启用时的建议：只在确实有文件在观察时才提 —— 没有观察条目说明
+               眼下没有被误伤的对象，此时劝用户去开一个开关只会变成噪音。 -->
+          <div v-else-if="watchingCount" class="mt-1">
+            💡 大文件可能在宽限期内传不完而被反复判疑似。
+            <b>建议开启「上传中文件不判疑似」</b>（配置页 → strm 交叉验证）。
           </div>
         </v-alert>
 
@@ -647,7 +655,7 @@
                 <v-tooltip activator="parent" location="top" max-width="360">
                   移除已不可能恢复正常的条目：非视频文件（字幕/图片不会生成 strm）、
                   已命中忽略规则、源端文件已删除、所属映射已取消 strm 验证。<br><br>
-                  ⚠️ 已生成 strm 的条目**不在此列** —— 那种情况由巡检与
+                  ⚠️ 已生成 strm 的条目<b>不在此列</b> —— 那种情况由巡检与
                   「扫描缺 strm 的文件」自动移出，不需要你点任何按钮。
                 </v-tooltip>
               </v-btn>
@@ -1772,7 +1780,7 @@ async function generateStrm() {
   const ok = window.confirm(
     `将请 strm 助手按这些文件所在的网盘目录重新生成 .strm：\n\n` +
     `${keys.length} 个文件\n\n` +
-    `• 生成成功 ⇒ 此前只是助手漏生成，**无需删旧重传**（省下一整轮删除与上传）\n` +
+    `• 生成成功 ⇒ 此前只是助手漏生成，无需删旧重传（省下一整轮删除与上传）\n` +
     `• 生成后仍无 ⇒ 云端确实缺该文件，届时再执行「删旧重传」\n\n` +
     `这些文件会移回「观察中」，按 ${statusData.value.strm_regrace_hours}h 窗口重新计时，` +
     `期间可用「检查 strm」立即查看结果（不必干等）。\n` +
