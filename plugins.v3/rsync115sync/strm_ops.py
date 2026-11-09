@@ -1580,10 +1580,10 @@ class StrmOpsMixin:
 
         logger.warning(
             f"[Rsync115Sync] ⚠️ {health['reason']}\n"
-            f"    没有插件在生成 .strm 时，**每一个同步成功的文件都会在宽限期"
+            f"    没有插件在生成 .strm 时，【每一个同步成功的文件都会在宽限期"
             f"（{getattr(self, '_strm_grace_minutes', 0)} 分钟）后被判为"
-            f"「疑似上传异常」** —— 你收到的疑似告警可能全部是误报。\n"
-            f"    若你使用**其它** strm 插件生成指针文件，本条可忽略。")
+            f"「疑似上传异常」】 —— 你收到的疑似告警可能全部是误报。\n"
+            f"    若你使用【其它】strm 插件生成指针文件，本条可忽略。")
         self._notify_helper_down(health["reason"])
         return health
 

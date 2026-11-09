@@ -208,7 +208,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.7"
+    plugin_version = "0.5.8"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -2411,13 +2411,31 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         #   · 字段缺失（老前端/未渲染）：保持原值；
         #   · 空串：用户明确清空 ⇒ 清空；
         #   · 非空：覆盖。
-        # 曾经这里是 `config.get(...) or ""`，而配置页在「已配置」状态下会把
-        # 输入框留空（因为我们不回传原值）—— 一次保存就静默清掉了 token，
-        # 而界面看不出任何变化。
-        # Empty means "clear" because the UI leaves the field blank when a token is
-        # already stored — but only when the key is present at all.
+        #
+        # 🔴 **必须同时回写进 `config` 字典**（这是上线后实测到的真 bug）：
+        # 本方法末尾的 `update_config(config)` 持久化的是**这个字典**，
+        # 只把值赋给 `self._cd2_api_token` 的话，内存里有、配置库里没有 ——
+        # 重载插件后 token 就没了，而界面上看起来"已保存成功"。
+        # 现象极难自查：保存返回成功、开关显示已开启、只有「填了 Token」
+        # 的提示始终不出现（因为 `cd2_api_token_set` 读的是内存属性，
+        # 当次会话里为真，重载后变假）。
+        # The dict is what gets persisted; assigning only to the instance attribute
+        # silently loses the token on reload.
+        #
+        # 另外**不要**把空串原样写进 config：`cd2_api_token_set` 为真而我们收到
+        # 空串时，"键缺失 = 保持原值"才是正确语义 —— 由前端 `_payloadForBackend`
+        # 保证（它在已配置状态下把空 token 的键整个删掉）。这里只处理
+        # "键确实存在"的情况，并把结果同步回字典。
         if "cd2_api_token" in config:
             self._cd2_api_token = str(config.get("cd2_api_token") or "").strip()
+            config["cd2_api_token"] = self._cd2_api_token
+        else:
+            # 键缺失（前端判为"保持不变"）：把内存里的现值写进字典，
+            # 否则 `update_config` 会把该字段从配置里抹掉。
+            config["cd2_api_token"] = self._cd2_api_token
+        # 同理：地址与开关也要以最终生效值回写，避免 "内存/配置库" 分叉。
+        config["cd2_api_url"] = self._cd2_api_url
+        config["cd2_query_enabled"] = self._cd2_query_enabled
         # 配置变了，缓存的连通性结论立刻失效 —— 否则用户刚填对地址，
         # 还要等缓存过期或静默期结束才生效，看起来像"填了没用"。
         self._cd2_cache = {}

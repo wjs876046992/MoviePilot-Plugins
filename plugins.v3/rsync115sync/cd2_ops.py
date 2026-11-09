@@ -249,7 +249,7 @@ class Cd2OpsMixin:
             logger.warning(
                 f"[Rsync115Sync] ⏳ {len(expired)} 个条目在 CD2 上传队列里停留超过 "
                 f"{_cd2.CD2_SUPPRESS_MAX_HOURS:g} 小时仍未完成，"
-                f"**不再按「上传中」豁免**（很可能任务已卡死，请到 CD2 网页确认）: "
+                f"【不再按「上传中」豁免】（很可能任务已卡死，请到 CD2 网页确认）: "
                 f"{_brief_paths(expired)}")
         return hits
 
@@ -299,7 +299,7 @@ class Cd2OpsMixin:
             self._strm_gen_requested.pop(key, None)
         self.save_data("strm_suspects", self._strm_suspects)
         logger.info(
-            f"[Rsync115Sync] 📤 {len(in_flight)} 个疑似条目其实**正在 CD2 上传**"
+            f"[Rsync115Sync] 📤 {len(in_flight)} 个疑似条目其实【正在 CD2 上传】"
             f"（宽限期不够长而已，不是异常），已移出待处理清单: "
             f"{'; '.join(f'{k}（{_cd2.progress_text(v)}）' for k, v in list(in_flight.items())[:_MAX_LOGGED_PATHS])}")
         self._reset_strm_notified_if_clear()
@@ -331,7 +331,7 @@ class Cd2OpsMixin:
         logger.warning(
             f"[Rsync115Sync] 🛑 拒绝删旧重传：{len(in_flight)} 个文件此刻正在 CD2 上传，"
             f"删除会让已传部分作废: {_brief_paths(list(in_flight))}")
-        return (f"这 {len(in_flight)} 个文件此刻**正在 CD2 上传**，"
+        return (f"这 {len(in_flight)} 个文件此刻【正在 CD2 上传】，"
                 f"删掉会让已经传完的部分作废：\n{detail}{more}\n\n"
                 f"请等它们传完再判断（上传完成后 strm 通常会自行生成）。"
                 f"如果确认是卡死的任务，请先在 CD2 网页里取消对应上传。")

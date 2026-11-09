@@ -343,3 +343,121 @@ def test_terminal_states_are_never_suppressing_regardless_of_age():
         assert cd2.should_suppress(item, age_secs=1) is False, (
             f"状态 {status} 不应压制告警")
         assert cd2.suppression_seconds(item) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 面向用户的字符串不得含 Markdown 标记
+# ---------------------------------------------------------------------------
+
+def test_user_facing_backend_strings_have_no_markdown():
+    """
+    后端**返回给用户**的字符串不得含 `**加粗**`。
+
+    这些字符串有三个去处，**全都不渲染 Markdown**：
+      · 看板的纯文本区块（走 `plainText()` + `pre-wrap`）
+      · `window.confirm()` 原生弹窗
+      · 聊天渠道的纯文本回复
+
+    项目在 v0.2.4 修过一次同类问题，但那条只覆盖了命令回复；本用例补上
+    「API 返回的 message」与「通知正文」这两条路径。
+
+    ⚠️ 只扫**非 docstring** 的字符串，且排除 logger 调用 ——
+    日志是给维护者看的，`**` 在那里是有效的视觉强调，不该被禁。
+    """
+    import ast
+    import re
+
+    root = _plugin_dir()
+    offenders = []
+    for name in ("__init__.py", "strm_ops.py", "cd2_ops.py",
+                 "commands.py", "sync_ops.py", "strm.py"):
+        path = root / name
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        # 收集 docstring 节点，排除
+        docstrings = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef,
+                                 ast.AsyncFunctionDef)):
+                body = getattr(node, "body", None) or []
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    docstrings.add(id(body[0].value))
+
+        # 收集 logger.* 调用里出现的字符串（那些不面向用户）
+        logger_strings = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "logger"):
+                for arg in node.args:
+                    for sub in ast.walk(arg):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                            logger_strings.add(id(sub))
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if id(node) in docstrings or id(node) in logger_strings:
+                continue
+            if re.search(r"\*\*[^*\n]{1,60}\*\*", node.value):
+                offenders.append(f"{name}:{node.lineno}  {node.value[:60]}")
+
+    assert not offenders, (
+        f"这些**面向用户**的字符串含 Markdown 加粗标记，用户会看到字面星号：\n"
+        + "\n".join(offenders)
+        + "\n请改为【…】或直接去掉星号（这三处渲染路径都不解析 Markdown）。"
+    )
+
+
+def test_save_config_writes_token_back_into_the_persisted_dict():
+    """
+    ⚠️ 回归（上线后实测到的真 bug）：`_api_save_config` 必须把 token
+    **回写进 `config` 字典**，而不只是赋给实例属性。
+
+    ## 症状（极难自查）
+
+    前端按约定在"已配置"状态下把空 token 的键整个删掉（表示"保持不变"），
+    后端把值赋给了 `self._cd2_api_token` —— 但 `update_config(config)`
+    持久化的是**那个字典**，字典里根本没有 token。
+
+    于是：保存返回成功、开关显示已开启、当次会话里 `cd2_api_token_set`
+    为真（读的是内存属性）—— **一切看起来都正常**。只有重载插件后 token
+    才消失，而那时用户以为早就配好了。
+
+    实测确认：配置库 `plugin.P115StrmHelper` 里从来没有 `cd2_api_token`。
+
+    这条用例用 AST 静态检查，不依赖后端：确认该方法内存在
+    `config["cd2_api_token"] = ...` 这样的回写。
+    """
+    import ast
+
+    src = (_plugin_dir() / "__init__.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    save_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_api_save_config":
+            save_fn = node
+            break
+    assert save_fn is not None, "未找到 _api_save_config"
+
+    # 收集所有 `config["cd2_api_token"] = ...` 形式的赋值
+    written = set()
+    for node in ast.walk(save_fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "config"
+                        and isinstance(target.slice, ast.Constant)):
+                    written.add(target.slice.value)
+
+    assert "cd2_api_token" in written, (
+        "`_api_save_config` 只把 token 赋给了实例属性，没有回写进 `config` 字典 —— "
+        "`update_config(config)` 持久化的是字典，导致 token 在重载后消失，"
+        "而保存过程一路显示成功。"
+    )
