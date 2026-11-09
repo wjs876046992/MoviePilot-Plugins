@@ -402,9 +402,12 @@ class StrmOpsMixin:
             # exactly the "synced before, failed this round" case.
             self._mark_synced(k, now_ts)
             self._strm_watch[k] = now_ts
-            # 重传成功即解除疑点
+            # 重传成功即解除疑点。
+            # ⚠️ 只摘缓存，**绝不 pop**：上面两行已经把这一行改成 pending_verify，
+            # pop 会 DELETE 整行，把刚写进去的观察状态和 synced_at 一起删掉。
+            # 当前进程靠 SW 的内存缓存看起来正常，**重载后观察就没了**（v0.6.0 修复）。
             if k in self._strm_suspects:
-                self._strm_suspects.pop(k, None)
+                _store_mod.forget_key(self._strm_suspects, k)
                 self.save_data("strm_suspects", self._strm_suspects)
             if k in self._strm_gen_requested:
                 self._strm_gen_requested.pop(k, None)
@@ -513,9 +516,15 @@ class StrmOpsMixin:
                 # NO_STRM_DIR 与 SOURCE_GONE 都是清理出口，与「正常解除」分开计数
                 dropped.append(key)
 
-        for k in settled_ok + dropped:
+        # 终态与清理出口分开处置：strm 已生成 = **成功**，行要留下（done），
+        # 这样 synced_at / verified_at 才不会被删掉，"累计成功数"才是累计的。
+        # 映射失效 / 源端消失 = 不再跟踪，删行是对的。
+        for k in settled_ok:
+            _store_mod.retire_key(self._strm_watch, k)
+            self._strm_gen_requested.pop(k, None)
+        for k in dropped:
             self._strm_watch.pop(k, None)
-            # 条目已离场（strm 已生成 / 映射失效 / 源端消失），补生成标记随之失效。
+            # 条目已离场（映射失效 / 源端消失），补生成标记随之失效。
             # 不清理的话这个字典只增不减，长期运行会把每次请求过的 key 全留着 ——
             # 而看板正是靠它标记「已请求生成」，陈旧标记会让新条目被误标。
             self._strm_gen_requested.pop(k, None)
@@ -533,8 +542,11 @@ class StrmOpsMixin:
         for k in new_suspects:
             if k in still_uploading:
                 continue
-            self._strm_watch.pop(k, None)
-            self._strm_suspects[k] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
+            # ⚠️ 先写疑似、再摘观察缓存。此前 pop（删行）+ 赋值（插新行）会把
+            # synced_at 与 gen_requested_at 一起删掉 —— 下面那条「有意保留补生成
+            # 标记」的注释因此只在内存里成立，重载后标记就没了（v0.6.0 修复）。
+            _store_mod.move_key(self._strm_watch, k, self._strm_suspects,
+                                {"ts": now_ts, "origin": _strm.ORIGIN_WATCH})
             # ⚠️ 有意**保留** _strm_gen_requested：这些条目正是「已经请助手生成过、
             # 宽限期到仍无 strm」的那批，标记必须留着，用户才知道这已经是补生成
             # 之后的结果（判定比首次疑似硬得多），而不是又一轮普通疑似。
@@ -635,7 +647,10 @@ class StrmOpsMixin:
             return []
         cooling = [k for k in list(self._strm_suspects.keys()) if k in pending]
         for key in cooling:
-            self._strm_suspects.pop(key, None)
+            # ⚠️ 只摘缓存：这个 key 此刻在冷却队列里，台账那一行的 status 是
+            # candidate。pop 会把它**从冷却队列里删掉** —— 一个还没上传的文件
+            # 就此不再被跟踪（v0.6.0 修复）。
+            _store_mod.forget_key(self._strm_suspects, key)
             # 补生成标记一并失效：条目已离场，留着只会让下一次同名条目被误标成
             # 「补生成后仍无」—— 而那次补生成针对的是"还没上传的文件"，
             # 结论毫无意义。与其它出口同口径。
@@ -698,7 +713,8 @@ class StrmOpsMixin:
                 # 宁可多挂一轮也不要因为一次挂载抖动把它静默摘掉。
                 continue
             if exists:
-                self._strm_suspects.pop(key, None)
+                # strm 已存在 = 这个文件真的成了 → 终态留行，不删。
+                _store_mod.retire_key(self._strm_suspects, key)
                 # 补生成标记随之失效（条目已离场，留着它只会让下一个同名条目被误标）
                 self._strm_gen_requested.pop(key, None)
                 resolved.append(key)
@@ -952,10 +968,13 @@ class StrmOpsMixin:
             in_flight = self._cd2_suppress_new_suspects(
                 [k for k in candidates if k in self._strm_suspects])
             for key in list(in_flight):
-                self._strm_suspects.pop(key, None)
+                # 正在上传 ≠ 异常，也 ≠ 不必跟踪：移回观察期，下一轮继续判。
+                # pop 会把刚插进去的行整行删掉，这个文件从此不受任何跟踪。
+                _store_mod.move_key(self._strm_suspects, key, self._strm_watch, now_ts)
                 added -= 1
             if in_flight:
                 self.save_data("strm_suspects", self._strm_suspects)
+                self.save_data("strm_watch", self._strm_watch)
                 skipped_uploading = len(in_flight)
             else:
                 skipped_uploading = 0
@@ -1105,9 +1124,12 @@ class StrmOpsMixin:
             in_flight = self._cd2_suppress_new_suspects(
                 [k for k in missing if k in self._strm_suspects])
             for key in list(in_flight):
-                self._strm_suspects.pop(key, None)
+                # 与全量扫描同口径：移回观察期而不是删行（删行 = 从此不受跟踪）
+                _store_mod.move_key(self._strm_suspects, key, self._strm_watch, now_ts)
                 added -= 1
             skipped_uploading = len(in_flight)
+            if in_flight:
+                self.save_data("strm_watch", self._strm_watch)
         else:
             skipped_uploading = 0
         if added:
@@ -1218,7 +1240,8 @@ class StrmOpsMixin:
                 key, self._strm_watch, self._strm_gen_requested, now_ts)[0]
             state, _record = self.check_one(key, now_ts, grace_secs)
             if state == _strm.SETTLED:
-                self._strm_watch.pop(key, None)
+                # 成功终态：留行（与巡检同一处置）
+                _store_mod.retire_key(self._strm_watch, key)
                 self._strm_gen_requested.pop(key, None)
                 changed = True
                 results.append({"key": key, "state": state, "clock": clock})
@@ -1228,9 +1251,10 @@ class StrmOpsMixin:
                 changed = True
                 results.append({"key": key, "state": state, "clock": clock})
             elif state == _strm.SUSPECT:
-                # 到期未生成：与巡检同一处置（转疑似 + 通知）
-                self._strm_watch.pop(key, None)
-                self._strm_suspects[key] = {"ts": now_ts, "origin": _strm.ORIGIN_WATCH}
+                # 到期未生成：与巡检同一处置（转疑似 + 通知）。
+                # 先写疑似再摘观察缓存，保住 synced_at / gen_requested_at。
+                _store_mod.move_key(self._strm_watch, key, self._strm_suspects,
+                                    {"ts": now_ts, "origin": _strm.ORIGIN_WATCH})
                 entered.append(key)
                 changed = True
                 results.append({"key": key, "state": state, "clock": clock})
@@ -1387,8 +1411,11 @@ class StrmOpsMixin:
         """
         moved = 0
         for key in keys:
-            self._strm_suspects.pop(key, None)
-            self._strm_watch[key] = now_ts
+            # ⚠️ 先写观察期、再摘疑似缓存，顺序不可颠倒。此前是 pop（删行）+ 赋值
+            # （插新行），于是调用方刚写下的 `gen_requested_at` 随行一起被删 ——
+            # 当前进程靠 GR 缓存仍按 1h 窗口计时，**重载后退回普通宽限期**，
+            # 「补生成后仍无」这个更硬的判定也一起消失（v0.6.0 修复）。
+            _store_mod.move_key(self._strm_suspects, key, self._strm_watch, now_ts)
             moved += 1
         if moved:
             self.save_data("strm_watch", self._strm_watch)
@@ -1540,7 +1567,7 @@ class StrmOpsMixin:
         30 分钟。若每次探测都打日志，一个长期健康的实例每天仍会产出几十条同义
         INFO —— 与「只有新发现才通知」是同一条原则：重复的告警会把真实变化淹没。
 
-        因此状态存在 `save_data("helper_health")` 里，与上次对比后分三种情况：
+        因此状态存在**本进程的** `_helper_health_state` 里，与上次对比后分三种情况：
           · 健康 → 不健康：WARNING + 一条通知（宽限期到会大面积误报，值得打扰）
           · 不健康 → 健康：INFO 恢复 + 重置通知闩锁
           · 状态未变：什么都不做（连日志都不打）
@@ -1564,9 +1591,11 @@ class StrmOpsMixin:
         prev_known = prev.get("ok")
         self._helper_health_state = {"ok": health["ok"], "reason": health["reason"]}
 
-        if prev_known is None or prev_known != health["ok"]:
-            self.save_data("helper_health", {"ok": health["ok"],
-                                             "checked_at": health["checked_at"]})
+        # ⚠️ 刻意**不落盘**（v0.6.0 删掉了这里的 save_data("helper_health")）：
+        # 全仓没有任何 get_data("helper_health") 读取点，init_plugin 也刻意不恢复
+        # 它 —— 写一份没人读的状态，只会让排障的人以为"重启后能接着上次的告警态
+        # 判断"。重载后首次探测重新建立基线（prev_known is None → 不通知）才是对的：
+        # 拿一份可能已过期的健康态去判"恢复/恶化"，会发出假告警。
         if health["ok"]:
             if prev_known is False:
                 logger.info("[Rsync115Sync] ✅ strm 助手已恢复运行，"

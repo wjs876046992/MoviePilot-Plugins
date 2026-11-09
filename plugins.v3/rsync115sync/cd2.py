@@ -82,7 +82,9 @@ _UPLOAD_DEST_PATH = 2
 _UPLOAD_SIZE = 3
 _UPLOAD_TRANSFERRED = 4
 _UPLOAD_STATUS_TEXT = 5
-_UPLOAD_ERROR = 6
+# f6 = 错误文本。**刻意不解析**：此前解析进 item["error"] 却从无读取者，
+# 看起来像"插件知道为什么失败"，实际任何判定都不用它。要用它做判定入口
+# 是 TODO 10.5 那一轮的事，届时连同判定一起加回来。
 _UPLOAD_STATUS_ENUM = 8
 
 # Status_1 枚举（**注意不是** Status，那是备份任务的状态）。
@@ -371,7 +373,7 @@ def parse_upload_list(message: bytes) -> List[Dict[str, Any]]:
             continue
         item: Dict[str, Any] = {
             "key": "", "dest_path": "", "size": 0, "transfered": 0,
-            "status": -1, "status_text": "", "error": "",
+            "status": -1, "status_text": "",
         }
         for f2, w2, v2 in _iter_fields(value):
             if f2 == _UPLOAD_KEY and w2 == 2:
@@ -384,8 +386,6 @@ def parse_upload_list(message: bytes) -> List[Dict[str, Any]]:
                 item["transfered"] = int(v2)
             elif f2 == _UPLOAD_STATUS_TEXT and w2 == 2:
                 item["status_text"] = _decode_text(v2)
-            elif f2 == _UPLOAD_ERROR and w2 == 2:
-                item["error"] = _decode_text(v2)
             elif f2 == _UPLOAD_STATUS_ENUM and w2 == 0:
                 item["status"] = int(v2)
         items.append(item)

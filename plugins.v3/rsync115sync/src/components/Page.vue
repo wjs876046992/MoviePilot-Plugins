@@ -120,6 +120,15 @@
           </v-col>
         </v-row>
 
+        <!-- 累计完成数。v0.6.0 起「已完成」的文件不再逐条出现在列表里（后端只下发
+             活跃条目）—— 没有这一行，处理完的文件就像凭空蒸发了一样。
+             ⚠️ 它只是数字：没有 done 标签、不可点，点进去必然是空的；
+             挂在统计行之下而不是标签角标旁 —— 标签数的是"列表里有什么"，
+             这个数恰恰不在任何标签的列表里。为 0 时不占位（新装没有可解释的消失）。 -->
+        <div v-if="doneTotal" class="text-caption text-medium-emphasis mb-3">
+          已完成 {{ doneTotal }} 个文件（累计 —— 已同步成功的不再列入下方清单）
+        </div>
+
         <!-- 传输进度：**只在跑同步时出现**（statusData.progress 为 null 时整块隐藏）。
              为什么要有它：在此之前一次 28 分钟的传输在看板上全程是黑屏 ——
              唯一能看到的只有「正在同步 ⏳」这五个字。
@@ -1121,10 +1130,15 @@ const webhookVisible = computed(() =>
 const ignoredList = ref([])
 
 // 分页：每页固定条数。队列可能上百条，一次全渲染既卡顿又难浏览。
+// v0.6.0 起 `/items` 只返回活跃条目（终态 done 不再逐条下发 —— 实机台账里压着
+// 十万量级的完成记录，那才是列表规模问题的根源），活跃集合因此有界，
+// 每页放大到 50：页数少了，翻页往返也少了 —— 但**仍是分页渲染**，不是取消分页。
 // 页码按标签分别记录，切换标签不会丢失各自的位置。
+// ⚠️ 页码越界由 paginate() 就地纠偏（条目在两轮轮询之间被处理掉时，
+// 停在第 N 页会渲染出空列表而分页条还说「第 N / M 页」）。
 // Per-tab pagination state. The queue can hold hundreds of entries; rendering all
 // of them hurts both performance and readability.
-const PAGE_SIZE = 15
+const PAGE_SIZE = 50
 const pageQueue = ref(1)
 const pageFailed = ref(1)
 const pageIgnored = ref(1)
@@ -1269,12 +1283,21 @@ const brokenCount = computed(() => itemsData.value.states.broken || 0)
 // ⚠️ 必须声明在**所有读取它的 computed 之前**：`<script setup>` 里 const 有
 // 暂时性死区，后面的 computed 在 setup 阶段求值时读到未初始化的绑定会直接抛错
 // （表现为整个看板白屏，而不是某个数字不对）。
-const itemsData = ref({ items: [], states: {} })
+// v0.6.0 起后端还带 `done_total`（累计完成数 —— 终态 done 不再逐条下发，
+// 只在 `items` 之外给这一个数；旧后端没有该字段时按 0 处理）。
+const itemsData = ref({ items: [], states: {}, done_total: 0 })
 
 /** 按 state 取条目 —— 唯一的筛选方式。 */
 function itemsByState(...states) {
   return itemsData.value.items.filter((it) => states.includes(it.state))
 }
+
+/**
+ * 累计完成数（`done_total`）。
+ * 只是**聚合计数**，不是清单入口 —— 看板没有 done 标签，它也永远不该被做成可点的：
+ * 数据没有下发，点进去必然是空的。
+ */
+const doneTotal = computed(() => Number(itemsData.value.done_total) || 0)
 
 const failedCount = computed(() => brokenCount.value)
 

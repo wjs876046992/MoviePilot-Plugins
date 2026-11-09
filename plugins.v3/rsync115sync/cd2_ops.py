@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional
 from app.sdk.logging import logger
 
 from . import cd2 as _cd2   # noqa: E402
+from . import store as _store_mod   # noqa: E402
 from .constants import (    # noqa: E402
     CD2_API_URL_DEFAULT as _CD2_API_URL_DEFAULT,
     CD2_FAILURE_BACKOFF_SECS as _CD2_FAILURE_BACKOFF_SECS,
@@ -292,12 +293,18 @@ class Cd2OpsMixin:
         in_flight = self._cd2_in_flight_for(suspects)
         if not in_flight:
             return []
+        now_ts = time.time()
         for key in in_flight:
-            self._strm_suspects.pop(key, None)
-            # 补生成标记一并失效：条目已离场，留着只会让下一次同名条目被误标
-            # 「补生成后仍无」。与其它出口同口径。
+            # ⚠️ 移回**观察期**，不是删行。正在上传的文件仍然需要被跟踪，下一轮
+            # 继续判；pop 会 DELETE 整行，让它从此不受任何跟踪 —— 而它恰恰是最
+            # 需要盯着的那一批（大文件、传得慢）。移出疑似清单的理由只是「清单上
+            # 唯一的处置动作（删旧重传）对正在传的文件是破坏性的」，观察期没有
+            # 那个动作，所以移过去既消掉了破坏性入口，又保住了跟踪。
+            _store_mod.move_key(self._strm_suspects, key, self._strm_watch, now_ts)
+            # 补生成标记一并失效：与其它出口同口径，重新按普通宽限期计时。
             self._strm_gen_requested.pop(key, None)
         self.save_data("strm_suspects", self._strm_suspects)
+        self.save_data("strm_watch", self._strm_watch)
         logger.info(
             f"[Rsync115Sync] 📤 {len(in_flight)} 个疑似条目其实【正在 CD2 上传】"
             f"（宽限期不够长而已，不是异常），已移出待处理清单: "

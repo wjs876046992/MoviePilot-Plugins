@@ -202,8 +202,10 @@ watch(showAdvanced, (v) => {
 const config = ref({
   enabled: false,
   listen_transfer: true,
-  // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
-  // 源端扫描（入库发现的主通道，2026-09-25 起取代宿主整理事件订阅）
+  // 与后端 `SOURCE_SCAN_ENABLED_DEFAULT`（constants.py）保持一致：**默认开启**。
+  // 此前这条注释写的是已废弃的 `_MISSED_SCAN_ENABLED_DEFAULT` 并称"默认关闭" ——
+  // 名字和结论都不对，照它排查的人会先判错一个前提。（v0.6.0 校正）
+  // 源端扫描是入库发现的主通道（2026-09-25 起取代宿主整理事件订阅）。
   source_scan_enabled: true,
   // cron 表达式（与「定时检查」同一套写法）。旧版这里是「间隔秒数」，
   // 后端会把它换算成等价的 */N 表达式并保留，见 _read_source_scan_cron。
@@ -551,7 +553,7 @@ return (_ctx, _cache) => {
                     class: "ml-2 font-weight-bold"
                   }, {
                     default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
-                      _createTextVNode("v0.5.10", -1)
+                      _createTextVNode("v0.6.0", -1)
                     ]))]),
                     _: 1
                   })
@@ -617,7 +619,7 @@ return (_ctx, _cache) => {
               _createElementVNode("div", _hoisted_7, [
                 _cache[37] || (_cache[37] = _createElementVNode("div", null, [
                   _createElementVNode("div", { class: "font-weight-bold text-body-2" }, "启用入库监听"),
-                  _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "Webhook 与源端扫描共用的总闸")
+                  _createElementVNode("div", { class: "text-caption text-medium-emphasis" }, "Webhook 入库监听的总闸，源端扫描另有开关")
                 ], -1)),
                 _createVNode(_component_v_switch, {
                   modelValue: config.value.listen_transfer,
@@ -743,7 +745,11 @@ return (_ctx, _cache) => {
                       _createElementVNode("b", null, "② Webhook —— 加速器，不承担完整性。"),
                       _createTextVNode(" 发送端主动通知（接入方式见上方「怎么把入库推给本插件」）。它让文件早一点进队列， 但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。 ")
                     ], -1),
-                    _createElementVNode("div", { class: "mt-1" }, " 关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到 「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 —— 那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。 ", -1)
+                    _createElementVNode("div", { class: "mt-1" }, [
+                      _createTextVNode(" 两个开关各管一条路："),
+                      _createElementVNode("b", null, "关闭「启用入库监听」只停 Webhook 通知"),
+                      _createTextVNode("， 主通道不受它影响 —— 源端扫描只看「源端扫描入库」自己的开关。 仅关闭「源端扫描入库」则只剩 Webhook 一条路 —— 那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。 ")
+                    ], -1)
                   ]))]),
                   _: 1
                 })
@@ -1732,6 +1738,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-9818baed"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-4ac6c037"]]);
 
 export { Config as default };

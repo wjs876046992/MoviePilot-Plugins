@@ -23,7 +23,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.5.10</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.6.0</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -84,10 +84,15 @@
                就会把控件挤成一条缝甚至挤出可视区（此前「源端扫描 Cron」那条四行说明
                就是这么把输入框挡住的）。详细语义写在模块顶部的 alert 里 ——
                卡片内只留"这一项是干什么的"一句话。详见 §4.0g ②/⑤。 -->
+          <!-- ⚠️ 文案红线：这里曾写「Webhook 与源端扫描共用的总闸」——**与后端不符**。
+               listen_transfer 只拦 webhook 入库那条路（on_webhook_message /
+               webhook_parser），源端游标扫描只看 source_scan_enabled，与本开关无关。
+               照旧文案关掉本开关，扫描照跑 —— 用户以为全停了，实际没有。
+               v0.6.0 按实际行为改写，并明确扫描另有开关。 -->
           <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-3">
             <div>
               <div class="font-weight-bold text-body-2">启用入库监听</div>
-              <div class="text-caption text-medium-emphasis">Webhook 与源端扫描共用的总闸</div>
+              <div class="text-caption text-medium-emphasis">Webhook 入库监听的总闸，源端扫描另有开关</div>
             </div>
             <v-switch v-model="config.listen_transfer" color="primary" inset hide-details density="compact"></v-switch>
           </div>
@@ -181,8 +186,9 @@
                     但即使整条失效，扫描也会在下一轮把同一个文件捞回来（去重由队列幂等保证）。
                   </div>
                   <div class="mt-1">
-                    关闭「启用入库监听」= 两条来源一起停（分开成两个开关会让用户遇到
-                    「关了一个、另一个还在悄悄入队」）。仅关闭「源端扫描入库」则只剩 Webhook 一条路 ——
+                    两个开关各管一条路：<b>关闭「启用入库监听」只停 Webhook 通知</b>，
+                    主通道不受它影响 —— 源端扫描只看「源端扫描入库」自己的开关。
+                    仅关闭「源端扫描入库」则只剩 Webhook 一条路 ——
                     那时手动放入、外部搬入，以及 webhook 配置出问题时的入库都会静默丢失。
                   </div>
           </CollapsibleNote>
@@ -753,8 +759,10 @@ watch(showAdvanced, (v) => {
 const config = ref({
   enabled: false,
   listen_transfer: true,
-  // 与后端 _MISSED_SCAN_ENABLED_DEFAULT 保持一致：默认关闭
-  // 源端扫描（入库发现的主通道，2026-09-25 起取代宿主整理事件订阅）
+  // 与后端 `SOURCE_SCAN_ENABLED_DEFAULT`（constants.py）保持一致：**默认开启**。
+  // 此前这条注释写的是已废弃的 `_MISSED_SCAN_ENABLED_DEFAULT` 并称"默认关闭" ——
+  // 名字和结论都不对，照它排查的人会先判错一个前提。（v0.6.0 校正）
+  // 源端扫描是入库发现的主通道（2026-09-25 起取代宿主整理事件订阅）。
   source_scan_enabled: true,
   // cron 表达式（与「定时检查」同一套写法）。旧版这里是「间隔秒数」，
   // 后端会把它换算成等价的 */N 表达式并保留，见 _read_source_scan_cron。

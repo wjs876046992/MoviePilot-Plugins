@@ -72,25 +72,41 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 # ---- 状态取值 ------------------------------------------------------------
-# 线性流转，不回退。每个取值都对应"这个文件此刻该被怎样处理"。
+# 每个取值都对应"这个文件此刻该被怎样处理"。
 #
-# ⚠️ 只有**在跟踪中**的文件有行。一个文件走完流程（strm 出现）就不再需要跟踪，
-# 它的行被删掉 —— 「同步成功过」这件事改由 `synced_at` 这一列回答。
+# ⚠️ **终态留行**（v0.6.0 起）：文件走完流程后改成 `done`，**不再删行**。
+# 此前是删行 + 靠 `synced_at` 回答"是否曾成功"，但删行会把 `synced_at` 一起删掉，
+# 于是 `/status` 的 `ledger.synced_files` 随文件完成而**减少** —— 一个宣称
+# "累计成功数"的指标实际是"当前仍在跟踪且曾成功的数量"。留行之后它才是累计值，
+# 而且"任取一个文件，一处就能回答它走到哪一步"这个目标才成立。
+# 代价是表会随媒体库增长（十万级约几 MB），**刻意不做保留期清理**：
+# 清理会重新引入"这个文件去哪了"的不可解释性。
 #
-# 这里曾有一个 `synced` 取值（"strm 已出现，确认真的上传成功"），但它**从来
-# 没有写入者**：那一步的实现是删行，不是改状态。一个定义了却永不出现的取值
-# 比没有更糟 —— 它让计数表上多一个永远为 0 的格子，读者会以为"没有文件成功过"。
-# 真要区分"已成功的"，判据是 `synced_at IS NOT NULL`（`/status` 的
-# `ledger.synced_files`），它与上面的状态正交：一个文件可以既同步成功过、
-# 又处于待处理（那正是"传过、但这一轮没传成"）。
-# No `synced` status: files that finish leave no row, and "did it ever sync"
-# is answered by `synced_at IS NOT NULL`, which is orthogonal to status.
+# ⚠️⚠️ **跨状态迁移的铁律**：PQ / SW / SS 是**同一张表的三个视图**，
+# 一个 key 只有一行。因此「从旧视图 pop + 往新视图赋值」= **删行重建**，
+# 会把正交列（synced_at / gen_requested_at / ingest_source / src_mtime）全部丢掉。
+# 正确写法是 **先写目标视图（upsert 同行改 status），再 `forget_key(源视图, key)`
+# 只摘缓存**。`pop` 只用于**真正不再跟踪**的场合（源端已删、被忽略、非视频脏数据）。
+# 这条规则曾造成两个静默 bug：重传成功后观察行被删（重载即丢观察）、
+# 补生成标记在移回观察期时丢失（重载后退回普通宽限期）。
+# The three mappings are views over ONE row per key: pop-then-set deletes and
+# recreates the row, silently dropping orthogonal columns. Write the target view
+# first, then forget the source cache. pop is only for genuine untracking.
 STATUS_CANDIDATE = "candidate"            # 已发现、正在等冷却结束
 STATUS_PENDING_VERIFY = "pending_verify"  # 已同步，等待宽限期后查 strm
 STATUS_SUSPECT = "suspect"                # 宽限期到仍无 strm —— 待人工处理
 STATUS_IGNORED = "ignored"                # 用户明确忽略，不再报警也不再处理
+STATUS_DONE = "done"                      # 终态：已送达（strm 已出现，或本就不需要 strm）
 
 ALL_STATUSES = (
+    STATUS_CANDIDATE, STATUS_PENDING_VERIFY,
+    STATUS_SUSPECT, STATUS_IGNORED, STATUS_DONE,
+)
+
+# 「活跃」状态：需要被载入内存视图、需要被巡检与看板默认展示的那些。
+# `done` 刻意不在其中 —— 十万级终态行不该进内存，也不该出现在看板默认列表里。
+# Active statuses get an in-memory view; `done` deliberately does not.
+ACTIVE_STATUSES = (
     STATUS_CANDIDATE, STATUS_PENDING_VERIFY,
     STATUS_SUSPECT, STATUS_IGNORED,
 )
@@ -209,6 +225,11 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
                 CREATE INDEX IF NOT EXISTS idx_files_pair   ON files(pair);
+                -- 看板分页用：按状态过滤后还要按 updated_at 排序。只有单列 status
+                -- 索引时，SQLite 取出行后仍要做一次临时排序；十万级终态留行之后
+                -- 这个排序会成为每次刷新看板的主要成本。
+                CREATE INDEX IF NOT EXISTS idx_files_status_updated
+                    ON files(status, updated_at);
 
                 -- 事件流水：只增不改。排查"这个文件经历过什么"时不用猜。
                 CREATE TABLE IF NOT EXISTS events (
@@ -278,16 +299,24 @@ class Store:
         return pair, rel
 
     def upsert(self, key: str, status: str, *, pair: str = "", rel_path: str = "",
-               ingest_source: str = SOURCE_LEGACY, src_mtime: Optional[float] = None,
+               ingest_source: Optional[str] = None, src_mtime: Optional[float] = None,
                enqueued_at: Optional[float] = None, synced_at: Optional[float] = None,
                verified_at: Optional[float] = None,
                gen_requested_at: Optional[float] = None,
                origin: Optional[str] = None,
-               last_error: Optional[str] = None,
-               bump_retry: bool = False) -> bool:
+               last_error: Optional[str] = None) -> bool:
         """
         插入或更新一行。**只覆盖显式传入的字段**（None 表示"不动"），
         因此调用方不必先读一遍再写 —— 避免读改写竞态。
+
+        ⚠️ `ingest_source` 也走"不动"语义（v0.6.0 修正）：此前它是
+        `= excluded.ingest_source` 且默认值为 `legacy`，于是**每一次改状态**
+        （登记观察、转疑似、移回观察期）都会把入库来源悄悄重置成 `legacy`，
+        "是扫描漏了还是 webhook 漏了"这个问题从此再也答不出来。
+        现在：INSERT 时缺省补 `legacy`，UPDATE 时只在显式传值才覆盖。
+        `retry_count` 列保留在表里但**不再读写**：它从来没有写入者
+        （`bump_retry` 无任何调用方），看板那一栏长期显示 0。删掉参数与自增，
+        不做 DROP COLUMN 迁移 —— 留一个空列无害，迁移有风险。
         """
         now = time.time()
         if not pair or not rel_path:
@@ -300,13 +329,13 @@ class Store:
                     """
                     INSERT INTO files (key, pair, rel_path, status, ingest_source,
                                        src_mtime, enqueued_at, synced_at, verified_at,
-                                       gen_requested_at, retry_count, last_error,
+                                       gen_requested_at, last_error,
                                        origin, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         status           = excluded.status,
-                        ingest_source    = excluded.ingest_source,
                         -- COALESCE：新值为 NULL 时保留旧值（"不动"语义）
+                        ingest_source    = COALESCE(?, files.ingest_source),
                         src_mtime        = COALESCE(excluded.src_mtime, files.src_mtime),
                         enqueued_at      = COALESCE(excluded.enqueued_at, files.enqueued_at),
                         synced_at        = COALESCE(excluded.synced_at, files.synced_at),
@@ -314,13 +343,14 @@ class Store:
                         gen_requested_at = COALESCE(excluded.gen_requested_at, files.gen_requested_at),
                         last_error       = COALESCE(excluded.last_error, files.last_error),
                         origin           = COALESCE(excluded.origin, files.origin),
-                        retry_count      = files.retry_count + ?,
                         updated_at       = excluded.updated_at
                     """,
-                    (key, pair, rel_path, status, ingest_source, src_mtime, enqueued_at,
-                     synced_at, verified_at, gen_requested_at, 0, last_error,
+                    (key, pair, rel_path, status, ingest_source or SOURCE_LEGACY,
+                     src_mtime, enqueued_at,
+                     synced_at, verified_at, gen_requested_at, last_error,
                      origin, now,
-                     1 if bump_retry else 0),
+                     # UPDATE 分支用的独立参数：None 才能表达"不动"
+                     ingest_source),
                 )
             return True
         except Exception:
@@ -369,6 +399,32 @@ class Store:
         for r in rows:
             out[str(r["status"])] = int(r["n"])
         return out
+
+    def page_by_status(self, statuses: Iterable[str], *, limit: int = 0,
+                       offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        按状态取行，可选分页。**看板取数用它，不再全表扫描**。
+
+        为什么必须带状态过滤：终态 `done` 留行之后，`files` 表会涨到媒体库规模
+        （十万级），而需要展示的活跃行通常只有几百到几千。`SELECT * FROM files`
+        会把十万行全部读出来、排序、折成条目、序列化成 JSON 交给浏览器 ——
+        每次刷新看板都付一遍这个代价。
+
+        `limit<=0` 表示不分页（取全部命中行）。排序带 `key` 作次级键：
+        没有确定性 tiebreaker 时，LIMIT/OFFSET 在相同 updated_at 的行之间
+        可能跳行或重复，翻页会"丢条目"。
+        """
+        names = [str(s) for s in statuses]
+        if not names:
+            return []
+        marks = ",".join("?" for _ in names)
+        sql = (f"SELECT * FROM files WHERE status IN ({marks}) "
+               f"ORDER BY updated_at, key")
+        params: List[Any] = list(names)
+        if limit and int(limit) > 0:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), max(0, int(offset))])
+        return [dict(r) for r in self._query(sql, params)]
 
     def set_status(self, key: str, status: str, **kw: Any) -> bool:
         return self.upsert(key, status, **kw)
@@ -757,6 +813,42 @@ class LedgerMapping(MutableMapping):
                 self._ledger.delete(key)
         self._cache.clear()
 
+    def forget(self, key: str) -> bool:
+        """
+        只从本视图的内存缓存里摘掉，**不动台账行**。返回是否真的摘掉了一条。
+
+        用于跨状态迁移的第二步：目标视图的 `__setitem__` 已经把这一行改成别的
+        status 了，本视图只是还留着一份过期缓存。**这里绝不能用 `pop`** ——
+        那会 DELETE 整行，把刚写进去的目标状态和所有正交列一起删掉。
+        Cache-only eviction. pop would DELETE the row that the target view just
+        wrote, taking every orthogonal column with it.
+        """
+        if key in self._cache:
+            self._cache.pop(key, None)
+            return True
+        return False
+
+    def retire(self, key: str, **fields: Any) -> bool:
+        """
+        把本视图里的一行送入终态 `done`（同行 UPDATE，正交列全部保留），并摘掉缓存。
+
+        **不建 `done` 视图**：十万级终态行不该载入内存，只通过 `page_by_status`
+        按需读取。
+
+        事件流水一并清掉：文件的一生已经结束，可久存的事实由行上的
+        `synced_at` / `verified_at` 承载。此前 events 表靠"行被删 → 事件成孤儿 →
+        被 `trim_events` 裁掉"来收敛；终态留行之后那条收敛路径没有了，不清就会
+        随媒体库无界增长，而 `trim_events` 的按 key 窗口函数要在每次加载时
+        扫全表。
+        """
+        if key not in self._cache:
+            return False
+        self._cache.pop(key, None)
+        if self._ledger is not None:
+            self._ledger.upsert(key, STATUS_DONE, **fields)
+            self._ledger._write("DELETE FROM events WHERE key = ?", (key,))
+        return True
+
     def pop(self, key, *args):
         """
         ⚠️ 必须自己实现 `pop` 而不是依赖 MutableMapping 的默认实现：
@@ -801,3 +893,59 @@ class LedgerMapping(MutableMapping):
 
     def __repr__(self) -> str:
         return f"<LedgerMapping {self._status} n={len(self._cache)}>"
+
+
+# ==========================================================================
+# 跨视图迁移的三个入口 —— 业务代码只用这三个，不要直接 pop
+# ==========================================================================
+#
+# ⚠️ 为什么要包一层而不是让调用点自己判断：台账**可用**时三个视图共用一张表，
+# 「摘掉旧视图」必须只动缓存；台账**不可用**时它们是三个独立的普通 dict，
+# 「摘掉旧视图」就是 pop。同一个业务动作在两种模式下语义不同，散在几十个
+# 调用点各判一次必然漏。收在这里，漏不了。
+# The degraded path uses plain dicts where pop IS correct; the ledger path shares
+# one row, where pop is destructive. One place decides, so no call site can drift.
+
+def forget_key(mapping: Any, key: str) -> bool:
+    """
+    跨状态迁移后清理旧视图（配合 `move_key` 使用，或用于「行已被别处改成别的
+    status」的场合）。**不删台账行**。
+    """
+    if isinstance(mapping, LedgerMapping):
+        return mapping.forget(key)
+    try:
+        mapping.pop(key, None)
+    except Exception:
+        return False
+    return True
+
+
+def move_key(src: Any, key: str, dst: Any, value: Any) -> None:
+    """
+    把一个 key 从 `src` 视图迁到 `dst` 视图。
+
+    ⚠️ **顺序不可颠倒**：先写目标（台账模式下是同行 UPDATE，正交列全部保留），
+    再摘源缓存。反过来先 pop 源就是删行，随后写目标等于插一行全新的 ——
+    `synced_at` / `gen_requested_at` / `ingest_source` 全部丢失，而且当前进程
+    靠内存缓存看起来一切正常，**重载之后才暴露**。这正是 v0.6.0 修的两个 bug。
+    Write the destination first, then evict the source cache. Reversing the order
+    deletes and recreates the row, losing orthogonal columns — invisibly until reload.
+    """
+    dst[key] = value
+    forget_key(src, key)
+
+
+def retire_key(mapping: Any, key: str, **fields: Any) -> bool:
+    """
+    把一行送入终态 `done`（已送达 / strm 已出现），保留行与正交列。
+
+    降级模式下没有台账，只能从 dict 里移除 —— 那时 `save_data` 才是持久化手段，
+    而终态本就不需要再被跟踪。
+    """
+    if isinstance(mapping, LedgerMapping):
+        return mapping.retire(key, **fields)
+    try:
+        mapping.pop(key, None)
+    except Exception:
+        return False
+    return True

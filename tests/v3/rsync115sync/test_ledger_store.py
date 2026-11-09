@@ -74,15 +74,21 @@ def test_upsert_only_overwrites_given_fields(tmp_path):
     assert row["synced_at"] == 200.0
 
 
-def test_retry_count_only_bumps_when_asked(tmp_path):
-    """重试次数只在显式 `bump_retry=True` 时 +1，普通状态更新不该动它。"""
+def test_retry_count_stays_zero_across_status_changes(tmp_path):
+    """
+    `retry_count` 已停用（v0.6.0）：列保留但不再有任何写入者。
+
+    此前有个 `bump_retry=True` 参数，而**全仓没有任何调用方传过它** —— 于是
+    看板那一栏长期显示 0，读者会以为"从来没有文件重试过"。一个定义了却永不
+    增长的计数比没有更糟。参数与自增 SQL 都已删除；不做 DROP COLUMN 迁移
+    （留一个空列无害，迁移有风险）。签名层面的守卫见
+    `test_state_transition.py::test_retry_count_is_no_longer_written`。
+    """
     s = _store(tmp_path)
     s.upsert("TV:a.mkv", "candidate")
+    s.upsert("TV:a.mkv", "suspect")
+    s.upsert("TV:a.mkv", "pending_verify")
     assert s.get("TV:a.mkv")["retry_count"] == 0
-    s.upsert("TV:a.mkv", "suspect", bump_retry=True)
-    assert s.get("TV:a.mkv")["retry_count"] == 1
-    s.upsert("TV:a.mkv", "pending_verify")          # 普通更新
-    assert s.get("TV:a.mkv")["retry_count"] == 1, "非重试的更新不该累加计数"
 
 
 def test_upsert_derives_pair_and_rel_path_from_key(tmp_path):

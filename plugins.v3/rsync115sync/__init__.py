@@ -253,7 +253,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.5.10"
+    plugin_version = "0.6.0"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -3019,7 +3019,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             logger.debug(f"[Rsync115Sync] 台账概览读取失败（已忽略）: {e}")
             return {}
 
-    def _api_get_items(self):
+    def _api_get_items(self, state: str = "", page: int = 1, page_size: int = 0):
         """
         看板的**唯一**取数入口：一张表、一行一个文件、一个 `state` 字段。
 
@@ -3055,17 +3055,33 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         `_count_queue` 的判据逐字相同，两处不能漂移）。
         ⚠️ `broken` 来自**对账结果**（`_last_status`），不是台账 status：
         它是"这一轮对账发现的问题"，与文件在生命周期里的位置正交。
+        （把它收敛进台账是 0.7.0 的事，本轮不动。）
+
+        ## 取数范围与分页（v0.6.0）
+
+        **终态 `done` 不在默认取数范围内**。终态留行之后 `files` 表会涨到媒体库
+        规模（十万级），而需要展示的活跃行通常只有几百到几千。此前是
+        `SELECT * FROM files ORDER BY updated_at` 全表扫描 + 全量序列化，
+        每次刷新看板都付一遍十万行的代价。现在按 `ACTIVE_STATUSES` 过滤，
+        走 `(status, updated_at)` 索引。
+
+        `page_size>0` 时按页返回，`states` 计数仍是**全量活跃集合**的计数
+        （角标不能只数当前页）。`state` 可按单个状态过滤。三个参数都是普通
+        类型且有默认值 —— 端点签名会被 FastAPI introspect，不传参时行为与
+        旧版一致（返回全部活跃条目）。
         """
         now_ts = time.time()
         threshold = self._delay_hours * 3600
         items: List[Dict[str, Any]] = []
+        done_total = 0
 
-        # ---- 台账驱动的状态（candidate / pending_verify / suspect / ignored）----
+        # ---- 台账驱动的活跃状态（candidate / pending_verify / suspect / ignored）----
         ledger = getattr(self, "_ledger", None)
         if ledger is not None:
             try:
-                for row in ledger._query("SELECT * FROM files ORDER BY updated_at"):
-                    items.append(self._ledger_row_to_item(row, now_ts, threshold))
+                rows = ledger.page_by_status(_store_mod.ACTIVE_STATUSES)
+                items = [self._ledger_row_to_item(r, now_ts, threshold) for r in rows]
+                done_total = int(ledger.count_by_status().get(_store_mod.STATUS_DONE, 0))
             except Exception as e:
                 # 台账读取失败降级为空列表（不炸整个看板）—— 与 _ledger_overview 同取向
                 logger.debug(f"[Rsync115Sync] 台账条目读取失败（已忽略）: {e}")
@@ -3084,9 +3100,28 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 items.append({"key": key, "state": "broken", "detail": label,
                               "pair": "", "rel_path": "", "notes": []})
 
+        # 计数按全量活跃集合算，再过滤/分页 —— 否则角标会随翻页变化。
+        states = self._state_counts(items)
+        try:
+            wanted = str(state or "").strip()
+            psize = int(page_size or 0)
+            pnum = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            wanted, psize, pnum = "", 0, 1
+        if wanted:
+            items = [it for it in items if it.get("state") == wanted]
+        total = len(items)
+        if psize > 0:
+            start = (pnum - 1) * psize
+            items = items[start:start + psize]
+
         return {"success": True,
                 "data": {"items": items,
-                         "states": self._state_counts(items),
+                         "states": states,
+                         "total": total,
+                         "page": pnum,
+                         "page_size": psize,
+                         "done_total": done_total,
                          "delay_hours": self._delay_hours}}
 
     @staticmethod
@@ -3142,7 +3177,6 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             "pair": r.get("pair") or "",
             "rel_path": r.get("rel_path") or "",
             "source": r.get("ingest_source") or "",
-            "retry_count": r.get("retry_count") or 0,
             "last_error": r.get("last_error") or "",
             "synced_at": r.get("synced_at"),
             "notes": [],
@@ -3282,11 +3316,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
 
-        # 移出冷却队列（本次已经手动提前上传，无需再排队）
+        # 移出冷却队列（本次已经手动提前上传，无需再排队）。
+        # ⚠️ 只摘缓存不删行：传成功后 arm_watch 会把同一行改成 pending_verify；
+        # 传失败则这一行仍是 candidate，下一轮 ready 会继续处理它 —— 与 ready
+        # 路径「失败留队列」的语义一致。此前 pop 会删行，失败的文件从此只在
+        # 内存异常清单里，重载即丢。
         popped = 0
         for k in keys:
             if k in self._pending_queue:
-                self._pending_queue.pop(k, None)
+                _store_mod.forget_key(self._pending_queue, k)
                 popped += 1
         if popped:
             self.save_data("pending_queue", self._pending_queue)
@@ -4338,15 +4376,30 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                         pair_name, pair_files, m_list, c_list))
                     # 用 pair_files 正向拼 key，不用 split(":",1) 反解析 ——
                     # 任务名本身可能含冒号（paths.split_pair_key 已注明）。
+                    watchable_keys: List[str] = []
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
                         if k not in succeeded_keys:
                             continue
-                        self._pending_queue.pop(k, None)
+                        # ⚠️ 成功离开冷却队列是**状态迁移**，不是删行。
+                        # 可观察的：这里只摘缓存，随后 arm_watch 把同一行改成
+                        #   pending_verify（正交列全部保留）；
+                        # 不可观察的（字幕 / 未配 strm_dir / 已忽略）：直接落终态
+                        #   done，并记下 synced_at —— 它们确实传成功了，只是没有
+                        #   strm 可验证，不该因此从台账里消失。
+                        # 此前一律 pop（DELETE）再由 arm_watch 插一行全新的，
+                        # ingest_source / src_mtime / 冷却基准全部丢失。
+                        ok, _skip_code, _skip_text = self._strm_watchable(k)
+                        if ok and not self._is_ignored(k):
+                            watchable_keys.append(k)
+                            _store_mod.forget_key(self._pending_queue, k)
+                        else:
+                            _store_mod.retire_key(self._pending_queue, k,
+                                                  synced_at=time.time())
                         logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
                     # strm 交叉验证：登记待观察（有 strm_dir 的映射才实际生效）
-                    if succeeded_keys:
-                        armed = self._strm_arm_watch(sorted(succeeded_keys))
+                    if watchable_keys:
+                        armed = self._strm_arm_watch(sorted(watchable_keys))
                         if armed:
                             logger.info(f"[Rsync115Sync] [{pair_name}] 📺 已登记 {armed} 个文件进入 "
                                         f"strm 观察期（{self._strm_grace_minutes} 分钟内未生成 strm 将标记疑似异常）")
