@@ -7,10 +7,72 @@
 ## 目录（按日期倒序）
 
 - 2026-11-10
+- 2026-11-10（DynamicWeChat V3 迁移）
 - 2026-11-09
 - 2026-11-08
 - 2026-11-05
 - 2026-09-14
+
+---
+
+## 2026-11-10（DynamicWeChat V3 迁移）
+
+**分支：** `main`
+**涉及插件：** DynamicWeChat
+**类型：** 代际迁移（功能不变）
+
+### 动态企微可信IP 3.0.2 —— 把「放错目录的 V3」正式迁到 V3
+
+fork 侧的 v3.0.0–3.0.2（通知系统重构、固定可信IP、合入上游 DDNS 域名模式与
+2.1.9 Cookie 校验）从一开始就是**为 V3 准备的版本号**，只是被叠加到了
+`plugins.v2/dynamicwechat/`。所以本轮不是「V2 上再跳一次主版本」，而是：
+
+- **V2 目录回滚上游 2.1.9**：`plugins.v2/dynamicwechat/` 两个源文件与
+  `package.v2.json` 条目整体还原到 `upstream/main`（V1 的 `package.json` 同理），
+  fork 侧的 3.x 工作不再留一份在旧代，从根上消掉同步上游时的双改冲突面；
+- **V3 接 3.0.2**：`plugins.v3/dynamicwechat/` 承载全部 3.x 功能，索引版本
+  3.0.2、history 保留 v3.0.2/3.0.1/3.0.0。相对 V2 的 2.1.9 正好是主版本跃迁
+  —— `_check_v3_release_contract` 按 `package.v2.json` 算出 expected_major=3，
+  4.0.0 反而会被门禁拒绝。曾按「V2 3.0.2 → V3 4.0.0」做过一版，方向错在
+  把代际和版本号当成两件事，已纠正。
+
+**功能与 UI 不变**，只做合同变更。
+
+#### 迁移前先钉死的事实
+
+全部逐条取自 `jxxghp/MoviePilot` v3 分支源码，没有猜（完整对照表见插件目录
+`DEVELOPMENT.md`）：`app.sdk.events` 导出 `eventmanager/Event`；`EventType` 不在
+SDK 里、官方插件从 `app.schemas.types` 取；`NotificationType` 已删、compat 别名
+指向 `MessageType`（`Plugin` 成员在）；`CookieCloudHelper` 物理位置
+`app.adapters.external.cookiecloud`（`app.helper.cookiecloud` 仅是兼容别名）；
+`_PluginBase` 从 `app.sdk.plugin` 取；`cloakbrowser` 0.7.2 是纯 Python wheel。
+
+#### 关键决定
+
+- **不顺带修 bug**：`ChangeIP` 二维码分支未置 `_cookie_valid=False`、
+  `_push_qr_code_async` 的 `if self._my_send:` 守卫挡住 MP 内置通知用户的
+  二维码推送——两个已知缺陷都记录在 `DEVELOPMENT.md` 待办，迁移 diff 保持纯合同变更。
+- **不换浏览器栈**：否决了改用 `app.sdk.browser` 的方案，CloakBrowser 的反爬
+  指纹是登录流程的核心，换栈等于重写而非迁移。
+- **V1/V2 回到上游原样**（2.1.9 / 1.7.3），仅索引加 `"v3": false` 阻断 V3
+  回退；`src/UpdateHelp.py` 死代码随 V2 上游原样保留，V3 目录不含它。
+
+#### 测试
+
+`tests/v3/dynamicwechat/test_v3_contract.py` 19 项全部 `--noconftest` 可跑：
+AST 静态扫描禁旧前缀导入、SDK 导入必需项、改名符号禁用、版本三元组、索引
+`v3: false`、pyproject 合同，加上 `MySender`/`IpLocationParser`/`JsonFieldManager`
+纯逻辑。过程中一处测试断言写反：`add_ips` 实际语义是**新 IP 在前**（`new + current`），
+这是 V2 以来的既有行为，按实际行为修正测试而非改代码。
+
+#### 遗留
+
+- `scripts/check_v3_imports.py` 需要宿主后端，本机跑不了；其口径由合同测试的
+  同前缀静态检查等效覆盖，真机仍应跑一次。
+- 真机验证清单（加载日志版本号、DEBUG 下无旧导入告警、保活/检测各一轮）见
+  `plugins.v3/dynamicwechat/DEVELOPMENT.md`。
+- `UpdateWeChatIp`（书小白版，直接调接口）未迁移，它依赖宿主消息能力接口，
+  适配面更大，另起一轮。
 
 ---
 

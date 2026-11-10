@@ -1,0 +1,22 @@
+[project]
+name = "moviepilot-plugin-dynamicwechat"
+# 清单只承载依赖，不承载插件版本：真实版本由插件类 plugin_version 与
+# package.v3.json 维护（当前 3.0.2），dynamic = ["version"] 是清单合同。
+dynamic = ["version"]
+description = "动态企微可信IP：检测公网IP变动并通过企业微信后台自动更新应用可信IP，支持Cookie保活、多WAN出口与DDNS域名模式"
+authors = [{ name = "RamenRa" }]
+# aiohttp: CookieCloud 探活与公网IP探测的异步HTTP客户端
+# pytz: 后台循环 CronTrigger 的时区处理
+# cloakbrowser: V2 代即使用的企业微信后台无头浏览器（0.7.x 为纯 Python wheel，无 cp314t 障碍）
+# pycryptodome: CookieCloud 端对端加密的 AES 实现（Crypto.Random / Crypto.Cipher.AES）
+dependencies = [
+    "aiohttp>=3.9",
+    "pytz>=2023.3",
+    "cloakbrowser>=0.7,<0.8",
+    "pycryptodome>=3.19",
+]
+requires-python = ">=3.14"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
