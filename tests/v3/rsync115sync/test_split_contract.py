@@ -11,6 +11,7 @@ AttributeError，语法检查一概无效。
 """
 import ast
 import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -85,10 +86,46 @@ def test_combined_class_exposes_full_surface():
         assert callable(getattr(cls, name, None)), f"组合后的类缺少 {name}"
 
 
-def test_instantiation_smoke():
-    """真实实例化 + 关键路径冒烟（8.5 节：只有实例化才能发现 AttributeError）。"""
+def test_instantiation_smoke(tmp_path):
+    """
+    真实实例化 + 关键路径冒烟（8.5 节：只有实例化才能发现 AttributeError）。
+
+    ⚠️ **绝不能碰生产数据**（2026-11-10 实测事故）：这里原来直接
+    `plugin = Rsync115Sync()` 再调 `_api_strm_ignore` —— 而真实实例的
+    `save_data` 写的是宿主配置库。在 NAS 容器里跑真实后端套件后，生产忽略
+    清单里真的多了一条 `电视剧:a.mkv`（`created_by=Web`、`source=strm_dashboard`），
+    用户随后收到「上传失败自动重试已停止」告警时还以为是测试数据没清干净。
+
+    根因：mock 的实例帮不上忙（要测的就是真实实例），但可以选择**把持久化
+    与台账都指向 tmp_path**。`_ignored_rules` 是普通列表，`save_data`/
+    `get_data` 换成内存字典，`_ledger` 指向 tmp 下的 sqlite —— 真实代码路径
+    全走，落盘目标全隔离。
+    """
     module = importlib.import_module("app.plugins.rsync115sync")
+    store = importlib.import_module("app.plugins.rsync115sync.store")
     plugin = module.Rsync115Sync()
+    # ---- 隔离持久化：任何 save_data/get_data 都落在本用例的字典里 ----
+    saved: dict = {}
+    plugin.save_data = lambda k, v, *a, **kw: saved.__setitem__(k, v)
+    plugin.get_data = lambda k, *a, **kw: saved.get(k)
+    plugin.del_data = lambda k, *a, **kw: saved.pop(k, None)
+    plugin._ledger = store.Store(os.path.join(str(tmp_path), "ledger.sqlite3"))
+    plugin._strm_suspects = store.LedgerMapping(
+        plugin._ledger, store.STATUS_SUSPECT, ts_field="verified_at",
+        extra_from_value={"origin": "origin"})
+    plugin._strm_watch = store.LedgerMapping(
+        plugin._ledger, store.STATUS_PENDING_VERIFY, ts_field="enqueued_at")
+    plugin._strm_gen_requested = store.LedgerFieldMap(
+        plugin._ledger, "gen_requested_at")
+    plugin._pending_queue = store.LedgerMapping(
+        plugin._ledger, store.STATUS_CANDIDATE, ts_field="enqueued_at")
+    plugin._failed_files = store.LedgerMapping(
+        plugin._ledger, store.STATUS_FAILED, ts_field="verified_at",
+        extra_from_value={"reason": "fail_reason", "count": "retry_count",
+                          "exhausted_at": "exhausted_at"})
+    plugin._ignored_rules = []
+    plugin._last_status = {"missing_files": [], "corrupt_files": []}
+    plugin._strm_notified = False
     # 类体别名是承重的（8.5 节）
     # 注：`_MISSED_SCAN_*` 已随源端补齐扫描一起被 `_SOURCE_SCAN_*` 取代
     # （2026-09-25），别名同步更名 —— 这条断言的价值正在于它会跟着旧名字一起
@@ -98,8 +135,12 @@ def test_instantiation_smoke():
                  "_SOURCE_CURSOR_OVERLAP_SECS", "_LEGACY_DEFAULTS",
                  "_LEGACY_DEFAULTS_ALL", "_TOLERATED_EXIT_CODES", "_SIDECAR_EXTS"):
         assert hasattr(plugin, attr), f"实例缺少类体别名 {attr}"
-    # 关键路径跑一次
+    # 关键路径跑一次（落点全在 tmp_path / saved 里）
     plugin._strm_suspects["电视剧:a.mkv"] = {"dest": "ok"}
     res = plugin._api_strm_ignore({"keys": ["电视剧:a.mkv"]})
     assert res["success"] is True
     assert "电视剧:a.mkv" not in plugin._strm_suspects
+    # 反向保护：这条规则确实写进了**本用例的**存储，而不是生产的
+    assert any(r.get("rule") == "电视剧:a.mkv"
+               for r in saved.get("ignored_files", [])), (
+        "忽略规则没有落到隔离存储 —— 说明持久化仍指向生产")
