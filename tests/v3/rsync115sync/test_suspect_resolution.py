@@ -175,6 +175,11 @@ def test_manual_check_also_retires_suspects(tmp_path):
     """
     「立即检查全部」要一并检查疑似清单（用户原话：「类似『立即检查全部』，
     可以把疑似的也检查一遍」）。
+
+    ⚠️ 断言文案随 v0.8.0 的措辞调整更新：疑似清单的清理现在有专属说法
+    「已移出疑似清单」（`strm_ops.py:1787`），而观察期条目走的是
+    「已移出待处理清单」。本条验的是**疑似**那条路，所以认前者。
+    原先断言「已移出待处理清单」是旧文案，功能一直正常、测试一直红。
     """
     plugin, _src, strm_dir = _plugin(tmp_path, suspects={KEY: {"ts": 1.0, "origin": "scan"}})
     _touch_strm(strm_dir, "某剧/Season 01/E01.mkv")
@@ -182,7 +187,10 @@ def test_manual_check_also_retires_suspects(tmp_path):
     res = plugin._api_strm_check({})
 
     assert KEY not in plugin._strm_suspects
-    assert "已移出待处理清单" in res.get("message", "")
+    msg = res.get("message", "")
+    assert "已移出疑似清单" in msg, f"疑似条目应被移出并说明，实际消息：{msg!r}"
+    assert "strm 已生成" in msg, f"消息应说明成因（strm 已生成），实际：{msg!r}"
+
 
 
 def test_deleted_strm_is_not_a_criterion(tmp_path):

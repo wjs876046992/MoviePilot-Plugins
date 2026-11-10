@@ -65,7 +65,35 @@ def _plugin(src_root, *, enabled=True, listen=True,
     plugin._webhook_stat = plugin._wh_stat()
     plugin.saved = {}
     plugin.save_data = lambda k, v: plugin.saved.__setitem__(k, v)
+    # ⚠️ `init_plugin` 内部还会走 `get_data` / `del_data` / `get_data_path`，
+    # 而真实后端的基类实现访问 `self.plugindata`（`__new__` 实例没有）——
+    # 桩环境里基类没有该属性，本机一直绿；真实后端上 `init_plugin` 直接
+    # AttributeError。补一个最小替身，签名与 `app/sdk/plugin/base.py` 一致。
+    plugin.plugindata = _StubHostData()
     return plugin
+
+
+class _StubHostData:
+    """
+    宿主 `plugindata` 的最小替身（签名照 `app/sdk/plugin/base.py:366-425`）。
+
+    `get_data(plugin_id, key)` / `save(plugin_id, key, value)` / `del_data(plugin_id, key)`
+    —— **plugin_id 在前**，写入方法叫 `save`。
+    """
+
+    def __init__(self):
+        self._d = {}
+
+    def save(self, plugin_id, key, value):
+        self._d[(plugin_id, key)] = value
+        return True
+
+    def get_data(self, plugin_id, key=None):
+        return self._d.get((plugin_id, key))
+
+    def del_data(self, plugin_id, key):
+        self._d.pop((plugin_id, key), None)
+        return True
 
 
 def _media(src_root, rel="S01E01.mkv"):
@@ -869,7 +897,33 @@ def test_unclaimable_addressed_payload_still_leaves_a_trace(tmp_path):
     )
 
 
-def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
+def _capture_plugin_logs(monkeypatch):
+    """
+    拦截插件模块级 `logger` 的 info/debug/warning/error，返回收集到的消息列表。
+
+    ⚠️ 为什么不用 `caplog`（2026-11-10 修）：真实后端的
+    `app.sdk.logging.logger` 是 **`app.runtime.log.LoggerManager`** ——
+    它有自己的路由（`logger(method, msg, ...)` → 控制台/文件 writer），
+    **完全不经过标准库 `logging`**，因此 `caplog` 一条也抓不到。
+    桩环境里 logger 是 `SimpleNamespace(info=noop, ...)`，同样什么也不记。
+    两种环境下这些断言都只能看到空字符串 —— 与产品行为无关。
+
+    直接替换模块 logger 的方法最稳：它不依赖宿主的日志实现，桩/真实后端都成立。
+    """
+    module = importlib.import_module("app.plugins.rsync115sync")
+    captured: list = []
+
+    def _mk(level):
+        def _rec(msg, *a, **kw):
+            captured.append((level, str(msg)))
+        return _rec
+
+    for level in ("info", "debug", "warning", "error"):
+        monkeypatch.setattr(module.logger, level, _mk(level), raising=False)
+    return captured
+
+
+def test_addressed_claim_failure_is_logged_at_info(tmp_path, monkeypatch):
     """
     认领失败必须打 **info** 级日志（不能只是 debug）。
 
@@ -877,9 +931,10 @@ def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
     根本看不到，而这个分支只会在**用户显式声明了 source=rsync115sync** 时走到 ——
     它天然是低频且高价值的，不存在刷屏风险。日志里必须带上路径与当前映射，
     否则用户只知道自己「配了但没生效」，仍然不知道该改哪一项。
-    """
-    import logging
 
+    用 `_capture_plugin_logs` 而非 `caplog`（真实后端的 LoggerManager
+    不经过标准库 logging，见该函数说明）。
+    """
     src = tmp_path / "9KG"
     src.mkdir()
     plugin = _parser_plugin(str(src))
@@ -887,15 +942,16 @@ def test_addressed_claim_failure_is_logged_at_info(tmp_path, caplog):
     outside.parent.mkdir()
     outside.write_bytes(b"x")
 
-    with caplog.at_level(logging.INFO, logger="stubhost"):
-        plugin.webhook_parser(
-            body=json.dumps({"paths": [str(outside)]}).encode(),
-            form={}, args={"source": "rsync115sync"})
+    captured = _capture_plugin_logs(monkeypatch)
+    plugin.webhook_parser(
+        body=json.dumps({"paths": [str(outside)]}).encode(),
+        form={}, args={"source": "rsync115sync"})
 
-    text = "\n".join(r.getMessage() for r in caplog.records)
-    assert "不属于任何映射" in text, f"认领失败必须留下 info 日志，实际日志：{text!r}"
-    assert str(outside) in text, "日志要写出是哪个路径没匹配上"
-    assert str(src) in text, "日志要写出当前配置的映射源目录，用户才知道该往哪改"
+    info_text = "\n".join(m for lvl, m in captured if lvl == "info")
+    assert "不属于任何映射" in info_text, (
+        f"认领失败必须留下 info 日志（不能只是 debug），实际 info：{info_text!r}")
+    assert str(outside) in info_text, "日志要写出是哪个路径没匹配上"
+    assert str(src) in info_text, "日志要写出当前配置的映射源目录，用户才知道该往哪改"
 
 
 def test_host_route_accepts_documented_payload_shapes(tmp_path):
@@ -1070,7 +1126,7 @@ def test_webhook_parser_exists_with_host_signature():
     )
 
 
-def test_startup_reports_claim_hook_registration(tmp_path, caplog):
+def test_startup_reports_claim_hook_registration(tmp_path, monkeypatch):
     """
     启动时必须**正面确认**认领钩子已注册，而不是等真机上去核对一条不存在的日志。
 
@@ -1081,37 +1137,35 @@ def test_startup_reports_claim_hook_registration(tmp_path, caplog):
 
     顺带它也覆盖「NAS 上跑的不是最新版」这种部署问题：版本号与这行日志是否出现，
     两者一对就能判断。
+
+    ⚠️ 用 `_capture_plugin_logs` 而非 `caplog`（2026-11-10 修）：真实后端的
+    `logger` 是 `LoggerManager`，不经过标准库 logging，caplog 抓不到任何东西；
+    而它也没有 `.name`，原先按名字过滤会直接 AttributeError。
     """
-    import logging
-
-    # 插件用的是宿主注入的 logger（生产环境名叫 moviepilot，桩环境叫 stubhost），
-    # 因此按**实例上的 logger 对象名**取，别把环境细节写死在用例里。
-    importlib.import_module("app.plugins.rsync115sync")
     plugin = _plugin(str(tmp_path / "TV"))
-    logger_name = __import__(
-        "app.plugins.rsync115sync", fromlist=["logger"]).logger.name
 
-    with caplog.at_level(logging.INFO, logger=logger_name):
-        plugin.init_plugin({"enabled": True, "listen_transfer": True,
-                            "sync_pairs": []})
+    captured = _capture_plugin_logs(monkeypatch)
+    plugin.init_plugin({"enabled": True, "listen_transfer": True,
+                        "sync_pairs": []})
 
-    text = caplog.text
-    assert "认领钩子已注册" in text, (
+    info_text = "\n".join(m for lvl, m in captured if lvl == "info")
+    assert "认领钩子已注册" in info_text, (
         "启动日志必须正面确认 webhook_parser 已向宿主声明 —— 缺了这条确认，"
         "真机上的静默失效就只能靠人肉核对「哪条日志没出现」"
     )
-    assert "认领钩子**未注册**" not in text
+    assert "认领钩子**未注册**" not in info_text
 
     # 反向：声明被拿掉时必须报 error 级（而不是继续静默）
     broken = _plugin(str(tmp_path / "TV"))
     broken.get_module = lambda: {}          # 模拟漏声明
-    with caplog.at_level(logging.ERROR, logger=logger_name):
-        caplog.clear()
-        broken.init_plugin({"enabled": True, "listen_transfer": True,
-                            "sync_pairs": []})
-        assert "认领钩子**未注册**" in caplog.text, (
-            "声明缺失时必须报 error —— 这正是真机上「什么也看不到」的那种失效"
-        )
+    captured2 = _capture_plugin_logs(monkeypatch)
+    broken.init_plugin({"enabled": True, "listen_transfer": True,
+                        "sync_pairs": []})
+    err_text = "\n".join(m for lvl, m in captured2 if lvl == "error")
+    assert "认领钩子**未注册**" in err_text, (
+        f"声明缺失时必须报 error —— 这正是真机上「什么也看不到」的那种失效。"
+        f"实际 error 日志：{err_text!r}"
+    )
 
 
 def test_webhook_parser_returns_none_for_unnamed_payload(tmp_path):

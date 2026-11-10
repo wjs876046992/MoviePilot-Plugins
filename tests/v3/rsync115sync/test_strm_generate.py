@@ -74,10 +74,28 @@ def _stub_helper(monkeypatch, module, *, running=True, helper_cfg=True):
 
 
 def _sent(monkeypatch, module):
-    """收集本插件发出的命令（走真实 eventmanager，宿主是桩）。"""
-    from app.core.event import eventmanager
-    eventmanager.sent = []
-    return eventmanager.sent
+    """
+    把插件的命令发送替换成收集器，返回收集列表。
+
+    ⚠️ 这里此前只做 `eventmanager.sent = []`，**从不替换 `send_event`** ——
+    而生产代码调的是真实 `eventmanager.send_event`，永远不会往 `.sent`
+    append。于是 `assert len(sent) == N` 在任何环境下都必然失败（`0 == N`），
+    这几条用例**从写下的那天起就没绿过**，也就从未验证过它声称的事。
+
+    现在直接替换插件自己的 `_send_helper_command`（发命令的唯一出口），
+    记录目标目录并返回成功。这比 patch 事件总线更贴近被验证的行为：
+    本组关心的是「插件决定对哪些目录发命令」，不是宿主如何分发。
+    """
+    from app.plugins.rsync115sync import strm as _strm_mod
+
+    sent: list = []
+
+    def _fake_send(self, pan_path: str) -> bool:
+        sent.append(pan_path)
+        return True
+
+    monkeypatch.setattr(module.Rsync115Sync, "_send_helper_command", _fake_send)
+    return sent
 
 
 # --------------------------------------------------------------------------
@@ -215,8 +233,11 @@ def test_requests_helper_and_moves_entry_back_to_watch(monkeypatch, tmp_path):
 
     assert res["success"] is True
     assert len(sent) == 1
-    etype, data = sent[0]
-    assert data["cmd"] == "/p115_strm /HomeTheater/TV/日番/黄泉的使者/Season 01"
+    # `_sent` 现在收集的是被交给助手的**网盘目录**（`_send_helper_command` 的入参），
+    # 不是事件总线的 `(etype, data)` 二元组 —— 后者从未真正被收集过，
+    # 原断言 `etype, data = sent[0]` 也就从未执行成功过。
+    assert sent[0] == "/HomeTheater/TV/日番/黄泉的使者/Season 01", (
+        f"应把网盘目录交给助手，实际：{sent!r}")
     assert key in plugin._strm_gen_requested, "应留下「已请求生成」标记"
     assert key in plugin._strm_watch, "命令确实发出后，条目应移回观察期（便于手动检查）"
     assert key not in plugin._strm_suspects, "移回观察期后不应再留在疑似清单"

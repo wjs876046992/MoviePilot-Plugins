@@ -42,15 +42,26 @@ def _source() -> str:
 
 
 def _tab_body(src: str, name: str) -> str:
-    """取出某个 tab 区域的模板文本（从它的 v-if 到下一个 tab 的 v-if）。"""
+    """
+    取出某个 tab 区域的模板文本。
+
+    ⚠️ 同一个标签可以有**多段** `v-if`（v0.8.0 合并标签后，`failed` 就分成
+    两段：对账异常列表 + 内嵌的 strm 疑似/观察区）。因此这里返回
+    **该标签所有段落的拼接**，而不是只取第一段到下一个标记之间 ——
+    只取第一段会让「找 strm 列表」的用例拿到不含它的文本，表现为
+    断言失败而界面其实是对的。
+    """
     marks = [(m.group(1), m.start()) for m in
              re.finditer(r"currentTab === '(\w+)'", src)]
+    chunks = []
     for i, (tab, pos) in enumerate(marks):
         if tab != name:
             continue
         end = marks[i + 1][1] if i + 1 < len(marks) else len(src)
-        return src[pos:end]
-    raise AssertionError(f"没找到 tab {name}")
+        chunks.append(src[pos:end])
+    if not chunks:
+        raise AssertionError(f"没找到 tab {name}")
+    return "\n".join(chunks)
 
 
 # --------------------------------------------------------------------------
@@ -72,14 +83,20 @@ def test_each_tab_slices_its_list(tab, expected_pager):
 
 def test_strm_tab_paginates_both_of_its_lists():
     """
-    strm 标签里有**两个**列表，且各自分页。
+    strm 的两个列表（观察中 / 疑似）都必须分页。
 
     ⚠️ 这是最容易漏的一个：`strm_watch`（观察中）此前完全没有分页，
     实机一次同步就登记 90+ 个文件，而它只会增长到宽限期到期为止。
+
+    ⚠️ 它们现在位于 **failed 标签内**（v0.8.0 把独立的 strm 标签并入了
+    对账异常标签，标签页只剩 queue / failed / ignored）。原用例找的是
+    `strm` 标签 → `_tab_body` 返回空串 → 两条断言一直红：
+    **列表其实分页了，是测试找错了地方。**
     """
-    body = _tab_body(_source(), "strm")
+    body = _tab_body(_source(), "failed")
     assert "watchingPaged.slice" in body, "观察中列表没有分页"
     assert "strmPaged.slice" in body, "疑似清单没有分页"
+
 
 
 def test_watching_list_has_its_own_page_state():
@@ -100,7 +117,7 @@ def test_watching_list_has_its_own_page_state():
             "paginate(strmWatchingEntries.value, pageWatching))") in src, (
         "观察中列表没有绑定自己的页码 ref —— 翻疑似清单时会把它一起翻走"
     )
-    body = _tab_body(src, "strm")
+    body = _tab_body(src, "failed")   # strm 两个列表已并入 failed 标签（v0.8.0）
     assert "watchingPaged.pages > 1" in body
     assert "paged.pages > 1" in body
     assert "watchingPaged.slice" in body and "strmPaged.slice" in body

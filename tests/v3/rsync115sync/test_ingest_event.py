@@ -312,25 +312,39 @@ def test_multiple_files_in_one_event_all_enqueued(tmp_path):
 
 def test_source_scan_baseline_is_today_midnight(tmp_path):
     """
-    首次扫描的基线取**当日 0 点**：今天已入库的存量要被覆盖，昨天的不动。
+    首次扫描的基线取**当日 0 点**：今天落地的存量必须被覆盖。
 
     ⚠️ 别改成「基线=当前时刻」（今天的文件会成为永久漏）或「只记不入队」
     （同一个漏，还要多维护一份状态）。两次踩法不同、后果相同。
+
+    ## v0.5.10 起"昨天"无法用 `os.utime` 伪造
+
+    入队判据已是 `max(mtime, ctime)`（修「硬链接 / cp -p 保留旧 mtime 导致
+    永久漏扫」，见 DEVELOPMENT §4.0r）。**`ctime` 不可回拨** —— `os.utime`
+    只改 mtime，读出的 ctime 仍是"刚刚"，于是任何刚创建的文件都算今天新增。
+
+    因此本用例原先的断言（「只捞到 today 那 1 个」）在修复后**必然失败**，
+    而这是**有意的**：宁可多传一个刚复制的旧文件，也不能漏传
+    （代价不对称 —— 多传是浪费一次带宽，漏传是文件永远不在云端）。
+    现在改为断言真正的不变量：**today 必被覆盖**，且游标被推进。
     """
     src = tmp_path / "TV"
     src.mkdir()
     old = src / "yesterday.mkv"
     old.write_bytes(b"x")
-    stamp = mod_today_start() - 3600          # 昨天
+    stamp = mod_today_start() - 3600          # mtime 拨到昨天
     os.utime(old, (stamp, stamp))
     today = src / "today.mkv"
-    today.write_bytes(b"x")                   # mtime = now
+    today.write_bytes(b"x")                   # mtime = ctime = now
 
     plugin = _plugin(str(src))
     n = plugin._scan_source_cursor()
 
-    assert n == 1, f"应只捞到今天的 1 个，实际 {n}（{list(plugin._pending_queue)}）"
-    assert list(plugin._pending_queue) == ["TV:today.mkv"]
+    assert "TV:today.mkv" in plugin._pending_queue, (
+        "当日落地的文件必须被首扫覆盖 —— 这是基线取当日 0 点的全部理由")
+    assert n >= 1
+    # 游标必须被推进（否则每轮都会重扫同一批）
+    assert float(plugin._source_cursor.get("TV") or 0) > 0
 
 
 def test_source_scan_advances_cursor_so_second_run_is_quiet(tmp_path):

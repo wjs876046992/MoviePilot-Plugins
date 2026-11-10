@@ -257,17 +257,26 @@ def test_siblings_expansion_is_capped(tmp_path):
 
 def test_sibling_expansion_is_off_for_normal_pairs(tmp_path):
     """
-    未勾选 `all_ext` 的映射**只能**入队被点到名的文件。
+    未勾选 `all_ext` 的映射**只能**入队被点到名的文件 + 同主名**伴生字幕**。
 
     这条是防「顺手把兜底扩大到所有映射」的哨兵：那会让每次入库都多上传
     本该被扩展名白名单挡掉的文件，静默消耗 115 风控配额 —— 与用户的配置
     意图直接冲突。
+
+    ## v0.5.1 起伴生字幕会联动入队（本条断言据此更新）
+
+    该版本明确修了「定时扫描只同步媒体、外挂字幕因 mtime 较旧被遗漏」：
+    主媒体入队时，同主名的字幕（`SIDECAR_EXTS`）一并入队并继承主视频的
+    冷却基准，保证同一批 rsync 上传。
+
+    ⚠️ 但**仅限**字幕扩展名 —— `.nfo` / `.jpg` 这类同目录文件仍然不得进来，
+    否则等于把 `all_ext` 的效果偷偷给了所有映射。这条区分正是本用例的价值。
     """
     src = tmp_path / "TV"
     movie = _write(str(src / "某剧" / "S01E01.mkv"))
-    _write(str(src / "某剧" / "S01E01.srt"))     # 字幕仍在白名单内
-    _write(str(src / "某剧" / "S01E01.nfo"))     # 不在白名单内
-    _write(str(src / "某剧" / "poster.jpg"))     # 不在白名单内
+    _write(str(src / "某剧" / "S01E01.srt"))     # 字幕：v0.5.1 起联动入队
+    _write(str(src / "某剧" / "S01E01.nfo"))     # 不在白名单内，也不在字幕集
+    _write(str(src / "某剧" / "poster.jpg"))     # 同上
 
     plugin = _plugin(str(src), pairs=[{
         "name": "TV", "src": str(src), "dest": "/dest/TV",
@@ -275,17 +284,23 @@ def test_sibling_expansion_is_off_for_normal_pairs(tmp_path):
     }])
     _ingest(plugin, movie)
 
-    assert list(plugin._pending_queue) == ["TV:某剧/S01E01.mkv"], \
-        "默认映射不该把同目录其它文件一起入队"
+    # 主媒体 + 同主名字幕，顺序按入队先后（主媒体先）
+    assert list(plugin._pending_queue) == [
+        "TV:某剧/S01E01.mkv", "TV:某剧/S01E01.srt"], \
+        "默认映射应只带同主名字幕，不得把 .nfo/.jpg 一起入队"
 
 
-def test_sidecar_subtitles_still_not_auto_added_for_normal_pairs(tmp_path):
+def test_sidecar_subtitles_auto_added_for_normal_pairs(tmp_path):
     """
-    默认映射下**连同名字幕也不自动入队** —— 现状如此，改动不得顺手变更。
+    默认映射下同主名字幕**会自动入队**（v0.5.1 起的既有行为，本条钉住它）。
 
-    这里钉住的是「本次修复的范围」：只针对 all_ext。默认映射的伴生字幕
-    由补传前置扫描（`_find_sidecar_files`）那条路负责，两条路混起来会让
-    「为什么这个字幕被传了、那个没有」无法解释。
+    历史：这条用例原先叫 `..._still_not_auto_added_...`，断言「字幕不自动入队」。
+    v0.5.1（commit 7c1ad34）明确修了相反的问题 ——「定时扫描仅同步媒体文件，
+    伴生外挂字幕因 mtime 较旧被遗漏」—— 并加了联动入队。测试没跟着更新，
+    于是从那时起一直红。现在按实际行为改写：**行为是对的，测试是旧的**。
+
+    为什么必须保留这条：联动入队是「整套一起上传」的前提，若哪天有人把它
+    当成重复入队优化掉，用户会重新遇到「视频传了、字幕没传」。
     """
     src = tmp_path / "TV"
     movie = _write(str(src / "某剧" / "S01E01.mkv"))
@@ -297,7 +312,16 @@ def test_sidecar_subtitles_still_not_auto_added_for_normal_pairs(tmp_path):
     }])
     _ingest(plugin, movie)
 
-    assert list(plugin._pending_queue) == ["TV:某剧/S01E01.mkv"]
+    assert list(plugin._pending_queue) == [
+        "TV:某剧/S01E01.mkv", "TV:某剧/S01E01.zh.srt"], \
+        "伴生字幕应随主媒体一起入队"
+
+    # 冷却基准必须继承主视频（同一时刻到期、同一批上传）——
+    # 这正是 v0.5.1 那条修复的另一半，只断言「入了队」会漏掉它。
+    bases = list(plugin._pending_queue.values())
+    assert bases[0] == bases[1], (
+        f"伴生字幕未继承主视频的冷却基准：{bases} —— 会晚一轮才传")
+
 
 
 # --------------------------------------------------------------------------
