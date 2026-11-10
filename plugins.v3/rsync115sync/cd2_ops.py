@@ -272,6 +272,76 @@ class Cd2OpsMixin:
                 f"{'; '.join(f'{k}（{_cd2.progress_text(v)}）' for k, v in list(in_flight.items())[:_MAX_LOGGED_PATHS])}")
         return in_flight
 
+    def _cd2_hold_failed_settlement(self, keys: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        从「即将判为对账失败」的列表里剔除仍在上传的，返回 {被剔除的 key: 详情}。
+
+        v0.8.2（TODO 10.5）：CD2 的「在传/排队」核对此前**只用于 strm 疑似**，
+        对账失败那条路完全不查 —— 大文件还在上传、目标端暂时不存在或大小不符
+        （CD2 边写边改挂载视图）时会被立即判 missing/corrupt 并报警。现在三处
+        判失败前统一走同一个判据（`_cd2_in_flight_for`：排队/预处理/传输/暂停/
+        队列中，刻意不含 FINISH 与 ERROR，卡死超限失去豁免）。
+
+        被剔除的条目**不写失败清单**（与挂载不可用的保守结算同一取向），
+        下一轮继续判；已在失败清单里的由 `_cd2_recover_failed_in_flight` 回退。
+        Suppressed entries skip the failed list this round, like the conservative
+        mount-unavailable settlement; entries already failed get reverted by
+        `_cd2_recover_failed_in_flight`.
+        """
+        in_flight = self._cd2_in_flight_for(keys)
+        if in_flight:
+            logger.info(
+                f"[Rsync115Sync] ⏳ {len(in_flight)} 个条目对账不一致，但 CD2 显示仍在上传中，"
+                f"本轮不判失败（大文件传输中挂载视图暂时不一致属正常）: "
+                f"{'; '.join(f'{k}（{_cd2.progress_text(v)}）' for k, v in list(in_flight.items())[:_MAX_LOGGED_PATHS])}")
+        return in_flight
+
+    def _cd2_recover_failed_in_flight(self) -> List[str]:
+        """
+        巡检入口：把「已判失败、但 CD2 显示正在上传」的条目移回等待态。
+
+        为什么需要回退而不是只挡新增（TODO 10.5）：rsync 刚写完时 CD2 可能
+        **还没扫到挂载点**，上一轮的单次检查会漏 —— 文件已在 failed 里，
+        之后 CD2 才显示在传。此时失败判定是过早的，应当撤回。
+
+        「移回等待态」= 从 failed 视图摘掉（缓存），行改回 candidate 并保留
+        原冷却基准的**已完成量**：冷却基准取 `min(发现时刻, mtime)`，此处取
+        "现在" 会让冷却重新走全程；取旧 enqueued_at 又可能立即再次取件。
+        折中：基准 = now − 一个批次周期（`_delay_hours` 的 1/4，至少 15 分钟），
+        让它在下一两轮内被重新取件重传，而不是立即、也不是等 4 小时。
+
+        Returns: 被回退的 key 列表（供调用方记日志/计数）。
+        """
+        failed = getattr(self, "_failed_files", None)
+        if not failed:
+            return []
+        keys = list(failed.keys())
+        if not keys:
+            return []
+        in_flight = self._cd2_in_flight_for(keys)
+        if not in_flight:
+            return []
+        now_ts = time.time()
+        basis = now_ts - max(900.0, float(getattr(self, "_delay_hours", 4.0)) * 900.0)
+        reverted: List[str] = []
+        for key in list(in_flight.keys()):
+            entry = failed.get(key)
+            # 只回退「未达上限」的：达上限是用户已知的人工处理项，
+            # 自动回退会让告警与实际状态脱节。
+            if isinstance(entry, dict) and entry.get("exhausted_at"):
+                continue
+            _store_mod.move_key(failed, key, self._pending_queue, basis)
+            reverted.append(key)
+        if reverted:
+            self.save_data("failed_files", failed)
+            self.save_data("pending_queue", self._pending_queue)
+            self._sync_failed_projection()
+            logger.info(
+                f"[Rsync115Sync] ↩️ {len(reverted)} 个失败条目其实【正在 CD2 上传】"
+                f"（上一轮判失败过早），已移回冷却队列稍后自动重传: "
+                f"{_brief_paths(reverted)}")
+        return reverted
+
     def _cd2_prune_in_flight_suspects(self) -> List[str]:
         """
         把已进入疑似清单、但此刻正在上传的条目移出，返回被移除的 key。

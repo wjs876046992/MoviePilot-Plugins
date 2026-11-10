@@ -1691,7 +1691,7 @@ return (_ctx, _cache) => {
                       ? (_openBlock(), _createElementBlock("div", _hoisted_39, [
                           (statusData.value.cd2_token_set)
                             ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                _createTextVNode(" 📤 CD2 队列核对已启用：正在上传的文件不会被判疑似，也不会被删旧重传。 ")
+                                _createTextVNode(" 📤 CD2 队列核对已启用：正在上传的文件不会被判疑似、不会失败计重试次数，也不会被删旧重传。 ")
                               ], 64))
                             : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                                 _cache[39] || (_cache[39] = _createTextVNode(" ⚠️ CD2 队列核对已开启，但", -1)),
@@ -1702,9 +1702,11 @@ return (_ctx, _cache) => {
                             ? (_openBlock(), _createElementBlock("div", _hoisted_40, " 上次查询失败（已按原判据处理）：" + _toDisplayString(statusData.value.cd2_last_error), 1))
                             : _createCommentVNode("", true)
                         ]))
-                      : (watchingCount.value)
+                      : (watchingCount.value || failedCount.value)
                         ? (_openBlock(), _createElementBlock("div", _hoisted_41, [...(_cache[42] || (_cache[42] = [
-                            _createTextVNode(" 💡 大文件可能在宽限期内传不完而被反复判疑似。 ", -1),
+                            _createTextVNode(" 💡 未开启 CD2 队列核对：大文件可能在宽限期内传不完而被反复判疑似； 刚传完的大文件也可能被", -1),
+                            _createElementVNode("b", null, "暂时判为失败", -1),
+                            _createTextVNode("（CD2 还没刷新挂载视图）， 下一轮会自动纠正。", -1),
                             _createElementVNode("b", null, "建议开启「上传中文件不判疑似」", -1),
                             _createTextVNode("（配置页 → strm 交叉验证）。 ", -1)
                           ]))]))
@@ -3314,6 +3316,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-a073d3ff"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c724499e"]]);
 
 export { App as default };

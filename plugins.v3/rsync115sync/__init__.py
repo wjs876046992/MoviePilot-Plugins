@@ -255,7 +255,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.8.1"
+    plugin_version = "0.8.2"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -3808,6 +3808,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         except Exception as e:
             logger.warning(f"[Rsync115Sync] strm 交叉验证巡检异常（已忽略，不影响本轮同步）: {e}")
 
+        # CD2 在传回退（v0.8.2，TODO 10.5）：上一轮判失败、但此刻 CD2 显示仍在
+        # 上传的条目，移回冷却队列稍后自动重传（rsync 刚写完时 CD2 可能还没扫到
+        # 挂载点，单次检查会漏）。CD2 未启用/查询失败时什么都不改变。
+        # 挂在巡检这里与 `_strm_check` 同频：它问的是「上一轮的失败判定还可信吗」。
+        try:
+            self._cd2_recover_failed_in_flight()
+        except Exception as e:
+            logger.warning(f"[Rsync115Sync] CD2 在传回退检查异常（已忽略，不影响本轮同步）: {e}")
+
         # strm 助手健康复查：同样纯本地、自带 30 分钟节流，且**仅在状态变化时**留痕。
         # 挂在巡检这里是刻意的 —— 它问的是「巡检的判定还可信吗」，与巡检同频最自然；
         # 单独注册一个 service 只会多一份需要维护的调度注册，收益为零。
@@ -4650,6 +4659,11 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     for rel_p in pair_files:
                         k = f"{pair_name}:{rel_p}"
                         if k not in succeeded_keys:
+                            if k in cd2_blocked_keys:
+                                # CD2 显示仍在传（TODO 10.5）：**留在冷却队列**，
+                                # 下一轮继续取件重传 —— 不进 failed、也不出队。
+                                # 出队会让它失去跟踪（不进 failed 又不在队列）。
+                                continue
                             # 对账失败（v0.7.0 统一语义）：离开冷却队列，进 failed
                             # 清单。此前 ready 失败项**留在队列里**每轮重传，
                             # 而 backfill 失败项进异常清单后只能人工接手 ——
@@ -4721,13 +4735,23 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             #   本轮未涉及的历史失败项保留，避免因为增量对账而误清空。
             # 忽略清单内的条目一律不进入失败清单。
             round_failed: Dict[str, str] = {}
+            # v0.8.2（TODO 10.5）：判失败前先问 CD2「还在传吗」—— 在传/排队的
+            # 条目不写失败（大文件传输中，目标端暂时不存在或大小不符属正常）。
+            # CD2 未启用或查询失败时返回空 dict，**什么都不改变**（三态语义）。
+            # 查询一次、批量回筛：避免逐条 HTTP。
+            cd2_blocked_keys: set = set()
+            _audit_keys = [k for k in dict.fromkeys(list(total_missing) + list(total_corrupt))
+                           if k not in unsettled_keys]
+            if _audit_keys:
+                cd2_in_flight = self._cd2_hold_failed_settlement(_audit_keys)
+                cd2_blocked_keys = set(cd2_in_flight.keys())
             for k in dict.fromkeys(total_missing):
-                if k in unsettled_keys:
-                    continue      # 未结算（挂载不可用）—— 保持原状态，不写失败
+                if k in unsettled_keys or k in cd2_blocked_keys:
+                    continue      # 未结算（挂载不可用）或仍在 CD2 上传 —— 不写失败
                 if not self._is_ignored(k):
                     round_failed[k] = _store_mod.FAIL_MISSING
             for k in dict.fromkeys(total_corrupt):
-                if k in unsettled_keys:
+                if k in unsettled_keys or k in cd2_blocked_keys:
                     continue
                 if not self._is_ignored(k):
                     round_failed[k] = _store_mod.FAIL_CORRUPT

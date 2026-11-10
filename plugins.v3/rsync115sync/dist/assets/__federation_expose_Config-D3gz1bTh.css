@@ -5,7 +5,7 @@
    联邦插件与宿主共用同一个文档，覆盖它们会波及其它插件的界面，而且属于
    "用 !important 改别人的东西"。改用本组件自己的类名表达自己的意图：
      用户要求「圆角弧度减少一半」→ 24px 的卡片类收成 12px、8px 的按钮/块类收成 4px。 */
-.radius-lg[data-v-ba194119] {
+.radius-lg[data-v-2cefac5a] {
   border-radius: 12px !important;
 }
 /* 框外标题：**无条件显示**。
@@ -26,11 +26,11 @@
    这条经验的普适形式：**当一个效果需要"渲染出来再藏掉"时，先找找能不能
    让它压根不渲染。** 依赖"别人内部结构 + 我的样式覆盖"是脆的；
    依赖"我不产生那个结构"是稳的。 */
-.stacked-label[data-v-ba194119] {
+.stacked-label[data-v-2cefac5a] {
   display: block;
   margin-bottom: 4px;
 }
-.radius-sm[data-v-ba194119] {
+.radius-sm[data-v-2cefac5a] {
   border-radius: 4px !important;
 }
 
@@ -41,15 +41,15 @@
    正确做法是**用自己的类**表达自己的意图（本插件的留白是 12px / 10px），
    模板里不再使用会把 20px 带进来的通用类。
    手机屏幕窄，这 8~10px 的收窄是实打实还给内容的。 */
-.card-pad-x[data-v-ba194119] {
+.card-pad-x[data-v-2cefac5a] {
   padding-left: 12px !important;
   padding-right: 12px !important;
 }
-.row-pad-x[data-v-ba194119] {
+.row-pad-x[data-v-2cefac5a] {
   padding-left: 10px !important;
   padding-right: 10px !important;
 }
-.plugin-config[data-v-ba194119] {
+.plugin-config[data-v-2cefac5a] {
   width: 100%;
   /* 高度链的**起点**：模板上的 `h-100`（= height:100%!important）让它填满
      宿主 .v-card-text。这里的 `border-box` 是承重的 —— 不加它，18px 的上下
@@ -60,7 +60,7 @@
      导致媒体查询无法覆盖；现收敛到此处作为唯一来源，便于移动端收窄 */
   padding: 18px 22px !important;
 }
-.config-main-card[data-v-ba194119] {
+.config-main-card[data-v-2cefac5a] {
   background: rgb(var(--v-theme-surface));
   width: 100%;
   /* 高度保底（第二道防线），与看板 .page-main-card 同值同理由：
@@ -69,27 +69,27 @@
      用视口单位会让卡片比容器更高，等于用一个裁切换另一个裁切。 */
   min-height: 240px;
 }
-.header-surface[data-v-ba194119] {
+.header-surface[data-v-2cefac5a] {
   background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.08) 0%, rgba(var(--v-theme-primary), 0.02) 100%);
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 /* 顶栏标题与副标题：仅调整外边距，不覆盖 text-caption 的小字号行高，
    保证 12px 中文文本的可读性 */
-.header-card-item .header-subtitle[data-v-ba194119] {
+.header-card-item .header-subtitle[data-v-2cefac5a] {
   margin-top: 6px;
 }
 /* 标题栏里的「高级设置」开关：Vuetify 的 v-switch 默认带上下 padding，
    放进一行高的标题栏会把整栏撑高。这里只压掉外边距，不动尺寸 ——
    开关本身的触控目标要保持可点。 */
-.adv-switch[data-v-ba194119] {
+.adv-switch[data-v-2cefac5a] {
   flex: 0 0 auto;
   margin: 0;
 }
-.adv-switch[data-v-ba194119] .v-input__control,
-.adv-switch[data-v-ba194119] .v-selection-control {
+.adv-switch[data-v-2cefac5a] .v-input__control,
+.adv-switch[data-v-2cefac5a] .v-selection-control {
   min-height: 0;
 }
-.adv-switch[data-v-ba194119] .v-label {
+.adv-switch[data-v-2cefac5a] .v-label {
   /* 开关右侧的文字标签不用（文字在 .adv-label 里），留空避免撑宽 */
   display: none;
 }
@@ -98,7 +98,7 @@
    内容区顶部内边距被强制归零，与看板同源，间距由 margin-top 提供。
    此处不能依赖相邻选择器：保存成功/失败提示条会插在两者之间，
    故直接按内容区类名设置，保证提示条出现时间距依然稳定。 */
-.config-body[data-v-ba194119] {
+.config-body[data-v-2cefac5a] {
   margin-top: 16px;
   /* ⚠️ 弹性子项默认 `min-height: auto`，会拒绝收缩到内容高度以下 ——
      高度链正常时它也无害，但一旦内容变多，它会让本区**撑高整张卡片**
@@ -164,10 +164,10 @@
    ⚠️ 这段规则**故意不带媒体查询**：桌面端同样需要它。曾经误以为桌面端由
    flex 链解决、只有移动端要 sticky —— 那是测试 harness 少了 `.v-dialog`
    类造成的假象，真实结构里两端都断在同一个位置。 */
-.config-main-card[data-v-ba194119] {
+.config-main-card[data-v-2cefac5a] {
   overflow: visible !important;
 }
-.header-surface[data-v-ba194119] {
+.header-surface[data-v-2cefac5a] {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -175,12 +175,12 @@
      header-surface 本身是半透明渐变，这里补一层实色底。 */
   background-color: rgb(var(--v-theme-surface));
 }
-.config-actions[data-v-ba194119] {
+.config-actions[data-v-2cefac5a] {
   position: sticky;
   bottom: 0;
   z-index: 3;
 }
-.header-icon-box[data-v-ba194119] {
+.header-icon-box[data-v-2cefac5a] {
   width: 36px;
   height: 36px;
   border-radius: 10px;
@@ -189,15 +189,15 @@
   justify-content: center;
   background: rgba(var(--v-theme-primary), 0.12);
 }
-.settings-group-card[data-v-ba194119] {
+.settings-group-card[data-v-2cefac5a] {
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
-.pair-card[data-v-ba194119] {
+.pair-card[data-v-2cefac5a] {
   background: rgba(var(--v-theme-on-surface), 0.02);
   border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
 }
-.empty-hint-box[data-v-ba194119] {
+.empty-hint-box[data-v-2cefac5a] {
   border: 1px dashed rgba(var(--v-theme-on-surface), 0.16);
 }
 
@@ -218,7 +218,7 @@
    `flex-wrap: wrap` 是这里的关键：一行放不下时**整块换到下一行**，
    控件永远拿满整行宽度 —— 而不是跟文字列在同一行里互相挤压。
    这样"会不会被挤掉"就不再取决于文字多长、用户窗口多宽。 */
-.setting-row[data-v-ba194119] {
+.setting-row[data-v-2cefac5a] {
   flex-wrap: wrap;
   gap: 8px;
   /* ⚠️ 纵容横向溢出会把控件"推到看不见的地方"。
@@ -232,7 +232,7 @@
    不含空格的串在浏览器眼里是"一个超长的词"，放不下就直接溢出。
    `word-break: break-word` 对中文无影响（中文本来就可断），对超长英文串有效。 */
 /* 给需要显式换行的长串（URL 等）用 */
-.wrap-anywhere[data-v-ba194119] {
+.wrap-anywhere[data-v-2cefac5a] {
   word-break: break-all;
   overflow-wrap: anywhere;
 }
@@ -241,49 +241,49 @@
    收缩到 0 —— 于是容器再窄也**永远不会触发换行**，控件就一直被挤在剩余的那点
    宽度里。`min-width: 0` 解决的是"文字能在列内折行"，不是"列本身该多窄"。
    给定一个基准宽度后：装得下就并排（文字占据剩余空间），装不下就整体换行。 */
-.setting-row > div[data-v-ba194119]:first-child {
+.setting-row > div[data-v-2cefac5a]:first-child {
   flex: 1 1 20rem;
   min-width: 15rem;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-.setting-row > .v-switch[data-v-ba194119],
-.setting-row > .v-text-field[data-v-ba194119],
-.setting-row > .v-chip[data-v-ba194119],
-.setting-row > .v-btn[data-v-ba194119] {
+.setting-row > .v-switch[data-v-2cefac5a],
+.setting-row > .v-text-field[data-v-2cefac5a],
+.setting-row > .v-chip[data-v-2cefac5a],
+.setting-row > .v-btn[data-v-2cefac5a] {
   flex: 0 0 auto;
 }
 /* 开关/状态行（.setting-row-inline）：左侧文字多则换行，右侧控件始终保持在同一行右侧 */
-.setting-row-inline[data-v-ba194119] {
+.setting-row-inline[data-v-2cefac5a] {
   flex-wrap: nowrap !important;
 }
-.setting-row-inline > div[data-v-ba194119]:first-child {
+.setting-row-inline > div[data-v-2cefac5a]:first-child {
   flex: 1 1 auto;
   min-width: 0;
   margin-right: 12px;
 }
-.setting-row-inline > .v-switch[data-v-ba194119],
-.setting-row-inline > .v-chip[data-v-ba194119],
-.setting-row-inline > .v-btn[data-v-ba194119] {
+.setting-row-inline > .v-switch[data-v-2cefac5a],
+.setting-row-inline > .v-chip[data-v-2cefac5a],
+.setting-row-inline > .v-btn[data-v-2cefac5a] {
   flex: 0 0 auto;
 }
 /* 控件本身也不得溢出容器 */
-.setting-row > .v-text-field[data-v-ba194119] {
+.setting-row > .v-text-field[data-v-2cefac5a] {
   max-width: 100%;
 }
 /* 「标签在上、输入框在下」的纵向设置行。
    为什么单独做一个类：横排本来就要依赖 flex 的收缩与换行计算，而那个计算
    在真实宿主里出过三次意外（开关被挤成缝、输入框消失 ×2）。
    含输入框的行干脆不参与这套计算 —— 纵排下"被旁边文字挤压"在结构上不存在。 */
-.setting-row-stacked[data-v-ba194119] {
+.setting-row-stacked[data-v-2cefac5a] {
   display: block;
 }
-.setting-row-stacked > div[data-v-ba194119]:first-child {
+.setting-row-stacked > div[data-v-2cefac5a]:first-child {
   /* 覆盖横排时给文字列设的 flex 属性 —— 纵排下它们没有意义 */
   flex: none;
   min-width: 0;
 }
-.max-field[data-v-ba194119] {
+.max-field[data-v-2cefac5a] {
   width: 100%;
   max-width: 240px;
 }
@@ -299,7 +299,7 @@
    断点沿用 Vuetify 的 sm（600px）。 */
 @media (max-width: 599.98px) {
   /* 移动端收窄外层留白，把宽度还给表单内容 */
-.plugin-config[data-v-ba194119] {
+.plugin-config[data-v-2cefac5a] {
     padding: 10px 12px !important;
 }
 
@@ -311,29 +311,29 @@
   /* 同看板：.v-card-item 的 append 列按 max-content 固定宽度、不会收缩，
      窄屏下关闭按钮会被顶出卡片并被 overflow-hidden 裁掉。
      改为 minmax(0, max-content)，允许在宽度不足时收缩。 */
-[data-v-ba194119] .v-card-item {
+[data-v-2cefac5a] .v-card-item {
     grid-template-columns: max-content minmax(0, auto) minmax(0, max-content);
 }
-[data-v-ba194119] .v-card-item__content {
+[data-v-2cefac5a] .v-card-item__content {
     min-width: 0;
 }
   /* 标题栏里的「高级设置」开关：窄屏下省掉文字标签，只留开关本体。
      标题栏宽度已经很紧（标题 + 徽标 + 开关 + 关闭按钮），
      文字标签在这里是第一个该让位的东西 —— 开关本身仍带 title 属性。 */
-.adv-label[data-v-ba194119] {
+.adv-label[data-v-2cefac5a] {
     display: none;
 }
   /* 设置行：默认改为纵向排列，避免控件被挤出右边界 */
-.setting-row[data-v-ba194119] {
+.setting-row[data-v-2cefac5a] {
     flex-direction: column;
     align-items: flex-start !important;
     gap: 8px;
 }
-.setting-row > div[data-v-ba194119]:first-child {
+.setting-row > div[data-v-2cefac5a]:first-child {
     flex: 0 0 auto;
     min-width: 0;
 }
-.setting-row > .v-switch[data-v-ba194119] {
+.setting-row > .v-switch[data-v-2cefac5a] {
     margin-left: -8px; /* 抵消 Vuetify 开关自带的左侧内缩，与说明文字左缘对齐 */
 }
 
@@ -345,36 +345,36 @@
        1. 主轴为 row，强制 flex-wrap: nowrap 禁止开关掉下去；
        2. 左侧 div:first-child 设为 flex: 1 1 auto; min-width: 0; margin-right: 12px;，文字过多自动内部折行；
        3. 右侧开关/徽标 flex: 0 0 auto 不被压缩，对齐在右侧，垂直居中对齐文字块。 */
-.setting-row-inline[data-v-ba194119] {
+.setting-row-inline[data-v-2cefac5a] {
     flex-direction: row;
     flex-wrap: nowrap !important;
     align-items: center !important;
 }
-.setting-row-inline > div[data-v-ba194119]:first-child {
+.setting-row-inline > div[data-v-2cefac5a]:first-child {
     flex: 1 1 auto !important;
     min-width: 0 !important;
     margin-right: 12px;
 }
-.setting-row-inline > .v-switch[data-v-ba194119],
-  .setting-row-inline > .v-chip[data-v-ba194119],
-  .setting-row-inline > .v-btn[data-v-ba194119] {
+.setting-row-inline > .v-switch[data-v-2cefac5a],
+  .setting-row-inline > .v-chip[data-v-2cefac5a],
+  .setting-row-inline > .v-btn[data-v-2cefac5a] {
     flex: 0 0 auto !important;
     margin-left: 0 !important;
 }
   /* 模块标题行（标题 + 右侧操作按钮）：标题允许收缩换行，按钮不被迫溢出 */
-.section-header[data-v-ba194119] {
+.section-header[data-v-2cefac5a] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.section-header > div[data-v-ba194119] {
+.section-header > div[data-v-2cefac5a] {
     min-width: 0;
 }
   /* 底部操作条：查看看板 / 保存配置 两个按钮在窄屏各占一行 */
-.config-actions[data-v-ba194119] {
+.config-actions[data-v-2cefac5a] {
     flex-wrap: wrap;
     gap: 8px;
 }
-.config-actions .v-btn[data-v-ba194119] {
+.config-actions .v-btn[data-v-2cefac5a] {
     flex: 1 1 100%;
     margin-left: 0 !important;
 }
@@ -385,7 +385,7 @@
    用统一的视觉语言标出，避免用户把「可选的协作功能」误当成「必须装的前置依赖」，
    也避免反过来：不知道某个字段填了才会启用协作。
    两种底色刻意区分：绿=不依赖任何插件，蓝=需要特定插件。 */
-.dep-note[data-v-ba194119] {
+.dep-note[data-v-2cefac5a] {
   display: flex;
   align-items: flex-start;
   gap: 4px;
@@ -394,26 +394,26 @@
   padding: 5px 8px;
   border-radius: 6px;
 }
-.dep-note .v-icon[data-v-ba194119] {
+.dep-note .v-icon[data-v-2cefac5a] {
   margin-top: 1px;
   flex-shrink: 0;
 }
-.dep-free[data-v-ba194119] {
+.dep-free[data-v-2cefac5a] {
   color: rgb(var(--v-theme-success));
   background: rgba(var(--v-theme-success), 0.08);
 }
-.dep-needs-helper[data-v-ba194119] {
+.dep-needs-helper[data-v-2cefac5a] {
   color: rgb(var(--v-theme-info));
   background: rgba(var(--v-theme-info), 0.1);
 }
 
 /* 依赖边界对照表：一行「本插件独立完成」+ 一行「需要助手」。
    两行并列呈现而非只列依赖项，是因为用户真正要判断的是「我不装它会少什么」。 */
-.dep-split[data-v-ba194119] {
+.dep-split[data-v-2cefac5a] {
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   overflow: hidden;
 }
-.dep-split-row[data-v-ba194119] {
+.dep-split-row[data-v-2cefac5a] {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -421,6 +421,6 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.dep-split-row + .dep-split-row[data-v-ba194119] {
+.dep-split-row + .dep-split-row[data-v-2cefac5a] {
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.1);
 }
