@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.0.2"
+    plugin_version = "3.1.0"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -106,6 +106,11 @@ class DynamicWeChat(_PluginBase):
 
     # 输入的企业应用id
     _input_id_list = ''
+    # 多WAN开关与最多出口IP数（从旧 ||wanN 语法拆出的独立字段）
+    _wan_enabled = False
+    _wan_max_ips = ""
+    # 自定义公网IP探测地址（从旧 ids||url1,url2 语法拆出的独立字段，逗号分隔）
+    _custom_ip_urls = ""
     # 二维码
     _qr_code_image = None
     # 用户消息
@@ -175,6 +180,17 @@ class DynamicWeChat(_PluginBase):
         self._stopping = False
         self._loops_started = False
         self._cookie_invalid_notified = False
+        # 页面状态记录点（只被后台流程在流程末尾赋值，供详情页快照展示）
+        self._last_check_result = None
+        self._login_confirmed_by = None
+        self._none_streak = 0
+        self._last_ip_check_ok = None          # None=还没跑过 / True / False
+        self._last_ip_check_note = ''          # 上次IP检测的一句用户可读结论
+        self._last_keepalive_ok = None         # None=还没跑过 / True / False
+        self._last_keepalive_note = ''         # 上次保活的一句用户可读结论
+        self._waiting_captcha = False          # 是否正在等待短信验证码
+        self._last_ddns_ok = None              # None=没配DDNS / True / False
+        self._last_ddns_ip = ''                # DDNS 最近一次解析到的IP（展示用脱敏）
 
         # 初始化实例级后台任务容器
         if self._bg_tasks is None:
@@ -205,22 +221,27 @@ class DynamicWeChat(_PluginBase):
             self._cookie_header = config.get("cookie_header")
             self._await_ip = config.get("await_ip")
             self._pinned_ips = config.get("pinned_ips", "")
+            self._wan_enabled = bool(config.get("wan_enabled"))
+            self._wan_max_ips = str(config.get("wan_max_ips") or "").strip()
+            self._custom_ip_urls = str(config.get("custom_ip_urls") or "").strip()
+
+        # 旧值迁移：应用ID里的 ||wanN（多WAN）与 ids||url1,url2（自定义探测URL）
+        # 拆到独立字段。幂等：新字段已存在时旧语法仍被兼容解析，不重复迁移。
+        self._migrate_legacy_magic_strings()
 
         # 初始化第三方通知发送器（MP内置通知由 post_message 直接处理）
         self._my_send = MySender(self._notification_token)
 
         if not self._my_send.init_success:
             self._my_send = None
-        if self._my_send and not self._my_send.other_channel:
+        if not self._my_send or not self._my_send.other_channel:
+            if self._await_ip:
+                logger.info("未配置第三方通知Token，「IP变动后通知」已自动关闭")
             self._await_ip = False
 
         # 处理多WAN口
-        if "||wan" in self._input_id_list:
-            last_char = self._input_id_list[-1] if self._input_id_list else None
-            if isinstance(last_char, str) and last_char.isdigit():
-                max_ips = int(last_char)
-            else:
-                max_ips = 3
+        if self._wan_enabled:
+            max_ips = int(self._wan_max_ips) if self._wan_max_ips.isdigit() and int(self._wan_max_ips) > 0 else 3
             self.wan2 = IpLocationParser(self._settings_file_path, max_ips=max_ips)
             self._current_ip_address = self.wan2.read_ips("ips")
         else:
@@ -237,11 +258,16 @@ class DynamicWeChat(_PluginBase):
         self._stopping = False
         self._loops_started = False
 
-        # 配置检查
+        # 配置检查（缺失时站内提示，不再只写日志）
         if not self._input_id_list:
             logger.warning("插件未配置应用ID，请填写企业微信应用ID")
+            if self._enabled:
+                self.systemmessage.put("【动态企微可信IP】已启用但未填写应用ID，不会执行任何检测，请到插件配置页填写")
             self.__update_config()
             return
+        if self._enabled and not str(self._cron or "").strip():
+            logger.warning("未配置检测周期，IP检测不会运行")
+            self.systemmessage.put("【动态企微可信IP】未配置检测周期，IP变化不会被自动更新，请到插件配置页填写")
 
         # 启用插件时启动后台循环和一次性任务
         if (self._enabled or self._onlyonce) and self._input_id_list:
@@ -249,6 +275,37 @@ class DynamicWeChat(_PluginBase):
             self._handle_once_tasks()
 
         self.__update_config()
+
+    def _migrate_legacy_magic_strings(self):
+        """
+        把旧版塞在应用ID字段里的魔法语法拆到独立字段（一次性、幂等）：
+        - 「ids||wanN」→ wan_enabled=True + wan_max_ips=N
+        - 「ids||url1,url2」→ custom_ip_urls=url1,url2
+        新字段已有值时不覆盖（用户可能在迁移后自行改过）；应用ID只保留逗号分隔的ID部分。
+        """
+        input_ids = self._input_id_list
+        if not isinstance(input_ids, str) or "||" not in input_ids:
+            return
+        ids_part, suffix = input_ids.split("||", 1)
+        ids_part = ids_part.strip()
+        suffix = suffix.strip()
+        if suffix.startswith("wan"):
+            # 多WAN语法
+            if not self._wan_enabled:
+                self._wan_enabled = True
+                digit = suffix[3:].strip()
+                if digit.isdigit():
+                    self._wan_max_ips = digit
+                logger.info(f"检测到旧版多WAN语法「||{suffix}」，已迁移到「多WAN多出口」开关（最多{self._wan_max_ips or 3}个出口IP）")
+        elif "," in suffix or suffix.startswith("http"):
+            # 自定义探测URL语法
+            if not self._custom_ip_urls:
+                self._custom_ip_urls = suffix
+                logger.info("检测到旧版自定义探测URL语法，已迁移到「自定义公网IP探测地址」字段")
+        else:
+            logger.warning(f"应用ID中包含无法识别的「||{suffix}」后缀，已忽略；应用ID只保留 {ids_part}")
+        if ids_part != input_ids:
+            self._input_id_list = ids_part
 
     def _handle_once_tasks(self):
         """
@@ -587,7 +644,22 @@ class DynamicWeChat(_PluginBase):
             return
         # 情况3：cookie失效且未启用延迟通知，立即通知
         logger.info("Cookie已失效，本次不检查IP")
+        self._last_ip_check_ok = False
+        self._last_ip_check_note = "Cookie已失效，本轮未检测IP"
         await self._send_cookie_false()
+
+    def _translate_check_result(self, reason) -> str:
+        """把 check_login_status 的结论原因转译成一句用户可读的说明"""
+        return {
+            'stopped': '插件正在重启或停用',
+            'timeout': '网络较慢或企业微信页面变化，未能确认登录状态',
+            'captcha_incomplete': '扫码后的验证码流程未完成',
+            'captcha_btn_error': '验证码确认环节页面异常',
+            'logged_in': '登录正常',
+            'qr_visible': '页面显示登录二维码（未登录）',
+            'captcha_no_code': '未收到短信验证码',
+            'captcha_failed': '验证码已提交但登录未成功',
+        }.get(reason, '原因未知')
 
     async def CheckIP(self, func=None):
         """
@@ -601,8 +673,13 @@ class DynamicWeChat(_PluginBase):
             ip_address = await asyncio.to_thread(self.get_ip_from_domain, company_domain)
             if not ip_address or ip_address == "获取IP失败":
                 logger.error(f"域名{company_domain}解析失败，不操作可信IP")
+                self._last_ddns_ok = False
+                self._last_ip_check_ok = False
+                self._last_ip_check_note = f"DDNS域名解析失败，未改动可信IP"
                 return False
             logger.info(f"IP获取成功: 解析域名 {company_domain}: {ip_address}")
+            self._last_ddns_ok = True
+            self._last_ddns_ip = str(ip_address)
             if not self._ip_changed and func != "public":
                 logger.info("上次IP修改IP失败 继续尝试修改IP")
                 return True
@@ -626,6 +703,8 @@ class DynamicWeChat(_PluginBase):
                 self._file_lock.release()
             if not ip_address or ip_address == "获取IP失败":
                 logger.error("获取IP失败 不操作可信IP")
+                self._last_ip_check_ok = False
+                self._last_ip_check_note = "多WAN出口IP获取失败，未改动可信IP"
                 return False
             if url and ip_address:
                 logger.info(f"IP获取成功: {url}: {ip_address}")
@@ -637,7 +716,11 @@ class DynamicWeChat(_PluginBase):
             else:
                 url_ips = [ip for ip in ip_address if ip]
             if not url_ips:
+                self._last_ip_check_ok = False
+                self._last_ip_check_note = "多WAN未检测到出口IP"
                 return False
+            self._last_ip_check_ok = True
+            self._last_ip_check_note = "多WAN出口IP未变化"
             saved_ips_list = [ip for ip in saved_ips.split(";") if ip] if saved_ips else []
             need_add = False
             for ip in url_ips:
@@ -663,6 +746,8 @@ class DynamicWeChat(_PluginBase):
             url, ip_address = await self.get_ip_from_url()
             if not ip_address or ip_address == "获取IP失败" or not url:
                 logger.error("获取IP失败 不操作可信IP")
+                self._last_ip_check_ok = False
+                self._last_ip_check_note = "公网IP获取失败，未改动可信IP"
                 return False
             if url and ip_address:
                 logger.info(f"IP获取成功: {url}: {ip_address}")
@@ -672,7 +757,11 @@ class DynamicWeChat(_PluginBase):
             if ip_address != self._current_ip_address:
                 logger.info("检测到IP变化")
                 self._cookie_invalid_notified = False  # 重置通知标志
+                self._last_ip_check_ok = True
+                self._last_ip_check_note = "检测到IP变化，正在更新可信IP"
                 return True
+            self._last_ip_check_ok = True
+            self._last_ip_check_note = "公网IP未变化"
         return False
 
     async def try_connect_cc_async(self):
@@ -713,9 +802,9 @@ class DynamicWeChat(_PluginBase):
         从URL获取IP地址
         多WAN分支：锁失败则继续尝试下一个URL，避免返回未保存的数据
         """
-        if isinstance(self._input_id_list, str) and "||" in self._input_id_list:
-            _, url_list = self._input_id_list.split("||", 1)
-            urls = url_list.split(",")
+        custom_urls = str(getattr(self, "_custom_ip_urls", "") or "").strip()
+        if custom_urls:
+            urls = [u.strip() for u in custom_urls.split(",") if u.strip()]
         elif isinstance(self._input_id_list, list):
             urls = self._input_id_list
         else:
@@ -1170,11 +1259,17 @@ class DynamicWeChat(_PluginBase):
                     self._cookie_valid = True
                     self._cookie_invalid_notified = False
                     cookie_used = True
+                    self._last_keepalive_ok = True
+                    self._last_keepalive_note = "本地Cookie校验有效"
+                    self._waiting_captcha = False
                     logger.info("本地缓存 Cookie 有效")
                     self._none_streak = 0
                 elif result is False:
                     self._cookie_valid = False
                     self._saved_cookie = None
+                    self._last_keepalive_ok = False
+                    self._last_keepalive_note = "本地Cookie已失效"
+                    self._waiting_captcha = False
                     # 本地失效，若启用CookieCloud则暂不通知，等待云端尝试
                     if self._use_cookiecloud:
                         logger.info("本地缓存 Cookie 失效，尝试从 CookieCloud 获取")
@@ -1188,6 +1283,8 @@ class DynamicWeChat(_PluginBase):
                     self._saved_cookie = None
                     reason = getattr(self, '_last_check_result', 'unknown')
                     self._none_streak = getattr(self, '_none_streak', 0) + 1
+                    self._last_keepalive_ok = None
+                    self._last_keepalive_note = self._translate_check_result(reason)
                     reason_text = {
                         'stopped': '插件正在重启或停用',
                         'timeout': '15秒内页面未给出登录/未登录信号（网络慢或企业微信页面结构变化）',
@@ -1216,11 +1313,14 @@ class DynamicWeChat(_PluginBase):
                         self._cookie_valid = True
                         self._cookie_invalid_notified = False
                         self._saved_cookie = await context.cookies()
-                        logger.info("CookieCloud 获取的 Cookie 有效")
+                        self._last_keepalive_ok = True
+                        self._last_keepalive_note = "CookieCloud Cookie校验有效"
                         self._none_streak = 0
                     else:
                         self._cookie_valid = False
                         self._saved_cookie = None
+                        self._last_keepalive_ok = False
+                        self._last_keepalive_note = "CookieCloud Cookie已失效"
                         if self._await_ip:
                             logger.info("CookieCloud Cookie失效，等待公网IP变动后再通知")
                         else:
@@ -1229,6 +1329,8 @@ class DynamicWeChat(_PluginBase):
                 else:
                     self._cookie_valid = False
                     self._saved_cookie = None
+                    self._last_keepalive_ok = False
+                    self._last_keepalive_note = "CookieCloud获取Cookie失败"
                     if self._await_ip:
                         logger.info("CookieCloud获取失败，等待公网IP变动后再通知")
                     else:
@@ -1329,13 +1431,17 @@ class DynamicWeChat(_PluginBase):
                 await asyncio.sleep(3)
             else:
                 logger.info("等待30秒,请将短信验证码请以'？'结束,发送到<企业微信应用> 如： 110301？")
-                for _ in range(30):
-                    if self._stopping:
-                        self._last_check_result = 'stopped'
-                        return None
-                    if self._verification_code:
-                        break
-                    await asyncio.sleep(1)
+                self._waiting_captcha = True
+                try:
+                    for _ in range(30):
+                        if self._stopping:
+                            self._last_check_result = 'stopped'
+                            return None
+                        if self._verification_code:
+                            break
+                        await asyncio.sleep(1)
+                finally:
+                    self._waiting_captcha = False
             if not self._verification_code:
                 logger.error(
                     "未收到短信验证码，请以问号结尾发送到企业微信应用。如：510010? 使用全局AI助手需使用/wxcode 510010的格式发送验证码")
@@ -1452,13 +1558,11 @@ class DynamicWeChat(_PluginBase):
             self.systemmessage.put("未获取到有效公网IP，取消更新可信IP，请检查网络或稍后重试")
             return
 
-        # 解析应用ID列表
-        if "||" in self._input_id_list:
-            parts = self._input_id_list.split("||", 1)
-            input_id_list = parts[0]
-        else:
-            input_id_list = self._input_id_list
-        id_list = input_id_list.split(",")
+        # 解析应用ID列表（迁移后字段已纯净，兼容旧值仍含 || 后缀的情况）
+        input_id_list = str(self._input_id_list or "")
+        if "||" in input_id_list:
+            input_id_list = input_id_list.split("||", 1)[0]
+        id_list = [a for a in input_id_list.split(",") if a.strip()]
         app_urls = [f"{bash_url}{app_id.strip()}" for app_id in id_list]
         # 合并固定可信IP与当前检测到的IP
         fill_ips = self._merge_pinned_ips(self._current_ip_address)
@@ -1521,8 +1625,8 @@ class DynamicWeChat(_PluginBase):
 
     def _merge_pinned_ips(self, detected_ips: str) -> str:
         """将固定可信IP与检测到的IP合并去重，固定IP始终保留"""
-        pinned = [ip.strip() for ip in self._pinned_ips.split(',') if ip.strip()]
-        detected = [ip.strip() for ip in detected_ips.split(';') if ip.strip()]
+        pinned = [ip.strip() for ip in str(self._pinned_ips or '').split(',') if ip.strip()]
+        detected = [ip.strip() for ip in str(detected_ips or '').split(';') if ip.strip()]
         seen = set()
         merged = []
         for ip in pinned + detected:
@@ -1540,6 +1644,82 @@ class DynamicWeChat(_PluginBase):
             return masked_ip
         return ip
 
+    def _page_snapshot(self) -> Dict[str, Any]:
+        """
+        汇总详情页所需的只读状态快照。
+        纯读方法：不修改任何实例状态、不做IO、不发通知，可被 get_page 安全多次调用。
+        各字段含义与四态文案的对应关系见 REDESIGN_REQUIREMENTS.md 状态矩阵。
+        """
+        snap: Dict[str, Any] = {}
+        # --- 总开关与必填前置 ---
+        snap["enabled"] = bool(self._enabled)
+        snap["has_app_id"] = bool(str(self._input_id_list or "").strip())
+        snap["cron"] = str(self._cron or "").strip()
+        snap["cron_valid"] = False
+        if snap["cron"]:
+            try:
+                CronTrigger.from_crontab(snap["cron"])
+                snap["cron_valid"] = True
+            except Exception:
+                snap["cron_valid"] = False
+        # --- Cookie 登录态 ---
+        snap["cookie_valid"] = bool(self._cookie_valid)
+        snap["cookie_lifetime"] = int(getattr(self, "_cookie_lifetime", 0) or 0)
+        # 「是否曾经登录过」：扫码登录/CookieCloud 写回成功（_is_special_upload）、
+        # 本地存有 Cookie、或寿命计数大于0，任一成立即视为登录过——
+        # 只看 _is_special_upload 会把「登录过但 Cookie 已失效」误判成「从未登录」。
+        snap["has_cookie_ever"] = bool(
+            getattr(self, "_is_special_upload", False)
+            or getattr(self, "_saved_cookie", None)
+            or int(getattr(self, "_cookie_lifetime", 0) or 0) > 0
+        )
+        snap["none_streak"] = int(getattr(self, "_none_streak", 0) or 0)
+        # --- 两个循环的上次结果 ---
+        snap["keepalive_ok"] = getattr(self, "_last_keepalive_ok", None)
+        snap["keepalive_note"] = str(getattr(self, "_last_keepalive_note", "") or "")
+        snap["ip_check_ok"] = getattr(self, "_last_ip_check_ok", None)
+        snap["ip_check_note"] = str(getattr(self, "_last_ip_check_note", "") or "")
+        snap["ip_changed"] = bool(self._ip_changed)
+        snap["current_ip_masked"] = ";".join(
+            self.mask_ip(ip) for ip in str(self._current_ip_address or "").split(";") if ip
+        )
+        # --- 二维码任务 ---
+        snap["qr_running"] = bool(getattr(self, "_qr_running", False))
+        snap["qr_future_timestamp"] = int(getattr(self, "_future_timestamp", 0) or 0)
+        snap["qr_has_image"] = self._qr_code_image is not None
+        # --- 验证码等待 ---
+        snap["waiting_captcha"] = bool(getattr(self, "_waiting_captcha", False))
+        # --- 通知通道 ---
+        snap["use_mp_notify"] = bool(self._use_mp_notify)
+        channels = []
+        if self._my_send and self._my_send.other_channel:
+            channels = [channel for channel, _ in self._my_send.other_channel]
+        snap["third_channels"] = channels
+        snap["third_token_present"] = bool(str(self._notification_token or "").strip())
+        snap["await_ip"] = bool(self._await_ip)
+        # --- IP 来源 ---
+        snap["company_domain"] = str(getattr(self, "_company_domain", "") or "").strip()
+        snap["ddns_ok"] = getattr(self, "_last_ddns_ok", None)
+        snap["ddns_ip_masked"] = ";".join(
+            self.mask_ip(ip) for ip in str(getattr(self, "_last_ddns_ip", "") or "").split(";") if ip
+        )
+        snap["wan_mode"] = self.wan2 is not None
+        snap["pinned_ips"] = str(getattr(self, "_pinned_ips", "") or "")
+        pinned_list = [ip for ip in snap["pinned_ips"].split(",") if ip.strip()]
+        snap["pinned_valid"] = all(self._is_ipv4(ip.strip()) for ip in pinned_list) if pinned_list else None
+        snap["pinned_count"] = len(pinned_list)
+        # --- CookieCloud ---
+        snap["use_cookiecloud"] = bool(self._use_cookiecloud)
+        snap["cc_key_present"] = bool(settings.COOKIECLOUD_KEY and settings.COOKIECLOUD_PASSWORD)
+        snap["cc_local"] = bool(settings.COOKIECLOUD_ENABLE_LOCAL)
+        snap["cc_server_ok"] = self._cc_server is not None
+        return snap
+
+    @staticmethod
+    def _is_ipv4(ip: str) -> bool:
+        """判断字符串是否为合法 IPv4 地址"""
+        return re.match(r'^\d{1,3}(\.\d{1,3}){3}$', str(ip).strip()) is not None
+
     def __update_config(self):
         """保存插件配置到系统"""
         self.update_config({
@@ -1556,6 +1736,9 @@ class DynamicWeChat(_PluginBase):
             "cookie_header": self._cookie_header,
             "use_cookiecloud": self._use_cookiecloud,
             "pinned_ips": self._pinned_ips,
+            "wan_enabled": getattr(self, "_wan_enabled", False),
+            "wan_max_ips": getattr(self, "_wan_max_ips", ""),
+            "custom_ip_urls": getattr(self, "_custom_ip_urls", ""),
         })
 
     def get_state(self) -> bool:
@@ -1564,12 +1747,19 @@ class DynamicWeChat(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
-        拼装插件配置页面，返回页面JSON和默认模型
+        拼装插件配置页面，返回页面JSON和默认模型。
+        页面分四区：基础 / IP来源 / 通知 / 高级设置，归属理由见
+        REDESIGN_REQUIREMENTS.md 的 UI 归属一节。
         """
+        third_channels = []
+        if self._my_send and self._my_send.other_channel:
+            third_channels = [c for c, _ in self._my_send.other_channel]
+        third_token_present = bool(str(self._notification_token or "").strip())
         return [
             {
                 'component': 'VForm',
                 'content': [
+                    # ---------- 首屏 · 基础 ----------
                     {
                         'component': 'VRow',
                         'content': [
@@ -1601,42 +1791,6 @@ class DynamicWeChat(_PluginBase):
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 3},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 3},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'local_scan', 'label': '本地扫码修改IP'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 3},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'use_mp_notify', 'label': 'MP内置通知'}}
-                                ]
-                            },
-                            *(
-                                [{
-                                    'component': 'VCol',
-                                    'props': {'cols': 12, 'md': 3},
-                                    'content': [
-                                        {'component': 'VSwitch', 'props': {'model': 'await_ip', 'label': 'IP变动后通知'}}
-                                    ]
-                                }]
-                                if self._my_send and self._my_send.other_channel else []
-                            )
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
                                 'props': {'cols': 12, 'md': 6},
                                 'content': [
                                     {'component': 'VTextField', 'props': {'model': 'cron', 'label': '[必填]检测周期', 'placeholder': '0 * * * *'}}
@@ -1646,7 +1800,32 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 6},
                                 'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'notification_token', 'label': '[可选] 通知方式', 'rows': 1, 'placeholder': '支持微信、Server酱、PushPlus、AnPush等Token或API'}}
+                                    {'component': 'VSwitch', 'props': {'model': 'local_scan', 'label': '本地扫码修改IP（首次使用先勾选此项保存，再到详情页扫码）'}}
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [
+                                    {'component': 'VTextarea', 'props': {'model': 'input_id_list', 'label': '[必填]应用ID（企业微信应用页面URL末尾获取，多个用英文逗号分隔。不要填100000x开头的自建应用ID）', 'rows': 1, 'placeholder': '如 1000002,1000003'}}
+                                ]
+                            }
+                        ]
+                    },
+                    # ---------- 首屏 · IP 来源 ----------
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [
+                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'IP来源按优先级生效：填了DDNS域名用DDNS；开了多WAN用多WAN出口；否则用公网IP探测。三者填了哪个用哪个，优先级从高到低'}}
                                 ]
                             }
                         ]
@@ -1658,9 +1837,21 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 6},
                                 'content': [
-                                    {'component': 'VTextField',
-                                     'props': {'model': 'company_domain', 'label': '[可选] DDNS域名',
-                                               'placeholder': '如 xxx.oicp.net，解析后得到动态公网IP'}}
+                                    {'component': 'VTextField', 'props': {'model': 'company_domain', 'label': '[可选] DDNS域名（优先级最高）', 'placeholder': '如 xxx.oicp.net，解析该域名得到动态公网IP'}}
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 3},
+                                'content': [
+                                    {'component': 'VSwitch', 'props': {'model': 'wan_enabled', 'label': '多WAN多出口'}}
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 3},
+                                'content': [
+                                    {'component': 'VTextField', 'props': {'model': 'wan_max_ips', 'label': '[多WAN]最多保留出口IP数', 'placeholder': '3'}}
                                 ]
                             }
                         ]
@@ -1672,7 +1863,64 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12},
                                 'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'input_id_list', 'label': '[必填]应用ID', 'rows': 1, 'placeholder': '输入应用ID,多个ID用英文逗号分隔。在企业微信应用页面URL末尾获取'}}
+                                    {'component': 'VTextarea', 'props': {'model': 'custom_ip_urls', 'label': '[可选] 自定义公网IP探测地址（仅单IP模式生效，多个用英文逗号分隔）', 'rows': 1, 'placeholder': '留空使用内置探测站；填写后优先用这些地址获取公网IP'}}
+                                ]
+                            }
+                        ]
+                    },
+                    # ---------- 首屏 · 通知 ----------
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [
+                                    {'component': 'VSwitch', 'props': {'model': 'use_mp_notify', 'label': 'MP内置通知'}}
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [
+                                    {'component': 'VSwitch', 'props': {'model': 'await_ip', 'label': 'IP变动后通知'}}
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [
+                                    {'component': 'VBtn', 'props': {'color': 'primary', 'variant': 'flat'}, 'text': '测试通知推送',
+                                     'events': {'click': {'api': 'plugin/DynamicWeChat/test_notify', 'method': 'get'}}}
+                                ]
+                            }
+                        ]
+                    },
+                    *(
+                        [{
+                            'component': 'VRow',
+                            'content': [
+                                {
+                                    'component': 'VCol',
+                                    'props': {'cols': 12},
+                                    'content': [
+                                        {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal',
+                                         'text': '「IP变动后通知」已开启，但下方未填写第三方通知Token，保存后该开关会被自动关闭。如需此功能请先填写Token'}}
+                                    ]
+                                }
+                            ]
+                        }]
+                        if self._await_ip and not third_token_present else []
+                    ),
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12},
+                                'content': [
+                                    {'component': 'VTextarea', 'props': {'model': 'notification_token', 'label': '[可选] 第三方通知Token', 'rows': 1,
+                                     'placeholder': '支持Server酱（sct开头）、IYUU（含iyuu）、PushPlus；多个Token用||分隔；结尾加||Q表示改IP成功时不发通知'}}
                                 ]
                             }
                         ]
@@ -1684,31 +1932,29 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12},
                                 'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'pinned_ips', 'label': '[可选] 固定可信IP', 'placeholder': '始终保留在可信IP列表中的固定IP，多个用英文逗号分隔，如: 1.2.3.4,5.6.7.8'}}
+                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
+                                     'text': ('已识别第三方通道：' + '、'.join(third_channels)) if third_channels
+                                             else '第三方通知未配置或无法识别Token。MP内置通知由MoviePilot统一发送，是否送达本页无法查询，可用「测试通知推送」按钮验证'}}
                                 ]
                             }
                         ]
                     },
+                    # ---------- 折叠 · 高级设置 ----------
                     {
                         'component': 'VRow',
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12},
+                                'props': {'cols': 12, 'md': 4},
                                 'content': [
-                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': '建议启用内建或自定义CookieCloud。通知支持两种方式：1. MP内置通知（由MoviePilot管理）2. 第三方通知（Server酱、PushPlus等）'}}
+                                    {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud'}}
                                 ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
+                            },
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12},
+                                'props': {'cols': 12, 'md': 8},
                                 'content': [
-                                    {'component': 'VAlert', 'props': {'type': 'info', 'text': 'MP内置通知：开启后使用MoviePilot配置的微信/Telegram等渠道。第三方通知：在通知方式中填写Token，多个用||分隔。两种通知独立工作，互不影响'}}
+                                    {'component': 'VTextField', 'props': {'model': 'pinned_ips', 'label': '[可选] 固定可信IP（始终保留，多个用英文逗号分隔）', 'placeholder': '如: 1.2.3.4,5.6.7.8'}}
                                 ]
                             }
                         ]
@@ -1728,43 +1974,119 @@ class DynamicWeChat(_PluginBase):
             "notification_token": "",
             "input_id_list": "",
             "pinned_ips": "",
-            "company_domain": ""
+            "company_domain": "",
+            "wan_enabled": False,
+            "wan_max_ips": "",
+            "custom_ip_urls": ""
         }
-
     def get_page(self) -> List[dict]:
         """
-        生成插件详情页（显示二维码和Cookie寿命）
+        生成插件详情页（只读状态总览 + 扫码区）
+        纯渲染方法：不修改任何实例状态（多次调用结果一致）。
+        状态条文案与配色见 REDESIGN_REQUIREMENTS.md 状态矩阵。
         """
-        current_time = datetime.now().timestamp()
-        if current_time > self._future_timestamp:
-            vaild_text = "二维码已过期或没有扫码任务"
-            color = "#9B50FF" if self._enabled else "#bbbbbb"
-            self._qr_code_image = None
-        else:
-            expiration_time = datetime.fromtimestamp(self._future_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-            vaild_text = f"二维码有效,过期时间: {expiration_time}"
-            color = "#32CD32"
-        if self._qr_code_image is None:
-            img_component = {
+        snap = self._page_snapshot()
+        now_ts = datetime.now().timestamp()
+
+        def _banner(text: str, bg: str) -> dict:
+            """一行状态条：纯文本 + 背景色（灰#bbbbbb/绿#40bb45/橙#e69b00/红#ff0000/黄#d4a017）"""
+            return {
                 "component": "div",
-                "text": "登录二维码都会在此展示,二维码有6秒延时。 [适用于Docker版]",
+                "text": text,
                 "props": {
                     "style": {
-                        "fontSize": "22px",
-                        "color": "#FFB90F",
+                        "fontSize": "16px",
+                        "color": "#ffffff",
+                        "backgroundColor": bg,
+                        "padding": "8px",
+                        "borderRadius": "5px",
                         "textAlign": "center",
-                        "margin": "20px"
+                        "display": "inline-block",
+                        "maxWidth": "100%",
+                        "wordBreak": "break-all"
                     }
                 }
             }
+
+        banners: List[dict] = []
+        # ---- 插件总开关 ----
+        if not snap["enabled"]:
+            banners.append(_banner("【插件未启用】所有自动任务停止，保存配置开启后才会运行", "#bbbbbb"))
+        elif not snap["has_app_id"]:
+            banners.append(_banner("【已启用，但未填写应用ID】不会执行任何检测，请到配置页填写", "#e69b00"))
         else:
+            banners.append(_banner("插件已启用，后台任务运行中", "#40bb45"))
+        # ---- Cookie 登录态 ----
+        if snap["enabled"] and not snap["has_app_id"]:
+            pass  # 总开关条已表达缺前置，Cookie 条不再重复
+        elif not snap["enabled"]:
+            banners.append(_banner("Cookie：插件未启用，不会保活", "#bbbbbb"))
+        elif not snap["has_cookie_ever"]:
+            banners.append(_banner(
+                "【尚未登录过】请到配置页勾选「本地扫码修改IP」保存，然后回到本页扫码",
+                "#e69b00"))
+        elif snap["cookie_valid"]:
+            lifetime = snap["cookie_lifetime"]
+            days = lifetime // 86400
+            hours = (lifetime % 86400) // 3600
+            minutes = (lifetime % 3600) // 60
+            banners.append(_banner(
+                f"【Cookie 有效】已保活 {days}天{hours}小时{minutes}分钟", "#40bb45"))
+        elif snap["none_streak"] >= 3:
+            banners.append(_banner(
+                f"【连续 {snap['none_streak']} 次无法确认登录状态】可能是网络不通或企业微信页面改版，"
+                "期间Cookie真实失效不能及时发现；请检查服务器到 work.weixin.qq.com 的连通性",
+                "#e69b00"))
+        else:
+            banners.append(_banner(
+                "【Cookie 已失效】自动恢复失败，请到配置页勾选「本地扫码修改IP」重新扫码",
+                "#ff0000"))
+        # ---- 保活循环 ----
+        if snap["enabled"] and snap["has_app_id"]:
+            if snap["keepalive_ok"] is None:
+                banners.append(_banner("保活校验：还没跑过第一轮（每10分钟自动校验一次）", "#bbbbbb"))
+            elif snap["keepalive_ok"] is True:
+                banners.append(_banner(f"保活校验：正常（{snap['keepalive_note']}）", "#40bb45"))
+            else:
+                banners.append(_banner(
+                    f"保活校验：{snap['keepalive_note']}；下轮将自动重试或通知", "#ff0000"))
+        # ---- IP 检测循环 ----
+        if snap["enabled"] and snap["has_app_id"]:
+            if not snap["cron"]:
+                banners.append(_banner("【未配置检测周期】IP变化不会被自动更新，请到配置页填写", "#e69b00"))
+            elif not snap["cron_valid"]:
+                banners.append(_banner(
+                    f"【检测周期格式错误】「{snap['cron']}」不是合法的 cron 表达式，IP 检测不会运行",
+                    "#ff0000"))
+            else:
+                note = snap["ip_check_note"] or "还没跑过第一轮"
+                color = "#bbbbbb" if snap["ip_check_ok"] is None else ("#40bb45" if snap["ip_check_ok"] else "#ff0000")
+                banners.append(_banner(
+                    f"IP检测（{snap['cron']}）：{note}；当前可信IP：{snap['current_ip_masked'] or '未记录'}",
+                    color))
+        # ---- DDNS ----
+        if snap["company_domain"] and snap["ddns_ok"] is False:
+            banners.append(_banner(
+                f"【DDNS域名解析失败】{snap['company_domain']} 上次解析未成功，本轮未改动可信IP", "#ff0000"))
+
+        # ---- 二维码区（三态分离，无写副作用） ----
+        qr_valid = snap["qr_future_timestamp"] > now_ts
+        if qr_valid:
+            qr_text = f"二维码有效，过期时间: {datetime.fromtimestamp(snap['qr_future_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}"
+            qr_color = "#40bb45"
+        elif snap["qr_running"]:
+            qr_text = "扫码任务运行中，二维码已过期或尚未生成，请重新发起扫码"
+            qr_color = "#d4a017"
+        else:
+            qr_text = "当前没有扫码任务。需要时到配置页勾选「本地扫码修改IP」保存，或发送 /push_qr 命令"
+            qr_color = "#bbbbbb"
+        if snap["qr_has_image"] and qr_valid:
             qr_image_data = self._qr_code_image.getvalue()
             base64_image = base64.b64encode(qr_image_data).decode('utf-8')
-            img_src = f"data:image/png;base64,{base64_image}"
             img_component = {
                 "component": "img",
                 "props": {
-                    "src": img_src,
+                    "src": f"data:image/png;base64,{base64_image}",
                     "style": {
                         "width": "auto",
                         "height": "auto",
@@ -1775,31 +2097,28 @@ class DynamicWeChat(_PluginBase):
                     }
                 }
             }
-        if self._is_special_upload and self._enabled:
-            cookie_lifetime_days = self._cookie_lifetime // 86400
-            cookie_lifetime_hours = (self._cookie_lifetime % 86400) // 3600
-            cookie_lifetime_minutes = (self._cookie_lifetime % 3600) // 60
-            bg_color = "#40bb45" if self._cookie_valid else "#ff0000"
-            cookie_lifetime_text = f"Cookie 已使用: {cookie_lifetime_days}天{cookie_lifetime_hours}小时{cookie_lifetime_minutes}分钟"
-            cookie_lifetime_component = {
+        else:
+            img_component = {
                 "component": "div",
-                "text": cookie_lifetime_text,
+                "text": "登录二维码会在此展示（生成后约6秒可见）",
                 "props": {
                     "style": {
-                        "fontSize": "18px",
-                        "color": "#ffffff",
-                        "backgroundColor": bg_color,
-                        "padding": "10px",
-                        "borderRadius": "5px",
+                        "fontSize": "16px",
+                        "color": "#888888",
                         "textAlign": "center",
-                        "marginTop": "10px",
-                        "display": "block"
+                        "margin": "10px"
                     }
                 }
             }
-        else:
-            cookie_lifetime_component = None
-        base_content = [
+        # ---- 验证码等待条 ----
+        captcha_component = None
+        if snap["waiting_captcha"]:
+            captcha_component = _banner(
+                "【正在等待短信验证码】请在企业微信应用发送 6 位数字并以？结尾（如 110301？），"
+                "或发送命令 /wxcode 110301",
+                "#d4a017")
+
+        return [
             {
                 "component": "div",
                 "props": {"style": {"textAlign": "center"}},
@@ -1812,56 +2131,19 @@ class DynamicWeChat(_PluginBase):
                                 "justifyContent": "center",
                                 "alignItems": "center",
                                 "flexDirection": "column",
-                                "gap": "10px"
+                                "gap": "8px"
                             }
                         },
                         "content": [
-                            {
-                                "component": "div",
-                                "text": vaild_text,
-                                "props": {
-                                    "style": {
-                                        "fontSize": "22px",
-                                        "fontWeight": "bold",
-                                        "color": "#ffffff",
-                                        "backgroundColor": color,
-                                        "padding": "8px",
-                                        "borderRadius": "5px",
-                                        "textAlign": "center",
-                                        "marginBottom": "10px",
-                                        "display": "inline-block"
-                                    }
-                                }
-                            },
-                            cookie_lifetime_component if cookie_lifetime_component else {},
+                            *banners,
+                            _banner(qr_text, qr_color),
                         ]
                     },
-                    img_component
-                ]
-            },
-            # 测试通知按钮
-            {
-                "component": "div",
-                "props": {"style": {"textAlign": "center", "marginTop": "20px"}},
-                "content": [
-                    {
-                        "component": "VBtn",
-                        "props": {
-                            "color": "primary",
-                            "variant": "flat",
-                        },
-                        "text": "测试通知推送",
-                        "events": {
-                            "click": {
-                                "api": "plugin/DynamicWeChat/test_notify",
-                                "method": "get",
-                            }
-                        }
-                    }
+                    img_component,
+                    captcha_component or {},
                 ]
             }
         ]
-        return base_content
 
     async def _test_notify_async(self):
         """

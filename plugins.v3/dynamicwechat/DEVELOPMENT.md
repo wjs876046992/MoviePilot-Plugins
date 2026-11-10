@@ -76,3 +76,74 @@ v3.0.2/3.0.1/3.0.0）。相对 V2 的 2.1.9，3.0.2 正好是主版本跃迁 —
 - [ ] 配置页五组控件齐全、详情页二维码/Cookie寿命/测试通知按钮正常
 - [ ] 一轮保活（10 分钟 cron）与一轮 IP 检测日志无异常
 - [ ] DEBUG=true 下无旧导入告警
+
+---
+
+## 3.1.0 页面重设计（详情页 + 配置页）
+
+### 问题
+
+用户认为两个页面设计不合理。需求分析（见同目录 REDESIGN_REQUIREMENTS.md，P1–P11
+逐条带行号证据）确认：后端早已区分的运行时状态（登录三态、两个独立循环、验证码
+等待、通知通道识别结果）在页面上完全不可见，且现有两处信息还挂错了条件。
+
+#### 症状最重的三个
+
+1. **Cookie 失效红条挂错对象**：整条 gated 在 `_is_special_upload and _enabled`
+   上，而该标志只在扫码登录/CookieCloud 写回成功时为 True——Cookie 失效时
+   （最需要红条的时刻）红条整个消失。这是 Plugin_Dev_Workflow §1.5 点名的
+   「提示嵌在被推到极端就消失的条件下」反例。
+2. **「IP变动后通知」开关静默消失**：未配第三方 Token 时开关不渲染，且
+   init_plugin 会静默把它复位 False——「看起来开了、保存后没了」。
+3. **通知 Token placeholder 教用户填无效内容**：写「支持微信、Server酱、
+   PushPlus、AnPush」，但 MySender 只识别 sct 前缀/IYUU/其余按 PushPlus——
+   微信与 AnPush 填了根本不被识别。
+
+#### 误判记录
+
+初版快照用 `_is_special_upload` 判「是否曾经登录过」，页面形状测试立刻抓出：
+「登录过但 Cookie 已失效」会被误判成「从未登录」（`_is_special_upload` 失效后
+被重置）。修正为 `_is_special_upload or _saved_cookie or _cookie_lifetime>0`
+三条件或——**单标志不足以表达「曾经登录」，测试先行抓住了这个设计漏洞。**
+
+### 做法
+
+- 新增 `_page_snapshot()`：只读汇总状态矩阵所需全部字段，`get_page` 消费；
+  不改任何写路径。`get_page` 改为纯渲染（去掉渲染中 `_qr_code_image = None`
+  的写副作用，测试断言连续两次调用不改变实例状态）。
+- 详情页：五组状态条（总开关/Cookie 登录态/保活循环/IP 检测循环/验证码等待）
+  + 二维码三态分离（无任务灰/过期黄/有效绿，文案互不相同）。
+- 配置页四区重排（基础/IP来源/通知/高级）；`await_ip` 恒显示，缺前置时其上
+  方插橙色 VAlert 警示「保存后会被自动关闭」；测试按钮从详情页移入通知区；
+  placeholder 只写真实支持的渠道并紧邻说明 `||`/`||Q`；删除底部两条游离 VAlert。
+- 魔法语法拆字段（用户拍板）：`||wanN` → `wan_enabled` 开关 + `wan_max_ips`
+  数字框；`ids||url1,url2` → `custom_ip_urls` 列表框。`_migrate_legacy_magic_strings()`
+  在 init_plugin 读配置后做一次幂等迁移，旧语法兼容解析一轮。
+- 必填项缺失（应用ID/检测周期）在启用时发 systemmessage 站内提示，不再只写日志。
+
+### 否决的方案
+
+- **验证码做成详情页输入框**：需新端点与新交互路径，用户拍板本轮只做「等待
+  状态可见」，提交仍走企微消息/`/wxcode`。
+- **get_render_mode 改 Vue**：vuetify JSON 表单已够表达状态矩阵，改 Vue 引入
+  构建链与联邦 CSS 负担，收益不成比例。
+- **实时轮询刷新详情页**：宿主按需快照渲染，维持现状。
+
+### 边界
+
+- MP 内置通知的「失败态」页面无法表达：宿主 `post_message` 契约返回 None、
+  失败不上报。文案如实写「是否送达本页无法查询，可用测试按钮验证」，
+  不编造「发送成功」。
+- 状态条是进入详情页时的快照，不轮询——「上次结果」字段由后台流程在流程末尾
+  写入，刷新页面即见最新。
+- 两个已知缺陷（ChangeIP 二维码分支、_push_qr_code_async 守卫）仍未修：
+  页面如实显示其后果，行为修复另行一轮。
+
+### 测试
+
+`tests/v3/dynamicwechat/test_page_shape.py` 11 项（--noconftest）：以
+textwrap.dedent 切出 `get_page`/`_page_snapshot`/`_migrate_legacy_magic_strings`
+源码在 stub 命名空间 exec，object 级 stub 实例调用，逐条断言 REDESIGN_REQUIREMENTS
+验收标准 1–8、10 + 迁移逻辑（多WAN/自定义URL/幂等/无后缀不动）。
+contract 测试的版本三元组断言同步到 3.1.0。
+页面形状测试过程中抓出两处真问题（见误判记录），证明这套测试有效。

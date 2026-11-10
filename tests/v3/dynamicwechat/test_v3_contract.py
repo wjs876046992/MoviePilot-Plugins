@@ -91,7 +91,7 @@ def test_plugin_source_has_no_renamed_v3_symbols():
 
 
 def test_v3_contract_versions():
-    """V3 版本主跳（2.1.9 → 3.0.2）、索引一致、旧条目阻断 V3 回退。"""
+    """V3 版本演进（2.1.9 → 3.0.2 迁移 → 3.1.0 页面重设计）、索引一致、旧条目阻断 V3 回退。"""
     tree = ast.parse(PLUGIN_SOURCES["__init__.py"])
     version = None
     for node in ast.walk(tree):
@@ -99,11 +99,11 @@ def test_v3_contract_versions():
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "plugin_version":
                     version = ast.literal_eval(node.value)
-    assert version == "3.0.2"
+    assert version == "3.1.0"
 
     v3 = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))[PLUGIN_ID]
-    assert v3["version"] == "3.0.2"
-    assert next(iter(v3["history"])) == "v3.0.2"
+    assert v3["version"] == "3.1.0"
+    assert next(iter(v3["history"])) == "v3.1.0"
     assert v3["system_version"] == ">=3.0.0"
 
     v2 = json.loads((ROOT / "package.v2.json").read_text(encoding="utf-8"))[PLUGIN_ID]
