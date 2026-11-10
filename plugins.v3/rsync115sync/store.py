@@ -229,6 +229,9 @@ class Store:
                     verified_at      REAL,
                     gen_requested_at REAL,
                     retry_count      INTEGER NOT NULL DEFAULT 0,
+                    -- 重试预算耗尽时刻（NULL=未达上限）。达上限后移出自动重试，
+                    -- 但仍留在 failed 清单等人工处理；手动重试清零（NULL）。
+                    exhausted_at     REAL,
                     last_error       TEXT,
                     -- failed 的成因（missing / corrupt）。与 status 同生命周期：
                     -- 成功离开 failed 时清空（clear_fail_reason）。
@@ -279,7 +282,8 @@ class Store:
         # 结论），它随那整套判定一起删了 —— 已经建过表的机器上那一列会留着，
         # 空着不碍事；这里不再补，免得新库上凭空多出一列没人写的字段。
         # Only columns the current build actually writes are added here.
-        want = {"files": [("origin", "TEXT"), ("fail_reason", "TEXT")]}
+        want = {"files": [("origin", "TEXT"), ("fail_reason", "TEXT"),
+                          ("exhausted_at", "REAL")]}
         try:
             with self._connect() as conn:
                 for table, cols in want.items():
@@ -321,7 +325,9 @@ class Store:
                gen_requested_at: Optional[float] = None,
                origin: Optional[str] = None,
                last_error: Optional[str] = None,
-               fail_reason: Optional[str] = None) -> bool:
+               fail_reason: Optional[str] = None,
+               retry_count: Optional[int] = None,
+               exhausted_at: Optional[float] = None) -> bool:
         """
         插入或更新一行。**只覆盖显式传入的字段**（None 表示"不动"），
         因此调用方不必先读一遍再写 —— 避免读改写竞态。
@@ -331,9 +337,12 @@ class Store:
         （登记观察、转疑似、移回观察期）都会把入库来源悄悄重置成 `legacy`，
         "是扫描漏了还是 webhook 漏了"这个问题从此再也答不出来。
         现在：INSERT 时缺省补 `legacy`，UPDATE 时只在显式传值才覆盖。
-        `retry_count` 列保留在表里但**不再读写**：它从来没有写入者
-        （`bump_retry` 无任何调用方），看板那一栏长期显示 0。删掉参数与自增，
-        不做 DROP COLUMN 迁移 —— 留一个空列无害，迁移有风险。
+        `retry_count` / `exhausted_at`（v0.8.1 重新接线）：重试预算的两列。
+        `retry_count` 是**覆盖**语义（显式传值才算，缺省保持旧值 —— 但值为
+        None 与值为 0 都能用 COALESCE 表达，因为 None=不动、0=显式清零）；
+        `exhausted_at` 达上限时写时间戳、手动重试清零用 NULL —— 但 upsert 的
+        COALESCE **写不了 NULL**（同 `clear_field` 的教训），所以"清零"必须走
+        `clear_field("exhausted_at")`，不在这里表达。
         `fail_reason`（v0.7.0）与 status `failed` 配套：记录缺失/残缺成因。
         它与 status 同生命周期（成功离开 failed 时必须清空），所以走 upsert
         而不是列视图 —— `clear_fail_reason` 负责清空。
@@ -350,8 +359,9 @@ class Store:
                     INSERT INTO files (key, pair, rel_path, status, ingest_source,
                                        src_mtime, enqueued_at, synced_at, verified_at,
                                        gen_requested_at, last_error, fail_reason,
+                                       retry_count, exhausted_at,
                                        origin, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET
                         status           = excluded.status,
                         -- COALESCE：新值为 NULL 时保留旧值（"不动"语义）
@@ -362,17 +372,22 @@ class Store:
                         verified_at      = COALESCE(excluded.verified_at, files.verified_at),
                         gen_requested_at = COALESCE(excluded.gen_requested_at, files.gen_requested_at),
                         last_error       = COALESCE(excluded.last_error, files.last_error),
-                        -- fail_reason：仅显式传值才覆盖（与"不动"语义一致）
                         fail_reason      = COALESCE(excluded.fail_reason, files.fail_reason),
+                        retry_count      = COALESCE(?, files.retry_count),
+                        exhausted_at     = COALESCE(excluded.exhausted_at, files.exhausted_at),
                         origin           = COALESCE(excluded.origin, files.origin),
                         updated_at       = excluded.updated_at
                     """,
                     (key, pair, rel_path, status, ingest_source or SOURCE_LEGACY,
                      src_mtime, enqueued_at,
                      synced_at, verified_at, gen_requested_at, last_error, fail_reason,
+                     # INSERT 分支：NOT NULL DEFAULT 0，显式 None 会违反约束，
+                     # 缺省补 0（DEFAULT 只在省略列时生效，显式 NULL 不触发）。
+                     retry_count if retry_count is not None else 0,
+                     exhausted_at,
                      origin, now,
                      # UPDATE 分支用的独立参数：None 才能表达"不动"
-                     ingest_source),
+                     ingest_source, retry_count),
                 )
             return True
         except Exception:

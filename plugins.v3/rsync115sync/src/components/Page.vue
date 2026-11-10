@@ -609,6 +609,17 @@
                   variant="flat"
                   class="font-weight-bold"
                 >{{ entry.kind === 'missing' ? '待同步' : '文件残缺' }}</v-chip>
+                <v-chip
+                  v-if="entry.exhausted"
+                  size="x-small"
+                  color="error"
+                  variant="tonal"
+                  class="font-weight-bold"
+                >已停止自动重试</v-chip>
+                <span
+                  v-if="entry.retryCount > 0 && !entry.exhausted"
+                  class="text-caption text-medium-emphasis"
+                >已试 {{ entry.retryCount }} 次</span>
                 <v-btn
                   size="x-small"
                   variant="tonal"
@@ -1481,6 +1492,9 @@ const failedEntries = computed(() =>
     // detail 是后端给的中文类别（缺失/残缺）；缺省时按 missing 渲染，
     // 保证旧后端（没有 detail 字段）也能显示而不是空白。
     kind: it.detail === '残缺' ? 'corrupt' : 'missing',
+    // v0.8.1：重试预算（后端 /items 给出，旧后端缺省按 0 / 未达上限）。
+    retryCount: it.retry_count || 0,
+    exhausted: !!it.exhausted,
   }))
 )
 

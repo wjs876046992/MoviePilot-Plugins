@@ -207,6 +207,8 @@ from .constants import (  # noqa: E402
     P115_STRM_COMMAND as _P115_STRM_COMMAND,
     P115_STRM_HELPER_PLUGIN as _P115_STRM_HELPER_PLUGIN,
     RETRY_KEYWORD_LIMIT as _RETRY_KEYWORD_LIMIT,
+    AUTO_RETRY_ENABLED_DEFAULT as _AUTO_RETRY_ENABLED_DEFAULT,
+    AUTO_RETRY_LIMIT_DEFAULT as _AUTO_RETRY_LIMIT_DEFAULT,
     SIDECAR_EXTS as _SIDECAR_EXTS,
     STRM_CHECK_INTERVAL as _STRM_CHECK_INTERVAL,
     STRM_GEN_DIR_LIMIT,
@@ -253,7 +255,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.8.0"
+    plugin_version = "0.8.1"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -408,6 +410,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         # （台账 status=failed），retry 模式的候选就是它 —— 两条路径共一个预算。
         # One failure list in the ledger; retry candidates come from it.
         self._failed_files: Dict[str, Dict[str, Any]] = {}
+        # 上传失败自动重试预算（v0.8.1）：默认关闭，见 constants 说明。
+        self._auto_retry_enabled: bool = _AUTO_RETRY_ENABLED_DEFAULT
+        self._auto_retry_limit: int = _AUTO_RETRY_LIMIT_DEFAULT
         # 失败清单的重试**不能**独占每一轮 cron：只要队列非空就 return 的话，
         # 一个永远修不好的条目（例如源文件已被删除）会让补传队列永久排队。
         # 若一轮 retry 既没恢复任何条目、也没有实际传输，就把重试推迟到
@@ -614,6 +619,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             if config.get("rate_limit_keywords"):
                 self._rate_limit_keywords = config.get("rate_limit_keywords")
             self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
+            # 上传失败自动重试预算（v0.8.1）：默认关闭，见 constants 说明。
+            self._auto_retry_enabled = bool(
+                config.get("auto_retry_enabled", _AUTO_RETRY_ENABLED_DEFAULT))
+            try:
+                self._auto_retry_limit = max(
+                    1, min(9, int(config.get("auto_retry_limit")
+                                   or _AUTO_RETRY_LIMIT_DEFAULT)))
+            except (TypeError, ValueError):
+                self._auto_retry_limit = _AUTO_RETRY_LIMIT_DEFAULT
             # strm 交叉验证配置（总开关与宽限期；每映射的 strm_dir 在 sync_pairs 内）
             self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
             self._strm_grace_minutes = self._read_grace_minutes(config)
@@ -2393,6 +2407,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 "backoff_secs": self._backoff_secs,
                 "rate_limit_keywords": self._rate_limit_keywords,
                 "force_cooldown_days": self._force_cooldown_days,
+                "auto_retry_enabled": self._auto_retry_enabled,
+                "auto_retry_limit": self._auto_retry_limit,
             }
         }
 
@@ -2422,6 +2438,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         if config.get("rate_limit_keywords"):
             self._rate_limit_keywords = config.get("rate_limit_keywords")
         self._force_cooldown_days = max(0, int(config.get("force_cooldown_days") or 7))
+        # 上传失败自动重试预算（与 init_plugin 保持一致）
+        self._auto_retry_enabled = bool(
+            config.get("auto_retry_enabled", _AUTO_RETRY_ENABLED_DEFAULT))
+        try:
+            self._auto_retry_limit = max(
+                1, min(9, int(config.get("auto_retry_limit")
+                               or _AUTO_RETRY_LIMIT_DEFAULT)))
+        except (TypeError, ValueError):
+            self._auto_retry_limit = _AUTO_RETRY_LIMIT_DEFAULT
         # strm 交叉验证配置（与 init_plugin 保持一致）
         self._strm_check_enabled = bool(config.get("strm_check_enabled", True))
         self._strm_grace_minutes = self._read_grace_minutes(config)
@@ -2630,7 +2655,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             k for k, v in now_failed.items()
             if isinstance(v, dict) and v.get("reason") == _store_mod.FAIL_CORRUPT]
 
-    def _mark_failed(self, key: str, reason: str, ts: Optional[float] = None) -> None:
+    def _mark_failed(self, key: str, reason: str, ts: Optional[float] = None,
+                     count: Optional[int] = None) -> None:
         """
         写 failed 状态，并把同一个 key 从其它活跃视图的缓存里摘掉。
 
@@ -2639,12 +2665,125 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         台账与缓存就分叉了：`/status` 按缓存说"在观察"，`/items` 按台账说
         "失败"；重载后观察状态直接消失（strm 不再复核）。所以统一在这里做
         「写目标 + 摘源缓存」—— 只摘缓存，不删行。
+
+        ⚠️ v0.8.1：必须**保留** prev 的 `count` / `exhausted_at`（内存缓存会被
+        整体替换，丢这两个键会让重试预算在内存层面归零、与台账分叉）。
+        `count` 显式传值才覆盖，否则沿用 prev。
         """
-        self._failed_files[key] = {"ts": ts if ts else time.time(), "reason": reason}
+        prev = self._failed_files.get(key)
+        prev = prev if isinstance(prev, dict) else {}
+        entry = {
+            "ts": ts if ts else time.time(),
+            "reason": reason,
+            "count": int(count) if count is not None else int(prev.get("count", 0)),
+        }
+        if prev.get("exhausted_at"):
+            entry["exhausted_at"] = prev["exhausted_at"]
+        self._failed_files[key] = entry
         for view_name in ("_pending_queue", "_strm_watch", "_strm_suspects"):
             view = getattr(self, view_name, None)
             if view is not None:
                 _store_mod.forget_key(view, key)
+
+    def _mark_exhausted(self, key: str) -> None:
+        """
+        把 failed 行标记为「重试预算耗尽」：写 exhausted_at，仍保持 status=failed。
+
+        达上限后移出**自动**重试候选，但仍留在失败清单里（看板可见、可手动
+        重试、force 全量对账可清退）。达上限告警由结算时检测「本轮新 exhausted」
+        的那批 key 统一发，不在这里逐条发。
+        """
+        entry = dict(self._failed_files.get(key) or {})
+        entry["exhausted_at"] = time.time()
+        self._failed_files[key] = entry
+
+    def _reset_retry_budget(self, key: str) -> bool:
+        """
+        手动重试发起：清零计数与达上限标志，让该文件重新进入自动预算。
+
+        返回值：该 key 是否真的在失败清单里（不在则无事可做）。
+        """
+        entry = self._failed_files.get(key)
+        if not isinstance(entry, dict):
+            return False
+        entry = dict(entry)
+        entry["count"] = 0
+        entry.pop("exhausted_at", None)
+        self._failed_files[key] = entry
+        # `exhausted_at` 置 NULL 必须走 clear_field —— upsert 的 COALESCE
+        # 无法把列写回 NULL（见 store.clear_field 的说明）。
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None:
+            try:
+                ledger.clear_field(key, "exhausted_at")
+            except Exception:
+                pass
+        return True
+
+    def _notify_retry_exhausted(self, keys: List[str]) -> None:
+        """
+        达上限告警：一批文件耗尽自动重试预算，通知用户「已停止、需人工处理」。
+
+        只发一次（只在 exhausted 从 NULL → 非 NULL 的转变瞬间触发，由结算的
+        `newly_exhausted` 保证）；`notify` 关闭时静默（状态仍已落盘，看板可见）。
+        """
+        if not self._notify:
+            logger.info(f"[Rsync115Sync] 📉 {len(keys)} 个文件耗尽自动重试预算"
+                        f"（通知未开启，仅落盘）")
+            return
+        mtype = self._plugin_mtype()
+        listed = "\n".join(f"• {k}" for k in keys[: _MAX_LOGGED_PATHS])
+        more = (f"\n（另有 {len(keys) - _MAX_LOGGED_PATHS} 个未列出）"
+                if len(keys) > _MAX_LOGGED_PATHS else "")
+        text = (
+            f"📉 上传失败自动重试已停止\n"
+            f"以下 {len(keys)} 个文件连续失败 {self._auto_retry_limit} 次，"
+            f"已停止自动重试、等待人工处理：\n{listed}{more}\n\n"
+            f"处理方式：看板「对账异常」里点重试（会重新计数），"
+            f"或 /rsync_ignore <剧名> 忽略。"
+        )
+        if mtype is None:
+            logger.warning(f"[Rsync115Sync] 宿主 MessageType 不可用，已跳过达上限告警"
+                           f"以免广播：{text.replace(chr(10), ' | ')}")
+        else:
+            self.post_message(mtype=mtype, title="115网盘上传失败", text=text)
+
+    def _reset_all_retry_budgets(self) -> int:
+        """
+        手动重试（整清单入口）发起：清零整个失败清单的预算，返回清零条数。
+
+        ⚠️ 台账模式下走**一条**批量 SQL（review R5）：逐 key 循环是每条两次
+        SQLite 往返，失败清单有几百条时看板按钮会明显卡住。降级模式（无台账）
+        才退回逐 key 的 dict 操作。两条路径都必须**同时**更新内存缓存与台账。
+        """
+        ledger = getattr(self, "_ledger", None)
+        if ledger is not None and getattr(ledger, "usable", False):
+            n = ledger._write_count(
+                "UPDATE files SET retry_count = 0, exhausted_at = NULL "
+                "WHERE status = ? AND (retry_count != 0 OR exhausted_at IS NOT NULL)",
+                (_store_mod.STATUS_FAILED,))
+            # 内存缓存同步重置（避免缓存领先台账的分叉窗口）
+            for k, v in list(self._failed_files.items()):
+                if isinstance(v, dict) and (v.get("count") or v.get("exhausted_at")):
+                    entry = dict(v)
+                    entry["count"] = 0
+                    entry.pop("exhausted_at", None)
+                    self._failed_files[k] = entry
+            return n
+        # 降级模式：dict 就是真相源
+        return sum(1 for k in list(self._failed_files.keys())
+                   if self._reset_retry_budget(k))
+
+    def _retryable_failed_keys(self) -> List[str]:
+        """
+        自动重试的候选 = failed 且**未耗尽预算**（`exhausted_at` 为空）。
+
+        ⚠️ 手动入口（`/rsync_retry` 无参、看板 `/retry`）会先 `_reset_all_retry_budgets`
+        把 exhausted 清零，因此这个候选集在手动触发时自然包含全部 failed ——
+        自动调度与手动重试共用这一个取数口径，不另设分支。
+        """
+        return [k for k, v in self._failed_files.items()
+                if isinstance(v, dict) and not v.get("exhausted_at")]
 
     def _prune_ignored_failed(self) -> None:
         """
@@ -2734,7 +2873,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             getattr(self, "_failed_files", None),
             _store_mod.LedgerMapping(self._ledger, _store_mod.STATUS_FAILED,
                                      ts_field="verified_at",
-                                     extra_from_value={"reason": "fail_reason"},
+                                     extra_from_value={"reason": "fail_reason",
+                                                       "count": "retry_count",
+                                                       "exhausted_at": "exhausted_at"},
                                      events={"reason": "fail"}))
         # 「已请助手补生成过」这一列**与 status 正交**（一个文件可以既在冷却队列
         # 又被补生成过），因此它走**列视图**而不是某个 status 替身 —— 见
@@ -3254,6 +3395,10 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             reason = r.get("fail_reason") or ""
             extra["detail"] = {"missing": "缺失", "corrupt": "残缺"}.get(reason, reason)
             extra["fail_reason"] = reason
+            # v0.8.1：重试预算。`retry_count` = 已自动重试失败的次数；
+            # `exhausted` = 已达上限、停止自动重试（看板据此标「已停止」）。
+            extra["retry_count"] = int(r.get("retry_count") or 0)
+            extra["exhausted"] = bool(r.get("exhausted_at"))
         return {
             "key": r.get("key", ""),
             "state": state,
@@ -3640,7 +3785,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         ⚠️ 这里的顺序在 2026-09-25 被**反转过**，原因是旧顺序会让主任务饿死：
 
             旧：if self._resume_backfill_if_pending(): return   # 补传非空 → 直接返回
-                self._start_sync_thread(mode="ready")
+                self._start_sync_thread(mode="ready", manual_trigger=False)
 
         补传队列是"存量"（可能是几千条），而每个 cron tick 都会启动一批补传就
         return。批次上限 200、窗口配额 500/30min 的情况下，一个几千条的队列会
@@ -3675,7 +3820,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         # 若 ready 本轮确实有活干，补传推迟到下一个 tick（`_resume_backfill_if_pending`
         # 每轮都会再试，且队列有限、自终止，不会因此永远排不上）。
         if self._has_ready_files():
-            self._start_sync_thread(mode="ready")
+            self._start_sync_thread(mode="ready", manual_trigger=False)
             return
         # 失败清单重试（v0.7.0）：ready 与 backfill 的失败现在共用这一份清单，
         # 节奏沿用同一个 cron 与风控闸（批次上限、窗口配额、退避）。
@@ -3683,15 +3828,17 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         # 时效上比存量补传更接近 ready；配额不足时下一轮再来。
         # ⚠️ 但不能**永远**独占：上一轮 retry 毫无进展时会让出 30 分钟，
         # 否则一个修不好的条目会把补传队列永久卡住（见 `_failed_retry_stalled_until`）。
-        if self._failed_files and time.time() >= getattr(
+        # ⚠️ v0.8.1：候选只用「未耗尽预算」的 failed —— 达上限的文件不再自动
+        # 重试，交给人工。
+        if self._retryable_failed_keys() and time.time() >= getattr(
                 self, "_failed_retry_stalled_until", 0.0):
-            self._start_sync_thread(mode="retry")
+            self._start_sync_thread(mode="retry", manual_trigger=False)
             return
         if self._resume_backfill_if_pending():
             return
         # 两者都没活干：仍然跑一次 ready，让它完成队列清理（源端已消失的条目出队）
         # 并如实回报「本轮无需同步」。
-        self._start_sync_thread(mode="ready")
+        self._start_sync_thread(mode="ready", manual_trigger=False)
 
     def _has_ready_files(self) -> bool:
         """
@@ -3711,14 +3858,24 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 continue
         return False
 
-    def _start_sync_thread(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
+    def _start_sync_thread(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None, manual_trigger: bool = True):
         """
         在后台线程启动一次同步，避免阻塞宿主事件循环。
 
         Run one sync in a background daemon thread so the host event loop is not
         blocked. Execution is serialised by self._lock inside _execute_sync.
+
+        ⚠️ `manual_trigger`（review R3）：达上限告警只发**定时轮**。人工入口
+        （看板按钮、聊天命令、HTTP API）都在场，结果已通过回执/看板可见；
+        看板重试按钮走 HTTP、没有 channel_event，**不能**按 channel_event 判定
+        人工与否 —— 因此这是显式参数。默认 True（人工入口占多数）；
+        `_scheduled_sync` 的三处定时调用显式传 False。
         """
-        threading.Thread(target=self._execute_sync, args=(mode, custom_files, channel_event), daemon=True).start()
+        threading.Thread(
+            target=self._execute_sync,
+            args=(mode, custom_files, channel_event),
+            kwargs={"manual_trigger": manual_trigger},
+            daemon=True).start()
 
     # ---- 传输进度 / transfer progress ------------------------------------
 
@@ -3853,11 +4010,15 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             self._progress_update(file=name)
         return text
 
-    def _execute_sync(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None):
+    def _execute_sync(self, mode: str = "ready", custom_files: Optional[List[str]] = None, channel_event: Optional[Event] = None, manual_trigger: bool = False):
         """
         同步主流程：本插件唯一真正与 115 交互的地方。
 
         Core sync routine — the single place that actually talks to the 115 mount.
+
+        :param manual_trigger: 是否人工发起（看板按钮 / 聊天命令）。达上限告警
+            只在**定时轮**发（人工在场，结果已通过回执/看板可见，再推一条聊天
+            消息是噪音）。
 
         三种模式 / three modes:
           ready    — 处理冷却到期的入库文件，走 --files-from 定向传输
@@ -3898,6 +4059,18 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
 
         try:
             self._is_running = True
+            # v0.8.1（review R4）：「人工发起的 retry = 人工介入 = 清零预算」
+            # 收口在**这一处**，而不是散在各入口。判定用 `mode == "retry"` +
+            # `manual_trigger`：定时调度开的 retry 线程 manual_trigger=False，
+            # 不清零（否则达上限等于没达）。custom_files 与整清单两种形态
+            # 都被覆盖 —— 未来新增的看板按钮/工作流操作只要走
+            # `_start_sync_thread(mode="retry", manual_trigger=True)` 就自动正确。
+            if mode == "retry" and manual_trigger:
+                if custom_files:
+                    for _k in custom_files:
+                        self._reset_retry_budget(_k)
+                else:
+                    self._reset_all_retry_budgets()
             start_time = datetime.now()
             self._last_status["state"] = "running"
             self._last_status["start_time"] = start_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -4096,7 +4269,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                         # `_last_status` 的两个数组，而 ready 失败项从不进那两个
                         # 数组（它们留在冷却队列里），于是「重试」只覆盖 backfill
                         # 与 force 的失败项，ready 的失败项永远走不到这里。
-                        raw_target_keys = list(self._failed_files.keys())
+                        raw_target_keys = self._retryable_failed_keys()
                     origin = ("（来自用户指定）" if custom_files
                               else ("（补传模式，无候选）" if mode == "backfill" else "（来自历史异常清单）"))
                     logger.info(f"[Rsync115Sync] [{pair_name}] 候选 {len(raw_target_keys)} 个{origin}")
@@ -4594,13 +4767,48 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 if ledger is not None:
                     try:
                         ledger.clear_fail_reason(k)
+                        # ⚠️ 必须同清 exhausted_at / retry_count（review R1）：
+                        # 只清 fail_reason 的话，列上残留的 exhausted_at 会在
+                        # 该文件**下一次**失败时经 `_mark_failed` 的 prev 保留
+                        # 逻辑与 upsert COALESCE 复活 —— 表现为"从未达上限
+                        # 却显示已停止自动重试、且永远不自动重试"，重载后才
+                        # 与内存分叉暴露。
+                        ledger.clear_field(k, "exhausted_at")
+                        ledger.set_field(k, "retry_count", 0)
                     except Exception:
                         pass
+            newly_exhausted: List[str] = []
             for k, reason in round_failed.items():
                 prev = self._failed_files.get(k)
+                is_new = not isinstance(prev, dict)
                 # 保留首次判失败的时刻：它回答"这个问题存在多久了"
                 ts = (prev or {}).get("ts", now_fail_ts) if isinstance(prev, dict) else now_fail_ts
-                self._mark_failed(k, reason, ts)
+                # 计数：只有「重试轮且该文件上一轮就在失败清单里」才 +1。
+                # 首次失败（ready/backfill）count 保持 0；force 全量对账的重写
+                # 不消耗预算（它没有"再试一次"的语义）。
+                # ⚠️ 开关关闭时**不计数**（review R2）：否则长期失败的文件会
+                # 静默攒出几十次计数，用户一开开关立刻"达上限"—— 宣称
+                # "连续失败 3 次"而实际是 11 次，通知本身就是假的。
+                prev_count = int(prev.get("count", 0)) if isinstance(prev, dict) else 0
+                if (mode == "retry" and not is_new
+                        and self._auto_retry_enabled):
+                    new_count = prev_count + 1
+                else:
+                    new_count = prev_count
+                self._mark_failed(k, reason, ts, count=new_count)
+                # 达上限判定：仅当开关开启、且是从「未达上限」跨到「达上限」。
+                # 用 exhausted_at 承载「已停止」这个事实（NULL=未达），
+                # 判定条件是「新计数达到上限」而非「计数 >= 上限」——
+                # 用户之后把上限改大，已判定的文件不会被追溯推翻。
+                if (mode == "retry" and self._auto_retry_enabled
+                        and new_count >= self._auto_retry_limit
+                        and not (isinstance(prev, dict) and prev.get("exhausted_at"))):
+                    # 只收集，不在此处落盘 —— exhausted_at 的写入延迟到本轮
+                    # 结尾与告警一起做（review R6：标记与通知之间隔了太多
+                    # 可抛异常的步骤，写早了会把 NULL→非NULL 的转变「烧掉」，
+                    # 异常后永远不再发告警）。判定本身仍以 prev 为准，
+                    # 不受延迟影响（prev 只在本循环读）。
+                    newly_exhausted.append(k)
             # 失败清单的落盘：台账模式下值是 LedgerMapping，save_data 会被
             # 护栏静默跳过（它已自行落库）；降级模式下是普通 dict，这里就是
             # 唯一的持久化手段 —— 同一个调用在两种模式下都正确。
@@ -4730,6 +4938,22 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     self.post_message(mtype=mtype, title="115网盘同步报告", text=msg)
             else:
                 logger.info(f"[Rsync115Sync] {msg.replace(chr(10), ' | ')}")
+
+            # 达上限告警（v0.8.1）：与上面的「清单变化报告」是**两条独立消息**。
+            # 自动重试轮里新一批文件耗尽预算，单独发一条，正文明确「已停止自动
+            # 重试、需要人工处理」。只在**定时轮**发（manual_trigger=False）；
+            # 人工触发在场，结果已通过回执/看板可见（review R3：看板按钮走
+            # HTTP、没有 channel_event，不能按 channel_event 判定）。
+            if newly_exhausted:
+                # v0.8.1（review R6）：**先标记、后通知**的顺序反了会让一次
+                # 异常永久吞掉告警（exhausted_at 已落盘 → NULL→非NULL 的转变
+                # 不会再被观察到）。现在在此处（本轮已无其它可抛异常的步骤）
+                # 统一落盘 + 发送；发送失败（post_message 内部已兜底）不会
+                # 影响标记本身，两条独立消息的语义也不变。
+                for _k in newly_exhausted:
+                    self._mark_exhausted(_k)
+                if not manual_trigger:
+                    self._notify_retry_exhausted(newly_exhausted)
 
         except Exception as e:
             logger.error(f"[Rsync115Sync] ❌ 同步过程发生异常: {e}\n{traceback.format_exc()}")

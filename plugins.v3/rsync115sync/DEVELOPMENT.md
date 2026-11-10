@@ -1582,6 +1582,69 @@ strm 相关功能了。」
 
 ## 4. 新增能力
 
+### 4.0v 上传失败自动重试预算（v0.8.1，原始需求「重试 3 次后告警」的收尾）
+
+#### 问题
+
+用户最初要的就是「上传失败自动重试 3 次后进入告警」。分析后发现重试早已存在且
+**过量**（无限、无计数、无停止），于是先做精简（0.6.0 状态迁移 → 0.7.0 失败清单
+收敛 → 0.8.0 入口收敛），这一版补上最后一块：**计数、停止、告警**。
+
+#### 做法
+
+- `retry_count`（v0.6.0 删掉半接线写入者的那列）重新接线 + 新增 `exhausted_at`。
+  failed 值携带 `{"ts", "reason", "count", "exhausted_at"}`，经 `LedgerMapping`
+  的 `extra_from_value` 走台账、跨重载存活。
+- **计数规则**：只有 `mode == retry` 且上一轮已在失败清单里才 +1 —— 首次失败
+  （ready/backfill 发现的）count 保持 0；force 全量对账的重写不消耗预算。
+  **开关关闭时不计数**（review R2）：否则长期失败的文件静默攒出几十次计数，
+  用户一开开关立刻"达上限"，通知里宣称"连续失败 3 次"而实际是 11 次。
+- **达上限**：`exhausted_at` 从 NULL → 时间戳，该文件移出自动重试候选
+  （`_retryable_failed_keys()` 过滤），仍留在失败清单（看板可见、可手动重试、
+  force 可清退）。只发**一次**告警（NULL→非NULL 的转变瞬间）。
+- **手动重试 = 人工介入 = 清零**：收口在 `_execute_sync` 入口的
+  `mode == "retry" and manual_trigger`（review R4）—— 不散在四个入口，
+  未来新增入口只要走 `_start_sync_thread(mode="retry")` 就自动正确。
+  `manual_trigger` 是显式参数（review R3）：看板按钮走 HTTP、没有
+  `channel_event`，不能按 channel_event 判定人工与否；定时调度显式传 False。
+- **恢复时同清预算**（review R1）：对账恢复不仅清 `fail_reason`，还清
+  `exhausted_at` / `retry_count` —— 只清前者的话，残留的 exhausted_at 会在
+  该文件**下一次**失败时经 `_mark_failed` 的 prev 保留逻辑复活，表现为
+  "从未达上限却永远不自动重试"。
+- **整清单清零走一条批量 SQL**（review R5）：逐 key 循环是每条两次往返，
+  失败清单几百条时看板按钮会卡。
+- **标记延迟到本轮结尾**（review R6）：exhausted_at 若在结算循环里就落盘，
+  标记与通知之间隔了一串可抛异常的步骤 —— 一次异常把 NULL→非NULL 的转变
+  "烧掉"，告警永久丢失。现在收集 `newly_exhausted`，在本轮末尾统一落盘 + 发送。
+
+#### 边界
+
+- 开关**默认关闭**：开启才改变行为（失败文件会被放下），老用户升级无感。
+- 达上限后通知与失败清单变化报告是**两条独立消息**；notify 关闭时静默落盘。
+- `_row_to_value` 会丢弃值为 0 的 `count`（`if row.get(field) is not None`
+  对 0 同样为真，但 `_extra_inverse` 映射下 0 正常读回 —— 真正的坑是
+  **upsert 的 `retry_count` 列 `NOT NULL DEFAULT 0`**：显式传 None 违反约束，
+  INSERT 分支必须补 0，UPDATE 分支 None=不动用独立参数表达）。
+
+#### 测试
+
+- backend-free 守卫 6 条（预算跨重载、清零写 NULL、候选过滤、计数只在
+  retry 轮、收口在 `_execute_sync`、默认值），`test_auto_retry.py` 5 条
+  方法级行为（需后端，NAS 上通过）。
+- 真实后端全量：**14 failed / 733 passed**，相对 v0.8.0 基线新增 0、消失 0。
+- 真机端到端（NAS，2026-11-10）：探针文件目标端被目录占用制造持续失败 ——
+  首次失败 count=0；定时 retry 轮失败 count+1；手动 retry = 先清零再计数
+  （count 3→0→1，R4 收口语义实录）；count 达 3 的下一轮定时 retry →
+  `exhausted_at` 落位、推送「📉 上传失败自动重试已停止…连续失败 3 次」告警、
+  `/items` 标 `exhausted=True`；达上限后手动重试 → count 归零（4→1）、
+  `exhausted_at` 清 NULL。
+  ⚠️ 验证方法教训：探针放在映射 src 下会被**源端游标扫描重新入队**
+  （`_ingest_stamp = max(mtime, ctime)`，任何 touch 都会刷新 ctime），
+  文件在 failed/candidate 间循环、retry 轮被 ready 抢占 —— 计数不涨。
+  可靠做法：临时关闭 `source_scan_enabled` + 直接 UPDATE 台账行固定 count；
+  以及注意 `_row_to_value` 的内存缓存在直改数据库后**不会自动刷新**，
+  必须重载插件。（前两次"达上限没触发"都是这两个坑，不是代码问题。）
+
 ### 4.0u 指令按「要做的事」重排，看板补状态图例（v0.8.0，精简阶段 2）
 
 #### 问题

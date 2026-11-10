@@ -23,7 +23,7 @@
         <div>
           <v-card-title class="text-subtitle-1 font-weight-bold pa-0 d-flex align-center">
             115 网盘同步配置
-            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.8.0</v-chip>
+            <v-chip size="x-small" color="primary" variant="tonal" class="ml-2 font-weight-bold">v0.8.1</v-chip>
           </v-card-title>
           <div class="header-subtitle text-caption text-medium-emphasis">设定 CD2 挂载目录映射、入库冷却缓冲策略与防假死参数</div>
         </div>
@@ -313,6 +313,41 @@
                 persistent-hint></v-text-field>
             </v-col>
           </v-row>
+        </div>
+
+        <!-- 模块 3.5：上传失败自动重试（v0.8.1） -->
+        <!-- 首屏：它决定「失败文件会不会被放下」，属于「判据松紧直接影响后果」那一类；
+             开关与次数上限必须同屏，绝不能开关在首屏、次数藏在高级区。 -->
+        <div class="font-weight-bold text-subtitle-2 d-flex align-center mb-2">
+          <v-icon size="18" color="primary" class="mr-1">mdi-refresh-auto</v-icon>
+          上传失败自动重试
+        </div>
+        <div class="settings-group-card radius-lg overflow-hidden pa-4 mb-4">
+          <div class="setting-row setting-row-inline d-flex align-center justify-space-between row-pad-x py-2">
+            <div>
+              <div class="font-weight-bold text-body-2">上传失败自动重试</div>
+              <div class="text-caption text-medium-emphasis">传不上去的文件最多自动重试 N 次，仍失败就停下来单独告警，等你人工处理</div>
+            </div>
+            <v-switch v-model="config.auto_retry_enabled" color="primary" inset hide-details density="compact"></v-switch>
+          </div>
+          <v-row v-if="config.auto_retry_enabled" density="comfortable" class="mt-2">
+            <v-col cols="12" sm="6">
+              <div class="stacked-label text-caption text-medium-emphasis">自动重试次数上限</div>
+              <v-text-field
+                v-model.number="config.auto_retry_limit"
+                type="number"
+                min="1"
+                max="9"
+                variant="outlined"
+                density="compact"
+                suffix="次"
+                hint="首次失败后最多自动重试这么多次；达到上限即停止并告警，手动重试会重新计数"
+                persistent-hint></v-text-field>
+            </v-col>
+          </v-row>
+          <div class="text-caption text-medium-emphasis row-pad-x pb-2" v-if="!config.auto_retry_enabled">
+            当前<b>未开启</b>：失败的文件会一直自动重试，不会停下来单独告警。开启后可按次数设上限。
+          </div>
         </div>
 
         <!-- 模块 4：高级过滤与防假死参数 -->
@@ -788,6 +823,11 @@ const config = ref({
   backoff_secs: 3600,
   rate_limit_keywords: 'too many requests\nrate limit\n429\ntoo frequent\n频繁\n操作过快\n请稍后',
   force_cooldown_days: 7,
+  // 上传失败自动重试预算（v0.8.1）：默认关闭 + 上限 3，与后端 constants 一致。
+  // 必须在这里写同一份默认值 —— v-model 绑 undefined 会让开关显示为关闭、
+  // 上限输入框空白写回 NaN（本文件已有同类教训）。
+  auto_retry_enabled: false,
+  auto_retry_limit: 3,
   // ---- webhook（第二入库来源）----
   // **没有任何配置项**：入口只认 `source=rsync115sync`，其它来源归平台解析器。
   // （渠道白名单与自建端点的四条防护均已移除，见 __init__.py 的 webhook 配置节。）

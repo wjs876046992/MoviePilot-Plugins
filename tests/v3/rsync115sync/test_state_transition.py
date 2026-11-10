@@ -302,7 +302,8 @@ def test_ready_failure_leaves_the_cooling_queue_without_deleting_the_row():
 def test_scheduled_cycle_retries_failed_files():
     """定时巡检必须把 failed 清单纳入重试节奏（ready → failed → backfill）。"""
     body = _func_src("__init__.py", "_scheduled_sync")
-    assert "self._failed_files" in body
+    # v0.8.1 起候选用未耗尽预算的子集
+    assert "_retryable_failed_keys()" in body
     # ast.unparse 把引号归一化成单引号
     assert "mode='retry'" in body
 
@@ -378,6 +379,81 @@ def test_recovered_failed_entries_are_retired_not_just_forgotten():
     body = _func_src("__init__.py", "_execute_sync")
     assert "retire_key(self._failed_files" in body
     assert "clear_fail_reason" in body
+
+
+# --------------------------------------------------------------------------
+# v0.8.1：上传失败自动重试预算
+# --------------------------------------------------------------------------
+
+def test_failed_retry_count_and_exhausted_persist(ledger):
+    """retry_count / exhausted_at 与 failed 值一起走台账、跨重载存活。"""
+    key = "TV:S01E10.mkv"
+    ledger.upsert(key, store.STATUS_FAILED, fail_reason=store.FAIL_MISSING)
+    failed = store.LedgerMapping(ledger, store.STATUS_FAILED,
+                                 ts_field="verified_at",
+                                 extra_from_value={"reason": "fail_reason",
+                                                   "count": "retry_count",
+                                                   "exhausted_at": "exhausted_at"})
+    failed[key] = {"ts": 1.0, "reason": store.FAIL_MISSING, "count": 2,
+                   "exhausted_at": 9.0}
+
+    reloaded = store.LedgerMapping(ledger, store.STATUS_FAILED,
+                                   ts_field="verified_at",
+                                   extra_from_value={"reason": "fail_reason",
+                                                     "count": "retry_count",
+                                                     "exhausted_at": "exhausted_at"})
+    assert reloaded[key]["count"] == 2
+    assert reloaded[key]["exhausted_at"] == 9.0
+    row = ledger.get(key)
+    assert row["retry_count"] == 2
+    assert row["exhausted_at"] == 9.0
+
+
+def test_clear_exhausted_at_writes_null(ledger):
+    """手动重试清零 exhausted_at 必须走 clear_field（upsert 写不了 NULL）。"""
+    key = "TV:S01E11.mkv"
+    ledger.upsert(key, store.STATUS_FAILED, exhausted_at=9.0, retry_count=3)
+    assert ledger.get(key)["exhausted_at"] == 9.0
+    ledger.clear_field(key, "exhausted_at")
+    assert ledger.get(key)["exhausted_at"] is None
+
+
+def test_retry_candidates_are_filtered_to_unexhausted():
+    """自动重试取件必须排除达上限的文件（否则达上限等于没达）。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    assert "_retryable_failed_keys()" in body
+
+
+def test_retry_count_only_bumps_on_retry_rounds():
+    """计数只在 retry 模式发生：ready/force 的失败重写不消耗预算。"""
+    body = _func_src("__init__.py", "_execute_sync")
+    # ast.unparse 归一化引号为单引号、且给 not 加括号
+    assert "mode == 'retry' and (not is_new)" in body
+
+
+def test_manual_retry_resets_the_budget():
+    """手动重试的预算清零收口在 _execute_sync（review R4），而非散在各入口。"""
+    assert "def _reset_retry_budget" in _read("__init__.py")
+    assert "def _reset_all_retry_budgets" in _read("__init__.py")
+    body = _func_src("__init__.py", "_execute_sync")
+    # 收口点：retry 轮 + 人工触发才清；custom_files 定向、否则整清单
+    assert "mode == 'retry' and manual_trigger" in body
+    assert "_reset_retry_budget(_k)" in body
+    assert "_reset_all_retry_budgets()" in body
+    # 四个入口都还把 manual_trigger=True（默认）传下去
+    assert "_reset_all_retry_budgets" not in _func_src("commands.py", "_dispatch_command")
+    assert "_reset_retry_budget" not in _func_src("strm_ops.py", "_retransfer_keys")
+    # 定时调度不开重置（达上限必须生效）
+    sched = _func_src("__init__.py", "_scheduled_sync")
+    assert "manual_trigger=False" in sched
+
+
+def test_auto_retry_defaults_off_with_limit_three():
+    """默认关闭 + 上限 3：老用户行为不变。"""
+    src = _read("constants.py")
+    assert "AUTO_RETRY_ENABLED_DEFAULT = False" in src
+    assert "AUTO_RETRY_LIMIT_DEFAULT = 3" in src
+
 
 
 

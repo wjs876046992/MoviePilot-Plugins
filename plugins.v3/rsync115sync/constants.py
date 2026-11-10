@@ -130,6 +130,13 @@ MAX_PATH_CHARS = 160
 # truncated — refusing is safer than a wide destructive action.
 RETRY_KEYWORD_LIMIT = 15
 
+# ---- 上传失败自动重试预算（v0.8.1）----
+# 首次失败不算；之后每轮自动重试仍失败 +1，达到上限即停止自动重试并告警。
+# 默认**关闭**：开启会让老用户的行为发生「失败文件被放下」的变化，宁可先
+# 显式打开、真机确认一轮，也不默认改变既有语义（见 DEVELOPMENT §4.0v）。
+AUTO_RETRY_ENABLED_DEFAULT = False
+AUTO_RETRY_LIMIT_DEFAULT = 3
+
 # ---- 巡检节流间隔（秒）/ sweep intervals in seconds ----
 # strm 交叉验证巡检的最小间隔。strm 生成是分钟级过程，没必要每次同步都查。
 # Minimum interval between strm cross-validation sweeps.
