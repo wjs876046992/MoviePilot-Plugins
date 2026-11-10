@@ -129,6 +129,8 @@ class SyncOpsMixin:
         self._upload_window_start = float(self.get_data("upload_window_start") or 0.0)
         self._upload_window_count = int(self.get_data("upload_window_count") or 0)
         self._upload_blocked_until = float(self.get_data("upload_blocked_until") or 0.0)
+        # 历史退避次数（v0.8.5）：旧数据没有这个键，缺省 0 即可
+        self._backoff_count = int(self.get_data("backoff_count") or 0)
 
     def _persist_rate_limit_state(self):
         """
@@ -140,6 +142,7 @@ class SyncOpsMixin:
         self.save_data("upload_window_start", self._upload_window_start)
         self.save_data("upload_window_count", self._upload_window_count)
         self.save_data("upload_blocked_until", self._upload_blocked_until)
+        self.save_data("backoff_count", int(getattr(self, "_backoff_count", 0) or 0))
 
     def _rate_limit_allows(self) -> Tuple[bool, str]:
         """
@@ -228,14 +231,20 @@ class SyncOpsMixin:
 
         Enter back-off after a rate-limit hit. No batch is permitted until the
         back-off deadline passes, giving 115's side time to settle.
+
+        历史退避次数（v0.8.5，TODO 9）持久化：看板用它回答「这个阈值合不合理」——
+        若一个月只退避一两次，说明阈值保守得刚好；频繁退避就该调大批次/窗口。
         """
         self._upload_blocked_until = time.time() + self._backoff_secs
         # 退避期间窗口计数一并归零，避免退避结束后立刻撞上配额上限
         self._upload_window_start = 0.0
         self._upload_window_count = 0
+        # 累计计数：只在触发时 +1（重载后从 save_data 恢复，见 _load_rate_limit_state）
+        self._backoff_count = int(getattr(self, "_backoff_count", 0) or 0) + 1
         self._persist_rate_limit_state()
         logger.warning(f"[Rsync115Sync] 🚫 触发风控退避：{reason}，"
-                       f"暂停上传 {self._backoff_secs // 60} 分钟")
+                       f"暂停上传 {self._backoff_secs // 60} 分钟"
+                       f"（历史累计 {self._backoff_count} 次）")
 
     def _build_backfill_candidates(self, path_filter: str = "") -> List[str]:
         """

@@ -255,7 +255,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.8.4"
+    plugin_version = "0.8.5"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -502,6 +502,9 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         self._upload_window_start: float = 0.0
         self._upload_window_count: int = 0
         self._upload_blocked_until: float = 0.0
+        # 历史风控退避次数（v0.8.5，TODO 9）：看板用它回答「阈值合不合理」。
+        # 触发时 +1 并随限流状态持久化；重载从 save_data 恢复。
+        self._backoff_count: int = 0
         # 当前批次实际提交给 rsync 的文件数，用于成功后扣减配额
         # Files actually handed to rsync in the current batch, used to charge
         # the quota before the transfer starts.
@@ -3109,6 +3112,24 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     f"忽略条目 {migrated['ignored']} / 疑似 {migrated['suspects']}"
                     f"（旧 save_data 键已清除，避免陈旧快照被反复回填）")
 
+    def _window_reset_minutes(self, now_ts: float) -> int:
+        """
+        距当前上传窗口重置还剩多少分钟（向上取整）；窗口未启动时返回 0。
+
+        窗口起点 `_upload_window_start` 在第一批上传时才开始计时（sync_ops
+        的 `_consume_upload_quota`），所以"窗口从未用过"时没有"重置"概念，
+        返回 0 让前端不显示 —— 显示「重置还需 30 分钟」反而会让用户以为
+        现在不能传。
+        """
+        start = float(getattr(self, "_upload_window_start", 0.0) or 0.0)
+        if start <= 0:
+            return 0
+        secs = int(getattr(self, "_upload_window_secs", 1800) or 1800)
+        remaining = secs - (now_ts - start)
+        if remaining <= 0:
+            return 0
+        return max(1, -(-int(remaining) // 60))   # ceil
+
     def _api_get_status(self):
         now_ts = time.time()
         threshold = self._delay_hours * 3600
@@ -3198,6 +3219,13 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 "upload_window_secs": int(
                     getattr(self, "_upload_window_secs", 1800)),
                 "upload_blocked_until": self._upload_blocked_until,
+                # v0.8.5（TODO 9）：距当前窗口重置的分钟数。前端据此把
+                # 「本窗口已用 N / 上限 M」补全成「约 N 分钟后重置」——
+                # 用户关心的其实正是"还要等多久"。
+                # 窗口从没启动过（_upload_window_start=0）时给 0，前端不显示。
+                "upload_window_reset_min": self._window_reset_minutes(now_ts),
+                # 历史风控退避次数：频繁退避 = 阈值该调了。缺属性兜底同上。
+                "backoff_count": int(getattr(self, "_backoff_count", 0)),
                 "last_force_ts": self._last_force_ts,
                 "force_cooldown_days": self._force_cooldown_days,
                 # 台账概览：一行一个文件，状态就是它的处境。

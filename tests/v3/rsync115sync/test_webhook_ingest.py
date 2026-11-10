@@ -62,6 +62,14 @@ def _plugin(src_root, *, enabled=True, listen=True,
     plugin._ingest_skip_stat = {}
     plugin._ignored_rules = []
     plugin._last_status = {}
+    # init_plugin 现在会走到 strm 通知闩锁段（plugindata 补齐后走得更深了），
+    # 缺这些属性会 AttributeError —— 逐个补上最小值
+    plugin._strm_notified = False
+    plugin._strm_last_notified_ts = 0.0
+    plugin._strm_suspects = {}
+    plugin._strm_watch = {}
+    plugin._strm_gen_requested = {}
+    plugin._notify = False
     plugin._webhook_stat = plugin._wh_stat()
     plugin.saved = {}
     plugin.save_data = lambda k, v: plugin.saved.__setitem__(k, v)

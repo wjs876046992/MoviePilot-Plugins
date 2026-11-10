@@ -858,6 +858,41 @@ class CommandsMixin:
                     reply += "🔍 源端扫描: 已启用，尚未完成首轮\n"
             else:
                 reply += "🔍 源端扫描: ⚠️ 已关闭 —— 入库只能靠 Webhook 通知发现\n"
+            # 补传进度 + 限流窗口（v0.8.5，TODO 10）：此前 /rsync_status 只有
+            # 冷却队列与异常清单，用户在聊天侧看不到「补传还剩多少、限流还差
+            # 几个窗口」—— 只能开看板。信息本身早已在实例状态里，补展示即可。
+            if getattr(self, "_backfill_queue", None):
+                total = int(getattr(self, "_backfill_total", 0) or 0)
+                remaining = len(self._backfill_queue)
+                done_n = max(0, total - remaining)
+                # ⚠️ 全部 getattr 兜底：__new__ 构造的实例（单测）没有这些属性，
+                # 直接取会 AttributeError —— 本仓已三次踩此坑（见 __init__.py
+                # _api_get_status 里同款注释），新增读取点默认按「可能缺属性」写。
+                rate_on = bool(getattr(self, "_rate_limit_enabled", True))
+                per_window = int(getattr(self, "_upload_max_per_window", 0) or 0)
+                if rate_on and per_window:
+                    wins = -(-remaining // per_window)
+                    win_note = f"，按当前配额还需约 {wins} 个窗口（每窗口 {per_window} 个）"
+                else:
+                    win_note = ""
+                reply += (f"📦 存量补传: 已完成 {done_n} / {total}，"
+                          f"剩余 {remaining} 个{win_note}\n")
+            if getattr(self, "_rate_limit_enabled", True):
+                used = int(getattr(self, "_upload_window_count", 0) or 0)
+                cap = int(getattr(self, "_upload_max_per_window", 0) or 0)
+                blocked = float(getattr(self, "_upload_blocked_until", 0.0) or 0.0)
+                if blocked > now_ts:
+                    mins = int((blocked - now_ts) / 60) + 1
+                    reply += (f"🚦 限流: 🚫 风控退避中，约 {mins} 分钟后恢复"
+                              f"（历史累计 {int(getattr(self, '_backoff_count', 0) or 0)} 次）\n")
+                elif used:
+                    secs = int(getattr(self, "_upload_window_secs", 1800) or 1800)
+                    start = float(getattr(self, "_upload_window_start", 0.0) or 0.0)
+                    left = max(1, int((secs - (now_ts - start)) / 60) + 1) if start else 0
+                    reset_note = f"，约 {left} 分钟后重置" if left else ""
+                    reply += (f"🚦 限流: 本窗口已用 {used} / {cap} 个{reset_note}\n")
+                else:
+                    reply += f"🚦 限流: 已启用（每窗口 {cap} 个），本窗口尚未使用\n"
             # ⚠️ 这里曾有一行「因扩展名被跳过（累计）」的统计 —— 用户要求移除
             # 看板提示时，连同 `_ingest_skip_stat` 属性与它的写入逻辑一起删了，
             # **但漏了这个读取点**，于是 `/rsync_status` 直接抛 AttributeError：

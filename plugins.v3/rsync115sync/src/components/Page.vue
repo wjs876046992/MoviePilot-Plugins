@@ -211,12 +211,18 @@
           </div>
           <div v-if="isThrottled" class="font-weight-medium">
             ⏸ 为避免触发 115 风控，上传已自动暂停，约 {{ blockedMinutes }} 分钟后恢复，无需手动操作。
+            <template v-if="statusData.backoff_count">
+              <div class="text-caption text-medium-emphasis mt-1">
+                历史累计退避 {{ statusData.backoff_count }} 次 —— 频繁退避说明阈值偏紧，
+                可在配置页调大批次上限或窗口配额。
+              </div>
+            </template>
           </div>
           <div v-if="statusData.backfill_remaining">
             存量补传进行中：剩余 <strong>{{ statusData.backfill_remaining }}</strong>
             <template v-if="statusData.backfill_total"> / 共 {{ statusData.backfill_total }}</template> 个。
             为防风控，每个时间窗口最多上传 {{ statusData.upload_max_per_window }} 个
-            （本窗口已用 {{ statusData.upload_window_count }} 个），未传完的会自动继续。
+            （本窗口已用 {{ statusData.upload_window_count }} 个<template v-if="statusData.upload_window_reset_min">，约 {{ statusData.upload_window_reset_min }} 分钟后重置</template>），未传完的会自动继续。
           </div>
           <div v-if="statusData.stale_count">
             🗑️ <strong>{{ statusData.stale_count }}</strong> 个队列条目的源文件已从本地删除，
