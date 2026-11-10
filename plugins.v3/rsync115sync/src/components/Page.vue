@@ -184,8 +184,12 @@
         </div>
 
         <!-- 补传 / 限流 / 源端扫描提示：用通俗文字说明“为什么慢、还要多久” -->
+        <!-- ⚠️ 外层条件必须包含 failedCount（review F6）：CD2 相关的说明里有一段
+             专门讲「刚传完的大文件可能被暂时判为失败」，而那种状态下往往既没有
+             观察条目、也没有补传/限流提示 —— 缺了它，正是写给这批人的话永远
+             显示不出来。 -->
         <v-alert
-          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || watchingCount || sourceScanProblem || helperHealthWarning"
+          v-if="statusData.backfill_remaining || isThrottled || statusData.stale_count || watchingCount || failedCount || sourceScanProblem || helperHealthWarning"
           :type="isThrottled || sourceScanProblem || helperHealthWarning ? 'warning' : 'info'"
           variant="tonal"
           density="compact"
@@ -259,11 +263,16 @@
             </div>
           </div>
           <!-- 未启用时的建议：只在确实有文件在观察或失败时才提 —— 没有可被误伤的
-               对象时，劝用户去开一个开关只会变成噪音。 -->
+               对象时，劝用户去开一个开关只会变成噪音。
+               ⚠️ 文案只承诺代码真会做的事（review F7）：开启后由定时巡检自动纠正
+               （30 分钟节流）；**未开启时不会有任何自动纠正**，下一次对账才会
+               重新判定。原先写「下一轮会自动纠正」在未开启分支里是假承诺。 -->
           <div v-else-if="watchingCount || failedCount" class="mt-1">
             💡 未开启 CD2 队列核对：大文件可能在宽限期内传不完而被反复判疑似；
             刚传完的大文件也可能被<b>暂时判为失败</b>（CD2 还没刷新挂载视图），
-            下一轮会自动纠正。<b>建议开启「上传中文件不判疑似」</b>（配置页 → strm 交叉验证）。
+            下一次对账会重新判定 —— 期间它可能占用一次重试计数。
+            <b>建议开启「上传中文件不判疑似」</b>（配置页 → strm 交叉验证）：
+            开启后判失败前会先问 CD2，并在定时巡检时自动把「其实还在传」的失败条目移回队列。
           </div>
         </v-alert>
 

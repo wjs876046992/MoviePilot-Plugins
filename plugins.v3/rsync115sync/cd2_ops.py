@@ -330,6 +330,20 @@ class Cd2OpsMixin:
             # 自动回退会让告警与实际状态脱节。
             if isinstance(entry, dict) and entry.get("exhausted_at"):
                 continue
+            # ⚠️ 回退前**必须清预算列**（review F3）：`move_key` 只写
+            # `enqueued_at`（其余列走 upsert 的 COALESCE），台账里的
+            # `fail_reason` / `retry_count` / `exhausted_at` 会原样留着。
+            # 下一次失败时 `_mark_failed` 不传 exhausted_at → COALESCE 保留旧值
+            # → 文件"从未达上限却显示已停止自动重试、且永不自动重试"。
+            # 与结算恢复路径（`_execute_sync` 的 recovered 段）同一处置。
+            ledger = getattr(self, "_ledger", None)
+            if ledger is not None:
+                try:
+                    ledger.clear_fail_reason(key)
+                    ledger.clear_field(key, "exhausted_at")
+                    ledger.set_field(key, "retry_count", 0)
+                except Exception:
+                    pass
             _store_mod.move_key(failed, key, self._pending_queue, basis)
             reverted.append(key)
         if reverted:

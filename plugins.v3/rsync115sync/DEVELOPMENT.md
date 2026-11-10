@@ -1665,6 +1665,37 @@ CD2 的「在传/排队」核对此前只用于 strm 疑似：宽限期到了但
 卡死超过 `CD2_SUPPRESS_MAX_HOURS` 失去豁免。未启用时的代价已写进看板文案
 （「刚传完的大文件可能被暂时判为失败，下一轮自动纠正」）。
 
+#### ⚠️ 第一版有致命缺陷：引用早于赋值（v0.8.4 修）
+
+v0.8.2 里 `cd2_blocked_keys` 的**查询与赋值写在结算段**，而 ready 出队分支
+（更早）已经在用它。Python 对函数内任何赋值过的名字一律按局部变量处理，
+于是在 ready 分支抛：
+
+```
+UnboundLocalError: cannot access local variable 'cd2_blocked_keys'
+```
+
+后果不是"CD2 判定失效"，而是**整轮同步经外层 except 中止** —— 不出队、
+不 arm strm、不更新失败清单。触发条件：CD2 核对开启（本机就是开启的）+
+本轮有任一文件对账不一致。而 `py_compile`、版本门禁、联邦 CSS 门禁全绿：
+语法完全合法，静态检查看不见控制流。
+
+**修法**：查询与赋值移到「对账之后、出队/结算之前」，按批次粒度（本组文件
+一次查询）。同时给 `tests/v3/rsync115sync/test_cd2_settlement.py` 加**顺序
+守卫**：断言函数体内 `cd2_blocked_keys: set = set()` 的位置早于第一次
+`in cd2_blocked_keys` 引用；把它改回原位置，测试立刻失败（已验证）。
+
+#### 同一轮 review 抓出的另外四处
+
+| # | 问题 | 修法 |
+|---|---|---|
+| F2 | 被 hold 的条目不在 `round_failed` 里 → 「恢复」扫描把它当已恢复 → `retire` 成 `done`，云端没有却从跟踪中消失 | 恢复循环同时排除 `round_cd2_blocked` |
+| F3 | 回退只写 `enqueued_at`（upsert 的 COALESCE 保留其余列）→ 旧 `exhausted_at`/`retry_count` 在下次失败时复活 | 回退前 `clear_fail_reason` + `clear_field(exhausted_at)` + `retry_count=0` |
+| F4 | 补传模式下被 hold 的条目仍被 `_backfill_done_keys` 排空 → 补传计数比实际少一条 | 出队时排除 `cd2_blocked_keys` |
+| F5 | 回退调用挂在 cron 上却没有节流与执行锁 → 与正在跑的 `_execute_sync` 并发改同一批映射（丢更新） | `not self._is_running` + 30 分钟节流 |
+| F6 | 看板外层 `v-if` 不含 `failedCount` → 专门写给"暂时判失败"用户的文案永不显示 | 外层条件加 `failedCount` |
+| F7 | 文案许诺「下一轮会自动纠正」，但未开启时根本没有自动纠正 | 改成只承诺代码会做的事 |
+
 #### 真机验证（NAS，2026-11-10）
 
 - **hold**：真实 CD2 API + 注入「传输中」队列 → 日志

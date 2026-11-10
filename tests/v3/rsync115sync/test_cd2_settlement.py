@@ -78,7 +78,54 @@ def test_settlement_consults_cd2_before_failing():
     src = _plugin_src("__init__.py")
     assert "_cd2_hold_failed_settlement" in src, (
         "结算未接入 CD2 在传判据 —— 大文件传输中会被立即判失败")
-    assert "cd2_blocked_keys" in src
+
+
+def test_cd2_blocked_set_is_bound_before_its_first_use():
+    """
+    ⚠️ 顺序守卫（review v0.8.2 的致命缺陷）：`cd2_blocked_keys` 必须在
+    **第一次被引用之前**完成赋值，否则 ready 分支抛 UnboundLocalError，
+    整轮同步中断 —— 而 py_compile 与所有门禁都不会报。
+
+    第一版把它写在结算段（ready 出队分支之后），逐字命中这个坑。
+    判据：函数内 `cd2_blocked_keys = ` 的赋值位置早于 `in cd2_blocked_keys`。
+    """
+    src = _plugin_src("__init__.py")
+    start = src.index("def _execute_sync")
+    end = src.index("\n    def ", start + 10)
+    body = src[start:end]
+    first_assign = body.find("cd2_blocked_keys: set = set()")
+    assert first_assign != -1, "找不到 cd2_blocked_keys 的初始化 —— 守卫失效"
+    first_use = body.find("in cd2_blocked_keys")
+    assert first_use == -1 or first_assign < first_use, (
+        "cd2_blocked_keys 在赋值前被引用 —— 会抛 UnboundLocalError，整轮同步中断")
+
+
+def test_hold_does_not_turn_a_blocked_failure_into_recovery():
+    """
+    ⚠️ review F2：被 CD2 hold 的条目**不是**「已恢复」——
+    「恢复」扫描必须跳过它，否则会 retire 成 done，云端没有却凭空消失。
+    """
+    src = _plugin_src("__init__.py")
+    start = src.index("def _execute_sync")
+    end = src.index("\n    def ", start + 10)
+    body = src[start:end]
+    # 恢复循环的条件里必须同时排除两个集合
+    loop_at = body.index("for k in list(self._failed_files.keys()):")
+    cond = body[loop_at:loop_at + 400]
+    assert "round_cd2_blocked" in cond, (
+        "恢复扫描未排除 CD2 hold 的条目 —— 会把它们 retire 成 done，文件凭空消失")
+
+
+def test_revert_clears_the_retry_budget_columns():
+    """⚠️ review F3：回退后台账里的 exhausted_at/retry_count 必须清零。"""
+    src = _plugin_src("__init__.py")
+    cd2_src = _plugin_src("cd2_ops.py")
+    start = cd2_src.index("def _cd2_recover_failed_in_flight")
+    end = cd2_src.index("\n    def ", start + 10)
+    body = cd2_src[start:end]
+    for marker in ("clear_fail_reason", 'clear_field(key, "exhausted_at")',
+                   '"retry_count", 0'):
+        assert marker in body, f"回退未清理 {marker} —— 旧预算会在下次失败时复活"
 
 
 def test_scheduled_cycle_has_revert_hook():

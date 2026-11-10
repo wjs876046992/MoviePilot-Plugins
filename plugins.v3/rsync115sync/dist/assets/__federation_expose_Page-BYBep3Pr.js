@@ -1618,7 +1618,7 @@ return (_ctx, _cache) => {
                     : _createCommentVNode("", true)
                 ]))
               : _createCommentVNode("", true),
-            (statusData.value.backfill_remaining || isThrottled.value || statusData.value.stale_count || watchingCount.value || sourceScanProblem.value || helperHealthWarning.value)
+            (statusData.value.backfill_remaining || isThrottled.value || statusData.value.stale_count || watchingCount.value || failedCount.value || sourceScanProblem.value || helperHealthWarning.value)
               ? (_openBlock(), _createBlock(_component_v_alert, {
                   key: 2,
                   type: isThrottled.value || sourceScanProblem.value || helperHealthWarning.value ? 'warning' : 'info',
@@ -1706,9 +1706,9 @@ return (_ctx, _cache) => {
                         ? (_openBlock(), _createElementBlock("div", _hoisted_41, [...(_cache[42] || (_cache[42] = [
                             _createTextVNode(" 💡 未开启 CD2 队列核对：大文件可能在宽限期内传不完而被反复判疑似； 刚传完的大文件也可能被", -1),
                             _createElementVNode("b", null, "暂时判为失败", -1),
-                            _createTextVNode("（CD2 还没刷新挂载视图）， 下一轮会自动纠正。", -1),
+                            _createTextVNode("（CD2 还没刷新挂载视图）， 下一次对账会重新判定 —— 期间它可能占用一次重试计数。 ", -1),
                             _createElementVNode("b", null, "建议开启「上传中文件不判疑似」", -1),
-                            _createTextVNode("（配置页 → strm 交叉验证）。 ", -1)
+                            _createTextVNode("（配置页 → strm 交叉验证）： 开启后判失败前会先问 CD2，并在定时巡检时自动把「其实还在传」的失败条目移回队列。 ", -1)
                           ]))]))
                         : _createCommentVNode("", true)
                   ]),
@@ -3316,6 +3316,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c724499e"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-2148ea5d"]]);
 
 export { App as default };
