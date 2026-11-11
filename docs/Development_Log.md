@@ -6,6 +6,7 @@
 
 ## 目录（按日期倒序）
 
+- 2026-11-11（DynamicWeChat 详情页 chip 化）
 - 2026-11-11（DynamicWeChat 修复 CookieCloud 覆盖写入）
 - 2026-11-11（DynamicWeChat 详情页卡片化）
 - 2026-11-11（DynamicWeChat 多DDNS域名与布局调整）
@@ -17,6 +18,31 @@
 - 2026-11-08
 - 2026-11-05
 - 2026-09-14
+
+---
+
+## 2026-11-11（DynamicWeChat 详情页 chip 化）
+
+**分支：** `main`
+**涉及插件：** DynamicWeChat
+**类型：** 视觉重构
+
+### 动态企微可信IP v3.1.5 → v3.1.6 —— 大色块横幅换成 VChip + VTable
+
+用户仍不满意详情页设计。双通道评审（设计总监 + 机械核查）拿到量化病根：
+**5 种底色上白字对比度 1.92～4.00:1，全部低于 WCAG AA**；典型态 6 条彩条占屏 41%，
+最坏态 9 条占 108%；穷举 172 万状态组合，5 色可同页共存。「一切都在喊等于没人在喊」
+——告警通胀不是文案问题，是色彩面积问题。
+
+#### 修法
+
+换到宿主原生状态语言（updatewechatip/courseorganizer 已验证）：VChip 徽章
+（tonal 主题色）+ VTable 键值表（标签列常驻锚点、数值独立成格、mono 字体）+
+卡头摘要行。橙/黄合并为 warning；Cookie 失效一处用 flat 保持唯一警报地位；
+四态文案精简（【】删除，chip 承担强调）。**语义与判定零改动**，`_page_snapshot`
+零改动。
+
+形状测试 walker 增收 VChip/td/span；新增「不得再有硬编码 hex / _banner」断言。
 
 ---
 

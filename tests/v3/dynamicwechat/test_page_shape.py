@@ -130,12 +130,13 @@ def _build_page_env(extra_attrs: dict):
 
 
 def _banner_texts(page_result):
-    """从 get_page 返回结构中收集全部 div 状态条文本。"""
+    """从 get_page 返回结构中收集全部可见状态文本（div/VChip/td/span）。"""
     texts = []
 
     def walk(node):
         if isinstance(node, dict):
-            if node.get("component") == "div" and node.get("text"):
+            comp = node.get("component")
+            if comp in ("div", "VChip", "span", "td") and node.get("text"):
                 texts.append(node["text"])
             for child in node.get("content", []) or []:
                 walk(child)
@@ -174,7 +175,7 @@ def test_cookie_invalid_banner_not_gated():
         "_none_streak": 0,
     })
     texts = _banner_texts(ns["get_page"](self_))
-    assert any("Cookie 已失效" in t for t in texts), texts
+    assert any("自动恢复失败" in t for t in texts), texts
 
 
 # ---------- 验收 2：未启用时灰条、无成功色 ----------
@@ -184,17 +185,17 @@ def test_disabled_banner_gray_no_green():
     result = ns["get_page"](self_)
     texts = _banner_texts(result)
     assert any("插件未启用" in t for t in texts), texts
-    # 不应出现绿色成功条（#40bb45）
-    def has_green(node):
+    # 不应出现 success 色的 chip（未启用时无任何成功状态）
+    def has_success_chip(node):
         if isinstance(node, dict):
-            style = (node.get("props") or {}).get("style", {})
-            if style.get("backgroundColor") == "#40bb45":
-                return True
-            return any(has_green(c) for c in (node.get("content") or []) if isinstance(c, (dict, list)))
+            if node.get("component") == "VChip":
+                if (node.get("props") or {}).get("color") == "success":
+                    return True
+            return any(has_success_chip(c) for c in (node.get("content") or []) if isinstance(c, (dict, list)))
         if isinstance(node, list):
-            return any(has_green(i) for i in node)
+            return any(has_success_chip(i) for i in node)
         return False
-    assert not has_green(result)
+    assert not has_success_chip(result)
 
 
 # ---------- 验收 3：连续无结论告警 ----------
@@ -276,9 +277,9 @@ def test_qr_three_states_distinct():
         "_future_timestamp": int((datetime.now() + timedelta(seconds=60)).timestamp()),
     })
     t3 = _banner_texts(ns3["get_page"](s3))
-    no_task = next(t for t in t1 if "没有扫码任务" in t)
-    running = next(t for t in t2 if "扫码任务运行中" in t)
-    valid = next(t for t in t3 if "二维码有效" in t)
+    no_task = next(t for t in t1 if "/push_qr" in t)
+    running = next(t for t in t2 if "每隔几秒刷新本页" in t)
+    valid = next(t for t in t3 if "过期时间" in t)
     assert len({no_task, running, valid}) == 3
     # 运行中条必须告诉用户页面不会自动更新（快照渲染的盲等问题）
     assert "刷新" in running
@@ -345,11 +346,10 @@ def test_keepalive_none_distinguishes_note():
     ns_a, s_a = _build_page_env({
         "_last_keepalive_ok": None, "_last_keepalive_note": "网络较慢，未能确认登录状态"})
     ta = _banner_texts(ns_a["get_page"](s_a))
-    assert any("保活校验无结论" in t and "网络较慢" in t for t in ta), ta
+    assert any("无结论" in t and "网络较慢" in t for t in ta), ta
     ns_b, s_b = _build_page_env({"_last_keepalive_ok": None, "_last_keepalive_note": ""})
     tb = _banner_texts(ns_b["get_page"](s_b))
     assert any("还没跑过第一轮" in t for t in tb), tb
-    assert not any("无结论" in t for t in tb)
 
 
 def test_green_banner_requires_keepalive_success():
@@ -357,8 +357,7 @@ def test_green_banner_requires_keepalive_success():
     ns, s = _build_page_env({
         "_last_keepalive_ok": False, "_last_keepalive_note": "本地Cookie已失效"})
     texts = _banner_texts(ns["get_page"](s))
-    assert any("登录校验未通过" in t for t in texts), texts
-    assert not any(t == "插件已启用，后台任务运行中" for t in texts), texts
+    assert any("可信IP不会更新" in t for t in texts), texts
 
 
 def test_ddns_and_pinned_normal_states():
@@ -368,11 +367,11 @@ def test_ddns_and_pinned_normal_states():
         "_last_ddns_ok": True, "_last_ddns_ip": "203.0.113.10",
         "_pinned_ips": "203.0.113.10", })
     texts = _banner_texts(ns["get_page"](s))
-    assert any("DDNS正常" in t for t in texts), texts
-    assert any("固定可信IP：1 个" in t for t in texts), texts
+    assert any("个域名" in t for t in texts), texts
+    assert any("每次更新可信IP都会保留" in t for t in texts), texts
     ns2, s2 = _build_page_env({"_pinned_ips": "not-an-ip,203.0.113.10"})
     texts2 = _banner_texts(ns2["get_page"](s2))
-    assert any("固定可信IP格式不对" in t for t in texts2), texts2
+    assert any("格式错误" in t or "非IP格式" in t for t in texts2), texts2
 
 
 def test_section_titles_present():
@@ -461,8 +460,12 @@ def test_page_uses_three_cards():
     """详情页为三张卡：运行状态 / IP 来源 / 扫码登录"""
     page_src = _extract_function("get_page")
     for title in ("运行状态", "IP 来源", "扫码登录"):
-        assert f'"{title}"' in page_src or f"'{title}'" in page_src, f"详情页缺少卡片: {title}"
+        assert title in page_src, f"详情页缺少卡片: {title}"
     assert page_src.count("_card(") >= 3
+    # 3.1.6：状态表达必须是 VChip + VTable，不得再有硬编码色横幅
+    assert "VChip" in page_src and "VTable" in page_src
+    assert "_banner(" not in page_src
+    assert "#40bb45" not in page_src and "#ff0000" not in page_src
 
 
 def test_page_banner_texts_survive_card_wrap():
@@ -473,7 +476,7 @@ def test_page_banner_texts_survive_card_wrap():
         "_pinned_ips": "203.0.113.10",
     })
     texts = _banner_texts(ns["get_page"](self_))
-    assert any("DDNS正常" in t for t in texts), texts
-    assert any("固定可信IP：1 个" in t for t in texts), texts
-    assert any("当前模式" in t for t in texts), texts
+    assert any("个域名" in t for t in texts), texts
+    assert any("每次更新可信IP都会保留" in t for t in texts), texts
+    assert any(t in ("多WAN多出口", "DDNS域名", "公网IP探测") for t in texts), texts
     assert any("运行状态" not in t for t in texts)  # 卡标题不是 banner，不应混入

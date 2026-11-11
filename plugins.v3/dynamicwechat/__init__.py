@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.5"
+    plugin_version = "3.1.6"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -2045,197 +2045,266 @@ class DynamicWeChat(_PluginBase):
         }
     def get_page(self) -> List[dict]:
         """
-        生成插件详情页（VCard 卡片式状态总览）。
-        三张卡：运行状态 / IP 来源 / 扫码登录（扫码卡在无任务时退化为单行灰条）。
+        生成插件详情页：三张 VCard（运行状态 / IP 来源 / 扫码登录），
+        卡内用 VChip 状态徽章 + VTable 键值表表达状态，主题色 token（tonal），
+        不再使用硬编码色块横幅（对比度与主题适配问题，见 DEVELOPMENT.md 3.1.6）。
         纯渲染方法：不修改任何实例状态（多次调用结果一致）。
-        状态条文案与配色见 REDESIGN_REQUIREMENTS.md 状态矩阵。
         """
         snap = self._page_snapshot()
         now_ts = datetime.now().timestamp()
 
-        def _banner(text: str, bg: str) -> dict:
-            """一行状态条：纯文本 + 背景色（灰#bbbbbb/绿#40bb45/橙#e69b00/红#ff0000/黄#d4a017）"""
+        def _chip(text: str, color: str = None, size: str = "x-small",
+                  variant: str = "tonal") -> dict:
+            """状态徽章：Vuetify 原生状态语言；中性态不传 color（默认灰）"""
+            props = {"size": size, "variant": variant}
+            if color:
+                props["color"] = color
+            return {"component": "VChip", "props": props, "text": text}
+
+        def _td_label(text: str) -> dict:
+            """键值表标签列：不换行、弱化色"""
+            return {"component": "td",
+                    "props": {"class": "text-no-wrap text-medium-emphasis"},
+                    "text": text}
+
+        def _td_detail(chips: List[dict], spans: List[dict]) -> dict:
+            """键值表详情列：chip（可选）+ span 文本（可选）"""
+            content = [*chips, *spans]
+            return {"component": "td", "content": content}
+
+        def _span(text: str, cls: str = "") -> dict:
+            props = {"class": cls} if cls else {}
+            return {"component": "span", "props": props, "text": text}
+
+        def _kv_table(rows: List[dict]) -> dict:
+            """无表头键值表：项目 | 状态徽章 | 详情"""
             return {
-                "component": "div",
-                "text": text,
-                "props": {
-                    "style": {
-                        "fontSize": "16px",
-                        "color": "#ffffff",
-                        "backgroundColor": bg,
-                        "padding": "8px",
-                        "borderRadius": "5px",
-                        "textAlign": "center",
-                        "display": "inline-block",
-                        "maxWidth": "100%",
-                        "wordBreak": "break-all"
-                    }
-                }
+                "component": "VTable",
+                "props": {"density": "compact", "class": "mt-2"},
+                "content": [{"component": "tbody", "content": rows}],
             }
 
         def _card(title: str, subtitle: str, inner: List[dict]) -> dict:
-            """详情页分区卡：与配置页 _card 同构（标题+副标题+内容行）"""
+            """分区卡：VCard title/subtitle props（courseorganizer 已验证的 V3 写法）"""
             return {
                 "component": "VCard",
-                "props": {"variant": "outlined", "class": "mb-4"},
-                "content": [
-                    {
-                        "component": "VCardText",
-                        "content": [
-                            {
-                                "component": "div",
-                                "props": {"class": "text-subtitle-1 font-weight-medium mb-1"},
-                                "text": title,
-                            },
-                            {
-                                "component": "div",
-                                "props": {"class": "text-caption text-medium-emphasis mb-3"},
-                                "text": subtitle,
-                            },
-                            {
-                                "component": "div",
-                                "props": {
-                                    "style": {
-                                        "display": "flex",
-                                        "justifyContent": "center",
-                                        "alignItems": "center",
-                                        "flexDirection": "column",
-                                        "gap": "8px"
-                                    }
-                                },
-                                "content": inner,
-                            },
-                        ],
-                    }
-                ],
+                "props": {"variant": "outlined", "class": "mb-4",
+                          "title": title, "subtitle": subtitle},
+                "content": inner,
             }
 
+        def _summary_row(chip: dict, note: str, note_cls: str = "text-body-2") -> dict:
+            """卡头摘要行：状态 chip + 一句话说明（updatewechatip 同款布局）"""
+            return {
+                "component": "div",
+                "props": {"class": "d-flex flex-wrap align-center ga-2"},
+                "content": [chip, _span(note, note_cls)],
+            }
+
+        cards: List[dict] = []
+
         # ================= 卡 1 · 运行状态 =================
-        status: List[dict] = []
-        # ---- 插件总开关 ----
-        # 绿条绑定"上一次保活校验实际成功"，而非仅仅字段非空——
-        # 应用ID被静默拒绝时用户不该在绿条下等一个永不发生的结果
+        # 摘要 chip 绑定"上一次保活校验实际成功"，而非仅仅字段非空
         if not snap["enabled"]:
-            status.append(_banner("【插件未启用】所有自动任务停止，保存配置开启后才会运行", "#bbbbbb"))
+            summary_chip = _chip("未启用", size="small")
+            summary_note = "所有自动任务已停止；到配置页开启后才会运行"
         elif not snap["has_app_id"]:
-            status.append(_banner("【已启用，但未填写应用ID】不会执行任何检测，请到配置页填写", "#e69b00"))
+            summary_chip = _chip("缺应用ID", "warning", size="small")
+            summary_note = "不会执行任何检测；请到配置页填写应用ID"
         elif snap["keepalive_ok"] is False:
-            status.append(_banner("【插件已启用，但登录校验未通过】任务在跑，可信IP不会更新；见下方Cookie状态", "#ff0000"))
+            summary_chip = _chip("校验未通过", "error", size="small")
+            summary_note = "任务在跑，可信IP不会更新；见下方 Cookie 行"
         elif snap["keepalive_ok"] is None and not snap["keepalive_note"]:
-            status.append(_banner("插件已启用，等待第一轮校验结果（约10分钟内）", "#bbbbbb"))
+            summary_chip = _chip("等待首轮", size="small")
+            summary_note = "插件已启用，约10分钟内出第一轮校验结果"
         else:
-            status.append(_banner("插件已启用，后台任务运行中", "#40bb45"))
-        # ---- Cookie 登录态 ----
-        if snap["enabled"] and not snap["has_app_id"]:
-            pass  # 总开关条已表达缺前置，Cookie 条不再重复
-        elif not snap["enabled"]:
-            status.append(_banner("Cookie：插件未启用，不会保活", "#bbbbbb"))
-        elif not snap["has_cookie_ever"]:
-            status.append(_banner(
-                "【尚未登录过】请到配置页勾选「本地扫码修改IP」保存，然后回到本页扫码",
-                "#e69b00"))
-        elif snap["cookie_valid"]:
-            lifetime = snap["cookie_lifetime"]
-            days = lifetime // 86400
-            hours = (lifetime % 86400) // 3600
-            minutes = (lifetime % 3600) // 60
-            status.append(_banner(
-                f"【Cookie 有效】已保活 {days}天{hours}小时{minutes}分钟", "#40bb45"))
-        elif snap["none_streak"] >= 3:
-            status.append(_banner(
-                f"【连续 {snap['none_streak']} 次无法确认登录状态】可能是网络不通或企业微信页面改版，"
-                "期间Cookie真实失效不能及时发现；请检查服务器到 work.weixin.qq.com 的连通性",
-                "#e69b00"))
-        else:
-            status.append(_banner(
-                "【Cookie 已失效】自动恢复失败；失效期间公网IP一旦变化，企业微信应用的通知将发送失败。"
-                "请尽快到配置页勾选「本地扫码修改IP」重新扫码",
-                "#ff0000"))
-        # ---- 保活循环 ----
-        # ok=None 有两种含义：真的没跑过（note 空）与跑了但无结论（note 是转译后的原因）——
-        # 把后者显示成"还没跑过"会让网络故障的中间态变成谎言
-        if snap["enabled"] and snap["has_app_id"]:
-            if snap["keepalive_ok"] is True:
-                status.append(_banner(f"保活校验：正常（{snap['keepalive_note']}）", "#40bb45"))
-            elif snap["keepalive_ok"] is None and snap["keepalive_note"]:
-                status.append(_banner(
-                    f"【保活校验无结论】{snap['keepalive_note']}；每10分钟自动重试，"
-                    "连续多次无结论说明网络或企业微信页面异常", "#e69b00"))
-            elif snap["keepalive_ok"] is None:
-                status.append(_banner("保活校验：还没跑过第一轮（每10分钟自动校验一次）", "#bbbbbb"))
+            summary_chip = _chip("运行中", "success", size="small")
+            summary_note = "后台任务运行中，两个循环正常"
+
+        status_rows: List[dict] = []
+        if snap["enabled"]:
+            # ---- Cookie 登录态 ----
+            if snap["enabled"] and not snap["has_app_id"]:
+                pass  # 摘要 chip 已表达缺前置，不再重复
+            elif not snap["has_cookie_ever"]:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("Cookie 登录态"),
+                    _td_detail([_chip("未登录", "warning")],
+                               [_span("到配置页勾选「本地扫码修改IP」保存，然后回本页扫码")]),
+                ]})
+            elif snap["cookie_valid"]:
+                lifetime = snap["cookie_lifetime"]
+                days = lifetime // 86400
+                hours = (lifetime % 86400) // 3600
+                minutes = (lifetime % 3600) // 60
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("Cookie 登录态"),
+                    _td_detail([_chip("有效", "success")],
+                               [_span(f"已保活 {days}天{hours}小时{minutes}分钟",
+                                      "font-weight-medium")]),
+                ]})
+            elif snap["none_streak"] >= 3:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("Cookie 登录态"),
+                    _td_detail([_chip("无法确认", "warning")],
+                               [_span(f"连续 {snap['none_streak']} 次无法确认登录状态；"
+                                      "请检查服务器到 work.weixin.qq.com 的连通性")]),
+                ]})
             else:
-                status.append(_banner(
-                    f"保活校验：{snap['keepalive_note']}；下轮将自动重试或通知", "#ff0000"))
-        # ---- IP 检测循环 ----
-        if snap["enabled"] and snap["has_app_id"]:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("Cookie 登录态"),
+                    _td_detail([_chip("失效", "error", variant="flat")],
+                               [_span("自动恢复失败；IP 一旦变化通知将发送失败。"
+                                      "请到配置页重新扫码")]),
+                ]})
+            # ---- 保活校验 ----
+            # ok=None 有两种含义：真的没跑过（note 空）与跑了但无结论（note 有值）——
+            # 把后者显示成"还没跑过"会让网络故障的中间态变成谎言
+            if snap["keepalive_ok"] is True:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("保活校验"),
+                    _td_detail([_chip("正常", "success")],
+                               [_span(snap["keepalive_note"]),
+                                _span(" · 每10分钟自动校验", "text-caption text-medium-emphasis")]),
+                ]})
+            elif snap["keepalive_ok"] is None and snap["keepalive_note"]:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("保活校验"),
+                    _td_detail([_chip("无结论", "warning")],
+                               [_span(f"{snap['keepalive_note']}；每10分钟自动重试，"
+                                      "连续多次无结论说明网络或页面异常")]),
+                ]})
+            elif snap["keepalive_ok"] is None:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("保活校验"),
+                    _td_detail([_chip("未运行")],
+                               [_span("还没跑过第一轮（每10分钟自动校验一次）")]),
+                ]})
+            else:
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("保活校验"),
+                    _td_detail([_chip("失败", "error")],
+                               [_span(f"{snap['keepalive_note']}；下轮将自动重试或通知")]),
+                ]})
+            # ---- IP 检测 ----
             if not snap["cron"]:
-                status.append(_banner("【未配置检测周期】IP变化不会被自动更新，请到配置页填写", "#e69b00"))
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("IP 检测"),
+                    _td_detail([_chip("未配置", "warning")],
+                               [_span("IP变化不会被自动更新；请到配置页填写检测周期")]),
+                ]})
             elif not snap["cron_valid"]:
-                status.append(_banner(
-                    f"【检测周期格式错误】「{snap['cron']}」不是合法的 cron 表达式，IP 检测不会运行",
-                    "#ff0000"))
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("IP 检测"),
+                    _td_detail([_chip("格式错误", "error")],
+                               [_span(f"「{snap['cron']}」不是合法的 cron 表达式，IP 检测不会运行",
+                                      "font-monospace")]),
+                ]})
             else:
                 note = snap["ip_check_note"] or "还没跑过第一轮"
-                color = "#bbbbbb" if snap["ip_check_ok"] is None else ("#40bb45" if snap["ip_check_ok"] else "#ff0000")
-                status.append(_banner(
-                    f"IP检测（{snap['cron']}）：{note}；当前可信IP：{snap['current_ip_masked'] or '未记录'}",
-                    color))
-        cards = [
-            _card("运行状态", "插件总开关、Cookie 登录态与两个后台任务的当前情况", status),
-        ]
+                if snap["ip_check_ok"] is True:
+                    check_chip = _chip("正常", "success")
+                elif snap["ip_check_ok"] is None:
+                    check_chip = _chip("未运行")
+                else:
+                    check_chip = _chip("失败", "error")
+                status_rows.append({"component": "tr", "content": [
+                    _td_label("IP 检测"),
+                    _td_detail([check_chip],
+                               [_span(snap["cron"], "font-monospace text-no-wrap"),
+                                _span(f" · 上次：{note}")]),
+                ]})
+        cards.append(_card(
+            "运行状态", "插件总开关、Cookie 登录态与两个后台任务",
+            [_summary_row(summary_chip, summary_note),
+             _kv_table(status_rows) if status_rows else
+             _span("插件未启用，Cookie 保活与 IP 检测均已停止",
+                   "text-caption text-medium-emphasis")]))
 
         # ================= 卡 2 · IP 来源 =================
+        # 模式判定与 CheckIP 的实际优先级一致：多WAN > DDNS > 公网探测
+        if snap["wan_mode"]:
+            mode_chip = _chip("多WAN多出口", size="small")
+        elif snap["company_domain"]:
+            mode_chip = _chip("DDNS域名", size="small")
+        else:
+            mode_chip = _chip("公网IP探测", size="small")
         ip_rows: List[dict] = []
         # ---- DDNS ----
-        # 补齐正常态/未配置态，与失败红条构成完整三态（此前只有失败分支）
         if snap["company_domain"]:
             if snap["ddns_ok"] is False:
-                ip_rows.append(_banner(
-                    f"【DDNS域名全部解析失败】{snap['company_domain']} 本轮未改动可信IP，请检查域名或DNS", "#ff0000"))
+                ip_rows.append({"component": "tr", "content": [
+                    _td_label("DDNS"),
+                    _td_detail([_chip("失败", "error")],
+                               [_span(f"{snap['company_domain']} 全部解析失败，本轮未改动可信IP",
+                                      "font-monospace")]),
+                ]})
             elif snap["ddns_ok"] is True and snap["ddns_ip_masked"]:
-                count = len([ip for ip in str(snap["company_domain"]).split(",") if ip.strip()])
-                ip_rows.append(_banner(
-                    f"DDNS正常：{count} 个域名解析到 {snap['ddns_ip_masked']}，已合并填入可信IP", "#40bb45"))
+                count = len([d for d in str(snap["company_domain"]).split(",") if d.strip()])
+                ip_rows.append({"component": "tr", "content": [
+                    _td_label("DDNS"),
+                    _td_detail([_chip("正常", "success")],
+                               [_span(f"{count} 个域名 → "),
+                                _span(snap["ddns_ip_masked"],
+                                      "font-monospace font-weight-medium")]),
+                ]})
             else:
-                ip_rows.append(_banner(f"DDNS：已配置 {snap['company_domain']}，等待首次解析", "#bbbbbb"))
+                ip_rows.append({"component": "tr", "content": [
+                    _td_label("DDNS"),
+                    _td_detail([_chip("等待首次")],
+                               [_span(f"已配置 {snap['company_domain']}，等待首次解析",
+                                      "font-monospace")]),
+                ]})
+        else:
+            ip_rows.append({"component": "tr", "content": [
+                _td_label("DDNS"),
+                _td_detail([_chip("未配置")],
+                           [_span("IP 来自多WAN或公网IP探测")]),
+            ]})
         # ---- 固定可信IP ----
-        # 快照已算好 pinned_valid/pinned_count，此前从未渲染（机械核查确认的死字段）
         if snap["pinned_ips"].strip():
             if snap["pinned_valid"] is False:
-                ip_rows.append(_banner(
-                    "【固定可信IP格式不对】含非IP格式的内容，更新可信IP时会被忽略；请检查是否误填了域名", "#e69b00"))
+                ip_rows.append({"component": "tr", "content": [
+                    _td_label("固定可信IP"),
+                    _td_detail([_chip("格式错误", "warning")],
+                               [_span("含非IP格式的内容，更新可信IP时会被忽略；请检查是否误填了域名")]),
+                ]})
             else:
-                ip_rows.append(_banner(
-                    f"固定可信IP：{snap['pinned_count']} 个，每次更新可信IP都会保留它们", "#40bb45"))
-        # ---- 多WAN 与当前可信IP 汇总行 ----
-        mode_text = "多WAN多出口" if snap["wan_mode"] else "公网IP探测" if not snap["company_domain"] else "DDNS域名"
-        if snap["wan_mode"]:
-            mode_text = "多WAN多出口"
-        elif snap["company_domain"]:
-            mode_text = "DDNS域名"
-        summary_color = "#bbbbbb" if not (snap["enabled"] and snap["has_app_id"]) else "#40bb45"
-        ip_rows.append(_banner(
-            f"当前模式：{mode_text}；当前可信IP：{snap['current_ip_masked'] or '未记录'}",
-            summary_color))
-        cards.append(
-            _card("IP 来源", "当前生效的检测来源、固定可信IP 与已填入的可信IP", ip_rows))
+                ip_rows.append({"component": "tr", "content": [
+                    _td_label("固定可信IP"),
+                    _td_detail([_chip("已启用", "success")],
+                               [_span(f"{snap['pinned_count']} 个；每次更新可信IP都会保留")]),
+                ]})
+        else:
+            ip_rows.append({"component": "tr", "content": [
+                _td_label("固定可信IP"),
+                _td_detail([_chip("未配置")],
+                           [_span("可信IP仅含检测到的出口IP")]),
+            ]})
+        cards.append(_card(
+            "IP 来源", "检测来源、固定可信IP 与当前可信IP",
+            [_summary_row(
+                mode_chip,
+                snap["current_ip_masked"] or "尚未获取到可信IP",
+                "font-monospace font-weight-medium"),
+             _kv_table(ip_rows)]))
 
         # ================= 卡 3 · 扫码登录 =================
-        # ---- 二维码区（三态分离 + 图片有无两态，无写副作用） ----
-        # 页面是进入时快照：等待出码的用户需要知道"刷新本页"才能看到新状态
+        # ---- 二维码状态（四态：有效/已过期/运行中未出码/无任务） ----
         qr_valid = snap["qr_future_timestamp"] > now_ts
         if qr_valid:
-            qr_text = f"二维码有效，过期时间: {datetime.fromtimestamp(snap['qr_future_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}。过期后请刷新本页查看新码"
-            qr_color = "#40bb45"
+            qr_chip = _chip("有效", "success", size="small")
+            qr_note = (f"过期时间 {datetime.fromtimestamp(snap['qr_future_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}"
+                       "；过期后请刷新本页查看新码")
         elif snap["qr_running"] and snap["qr_has_image"]:
-            qr_text = "二维码已过期。请刷新本页查看是否已生成新码；没有新码就到配置页重新勾选「本地扫码修改IP」保存"
-            qr_color = "#d4a017"
+            qr_chip = _chip("已过期", "warning", size="small")
+            qr_note = "请刷新本页查看是否已生成新码；没有新码就到配置页重新勾选「本地扫码修改IP」保存"
         elif snap["qr_running"]:
-            qr_text = "扫码任务运行中，二维码生成后本页不会自动出现——请每隔几秒刷新本页查看"
-            qr_color = "#d4a017"
+            qr_chip = _chip("运行中", "warning", size="small")
+            qr_note = "二维码生成后本页不会自动出现——请每隔几秒刷新本页查看"
         else:
-            qr_text = "当前没有扫码任务。需要时到配置页勾选「本地扫码修改IP」保存，或发送 /push_qr 命令"
-            qr_color = "#bbbbbb"
+            qr_chip = _chip("无任务", size="small")
+            qr_note = "需要时到配置页勾选「本地扫码修改IP」保存，或发送 /push_qr 命令"
         if snap["qr_has_image"] and qr_valid:
             qr_image_data = self._qr_code_image.getvalue()
             base64_image = base64.b64encode(qr_image_data).decode('utf-8')
@@ -2256,31 +2325,33 @@ class DynamicWeChat(_PluginBase):
         else:
             img_component = {
                 "component": "div",
+                "props": {"class": "text-caption text-medium-emphasis text-center my-2"},
                 "text": "登录二维码会在此展示；生成后需刷新本页",
-                "props": {
-                    "style": {
-                        "fontSize": "16px",
-                        "color": "#888888",
-                        "textAlign": "center",
-                        "margin": "10px"
-                    }
-                }
             }
-        scan_inner: List[dict] = [_banner(qr_text, qr_color), img_component]
-        # ---- 验证码等待条 ----
+        scan_inner: List[dict] = [_summary_row(qr_chip, qr_note, "text-caption text-medium-emphasis"), img_component]
+        # ---- 验证码等待（全页唯一 VAlert：需要用户立即动作的指令） ----
         if snap["waiting_captcha"]:
-            scan_inner.append(_banner(
-                "【正在等待短信验证码】请在企业微信应用发送 6 位数字并以？结尾（如 110301？），"
-                "或发送命令 /wxcode 110301",
-                "#d4a017"))
-        cards.append(
-            _card("扫码登录", "重新登录企业微信；二维码出现后用手机「企业微信」App 扫码", scan_inner))
+            scan_inner.append({
+                "component": "VAlert",
+                "props": {"type": "warning", "variant": "tonal", "density": "comfortable",
+                          "class": "mt-2"},
+                "text": ("正在等待短信验证码：请在企业微信应用发送 6 位数字并以？结尾"
+                         "（如 110301？），或发送命令 /wxcode 110301"),
+            })
+        cards.append(_card(
+            "扫码登录", "重新登录企业微信；二维码出现后用手机「企业微信」App 扫码",
+            scan_inner))
 
         return [
             {
-                "component": "div",
-                "props": {"style": {"textAlign": "center"}},
-                "content": cards,
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": cards,
+                    }
+                ],
             }
         ]
 

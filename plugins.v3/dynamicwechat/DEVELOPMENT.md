@@ -362,3 +362,47 @@ requests.post(self.url + '/update', ...)      # /update 是整体替换语义
 新增 `tests/v3/dynamicwechat/test_cookie_persistence.py` 7 项：加解密往返、
 错误密钥不还原明文、**合并写入保留其它站点**、**无全量时拒绝写入**、落盘/读回
 （含 600 权限）、读取优先级、回读校验检查 wwrtx.sid。
+
+---
+
+## 3.1.6 详情页视觉重构（chip + 表格替代色块横幅）
+
+### 问题（双通道评审：设计评审 + 机械核查）
+
+用户反馈「布局改动了但设计还是不太好」。机械核查给出量化病根：
+
+- **对比度全线不达标**：5 种底色上白字对比度 1.92:1（#bbbbbb）～4.00:1（#ff0000），
+  全部低于 WCAG AA 正文 4.5:1——连红都不达标。
+- **告警通胀**：典型态 6 条彩条占视口 41%，最坏态 9 条占 108%（超一屏），红占 40%。
+  穷举 172 万状态组合，5 色可同页共存——「一切都在喊等于没人在喊」。
+- **橙/黄同属琥珀色系无法靠颜色区分**；硬编码 hex 与宿主主题脱节，暗色下刺眼。
+- **数值埋在长句**：3 条超 60 字的横幅；可信IP 一页出现 2 次。
+- 组件统计对照 updatewechatip（同为企微 Cookie 保活的成熟详情页）：
+  13 种组件 vs 本页 4 种；VChip/VTable/VAlert 全部为 0。
+
+### 做法
+
+采用宿主原生状态语言（updatewechatip + courseorganizer 已验证的模式）：
+
+- **VChip 徽章**（`variant:tonal` + 主题 token）替代全部色块：success/error/warning/
+  默认灰；**橙与黄合并为 warning**（本就难辨，区分交给所在卡与文案）；Cookie 失效
+  一处用 `flat` 保持「红=唯一警报」的隔离效应。
+- **VTable 键值表**（无表头三列：项目 | 状态chip | 详情）替代长句横幅：标签列是
+  常驻锚点，数值独立成格（保活时长加粗、IP/cron 用 `font-monospace`）。
+- **卡头摘要行**（chip + 说明 span，`d-flex flex-wrap align-center ga-2`）：摘要
+  chip 绑定 keepalive 实际结果；可信IP 全页唯一一处（卡 2 摘要行）。
+- **卡骨架改 VCard title/subtitle props**（courseorganizer 式，删手拼 div）；
+  验证码等待改 VAlert warning tonal（全页唯一 alert，值得 alert 级）。
+- 四态文案精简（【】删除——chip 承担强调），语义不丢；`_page_snapshot` 零改动。
+
+### 边界
+
+- 9 个快照 key 仍未消费（通知通道/CookieCloud 组）：对应状态配置页已表达，
+  详情页重复展示违反单一信息源（3.1.1 决定维持）。
+- 无 thead 的 VTable 若宿主渲染异常，兜底是加一行表头（项目/状态/详情）——真机看一眼。
+
+### 测试
+
+形状测试 walker 增收 VChip/td/span 文本；「无成功色」断言改为「无 success chip」；
+新增断言：页面必须含 VChip/VTable、不得再有 `_banner(` 与任何硬编码 hex。
+49 项全绿。
