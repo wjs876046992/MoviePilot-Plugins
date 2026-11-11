@@ -298,3 +298,67 @@ CheckIP 的实际优先级一致。
 
 形状测试 40→42 项：三卡标题断言、卡片包裹后 `_banner_texts` 递归收集回归
 （保证既有 40 项状态断言在卡片结构下依然生效）。
+
+---
+
+## 3.1.5 CookieCloud 覆盖式写入缺陷（严重）
+
+### 症状
+
+用户反馈「开了 CookieCloud，重启插件后 Cookie 仍然失效」。真机日志每 10 分钟一轮：
+```
+15:30:02 开始从 CookieCloud 获取 Cookie
+15:30:09 CookieCloud Cookie失效，发送通知
+```
+
+### 根因（真机解密证实）
+
+解密 `/config/cookies/<uuid>.json` 后发现，`work.weixin.qq.com` 域里**只剩 2 个
+边缘 cookie**：
+
+```
+[.work.weixin.qq.com]  cookie 数量=2  名称=['wwrtx.c_gdpr', 'ww_lang']
+```
+
+登录凭证 `wwrtx.sid` 不见了。原因是 `helper.update_cookie` 的实现：
+
+```python
+cookie = {'cookie_data': formatted_cookies}   # 只有 work.weixin.qq.com 一个域
+requests.post(self.url + '/update', ...)      # /update 是整体替换语义
+```
+
+两个后果：
+1. **清空了其它所有站点**的 Cookie（那次解密看到 700 个域名，其中 699 个本应
+   由 MoviePilot 的站点同步维护，会被插件写操作覆盖掉）
+2. 企微域只写入了浏览器当时采到的子集，后续再写一次不完整的数据就会把
+   `wwrtx.sid` 覆盖没
+
+**不是别的浏览器配置覆盖了它，是插件自己覆盖了整个 CookieCloud。**
+
+### 做法（三项，用户拍板全做）
+
+1. **读-合并-写**：新增 `decrypt()` 与 `PyCookieCloud.download_raw()`；`update_cookie`
+   先取全量、移除所有 `*weixin*` 域、只写回企微组。**拿不到全量时直接拒绝写入**
+   （宁可这轮不更新，也不能清空别人的 Cookie）。
+2. **回读校验**：写入成功后立刻 `download_raw()` 检查 `wwrtx.sid` 是否存在，
+   不存在则报错并标记上传失败——避免「接口返回 done 但内容不对」的静默失败。
+3. **本地落盘兜底**：`get_data_path()/cookie.json`（权限 600），只存 weixin 相关域；
+   读取顺序改为 内存 → 本地落盘 → CookieCloud，重启后不再完全依赖云端。
+
+`PyCookieCloud` 新增 `local_dir` 构造参数（内建 CookieCloud 的数据目录），
+让 helper 保持纯逻辑、不直接依赖宿主 `app.sdk.config`。
+
+### 边界
+
+- 合并时按 `"weixin" in domain.lower()` 删除旧组，因此 `mac.weixin.qq.com`
+  （微信客户端相关）也会被一并替换——它不由本插件维护，但同属企微生态，
+  保留旧值反而可能残留过期凭证。
+- 落盘只存 weixin 域，不把浏览器里的其它站点 Cookie 抄一份到插件数据目录。
+- **此前被清空的其它站点 Cookie 需要用户重新同步一次**（MoviePilot 的站点同步
+  任务会补回，日志已见 `CookieCloud同步成功`）。
+
+### 测试
+
+新增 `tests/v3/dynamicwechat/test_cookie_persistence.py` 7 项：加解密往返、
+错误密钥不还原明文、**合并写入保留其它站点**、**无全量时拒绝写入**、落盘/读回
+（含 600 权限）、读取优先级、回读校验检查 wwrtx.sid。

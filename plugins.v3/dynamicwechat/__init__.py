@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.4"
+    plugin_version = "3.1.5"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -790,7 +790,9 @@ class DynamicWeChat(_PluginBase):
             self._cc_server = PyCookieCloud(
                 url=self._server,
                 uuid=settings.COOKIECLOUD_KEY,
-                password=settings.COOKIECLOUD_PASSWORD
+                password=settings.COOKIECLOUD_PASSWORD,
+                # 内建服务的数据文件在 COOKIE_PATH 下；读-合并-写需要它
+                local_dir=str(getattr(settings, "COOKIE_PATH", "") or "/config/cookies"),
             )
             logger.info("使用内建CookieCloud服务器")
         else:
@@ -1049,16 +1051,79 @@ class DynamicWeChat(_PluginBase):
                     formatted_cookies[domain].append(cookie)
                 update_success = await asyncio.to_thread(self._cc_server.update_cookie, formatted_cookies)
                 if update_success:
-                    logger.info("更新 CookieCloud 成功")
-                    self._is_special_upload = True
+                    # 回读校验：写入返回成功不代表真的写进去了（历史上出现过
+                    # 只剩 ww_lang 这类边缘 cookie 的情况），必须确认登录凭证存在
+                    verified = await asyncio.to_thread(self._verify_cookiecloud_has_sid)
+                    if verified:
+                        logger.info("更新 CookieCloud 成功（已回读校验）")
+                        self._is_special_upload = True
+                    else:
+                        logger.error("CookieCloud 写入成功但回读未见登录凭证（wwrtx.sid），请检查CookieCloud")
+                        self._is_special_upload = False
                 else:
                     logger.error("更新 CookieCloud 失败，但本地cookie已有效")
                     self._is_special_upload = False
+                # 本地落盘兜底：不依赖 CookieCloud 是否可用
+                await self._save_cookie_to_disk(current_cookies)
             except Exception as e:
                 logger.error(f"CookieCloud更新 cookie 发生错误: {e}")
         else:
             self._is_special_upload = True  # 不用cookiecloud 也显示cookie寿命
             logger.info("更新本地 Cookie成功")
+        # 未启用 CookieCloud 时同样要落盘，否则重启后必丢
+        if not self._use_cookiecloud:
+            await self._save_cookie_to_disk(current_cookies)
+
+    def _verify_cookiecloud_has_sid(self) -> bool:
+        """回读 CookieCloud，确认企微登录凭证（wwrtx.sid）确实存在"""
+        try:
+            data = self._cc_server.download_raw() if self._cc_server else {}
+        except Exception as e:
+            logger.warning(f"回读 CookieCloud 校验失败: {e}")
+            return False
+        for domain, cookies in (data or {}).items():
+            if "weixin" not in str(domain).lower():
+                continue
+            for cookie in cookies or []:
+                if cookie.get("name") == "wwrtx.sid" and cookie.get("value"):
+                    return True
+        return False
+
+    async def _save_cookie_to_disk(self, cookies: List[dict]) -> None:
+        """
+        把企微 Cookie 落到插件数据目录，作为 CookieCloud 之外的持久兜底。
+        只保存 work.weixin.qq.com 相关域，避免把浏览器里其它敏感 Cookie 抄一份。
+        """
+        try:
+            path = self.get_data_path() / "cookie.json"
+            payload = [c for c in (cookies or [])
+                       if "weixin" in str(c.get("domain", "")).lower()]
+            if not payload:
+                return
+            def _write():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            await asyncio.to_thread(_write)
+            logger.info(f"Cookie 已落盘（{len(payload)} 条）")
+        except Exception as e:
+            logger.warning(f"Cookie 落盘失败: {e}")
+
+    def _load_cookie_from_disk(self) -> List[dict]:
+        """从插件数据目录读取兜底 Cookie（不存在或损坏时返回空列表）"""
+        try:
+            path = self.get_data_path() / "cookie.json"
+            if not path.is_file():
+                return []
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
 
     async def _send_cookie_false(self):
         """
@@ -1234,6 +1299,11 @@ class DynamicWeChat(_PluginBase):
         """
         if self._saved_cookie and self._cookie_valid:
             return self._saved_cookie
+        # 本地落盘优先于 CookieCloud：重启后不依赖云端是否正常
+        disk_cookie = await asyncio.to_thread(self._load_cookie_from_disk)
+        if disk_cookie:
+            logger.info(f"使用本地落盘 Cookie（{len(disk_cookie)} 条）")
+            return disk_cookie
         try:
             if not self._use_cookiecloud:
                 return None

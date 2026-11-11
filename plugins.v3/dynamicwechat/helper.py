@@ -41,13 +41,38 @@ def encrypt(message: bytes, passphrase: bytes) -> bytes:
     return base64.b64encode(b"Salted__" + salt + aes.encrypt(data))
 
 
+def decrypt(encrypted: bytes, passphrase: bytes) -> bytes:
+    """
+    解密 CryptoJS AES 密文（encrypt 的逆运算）。
+
+    用于「读-合并-写」：更新 CookieCloud 前必须先解出全量数据，
+    否则会用只含一个域名的数据整体覆盖掉其它站点的 Cookie。
+    """
+    data = base64.b64decode(encrypted)
+    if not data.startswith(b"Salted__"):
+        raise ValueError("不是 CryptoJS 密文（缺少 Salted__ 头）")
+    salt = data[8:16]
+    body = data[16:]
+    key_iv = bytes_to_key(passphrase, salt, 32 + 16)
+    aes = AES.new(key_iv[:32], AES.MODE_CBC, key_iv[32:])
+    plain = aes.decrypt(body)
+    if not plain:
+        return b""
+    pad_len = plain[-1]
+    if not 0 < pad_len <= 16:
+        raise ValueError("密文填充非法，可能密钥不匹配")
+    return plain[:-pad_len]
+
+
 class PyCookieCloud:
     """CookieCloud 客户端，提供同步和异步两种操作方式"""
 
-    def __init__(self, url: str, uuid: str, password: str):
+    def __init__(self, url: str, uuid: str, password: str, local_dir: str = ""):
         self.url: str = url
         self.uuid: str = uuid
         self.password: str = password
+        # 内建 CookieCloud 的数据目录（仅本地服务需要，用于读-合并-写）
+        self.local_dir: str = local_dir
 
     def check_connection(self) -> bool:
         """同步检查连接（保留兼容）"""
@@ -66,16 +91,71 @@ class PyCookieCloud:
         except Exception:
             return False
 
+    def download_raw(self) -> Dict[str, Any]:
+        """
+        下载并解密 CookieCloud 的**全量** cookie_data（域名字典）。
+
+        CookieCloud 的 /update 是整体替换语义，任何写入前都必须先拿到全量数据，
+        否则会用单域数据覆盖掉其它站点。失败时返回空字典（调用方据此决定是否放弃写入）。
+        """
+        try:
+            if self._is_local():
+                raw = self._load_local_encrypted()
+            else:
+                resp = requests.get(f"{self.url}/get/{self.uuid}", timeout=15)
+                if resp.status_code != 200:
+                    return {}
+                raw = resp.json()
+        except Exception:
+            return {}
+        encrypted = (raw or {}).get("encrypted")
+        if not encrypted:
+            return {}
+        try:
+            plain = decrypt(encrypted.encode("utf-8"), self.get_the_key().encode("utf-8"))
+            doc = json.loads(plain)
+        except Exception:
+            return {}
+        return doc.get("cookie_data") or doc or {}
+
+    def _is_local(self) -> bool:
+        """判断是否连接内建（本地文件）CookieCloud 服务"""
+        return str(self.url).startswith("http://localhost")
+
+    def _load_local_encrypted(self) -> Dict[str, Any]:
+        """
+        从本地 CookieCloud 数据文件读取密文（内建服务场景）。
+        路径由调用方通过 PyCookieCloud(url, uuid, password, local_dir=...) 传入，
+        本模块不直接依赖宿主配置，保持纯逻辑可测。
+        """
+        if not self.local_dir:
+            return {}
+        candidate = os.path.join(str(self.local_dir), f"{self.uuid}.json")
+        if not os.path.isfile(candidate):
+            return {}
+        with open(candidate, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
     def update_cookie(self, formatted_cookies: Dict[str, Any]) -> bool:
         """
-        Update cookie data to CookieCloud.
+        更新 CookieCloud 中的企业微信 Cookie 域（**读-合并-写**）。
 
-        :param formatted_cookies: cookie value to update.
-        :return: if update success, return True, else return False.
+        先下载全量数据、只替换 work.weixin.qq.com 这一组、再整体写回——
+        此前直接上传单域数据会清空其它所有站点的 Cookie。
+
+        :param formatted_cookies: 由浏览器取到的 cookie 列表，按域名分组
+        :return: 写入是否成功
         """
-        if '.work.weixin.qq.com' not in formatted_cookies:
-            formatted_cookies['.work.weixin.qq.com'] = []
-        formatted_cookies['.work.weixin.qq.com'].append({
+        merged = self.download_raw()
+        if not merged:
+            # 拿不到现有数据时拒绝写入：宁可本次不更新，也不能清空别人的 Cookie
+            return False
+
+        # 只替换企微相关域，其余域名原样保留
+        for key in [k for k in merged if "weixin" in str(k).lower()]:
+            merged.pop(key, None)
+        wechat_group = list(formatted_cookies.get(".work.weixin.qq.com") or [])
+        wechat_group.append({
             'name': '_upload_type',
             'value': 'A',
             'domain': '.work.weixin.qq.com',
@@ -85,14 +165,19 @@ class PyCookieCloud:
             'secure': False,
             'sameSite': 'Lax'
         })
+        merged['.work.weixin.qq.com'] = wechat_group
 
-        cookie = {'cookie_data': formatted_cookies}
+        cookie = {'cookie_data': merged}
         raw_data = json.dumps(cookie)
         encrypted_data = encrypt(raw_data.encode('utf-8'), self.get_the_key().encode('utf-8')).decode('utf-8')
-        cookie_cloud_request = requests.post(
-            self.url + '/update',
-            json={'uuid': self.uuid, 'encrypted': encrypted_data}
-        )
+        try:
+            cookie_cloud_request = requests.post(
+                self.url + '/update',
+                json={'uuid': self.uuid, 'encrypted': encrypted_data},
+                timeout=20
+            )
+        except Exception:
+            return False
         if cookie_cloud_request.status_code == 200:
             if cookie_cloud_request.json().get('action') == 'done':
                 return True

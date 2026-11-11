@@ -6,6 +6,7 @@
 
 ## 目录（按日期倒序）
 
+- 2026-11-11（DynamicWeChat 修复 CookieCloud 覆盖写入）
 - 2026-11-11（DynamicWeChat 详情页卡片化）
 - 2026-11-11（DynamicWeChat 多DDNS域名与布局调整）
 - 2026-11-11（DynamicWeChat 卡片式配置页）
@@ -16,6 +17,37 @@
 - 2026-11-08
 - 2026-11-05
 - 2026-09-14
+
+---
+
+## 2026-11-11（DynamicWeChat 修复 CookieCloud 覆盖写入）
+
+**分支：** `main`
+**涉及插件：** DynamicWeChat
+**类型：** 严重缺陷修复（数据破坏）
+
+### 动态企微可信IP v3.1.4 → v3.1.5
+
+用户报告「开了 CookieCloud，重启插件后 Cookie 仍然失效」。猜测是别的浏览器配的
+CookieCloud 覆盖了它——**方向错了，是插件自己覆盖了 CookieCloud。**
+
+#### 根因（真机解密证实）
+
+解密容器内 CookieCloud 文件，`work.weixin.qq.com` 只剩 2 个边缘 cookie
+（`wwrtx.c_gdpr`、`ww_lang`），登录凭证 `wwrtx.sid` 不见了。而 `update_cookie`
+的实现是「只上传企微域 + `/update` 整体替换语义」——新版宿主该文件里有 700 个
+域名，**那次写入等于把另外 699 个站点的 Cookie 全删了**。
+
+#### 修法
+
+读全量 → 只替换企微域 → 写回；拿不到全量时拒绝写入；写后回读校验 `wwrtx.sid`；
+新增本地 `cookie.json` 落盘兜底，读取顺序改为 内存 → 落盘 → 云端。
+
+#### 代价与遗留
+
+被清空的站点 Cookie 需要用户重新同步一次（MP 的站点同步会补回）。另外这次事故
+暴露了一个更普遍的问题：**任何「只写自己那部分」的 CookieCloud 客户端都必须先读
+全量**——`/update` 不是 upsert。
 
 ---
 
