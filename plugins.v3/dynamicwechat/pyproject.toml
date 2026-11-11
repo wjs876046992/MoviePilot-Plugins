@@ -1,19 +1,21 @@
 [project]
 name = "moviepilot-plugin-dynamicwechat"
 # 清单只承载依赖，不承载插件版本：真实版本由插件类 plugin_version 与
-# package.v3.json 维护（当前 3.1.0），dynamic = ["version"] 是清单合同。
+# package.v3.json 维护（当前 3.1.2），dynamic = ["version"] 是清单合同。
 dynamic = ["version"]
 description = "动态企微可信IP：检测公网IP变动并通过企业微信后台自动更新应用可信IP，支持Cookie保活、多WAN出口与DDNS域名模式"
 authors = [{ name = "RamenRa" }]
 # aiohttp: CookieCloud 探活与公网IP探测的异步HTTP客户端
 # pytz: 后台循环 CronTrigger 的时区处理
-# cloakbrowser: 企业微信后台无头浏览器。锁 0.6.x —— 0.7.0 起启动前强制
-# license key（Docker 里会卡在交互菜单），且 0.6.5 同样提供 launch_context_async。
+# cloakbrowser: 企业微信后台无头浏览器。0.7.0 起启动前强制 license key，
+# 本机暂时拿不到 key，实例侧已用 UV_CONSTRAINT 固定 cloakbrowser>=0.6,<0.7。
+# 这里只声明下限、不写上界：写上界会让宿主预检在实例装不到指定版本时
+# 直接拒绝加载插件（"当前为 0.7.x，插件要求 <0.7"），而下限足够保证 API 可用。
 # pycryptodome: CookieCloud 端对端加密的 AES 实现（Crypto.Random / Crypto.Cipher.AES）
 dependencies = [
     "aiohttp>=3.9",
     "pytz>=2023.3",
-    "cloakbrowser>=0.6,<0.7",
+    "cloakbrowser>=0.6",
     "pycryptodome>=3.19",
 ]
 requires-python = ">=3.14"
