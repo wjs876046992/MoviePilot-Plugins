@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.2"
+    plugin_version = "3.1.3"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -677,16 +677,20 @@ class DynamicWeChat(_PluginBase):
         返回True表示IP已变化需要更新，否则False
         """
         # DDNS域名模式：解析域名获取动态公网IP，优先于多WAN和URL检测
+        # 支持多个域名（英文逗号分隔）：全部解析并合并且分号拼接，任一成功即可用
         company_domain = str(getattr(self, "_company_domain", "") or "").strip()
         if company_domain:
-            ip_address = await asyncio.to_thread(self.get_ip_from_domain, company_domain)
-            if not ip_address or ip_address == "获取IP失败":
-                logger.error(f"域名{company_domain}解析失败，不操作可信IP")
+            ip_address, ok_domains, failed_domains = await asyncio.to_thread(
+                self.resolve_domains, company_domain)
+            if not ip_address:
+                logger.error(f"DDNS 域名全部解析失败（{company_domain}），不操作可信IP")
                 self._last_ddns_ok = False
                 self._last_ip_check_ok = False
-                self._last_ip_check_note = f"DDNS域名解析失败，未改动可信IP"
+                self._last_ip_check_note = "DDNS域名解析失败，未改动可信IP"
                 return False
-            logger.info(f"IP获取成功: 解析域名 {company_domain}: {ip_address}")
+            if failed_domains:
+                logger.warning(f"部分 DDNS 域名解析失败：{','.join(failed_domains)}；已用：{','.join(ok_domains)}")
+            logger.info(f"IP获取成功: 解析域名 {','.join(ok_domains)}: {ip_address}")
             self._last_ddns_ok = True
             self._last_ddns_ip = str(ip_address)
             if not self._ip_changed and func != "public":
@@ -882,6 +886,35 @@ class DynamicWeChat(_PluginBase):
         except Exception as e:
             logger.warning(f"域名{domain}解析失败,Error: {e}")
             return "获取IP失败"
+
+    def resolve_domains(self, raw: str) -> Tuple[str, List[str], List[str]]:
+        """
+        解析配置中的多个 DDNS 域名（英文逗号分隔），返回 (合并IP串, 成功域名, 失败域名)。
+
+        语义：所有域名都解析，结果去重后合并且分号拼接（多线路场景可一次填入多个出口IP）；
+        只要有任一域名解析成功就返回可用结果，只有全部失败时合并IP串为空。
+        纯函数式：除日志外不修改实例状态，便于测试。
+        """
+        domains = [d.strip() for d in str(raw or "").replace("，", ",").split(",") if d.strip()]
+        if not domains:
+            return "", [], []
+        ok_ips: List[str] = []
+        ok_domains: List[str] = []
+        failed_domains: List[str] = []
+        for domain in domains:
+            ip = self.get_ip_from_domain(domain)
+            if not ip or ip == "获取IP失败":
+                failed_domains.append(domain)
+                continue
+            ok_domains.append(domain)
+            # 同一域名可能被多个域名指向同一出口，去重但保留顺序
+            for single in str(ip).split(";"):
+                single = single.strip()
+                if single and single not in ok_ips:
+                    ok_ips.append(single)
+        if failed_domains:
+            logger.warning(f"DDNS 解析失败的域名：{','.join(failed_domains)}（其余域名已生效）")
+        return ";".join(ok_ips), ok_domains, failed_domains
 
     async def find_qrc(self, page):
         """
@@ -1539,7 +1572,16 @@ class DynamicWeChat(_PluginBase):
         # 获取当前IP地址，多WAN时加锁读取
         company_domain = str(getattr(self, "_company_domain", "") or "").strip()
         if company_domain:
-            self._current_ip_address = await asyncio.to_thread(self.get_ip_from_domain, company_domain)
+            merged, ok_domains, failed_domains = await asyncio.to_thread(
+                self.resolve_domains, company_domain)
+            if not merged:
+                # 全部域名都失败时不静默回退到其他来源，避免写错 IP
+                self._ip_changed = False
+                logger.error(f"DDNS 域名全部解析失败（{company_domain}），取消更新可信IP")
+                self.systemmessage.put("DDNS域名全部解析失败，取消更新可信IP")
+                return
+            self._current_ip_address = merged
+            logger.info(f"DDNS 解析到 {len(merged.split(';'))} 个IP（域名：{','.join(ok_domains)}）")
         elif self.wan2:
             ips_str = ""
             if await self._acquire_file_lock():
@@ -1843,20 +1885,26 @@ class DynamicWeChat(_PluginBase):
                     # ---------- 卡片 3 · IP 来源 ----------
                     _card(
                         'IP 来源',
-                        '不填则用默认公网IP探测；多个来源同时配置时按优先级只取一个',
+                        '决定填入可信IP的是哪些地址：检测来源按优先级只取一个，固定可信IP始终额外保留',
                         [
                             _row(
                                 _col(12, {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
-                                         'text': '优先级从高到低：① DDNS域名（填了就用它）② 多WAN出口（开了就用它）③ 公网IP探测（默认）'}}),
+                                         'text': '优先级从高到低：① DDNS域名（填了就用它）② 多WAN出口（开了就用它）③ 公网IP探测（默认）。固定可信IP与所选检测来源合并后一起填入'}}),
                             ),
                             _row(
-                                _col(6, {'component': 'VTextField', 'props': {'model': 'company_domain',
-                                         'label': 'DDNS域名（可选·优先级最高）', 'placeholder': '如 xxx.oicp.net，解析该域名得到动态公网IP'}}),
+                                _col(12, {'component': 'VTextField', 'props': {'model': 'company_domain',
+                                         'label': 'DDNS域名（可选·优先级最高，多个用英文逗号分隔）',
+                                         'placeholder': '如 home.oicp.net,backup.myqnapcloud.com —— 所有域名都会解析，结果合并去重'}}),
                             ),
                             _row(
-                                _col(6, {'component': 'VSwitch', 'props': {'model': 'wan_enabled', 'label': '多WAN多出口'}}),
-                                _col(6, {'component': 'VTextField', 'props': {'model': 'wan_max_ips',
-                                         'label': '最多保留出口IP数（仅多WAN生效）', 'placeholder': '默认 3'}}),
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'wan_enabled', 'label': '多WAN多出口'}}),
+                                _col(8, {'component': 'VTextField', 'props': {'model': 'wan_max_ips',
+                                         'label': '最多保留出口IP数（仅在开启多WAN时生效）', 'placeholder': '留空默认 3'}}),
+                            ),
+                            _row(
+                                _col(12, {'component': 'VTextField', 'props': {'model': 'pinned_ips',
+                                         'label': '固定可信IP（可选·始终保留，多个用英文逗号分隔）',
+                                         'placeholder': '如 203.0.113.10,198.51.100.7'}}),
                             ),
                             _row(
                                 _col(12, {'component': 'VTextarea', 'props': {'model': 'custom_ip_urls',
@@ -1901,9 +1949,7 @@ class DynamicWeChat(_PluginBase):
                         '进阶选项 —— 保持默认即可，不改不影响正常使用',
                         [
                             _row(
-                                _col(4, {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}),
-                                _col(8, {'component': 'VTextField', 'props': {'model': 'pinned_ips',
-                                         'label': '固定可信IP（可选·始终保留，多个用英文逗号分隔）', 'placeholder': '如 203.0.113.10,198.51.100.7'}}),
+                                _col(12, {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}),
                             ),
                         ],
                     ),
@@ -2030,10 +2076,11 @@ class DynamicWeChat(_PluginBase):
         if snap["company_domain"]:
             if snap["ddns_ok"] is False:
                 banners.append(_banner(
-                    f"【DDNS域名解析失败】{snap['company_domain']} 上次解析未成功，本轮未改动可信IP", "#ff0000"))
+                    f"【DDNS域名全部解析失败】{snap['company_domain']} 本轮未改动可信IP，请检查域名或DNS", "#ff0000"))
             elif snap["ddns_ok"] is True and snap["ddns_ip_masked"]:
+                count = len([ip for ip in str(snap["company_domain"]).split(",") if ip.strip()])
                 banners.append(_banner(
-                    f"DDNS正常：{snap['company_domain']} 解析到 {snap['ddns_ip_masked']}，IP来源优先级最高", "#40bb45"))
+                    f"DDNS正常：{count} 个域名解析到 {snap['ddns_ip_masked']}，已合并填入可信IP", "#40bb45"))
             else:
                 banners.append(_banner(f"DDNS：已配置 {snap['company_domain']}，等待首次解析", "#bbbbbb"))
         # ---- 固定可信IP ----

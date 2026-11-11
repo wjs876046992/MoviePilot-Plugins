@@ -395,3 +395,61 @@ def test_once_switches_declare_one_shot():
     """P3 回归：一次性触发语义必须可见——开关短 label + 卡内触发器说明 alert"""
     assert "自动复位" in SOURCE
     assert "触发器" in SOURCE
+
+
+# ---------- 3.1.3 多 DDNS 域名 + 布局调整 ----------
+
+def test_resolve_domains_merges_all():
+    """所有域名都解析，结果合并去重；部分失败仍返回可用结果"""
+    ns = {"Tuple": tuple, "List": list, "logger": SimpleNamespace(warning=lambda *a, **k: None)}
+    exec(_extract_function("resolve_domains"), ns)
+
+    def run(raw, mapping):
+        s = SimpleNamespace(get_ip_from_domain=lambda d: mapping.get(d, "获取IP失败"))
+        return ns["resolve_domains"](s, raw)
+
+    # 两个域名指向不同出口 → 合并
+    merged, ok, failed = run("a.example.com,b.example.com", {
+        "a.example.com": "203.0.113.10", "b.example.com": "198.51.100.7"})
+    assert merged == "203.0.113.10;198.51.100.7"
+    assert ok == ["a.example.com", "b.example.com"] and failed == []
+
+    # 两个域名解析到同一 IP → 去重
+    merged, _, _ = run("a.example.com,b.example.com", {
+        "a.example.com": "203.0.113.10", "b.example.com": "203.0.113.10"})
+    assert merged == "203.0.113.10"
+
+    # 部分失败：成功的照用，失败的报告
+    merged, ok, failed = run("a.example.com,dead.example.com", {"a.example.com": "203.0.113.10"})
+    assert merged == "203.0.113.10" and ok == ["a.example.com"] and failed == ["dead.example.com"]
+
+    # 全部失败
+    merged, ok, failed = run("x.example.com,y.example.com", {})
+    assert merged == "" and ok == [] and len(failed) == 2
+
+    # 中文逗号也支持、空串返回空
+    merged, _, _ = run("a.example.com，b.example.com", {"a.example.com": "1.1.1.1", "b.example.com": "2.2.2.2"})
+    assert merged == "1.1.1.1;2.2.2.2"
+    assert run("", {})[0] == ""
+
+
+def test_pinned_ips_moved_to_ip_source_card():
+    """固定可信IP 现在位于 IP 来源卡内，不再出现在高级卡"""
+    form_src = _extract_function("get_form")
+    ip_card = form_src.index("'IP 来源'")
+    adv_card = form_src.index("'高级'")
+    pinned_pos = form_src.index("'model': 'pinned_ips'")
+    assert ip_card < pinned_pos < adv_card, "pinned_ips 应位于 IP来源 与 高级 之间"
+
+
+def test_wan_switch_and_number_layout():
+    """多WAN 开关独占窄列、数量框宽列（此前 6+6 并排挤压）"""
+    form_src = _extract_function("get_form")
+    assert "_col(4, {'component': 'VSwitch', 'props': {'model': 'wan_enabled'" in form_src
+    assert "_col(8, {'component': 'VTextField', 'props': {'model': 'wan_max_ips'" in form_src
+
+
+def test_ddns_field_mentions_multiple_domains():
+    form_src = _extract_function("get_form")
+    assert "多个用英文逗号分隔" in form_src
+    assert "所有域名都会解析" in form_src
