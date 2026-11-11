@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.1"
+    plugin_version = "3.1.2"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -1757,237 +1757,156 @@ class DynamicWeChat(_PluginBase):
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
         拼装插件配置页面，返回页面JSON和默认模型。
-        页面分四区：基础 / IP来源 / 通知 / 高级设置，归属理由见
-        REDESIGN_REQUIREMENTS.md 的 UI 归属一节。
+        布局为 VCard 卡片分区（每区一张卡：标题+副标题+内部字段行），
+        宿主对 get_form 内 VCard 有一等支持（参照 tunnelyield 的 section 模式）。
         """
         third_channels = []
         if self._my_send and self._my_send.other_channel:
             third_channels = [c for c, _ in self._my_send.other_channel]
         third_token_present = bool(str(self._notification_token or "").strip())
 
-        def _section_title(text: str) -> dict:
-            """区标题条：vuetify JSON 表单模式下唯一可用的视觉分组手段，紧邻区内首个控件"""
+        def _col(md: int, control: dict) -> dict:
+            return {'component': 'VCol', 'props': {'cols': 12, 'md': md}, 'content': [control]}
+
+        def _row(*cols: dict) -> dict:
+            return {'component': 'VRow', 'content': list(cols)}
+
+        def _card(title: str, subtitle: str, rows: List[dict]) -> dict:
+            """一张功能分区卡：标题 + 一句副标题 + 字段行"""
             return {
-                'component': 'VRow',
+                'component': 'VCard',
+                'props': {'variant': 'outlined', 'class': 'mb-4'},
                 'content': [
                     {
-                        'component': 'VCol',
-                        'props': {'cols': 12},
+                        'component': 'VCardText',
                         'content': [
-                            {'component': 'VAlert', 'props': {'type': 'title', 'variant': 'tonal', 'text': text}}
-                        ]
+                            {
+                                'component': 'div',
+                                'props': {'class': 'text-subtitle-1 font-weight-medium mb-1'},
+                                'text': title,
+                            },
+                            {
+                                'component': 'div',
+                                'props': {'class': 'text-caption text-medium-emphasis mb-3'},
+                                'text': subtitle,
+                            },
+                            *rows,
+                        ],
                     }
-                ]
+                ],
             }
 
         return [
             {
                 'component': 'VForm',
                 'content': [
-                    # ---------- 首屏 · 基础 ----------
-                    _section_title('【基础】启用与必填项 —— 填完这两项插件才能工作'),
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'enabled', 'label': '启用插件'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即检测一次（保存后执行一次并自动复位）'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'forced_update', 'label': '强制更新IP（保存后执行一次并自动复位）'}}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 6},
-                                'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'cron', 'label': '[必填]检测周期', 'placeholder': '0 * * * *'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 6},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'local_scan', 'label': '本地扫码修改IP（首次使用先勾选此项保存，再到详情页扫码）'}}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12},
-                                'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'input_id_list', 'label': '[必填]应用ID（企业微信应用页面URL末尾获取，多个用英文逗号分隔。不要填100000x开头的自建应用ID）', 'rows': 1, 'placeholder': '如 1021042,1052986'}}
-                                ]
-                            }
-                        ]
-                    },
-                    # ---------- 首屏 · IP 来源 ----------
-                    _section_title('【IP来源】不填就用默认公网IP探测；按优先级只取一个来源'),
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12},
-                                'content': [
-                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': '优先级从高到低：填了DDNS域名用DDNS；开了多WAN用多WAN出口；否则用公网IP探测'}}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 6},
-                                'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'company_domain', 'label': '[可选] DDNS域名（优先级最高）', 'placeholder': '如 xxx.oicp.net，解析该域名得到动态公网IP'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 3},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'wan_enabled', 'label': '多WAN多出口'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 3},
-                                'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'wan_max_ips', 'label': '[多WAN]最多保留出口IP数', 'placeholder': '3'}}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12},
-                                'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'custom_ip_urls', 'label': '[可选] 自定义公网IP探测地址（仅单IP模式生效，多个用英文逗号分隔）', 'rows': 1, 'placeholder': '留空使用内置探测站；填写后优先用这些地址获取公网IP'}}
-                                ]
-                            }
-                        ]
-                    },
-                    # ---------- 首屏 · 通知 ----------
-                    _section_title('【通知】Cookie失效和IP更新时如何告诉你'),
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'use_mp_notify', 'label': 'MP内置通知'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'await_ip', 'label': 'IP变动后通知'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VBtn', 'props': {'color': 'primary', 'variant': 'flat'}, 'text': '测试通知推送',
-                                     'events': {'click': {'api': 'plugin/DynamicWeChat/test_notify', 'method': 'get'}}}
-                                ]
-                            }
-                        ]
-                    },
-                    *(
-                        [{
-                            'component': 'VRow',
-                            'content': [
-                                {
-                                    'component': 'VCol',
-                                    'props': {'cols': 12},
-                                    'content': [
-                                        {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal',
-                                         'text': '「IP变动后通知」已开启，但下方未填写第三方通知Token，保存后该开关会被自动关闭。如需此功能请先填写Token'}}
-                                    ]
-                                }
-                            ]
-                        }]
-                        if self._await_ip and not third_token_present else []
+                    # ---------- 卡片 1 · 基础 ----------
+                    _card(
+                        '基础',
+                        '启用插件、触发一次检测或强制更新；检测周期与应用ID是必填项',
+                        [
+                            _row(
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'enabled', 'label': '启用插件'}}),
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即检测一次'}}),
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'forced_update', 'label': '强制更新IP'}}),
+                            ),
+                            _row(
+                                _col(12, {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
+                                         'text': '「立即检测一次」「强制更新IP」是触发器：保存后执行一次并自动复位，不是常开开关'}}),
+                            ),
+                            _row(
+                                _col(6, {'component': 'VTextField', 'props': {'model': 'cron', 'label': '检测周期（必填）', 'placeholder': '0 * * * *'}}),
+                                _col(6, {'component': 'VTextarea', 'props': {'model': 'input_id_list',
+                                         'label': '应用ID（必填）—— 企业微信应用页面URL末尾获取，多个用英文逗号分隔；不要填100000x开头的自建应用ID',
+                                         'rows': 1, 'placeholder': '如 1021042,1052986'}}),
+                            ),
+                        ],
                     ),
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12},
+                    # ---------- 卡片 2 · 扫码登录 ----------
+                    _card(
+                        '扫码登录',
+                        '首次使用或Cookie失效时在这里重新登录；二维码出现在插件详情页',
+                        [
+                            _row(
+                                _col(12, {'component': 'VSwitch', 'props': {'model': 'local_scan',
+                                         'label': '本地扫码修改IP —— 勾选并保存后，打开插件详情页查看二维码'}}),
+                            ),
+                            *([{
+                                'component': 'VRow',
                                 'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'notification_token', 'label': '[可选] 第三方通知Token', 'rows': 1,
-                                     'placeholder': '支持Server酱（sct开头）、IYUU（含iyuu）、PushPlus；多个Token用||分隔；结尾加||Q表示改IP成功时不发通知'}}
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12},
+                                    _col(12, {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal',
+                                             'text': '扫码任务进行中：保存后请尽快打开详情页扫码（二维码约110秒过期），过期后刷新详情页可看新码'}}),
+                                ],
+                            }] if getattr(self, "_qr_running", False) else []),
+                        ],
+                    ),
+                    # ---------- 卡片 3 · IP 来源 ----------
+                    _card(
+                        'IP 来源',
+                        '不填则用默认公网IP探测；多个来源同时配置时按优先级只取一个',
+                        [
+                            _row(
+                                _col(12, {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
+                                         'text': '优先级从高到低：① DDNS域名（填了就用它）② 多WAN出口（开了就用它）③ 公网IP探测（默认）'}}),
+                            ),
+                            _row(
+                                _col(6, {'component': 'VTextField', 'props': {'model': 'company_domain',
+                                         'label': 'DDNS域名（可选·优先级最高）', 'placeholder': '如 xxx.oicp.net，解析该域名得到动态公网IP'}}),
+                            ),
+                            _row(
+                                _col(6, {'component': 'VSwitch', 'props': {'model': 'wan_enabled', 'label': '多WAN多出口'}}),
+                                _col(6, {'component': 'VTextField', 'props': {'model': 'wan_max_ips',
+                                         'label': '最多保留出口IP数（仅多WAN生效）', 'placeholder': '默认 3'}}),
+                            ),
+                            _row(
+                                _col(12, {'component': 'VTextarea', 'props': {'model': 'custom_ip_urls',
+                                         'label': '自定义公网IP探测地址（可选·仅单IP模式生效，多个用英文逗号分隔）',
+                                         'rows': 1, 'placeholder': '留空使用内置探测站；填写后优先用这些地址获取公网IP'}}),
+                            ),
+                        ],
+                    ),
+                    # ---------- 卡片 4 · 通知 ----------
+                    _card(
+                        '通知',
+                        'Cookie失效和IP更新时如何告诉你；两种通知独立工作',
+                        [
+                            _row(
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'use_mp_notify', 'label': 'MP内置通知'}}),
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'await_ip', 'label': 'IP变动后通知'}}),
+                                _col(4, {'component': 'VBtn', 'props': {'color': 'primary', 'variant': 'flat'}, 'text': '测试通知推送',
+                                      'events': {'click': {'api': 'plugin/DynamicWeChat/test_notify', 'method': 'get'}}}),
+                            ),
+                            *([{
+                                'component': 'VRow',
                                 'content': [
-                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
-                                     'text': (('已识别第三方通道：' + '、'.join(third_channels) + '。修改Token后需保存，此提示才会更新') if third_channels
-                                             else '第三方通知未配置或无法识别Token（保存后此提示更新）。MP内置通知由MoviePilot统一发送，是否送达本页无法查询，可用「测试通知推送」按钮验证')}}
-                                ]
-                            }
-                        ]
-                    },
-                    # ---------- 折叠 · 高级设置 ----------
-                    _section_title('【高级】进阶选项 —— 保持默认即可，不改不影响正常使用'),
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
-                                'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {'cols': 12, 'md': 8},
-                                'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'pinned_ips', 'label': '[可选] 固定可信IP（始终保留，多个用英文逗号分隔）', 'placeholder': '如 203.0.113.10,198.51.100.7'}}
-                                ]
-                            }
-                        ]
-                    },
+                                    _col(12, {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal',
+                                             'text': '「IP变动后通知」已开启，但下方未填写第三方通知Token，保存后该开关会被自动关闭。如需此功能请先填写Token'}}),
+                                ],
+                            }] if self._await_ip and not third_token_present else []),
+                            _row(
+                                _col(12, {'component': 'VTextarea', 'props': {'model': 'notification_token',
+                                         'label': '第三方通知Token（可选）', 'rows': 1,
+                                         'placeholder': '支持Server酱（sct开头）、IYUU（含iyuu）、PushPlus；多个Token用||分隔；结尾加||Q表示改IP成功时不发通知'}}),
+                            ),
+                            _row(
+                                _col(12, {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
+                                         'text': (('已识别第三方通道：' + '、'.join(third_channels) + '。修改Token后需保存，此提示才会更新') if third_channels
+                                                 else '第三方通知未配置或无法识别Token（保存后此提示更新）。MP内置通知由MoviePilot统一发送，是否送达本页无法查询，可用「测试通知推送」按钮验证')}}),
+                            ),
+                        ],
+                    ),
+                    # ---------- 卡片 5 · 高级 ----------
+                    _card(
+                        '高级',
+                        '进阶选项 —— 保持默认即可，不改不影响正常使用',
+                        [
+                            _row(
+                                _col(4, {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}),
+                                _col(8, {'component': 'VTextField', 'props': {'model': 'pinned_ips',
+                                         'label': '固定可信IP（可选·始终保留，多个用英文逗号分隔）', 'placeholder': '如 203.0.113.10,198.51.100.7'}}),
+                            ),
+                        ],
+                    ),
                 ]
             }
         ], {

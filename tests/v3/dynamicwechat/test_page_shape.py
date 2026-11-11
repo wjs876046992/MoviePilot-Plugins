@@ -376,10 +376,12 @@ def test_ddns_and_pinned_normal_states():
 
 
 def test_section_titles_present():
-    """配置页四区有区标题条（此前只存在于代码注释）"""
+    """配置页以 VCard 卡片分区，五张卡标题齐全（3.1.2 卡片式布局）"""
     form_src = _extract_function("get_form")
-    for marker in ("【基础】", "【IP来源】", "【通知】", "【高级】"):
-        assert marker in form_src, f"配置页缺少区标题: {marker}"
+    for marker in ("\u57fa\u7840", "IP \u6765\u6e90", "\u626b\u7801\u767b\u5f55", "\u901a\u77e5", "\u9ad8\u7ea7"):
+        assert marker in form_src, f"配置页缺少分区卡: {marker}"
+    assert "'component': 'VCard'" in form_src and "_card(" in form_src
+    assert form_src.count("_card(\n") + form_src.count("_card('") >= 5
 
 
 def test_app_id_placeholder_not_forbidden_value():
@@ -390,6 +392,6 @@ def test_app_id_placeholder_not_forbidden_value():
 
 
 def test_once_switches_declare_one_shot():
-    """P3 回归：一次性开关必须声明"执行一次并自动复位" """
-    assert "立即检测一次（保存后执行一次并自动复位）" in SOURCE
-    assert "强制更新IP（保存后执行一次并自动复位）" in SOURCE
+    """P3 回归：一次性触发语义必须可见——开关短 label + 卡内触发器说明 alert"""
+    assert "自动复位" in SOURCE
+    assert "触发器" in SOURCE
