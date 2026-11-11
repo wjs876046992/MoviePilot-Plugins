@@ -453,3 +453,27 @@ def test_ddns_field_mentions_multiple_domains():
     form_src = _extract_function("get_form")
     assert "多个用英文逗号分隔" in form_src
     assert "所有域名都会解析" in form_src
+
+
+# ---------- 3.1.4 详情页卡片式布局 ----------
+
+def test_page_uses_three_cards():
+    """详情页为三张卡：运行状态 / IP 来源 / 扫码登录"""
+    page_src = _extract_function("get_page")
+    for title in ("运行状态", "IP 来源", "扫码登录"):
+        assert f'"{title}"' in page_src or f"'{title}'" in page_src, f"详情页缺少卡片: {title}"
+    assert page_src.count("_card(") >= 3
+
+
+def test_page_banner_texts_survive_card_wrap():
+    """卡片包裹后 _banner_texts 仍能收集全部状态条（递归 walk 的回归）"""
+    ns, self_ = _build_page_env({
+        "_company_domain": "a.example.com",
+        "_last_ddns_ok": True, "_last_ddns_ip": "203.0.113.10",
+        "_pinned_ips": "203.0.113.10",
+    })
+    texts = _banner_texts(ns["get_page"](self_))
+    assert any("DDNS正常" in t for t in texts), texts
+    assert any("固定可信IP：1 个" in t for t in texts), texts
+    assert any("当前模式" in t for t in texts), texts
+    assert any("运行状态" not in t for t in texts)  # 卡标题不是 banner，不应混入
