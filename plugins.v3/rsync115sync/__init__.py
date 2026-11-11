@@ -169,6 +169,7 @@ def _ingest_stamp(file_path: str) -> float:
 #
 # 这里用下划线别名导入，是为了让类体与既有调用点无需到处加模块前缀 ——
 # 类体在求值时能读到本模块的全局名字。
+from . import cd2 as _cd2  # noqa: E402
 from . import strm as _strm  # noqa: E402
 from . import strm_ops as strm_ops_mod  # noqa: E402
 from .strm_ops import StrmOpsMixin  # noqa: E402
@@ -255,7 +256,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.8.5"
+    plugin_version = "0.8.6"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -3332,7 +3333,18 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         if ledger is not None:
             try:
                 rows = ledger.page_by_status(_store_mod.ACTIVE_STATUSES)
-                items = [self._ledger_row_to_item(r, now_ts, threshold) for r in rows]
+                # CD2 失败状态一次性批量查（v0.8.6）：只用于给疑似条目附加
+                # 「已在 CD2 失败」的解释，不参与任何判定。查不到时为空字典。
+                suspect_keys = [r["key"] for r in rows
+                                if str(r["status"]) == _store_mod.STATUS_SUSPECT]
+                try:
+                    cd2_failed = (self._cd2_failed_for(suspect_keys)
+                                  if suspect_keys and hasattr(self, "_cd2_failed_for") else {})
+                except Exception as exc:
+                    logger.debug(f"[Rsync115Sync] 看板 CD2 失败状态查询失败（已忽略）: {exc}")
+                    cd2_failed = {}
+                items = [self._ledger_row_to_item(r, now_ts, threshold, cd2_failed)
+                         for r in rows]
                 done_total = int(ledger.count_by_status().get(_store_mod.STATUS_DONE, 0))
             except Exception as e:
                 # 台账读取失败降级为空列表（不炸整个看板）—— 与 _ledger_overview 同取向
@@ -3379,7 +3391,8 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         return out
 
     def _ledger_row_to_item(self, row: Any, now_ts: float,
-                            threshold: float) -> Dict[str, Any]:
+                            threshold: float,
+                            cd2_failed: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         把台账一行折成看板条目（status → state，并按冷却时间细分 ready）。
 
@@ -3415,6 +3428,14 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
             extra["origin"] = r.get("origin") or ""
             # 补生成标记与 status 正交（列视图），但界面上要显示"已经请过助手"
             extra["gen_requested"] = bool(r.get("gen_requested_at"))
+            # CD2 侧状态（v0.8.6）：疑似条目的成因有两种，看板必须能区分——
+            # 「还在传」（已有逻辑会移出清单）与「传失败了」（留在清单，需人工处理）。
+            # 空串表示未查/查不到，前端据此不显示额外徽章（行为与改造前一致）。
+            extra["cd2_state"] = (cd2_failed.get(r.get("key", "")) or {}).get("status") \
+                if isinstance(cd2_failed, dict) else None
+            extra["cd2_state_text"] = (_cd2.progress_text(cd2_failed[r.get("key", "")])
+                                       if isinstance(cd2_failed, dict)
+                                       and r.get("key") in cd2_failed else "")
         elif status == _store_mod.STATUS_FAILED:
             # 对账失败（v0.7.0 起是台账状态，不再是正交清单）。
             # 对外仍叫 `broken`：这是看板失败标签一直在用的 state 名，

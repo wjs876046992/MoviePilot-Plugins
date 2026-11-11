@@ -947,6 +947,13 @@
                       <template v-else>
                         同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成
                       </template>
+                      <!-- v0.8.6：CD2 侧状态。疑似条目「还在传」会被移出清单，
+                           留在清单里的若 CD2 显示失败/暂停，用户需要知道「不是慢，
+                           是传失败了」——否则会照着"再等等"的预期干等。
+                           查不到 / 未启用 CD2 核对时不显示，行为与改造前一致。 -->
+                      <div v-if="cd2StateText[key]" class="text-error font-weight-medium mt-0.5">
+                        ↳ CD2 {{ cd2StateText[key] }} —— 不是在传，请到 CD2 处理或点「删旧重传」
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1452,6 +1459,19 @@ const genRequested = computed(() => {
   const out = {}
   for (const it of itemsByState('suspect')) {
     if (it.gen_requested && it.since) out[it.key] = it.since
+  }
+  return out
+})
+
+// CD2 侧失败/暂停说明（v0.8.6）。
+//
+// 疑似清单里「还在传」的条目会被后端移出，所以留下来的若 CD2 报失败，
+// 用户最需要知道的就是「不是在等，是传失败了」。后端只在查得到时下发
+// `cd2_state_text`；查不到 / 未启用 CD2 核对时为空，界面与改造前完全一致。
+const cd2StateText = computed(() => {
+  const out = {}
+  for (const it of itemsByState('suspect')) {
+    if (it.cd2_state_text) out[it.key] = it.cd2_state_text
   }
   return out
 })

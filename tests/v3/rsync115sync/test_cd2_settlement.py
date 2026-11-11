@@ -185,3 +185,52 @@ def test_revert_is_noop_when_cd2_unknown_or_empty(tmp_path):
     assert p._cd2_recover_failed_in_flight() == []
     assert "电视剧:a.mkv" in p._failed_files
     assert led.get("电视剧:a.mkv")["status"] == st.STATUS_FAILED
+
+
+# --------------------------------------------------------------------------
+# v0.8.6：CD2 失败状态解释（只加说明，不参与判定）
+# --------------------------------------------------------------------------
+
+def test_failed_for_never_feeds_in_flight():
+    """`_cd2_failed_for` 的结果不得进入在传判据 —— 失败不是"在传"。"""
+    src = _plugin_src("cd2_ops.py")
+    assert "_cd2_failed_for" in src
+    # 在传判据仍只由 _cd2_in_flight_for 提供
+    assert "_cd2_in_flight_for" in src
+    assert "CD2_FAILED_STATUSES" in src
+
+
+def test_failed_for_returns_empty_when_query_unavailable():
+    """查不到时返回空字典（调用方据此不显示任何额外信息）。"""
+    try:
+        import importlib
+        mod = importlib.import_module("app.plugins.rsync115sync")
+    except Exception as exc:
+        pytest.skip(f"无法导入（{exc.__class__.__name__}）")
+    p = mod.Rsync115Sync.__new__(mod.Rsync115Sync)
+    p._cd2_query_enabled = False
+    p._sync_pairs = []
+    assert p._cd2_failed_for(["any:key"]) == {}
+    assert p._cd2_failed_for([]) == {}
+
+
+def test_notification_appends_cd2_failure_line():
+    """通知正文必须用 ↳ 追加失败说明，且不改变原有条目格式。"""
+    src = _plugin_src("strm_ops.py")
+    assert "↳ CD2 上传失败" in src
+    assert "不是慢" in src
+
+
+def test_items_payload_exposes_cd2_state():
+    """看板条目要下发 cd2_state_text，前端据此显示失败徽章。"""
+    src = _plugin_src("__init__.py")
+    assert "cd2_state_text" in src
+    assert "cd2_failed" in src
+
+
+def test_page_component_renders_cd2_state():
+    """前端必须消费 cd2_state_text（否则后端字段是死数据）。"""
+    page = open(os.path.join(_PLUGIN_DIR, "src", "components", "Page.vue"),
+                encoding="utf-8").read()
+    assert "cd2StateText" in page
+    assert "cd2_state_text" in page

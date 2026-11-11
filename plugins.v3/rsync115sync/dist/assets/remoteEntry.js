@@ -2,11 +2,11 @@ const currentImports = {};
       const exportSet = new Set(['Module', '__esModule', 'default', '_export_sfc']);
       let moduleMap = {
 "./Page":()=>{
-      dynamicLoadingCss(["__federation_expose_Page-DoilFW9q.css","CollapsibleNote-B33Pe3jT.css"], false, './Page');
-      return __federation_import('./__federation_expose_Page-BDJBre6_.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
+      dynamicLoadingCss(["__federation_expose_Page-Pjf6Z2sf.css","CollapsibleNote-B33Pe3jT.css"], false, './Page');
+      return __federation_import('./__federation_expose_Page-DzPX3T1w.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},
 "./Config":()=>{
-      dynamicLoadingCss(["__federation_expose_Config-ym57ghsE.css","CollapsibleNote-B33Pe3jT.css"], false, './Config');
-      return __federation_import('./__federation_expose_Config-6A7Gvvi0.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
+      dynamicLoadingCss(["__federation_expose_Config-C_Oiawof.css","CollapsibleNote-B33Pe3jT.css"], false, './Config');
+      return __federation_import('./__federation_expose_Config-CuDwdOMj.js').then(module =>Object.keys(module).every(item => exportSet.has(item)) ? () => module.default : () => module)},};
       const seen = {};
       const dynamicLoadingCss = (cssFilePaths, dontAppendStylesToHead, exposeItemName) => {
         const metaUrl = import.meta.url;

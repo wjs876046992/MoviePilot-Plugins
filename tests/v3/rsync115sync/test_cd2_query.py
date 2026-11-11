@@ -461,3 +461,49 @@ def test_save_config_writes_token_back_into_the_persisted_dict():
         "`update_config(config)` 持久化的是字典，导致 token 在重载后消失，"
         "而保存过程一路显示成功。"
     )
+
+
+# ---------- v0.8.6：CD2 侧失败状态（用于解释疑似条目，不用于豁免） ----------
+
+def test_failed_statuses_are_not_in_flight():
+    """失败状态必须**不**在豁免集合里 —— 豁免会把真故障永久藏起来。"""
+    for status in (cd2.STATUS_ERROR, cd2.STATUS_FATAL_ERROR):
+        assert status not in cd2.IN_FLIGHT_STATUSES
+        assert status in cd2.CD2_FAILED_STATUSES
+    # 暂停两边都在：它既不推进、也不该被删除
+    assert cd2.STATUS_PAUSE in cd2.IN_FLIGHT_STATUSES
+    assert cd2.STATUS_PAUSE in cd2.CD2_FAILED_STATUSES
+
+
+def test_failed_statuses_exclude_user_actions():
+    """取消/忽略/跳过是用户主动操作，与「传失败」是不同的事。"""
+    for status in (cd2.STATUS_CANCELLED, cd2.STATUS_IGNORED, cd2.STATUS_SKIPPED):
+        assert status not in cd2.CD2_FAILED_STATUSES
+
+
+def test_progress_text_for_fatal_error():
+    """真机现场：status=10、transfered=0、size=6.3GB —— 文案必须是「严重失败」。"""
+    item = {"status": cd2.STATUS_FATAL_ERROR, "size": 6326815505, "transfered": 0}
+    text = cd2.progress_text(item)
+    assert text.startswith("严重失败")
+    assert "0 B" in text and "5.9 GB" in text
+
+
+def test_dest_paths_and_failed_match_case():
+    """端到端核对现场那一对路径：key + 映射 → 云端路径 → 命中失败任务。"""
+    key = ("电视剧:欧美剧/幻视任务 (2026) {tmdbid=213375}/Season 01/"
+           "幻视任务 S01E08.2160p.Disney+.WEB-DL.HDR10P.H265.DDP 5.1 Atmos.mkv")
+    pairs = [{"name": "电视剧", "dest": "/CloudNAS/115/TV", "strm_dir": "/media/strms/TV"}]
+    mounts = {"/volume2/CloudNAS/115": "/115open/HomeTheater"}
+    candidates = cd2.dest_paths_for_key(key, pairs, mounts)
+    uploads = [{
+        "status": cd2.STATUS_FATAL_ERROR,
+        "dest_path": ("/115open/HomeTheater/TV/欧美剧/幻视任务 (2026) {tmdbid=213375}/"
+                      "Season 01/幻视任务 S01E08.2160p.Disney+.WEB-DL.HDR10P.H265.DDP 5.1 Atmos.mkv"),
+        "size": 6326815505, "transfered": 0,
+    }]
+    # find_in_flight 跳过失败态（正确：它不是在传）
+    assert cd2.find_in_flight(candidates, uploads) == []
+    # 但路径确实能对上——失败状态的查询依赖这一点
+    wanted = {cd2.normalize_path(p) for p in candidates}
+    assert cd2.normalize_path(uploads[0]["dest_path"]) in wanted

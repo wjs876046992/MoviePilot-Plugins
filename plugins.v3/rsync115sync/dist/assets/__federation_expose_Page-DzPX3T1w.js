@@ -218,33 +218,37 @@ const _hoisted_102 = { class: "list-row-main d-flex align-center overflow-hidden
 const _hoisted_103 = { class: "overflow-hidden" };
 const _hoisted_104 = { class: "font-weight-bold text-body-2 text-warning text-truncate" };
 const _hoisted_105 = { class: "text-caption text-medium-emphasis mt-0.5" };
-const _hoisted_106 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
-const _hoisted_107 = {
+const _hoisted_106 = {
+  key: 2,
+  class: "text-error font-weight-medium mt-0.5"
+};
+const _hoisted_107 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
+const _hoisted_108 = {
   key: 5,
   class: "pager-bar d-flex align-center justify-center flex-wrap ga-2 mb-3"
 };
-const _hoisted_108 = { class: "text-caption text-medium-emphasis" };
-const _hoisted_109 = {
+const _hoisted_109 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_110 = {
   key: 6,
   class: "pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3"
 };
-const _hoisted_110 = { class: "text-caption text-medium-emphasis" };
-const _hoisted_111 = { key: 7 };
-const _hoisted_112 = {
+const _hoisted_111 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_112 = { key: 7 };
+const _hoisted_113 = {
   key: 0,
   class: "d-flex flex-column ga-2"
 };
-const _hoisted_113 = { class: "list-row-main overflow-hidden mr-sm-3 mr-0" };
-const _hoisted_114 = { class: "font-weight-bold text-body-2 text-truncate" };
-const _hoisted_115 = { class: "text-caption text-medium-emphasis mt-0.5" };
-const _hoisted_116 = { key: 0 };
-const _hoisted_117 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
-const _hoisted_118 = {
+const _hoisted_114 = { class: "list-row-main overflow-hidden mr-sm-3 mr-0" };
+const _hoisted_115 = { class: "font-weight-bold text-body-2 text-truncate" };
+const _hoisted_116 = { class: "text-caption text-medium-emphasis mt-0.5" };
+const _hoisted_117 = { key: 0 };
+const _hoisted_118 = { class: "list-row-actions d-flex align-center flex-wrap ga-1 flex-shrink-0" };
+const _hoisted_119 = {
   key: 1,
   class: "pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3"
 };
-const _hoisted_119 = { class: "text-caption text-medium-emphasis" };
-const _hoisted_120 = {
+const _hoisted_120 = { class: "text-caption text-medium-emphasis" };
+const _hoisted_121 = {
   key: 2,
   class: "empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center"
 };
@@ -584,6 +588,19 @@ const genRequested = computed(() => {
   const out = {};
   for (const it of itemsByState('suspect')) {
     if (it.gen_requested && it.since) out[it.key] = it.since;
+  }
+  return out
+});
+
+// CD2 侧失败/暂停说明（v0.8.6）。
+//
+// 疑似清单里「还在传」的条目会被后端移出，所以留下来的若 CD2 报失败，
+// 用户最需要知道的就是「不是在等，是传失败了」。后端只在查得到时下发
+// `cd2_state_text`；查不到 / 未启用 CD2 核对时为空，界面与改造前完全一致。
+const cd2StateText = computed(() => {
+  const out = {};
+  for (const it of itemsByState('suspect')) {
+    if (it.cd2_state_text) out[it.key] = it.cd2_state_text;
   }
   return out
 });
@@ -2936,11 +2953,14 @@ return (_ctx, _cache) => {
                                         ], 64))
                                       : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                                           _createTextVNode(" 同步已报告成功，但宽限期内未见 strm 生成 —— 可能上传未真正完成 ")
-                                        ], 64))
+                                        ], 64)),
+                                    (cd2StateText.value[key])
+                                      ? (_openBlock(), _createElementBlock("div", _hoisted_106, " ↳ CD2 " + _toDisplayString(cd2StateText.value[key]) + " —— 不是在传，请到 CD2 处理或点「删旧重传」 ", 1))
+                                      : _createCommentVNode("", true)
                                   ])
                                 ])
                               ]),
-                              _createElementVNode("div", _hoisted_106, [
+                              _createElementVNode("div", _hoisted_107, [
                                 (genRequested.value[key])
                                   ? (_openBlock(), _createBlock(_component_v_chip, {
                                       key: 0,
@@ -3080,7 +3100,7 @@ return (_ctx, _cache) => {
                           }), 128))
                         ]),
                         (watchingPaged.value.pages > 1)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_107, [
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_108, [
                               _createVNode(_component_v_btn, {
                                 size: "small",
                                 variant: "text",
@@ -3103,7 +3123,7 @@ return (_ctx, _cache) => {
                                 ]),
                                 _: 1
                               }, 8, ["disabled"]),
-                              _createElementVNode("span", _hoisted_108, [
+                              _createElementVNode("span", _hoisted_109, [
                                 _cache[143] || (_cache[143] = _createTextVNode(" 观察中 第 ", -1)),
                                 _createElementVNode("strong", null, _toDisplayString(watchingPaged.value.page), 1),
                                 _createTextVNode(" / " + _toDisplayString(watchingPaged.value.pages) + " 页 · 共 " + _toDisplayString(watchingPaged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
@@ -3133,7 +3153,7 @@ return (_ctx, _cache) => {
                             ]))
                           : _createCommentVNode("", true),
                         (paged.value.pages > 1)
-                          ? (_openBlock(), _createElementBlock("div", _hoisted_109, [
+                          ? (_openBlock(), _createElementBlock("div", _hoisted_110, [
                               _createVNode(_component_v_btn, {
                                 size: "small",
                                 variant: "text",
@@ -3156,7 +3176,7 @@ return (_ctx, _cache) => {
                                 ]),
                                 _: 1
                               }, 8, ["disabled"]),
-                              _createElementVNode("span", _hoisted_110, [
+                              _createElementVNode("span", _hoisted_111, [
                                 _cache[148] || (_cache[148] = _createTextVNode(" 第 ", -1)),
                                 _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                                 _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
@@ -3190,24 +3210,24 @@ return (_ctx, _cache) => {
                 ]))
               : _createCommentVNode("", true),
             (currentTab.value === 'ignored')
-              ? (_openBlock(), _createElementBlock("div", _hoisted_111, [
+              ? (_openBlock(), _createElementBlock("div", _hoisted_112, [
                   (ignoredList.value.length)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_112, [
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_113, [
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(ignoredPaged.value.slice, (rule) => {
                           return (_openBlock(), _createElementBlock("div", {
                             key: 'i-' + rule.rule,
                             class: "queue-item-card d-flex flex-column flex-sm-row align-stretch align-sm-center justify-sm-space-between radius-lg pa-3 ga-2"
                           }, [
-                            _createElementVNode("div", _hoisted_113, [
-                              _createElementVNode("div", _hoisted_114, _toDisplayString(rule.rule), 1),
-                              _createElementVNode("div", _hoisted_115, [
+                            _createElementVNode("div", _hoisted_114, [
+                              _createElementVNode("div", _hoisted_115, _toDisplayString(rule.rule), 1),
+                              _createElementVNode("div", _hoisted_116, [
                                 _createTextVNode(_toDisplayString(rule.match === 'exact' ? '精确匹配' : '包含匹配') + " · 加入于 " + _toDisplayString(rule.created_at) + " ", 1),
                                 (rule.created_by)
-                                  ? (_openBlock(), _createElementBlock("span", _hoisted_116, " · 操作人 " + _toDisplayString(rule.created_by), 1))
+                                  ? (_openBlock(), _createElementBlock("span", _hoisted_117, " · 操作人 " + _toDisplayString(rule.created_by), 1))
                                   : _createCommentVNode("", true)
                               ])
                             ]),
-                            _createElementVNode("div", _hoisted_117, [
+                            _createElementVNode("div", _hoisted_118, [
                               _createVNode(_component_v_chip, {
                                 size: "x-small",
                                 color: "secondary",
@@ -3251,7 +3271,7 @@ return (_ctx, _cache) => {
                       ]))
                     : _createCommentVNode("", true),
                   (paged.value.pages > 1)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_118, [
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_119, [
                         _createVNode(_component_v_btn, {
                           size: "small",
                           variant: "text",
@@ -3274,7 +3294,7 @@ return (_ctx, _cache) => {
                           ]),
                           _: 1
                         }, 8, ["disabled"]),
-                        _createElementVNode("span", _hoisted_119, [
+                        _createElementVNode("span", _hoisted_120, [
                           _cache[156] || (_cache[156] = _createTextVNode(" 第 ", -1)),
                           _createElementVNode("strong", null, _toDisplayString(paged.value.page), 1),
                           _createTextVNode(" / " + _toDisplayString(paged.value.pages) + " 页 · 共 " + _toDisplayString(paged.value.total) + " 条（每页 " + _toDisplayString(PAGE_SIZE) + " 条） ", 1)
@@ -3304,7 +3324,7 @@ return (_ctx, _cache) => {
                       ]))
                     : _createCommentVNode("", true),
                   (!ignoredList.value.length)
-                    ? (_openBlock(), _createElementBlock("div", _hoisted_120, [
+                    ? (_openBlock(), _createElementBlock("div", _hoisted_121, [
                         _createVNode(_component_v_icon, {
                           size: "32",
                           color: "primary",
@@ -3331,6 +3351,6 @@ return (_ctx, _cache) => {
 }
 
 };
-const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-c74101f5"]]);
+const App = /*#__PURE__*/_export_sfc(_sfc_main, [['__scopeId',"data-v-19bd73e7"]]);
 
 export { App as default };

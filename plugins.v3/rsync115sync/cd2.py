@@ -135,6 +135,18 @@ IN_FLIGHT_STATUSES = frozenset({
     STATUS_INQUEUE,
 })
 
+# 「CD2 侧已经失败」的状态集合：用于**解释**疑似条目的成因，不用于豁免。
+#
+# 与 `IN_FLIGHT_STATUSES` 的分界是承重的：失败的文件应当继续留在疑似清单里
+# （它不是"在传"），但用户需要被告知"去 CD2 处理或删旧重传"，而不是干等。
+# 刻意不含 CANCELLED/IGNORED/SKIPPED —— 那些多由用户主动操作产生，
+# 与「传失败」是不同的事，混进来会让提示失去指向性。
+CD2_FAILED_STATUSES = frozenset({
+    STATUS_ERROR,
+    STATUS_FATAL_ERROR,
+    STATUS_PAUSE,
+})
+
 # ⚠️ 这些状态**不计入暂停时长**（见 `plan_delay_seconds` 的说明）。
 # 只有真正"被按了暂停键"的 PAUSE 才该无限期豁免；排队/预处理/传输都在动，
 # 它们卡住是**另一个问题**（CD2 侧异常），不该被当成"正常等待"一直藏起来。

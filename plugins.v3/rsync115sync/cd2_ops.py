@@ -396,6 +396,45 @@ class Cd2OpsMixin:
         self._reset_strm_notified_if_clear()
         return list(in_flight)
 
+    def _cd2_failed_for(self, keys: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        查这些 key 在 CD2 里是否处于**失败/暂停**状态，返回 {key: 上传任务}。
+
+        这不是判定，是**解释**：疑似清单里的条目成因有两种，差别很大——
+          · 文件还在 CD2 传（大文件慢）→ 已有逻辑会把它移出清单；
+          · 文件在 CD2 已经**失败**（ERROR / FATAL_ERROR，传输 0 字节）
+            → 清单保留是对的，但用户看到「疑似上传异常」会以为要等，
+              实际需要去 CD2 处理或删旧重传。
+        本方法只把第二种情况查出来，供通知与看板附加一行说明。
+
+        ⚠️ 刻意**不**把这些状态并入 `IN_FLIGHT_STATUSES`：失败不是"在传"，
+        豁免它会让真故障永久藏起来（见 `should_suppress` 的说明）。
+
+        查不到时返回空字典 —— 调用方据此不显示任何额外信息，行为与改造前一致。
+        """
+        if not keys or not self._cd2_enabled():
+            return {}
+        uploads = self._cd2_uploads()
+        if not uploads:
+            return {}
+        mounts = self._cd2_mount_map()
+        hits: Dict[str, Dict[str, Any]] = {}
+        for key in keys:
+            candidates = _cd2.dest_paths_for_key(key, getattr(self, "_sync_pairs", []), mounts)
+            if not candidates:
+                continue
+            wanted = {_cd2.normalize_path(p) for p in candidates if p}
+            if not wanted:
+                continue
+            for item in uploads:
+                if item.get("status") not in _cd2.CD2_FAILED_STATUSES:
+                    continue
+                if any(_cd2.normalize_path(p) in wanted
+                       for p in (item.get("dest_path"), item.get("key"))):
+                    hits[key] = item
+                    break
+        return hits
+
     def _cd2_block_retransfer(self, keys: List[str]) -> Optional[str]:
         """
         「删旧重传」前的最后一道闸：拒绝删除正在上传的文件。

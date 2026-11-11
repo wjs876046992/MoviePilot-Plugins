@@ -5769,3 +5769,55 @@ INFO [Rsync115Sync] 认领钩子已注册（webhook_parser 已向宿主声明）
 - `test_host_route_accepts_documented_payload_shapes` /
   `test_host_route_enqueues_every_path_in_the_list` —— 移除后
   重新钉住**唯一**入口的闭环，避免出现「删掉了通道 B、通道 A 也没验过」。
+
+---
+
+## 0.8.6 疑似清单标注 CD2 失败原因
+
+### 问题
+
+用户报告：「仍有疑似异常待处理 —— 幻视任务 S01E08… 实际上这个文件在 CD2 上传列表，
+状态异常」。真机核对 CD2 队列：
+
+```
+status = 10        → STATUS_FATAL_ERROR（严重失败）
+transfered = 0     → 一字节未传
+size = 6.3 GB
+```
+
+插件判疑似**没有错**（同步报成功、strm 没生成），但用户拿不到「它其实已经在 CD2
+失败了」这个信息，只能自己开 CD2 网页比对——而 CD2 里「在传」和「传失败」在
+插件侧此前都被折叠成同一个「疑似上传异常」。
+
+### 为什么不并入在传豁免
+
+`IN_FLIGHT_STATUSES` 刻意不含 `ERROR`/`FATAL_ERROR`：豁免失败任务会让真故障
+永久不出现在清单里（`should_suppress` 的注释里已写明这是设计红线）。
+所以这次只做**解释**，不做**豁免**。
+
+### 做法
+
+1. `cd2.py` 新增 `CD2_FAILED_STATUSES = {ERROR, FATAL_ERROR, PAUSE}`——
+   与 `IN_FLIGHT_STATUSES` 并列，语义清楚分开：一个用于豁免，一个用于解释。
+   刻意不含 `CANCELLED / IGNORED / SKIPPED`：那些多由用户主动操作产生。
+2. `cd2_ops.py` 新增 `_cd2_failed_for(keys)`：复用 `dest_paths_for_key` 与
+   `normalize_path` 做**精确**路径匹配（不做前缀匹配——前缀会让同目录邻居
+   串味）；查不到返回 `{}`，调用方据此什么也不显示。
+3. 通知（`strm_ops._notify_strm_suspects`）与看板（`/items` 的 `cd2_state_text`
+   + `Page.vue`）都用这一份结果：条目下追加
+   「↳ CD2 上传失败（严重失败 0 B / 5.9 GB）—— 不是在传，请到 CD2 处理或点删旧重传」。
+
+### 边界
+
+- **CD2 未启用 / 查不到**：不显示任何额外信息，行为与改造前完全一致。
+- 失败状态**不**影响疑似判定：条目仍留在清单、仍会催办，只是多了成因说明。
+- 只有**精确路径命中**才算：宁可少标一条，也不把同目录另一个文件的失败
+  算到它头上。
+
+### 测试
+
+- `test_cd2_query.py` +4：失败状态不在豁免集合、取消/忽略/跳过不算失败、
+  `progress_text` 对 0 字节的文案、现场那对路径的端到端匹配。
+- `test_cd2_settlement.py` +5 哨兵：失败结果不得进入在传判据、查不到返回空、
+  通知含 `↳` 行、items 下发 `cd2_state_text`、前端确实消费该字段。
+- 前端已重建 `dist/`（Vue 模式，`dist` 即运行代码）。

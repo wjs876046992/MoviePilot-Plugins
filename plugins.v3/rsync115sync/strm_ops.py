@@ -50,6 +50,7 @@ def _is_hour_in_window(current_hour: int, start: int, end: int) -> bool:
         return start <= current_hour <= end
     return current_hour >= start or current_hour <= end
 
+from . import cd2 as _cd2   # noqa: E402
 from . import store as _store_mod   # noqa: E402
 from . import strm as _strm  # noqa: E402
 
@@ -744,7 +745,19 @@ class StrmOpsMixin:
             logger.warning("[Rsync115Sync] 宿主 MessageType 不可用，已跳过 strm 疑似异常通知以免广播")
             return
         total = len(self._strm_suspects)
-        listed = "\n".join(f"• {k}" for k in suspects[:_MAX_LOGGED_PATHS])
+        # 查一次 CD2：这些疑似条目里，哪些其实**已经在 CD2 侧失败**了。
+        # 失败 ≠ 在传：它仍该留在疑似清单里（已有逻辑不豁免），但必须告诉用户
+        # 「不是在等，是传失败了」——否则用户会照着"再等等"的预期干等。
+        failed_in_cd2 = self._cd2_failed_for(suspects) if hasattr(self, "_cd2_failed_for") else {}
+        listed_lines = []
+        for k in suspects[:_MAX_LOGGED_PATHS]:
+            listed_lines.append(f"• {k}")
+            item = failed_in_cd2.get(k)
+            if item:
+                listed_lines.append(
+                    f"  ↳ CD2 上传失败（{_cd2.progress_text(item)}），"
+                    f"不是慢——请到 CD2 处理，或点下方「删旧重传」")
+        listed = "\n".join(listed_lines)
         more = f"\n（另有 {len(suspects) - _MAX_LOGGED_PATHS} 个未列出）" \
             if len(suspects) > _MAX_LOGGED_PATHS else ""
         try:
