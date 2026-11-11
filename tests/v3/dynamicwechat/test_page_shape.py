@@ -125,6 +125,7 @@ def _build_page_env(extra_attrs: dict):
     exec(_extract_function("_is_ipv4"), snap_ns)
     exec(_extract_function("_page_snapshot"), snap_ns)
     self._page_snapshot = lambda: snap_ns["_page_snapshot"](self)
+    self._is_ipv4 = lambda ip: snap_ns["_is_ipv4"](ip)
     return ns, self
 
 
@@ -262,9 +263,10 @@ def test_get_page_no_side_effect():
     assert not re.search(r"self\._qr_code_image\s*=\s*None", page_src)
 
 
-# ---------- 验收 8：二维码三态文案互不相同 ----------
+# ---------- 验收 8：二维码状态文案互不相同 ----------
 
 def test_qr_three_states_distinct():
+    """无任务 / 运行中未出码 / 有效 三态文案互不相同（运行中已过期并入黄条族但与运行中未出码可区分）"""
     ns1, s1 = _build_page_env({"_qr_running": False, "_future_timestamp": 0})
     t1 = _banner_texts(ns1["get_page"](s1))
     ns2, s2 = _build_page_env({"_qr_running": True, "_future_timestamp": 0})
@@ -275,9 +277,11 @@ def test_qr_three_states_distinct():
     })
     t3 = _banner_texts(ns3["get_page"](s3))
     no_task = next(t for t in t1 if "没有扫码任务" in t)
-    expired = next(t for t in t2 if "已过期" in t or "尚未生成" in t)
+    running = next(t for t in t2 if "扫码任务运行中" in t)
     valid = next(t for t in t3 if "二维码有效" in t)
-    assert len({no_task, expired, valid}) == 3
+    assert len({no_task, running, valid}) == 3
+    # 运行中条必须告诉用户页面不会自动更新（快照渲染的盲等问题）
+    assert "刷新" in running
 
 
 # ---------- 验收 10：无 Markdown、无内部术语 ----------
@@ -332,3 +336,60 @@ def test_migrate_logic():
     # 无 || 时不动
     s = run("1000002,1000003")
     assert s._input_id_list == "1000002,1000003" and not s._wan_enabled
+
+
+# ---------- v3.1.1 评审修复回归 ----------
+
+def test_keepalive_none_distinguishes_note():
+    """keepalive ok=None 时：note 非空显示橙条（无结论），note 空才是灰条（没跑过）"""
+    ns_a, s_a = _build_page_env({
+        "_last_keepalive_ok": None, "_last_keepalive_note": "网络较慢，未能确认登录状态"})
+    ta = _banner_texts(ns_a["get_page"](s_a))
+    assert any("保活校验无结论" in t and "网络较慢" in t for t in ta), ta
+    ns_b, s_b = _build_page_env({"_last_keepalive_ok": None, "_last_keepalive_note": ""})
+    tb = _banner_texts(ns_b["get_page"](s_b))
+    assert any("还没跑过第一轮" in t for t in tb), tb
+    assert not any("无结论" in t for t in tb)
+
+
+def test_green_banner_requires_keepalive_success():
+    """绿条绑定实际校验：校验失败时顶部条必须是红色且说明可信IP不会更新"""
+    ns, s = _build_page_env({
+        "_last_keepalive_ok": False, "_last_keepalive_note": "本地Cookie已失效"})
+    texts = _banner_texts(ns["get_page"](s))
+    assert any("登录校验未通过" in t for t in texts), texts
+    assert not any(t == "插件已启用，后台任务运行中" for t in texts), texts
+
+
+def test_ddns_and_pinned_normal_states():
+    """DDNS 正常态与 pinned 格式错误态有渲染（此前 ddns_ok 只有 1 分支、pinned_valid 死字段）"""
+    ns, s = _build_page_env({
+        "_company_domain": "nas.example.com",
+        "_last_ddns_ok": True, "_last_ddns_ip": "203.0.113.10",
+        "_pinned_ips": "203.0.113.10", })
+    texts = _banner_texts(ns["get_page"](s))
+    assert any("DDNS正常" in t for t in texts), texts
+    assert any("固定可信IP：1 个" in t for t in texts), texts
+    ns2, s2 = _build_page_env({"_pinned_ips": "not-an-ip,203.0.113.10"})
+    texts2 = _banner_texts(ns2["get_page"](s2))
+    assert any("固定可信IP格式不对" in t for t in texts2), texts2
+
+
+def test_section_titles_present():
+    """配置页四区有区标题条（此前只存在于代码注释）"""
+    form_src = _extract_function("get_form")
+    for marker in ("【基础】", "【IP来源】", "【通知】", "【高级】"):
+        assert marker in form_src, f"配置页缺少区标题: {marker}"
+
+
+def test_app_id_placeholder_not_forbidden_value():
+    """P0 回归：应用ID 占位符不得再演示 100000x 格式"""
+    m = re.search(r"'model': 'input_id_list'.*?'placeholder':\s*'([^']*)'", SOURCE, re.S)
+    assert m
+    assert "1000002" not in m.group(1) and "1000003" not in m.group(1)
+
+
+def test_once_switches_declare_one_shot():
+    """P3 回归：一次性开关必须声明"执行一次并自动复位" """
+    assert "立即检测一次（保存后执行一次并自动复位）" in SOURCE
+    assert "强制更新IP（保存后执行一次并自动复位）" in SOURCE

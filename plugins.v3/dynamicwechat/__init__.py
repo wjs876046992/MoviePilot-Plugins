@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.0"
+    plugin_version = "3.1.1"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -265,6 +265,15 @@ class DynamicWeChat(_PluginBase):
                 self.systemmessage.put("【动态企微可信IP】已启用但未填写应用ID，不会执行任何检测，请到插件配置页填写")
             self.__update_config()
             return
+        # 100000x 开头的应用ID是企微原生自建应用，插件不支持且会静默拒绝——
+        # 站内提示，别让用户照着旧占位符填完还在绿条下等一个永不发生的结果
+        bad_ids = [a.strip() for a in str(self._input_id_list).split(",")
+                   if a.strip().startswith("100000") and len(a.strip()) == 7]
+        if bad_ids:
+            logger.warning(f"应用ID包含不支持的100000x格式: {bad_ids}")
+            self.systemmessage.put(
+                f"【动态企微可信IP】应用ID {','.join(bad_ids)} 是100000x开头的自建应用，插件不支持，"
+                "这些ID会被跳过；请到插件配置页改用企业微信应用页面URL末尾的通讯录应用ID")
         if self._enabled and not str(self._cron or "").strip():
             logger.warning("未配置检测周期，IP检测不会运行")
             self.systemmessage.put("【动态企微可信IP】未配置检测周期，IP变化不会被自动更新，请到插件配置页填写")
@@ -1755,11 +1764,28 @@ class DynamicWeChat(_PluginBase):
         if self._my_send and self._my_send.other_channel:
             third_channels = [c for c, _ in self._my_send.other_channel]
         third_token_present = bool(str(self._notification_token or "").strip())
+
+        def _section_title(text: str) -> dict:
+            """区标题条：vuetify JSON 表单模式下唯一可用的视觉分组手段，紧邻区内首个控件"""
+            return {
+                'component': 'VRow',
+                'content': [
+                    {
+                        'component': 'VCol',
+                        'props': {'cols': 12},
+                        'content': [
+                            {'component': 'VAlert', 'props': {'type': 'title', 'variant': 'tonal', 'text': text}}
+                        ]
+                    }
+                ]
+            }
+
         return [
             {
                 'component': 'VForm',
                 'content': [
                     # ---------- 首屏 · 基础 ----------
+                    _section_title('【基础】启用与必填项 —— 填完这两项插件才能工作'),
                     {
                         'component': 'VRow',
                         'content': [
@@ -1774,14 +1800,14 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4},
                                 'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即检测一次'}}
+                                    {'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即检测一次（保存后执行一次并自动复位）'}}
                                 ]
                             },
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4},
                                 'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'forced_update', 'label': '强制更新IP'}}
+                                    {'component': 'VSwitch', 'props': {'model': 'forced_update', 'label': '强制更新IP（保存后执行一次并自动复位）'}}
                                 ]
                             }
                         ]
@@ -1812,12 +1838,13 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12},
                                 'content': [
-                                    {'component': 'VTextarea', 'props': {'model': 'input_id_list', 'label': '[必填]应用ID（企业微信应用页面URL末尾获取，多个用英文逗号分隔。不要填100000x开头的自建应用ID）', 'rows': 1, 'placeholder': '如 1000002,1000003'}}
+                                    {'component': 'VTextarea', 'props': {'model': 'input_id_list', 'label': '[必填]应用ID（企业微信应用页面URL末尾获取，多个用英文逗号分隔。不要填100000x开头的自建应用ID）', 'rows': 1, 'placeholder': '如 1021042,1052986'}}
                                 ]
                             }
                         ]
                     },
                     # ---------- 首屏 · IP 来源 ----------
+                    _section_title('【IP来源】不填就用默认公网IP探测；按优先级只取一个来源'),
                     {
                         'component': 'VRow',
                         'content': [
@@ -1825,7 +1852,7 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12},
                                 'content': [
-                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': 'IP来源按优先级生效：填了DDNS域名用DDNS；开了多WAN用多WAN出口；否则用公网IP探测。三者填了哪个用哪个，优先级从高到低'}}
+                                    {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': '优先级从高到低：填了DDNS域名用DDNS；开了多WAN用多WAN出口；否则用公网IP探测'}}
                                 ]
                             }
                         ]
@@ -1869,6 +1896,7 @@ class DynamicWeChat(_PluginBase):
                         ]
                     },
                     # ---------- 首屏 · 通知 ----------
+                    _section_title('【通知】Cookie失效和IP更新时如何告诉你'),
                     {
                         'component': 'VRow',
                         'content': [
@@ -1933,13 +1961,14 @@ class DynamicWeChat(_PluginBase):
                                 'props': {'cols': 12},
                                 'content': [
                                     {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
-                                     'text': ('已识别第三方通道：' + '、'.join(third_channels)) if third_channels
-                                             else '第三方通知未配置或无法识别Token。MP内置通知由MoviePilot统一发送，是否送达本页无法查询，可用「测试通知推送」按钮验证'}}
+                                     'text': (('已识别第三方通道：' + '、'.join(third_channels) + '。修改Token后需保存，此提示才会更新') if third_channels
+                                             else '第三方通知未配置或无法识别Token（保存后此提示更新）。MP内置通知由MoviePilot统一发送，是否送达本页无法查询，可用「测试通知推送」按钮验证')}}
                                 ]
                             }
                         ]
                     },
                     # ---------- 折叠 · 高级设置 ----------
+                    _section_title('【高级】进阶选项 —— 保持默认即可，不改不影响正常使用'),
                     {
                         'component': 'VRow',
                         'content': [
@@ -1947,14 +1976,14 @@ class DynamicWeChat(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4},
                                 'content': [
-                                    {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud'}}
+                                    {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}
                                 ]
                             },
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 8},
                                 'content': [
-                                    {'component': 'VTextField', 'props': {'model': 'pinned_ips', 'label': '[可选] 固定可信IP（始终保留，多个用英文逗号分隔）', 'placeholder': '如: 1.2.3.4,5.6.7.8'}}
+                                    {'component': 'VTextField', 'props': {'model': 'pinned_ips', 'label': '[可选] 固定可信IP（始终保留，多个用英文逗号分隔）', 'placeholder': '如 203.0.113.10,198.51.100.7'}}
                                 ]
                             }
                         ]
@@ -2010,10 +2039,16 @@ class DynamicWeChat(_PluginBase):
 
         banners: List[dict] = []
         # ---- 插件总开关 ----
+        # 绿条绑定"上一次保活校验实际成功"，而非仅仅字段非空——
+        # 应用ID被静默拒绝时用户不该在绿条下等一个永不发生的结果
         if not snap["enabled"]:
             banners.append(_banner("【插件未启用】所有自动任务停止，保存配置开启后才会运行", "#bbbbbb"))
         elif not snap["has_app_id"]:
             banners.append(_banner("【已启用，但未填写应用ID】不会执行任何检测，请到配置页填写", "#e69b00"))
+        elif snap["keepalive_ok"] is False:
+            banners.append(_banner("【插件已启用，但登录校验未通过】任务在跑，可信IP不会更新；见下方Cookie状态", "#ff0000"))
+        elif snap["keepalive_ok"] is None and not snap["keepalive_note"]:
+            banners.append(_banner("插件已启用，等待第一轮校验结果（约10分钟内）", "#bbbbbb"))
         else:
             banners.append(_banner("插件已启用，后台任务运行中", "#40bb45"))
         # ---- Cookie 登录态 ----
@@ -2039,14 +2074,21 @@ class DynamicWeChat(_PluginBase):
                 "#e69b00"))
         else:
             banners.append(_banner(
-                "【Cookie 已失效】自动恢复失败，请到配置页勾选「本地扫码修改IP」重新扫码",
+                "【Cookie 已失效】自动恢复失败；失效期间公网IP一旦变化，企业微信应用的通知将发送失败。"
+                "请尽快到配置页勾选「本地扫码修改IP」重新扫码",
                 "#ff0000"))
         # ---- 保活循环 ----
+        # ok=None 有两种含义：真的没跑过（note 空）与跑了但无结论（note 是转译后的原因）——
+        # 把后者显示成"还没跑过"会让网络故障的中间态变成谎言
         if snap["enabled"] and snap["has_app_id"]:
-            if snap["keepalive_ok"] is None:
-                banners.append(_banner("保活校验：还没跑过第一轮（每10分钟自动校验一次）", "#bbbbbb"))
-            elif snap["keepalive_ok"] is True:
+            if snap["keepalive_ok"] is True:
                 banners.append(_banner(f"保活校验：正常（{snap['keepalive_note']}）", "#40bb45"))
+            elif snap["keepalive_ok"] is None and snap["keepalive_note"]:
+                banners.append(_banner(
+                    f"【保活校验无结论】{snap['keepalive_note']}；每10分钟自动重试，"
+                    "连续多次无结论说明网络或企业微信页面异常", "#e69b00"))
+            elif snap["keepalive_ok"] is None:
+                banners.append(_banner("保活校验：还没跑过第一轮（每10分钟自动校验一次）", "#bbbbbb"))
             else:
                 banners.append(_banner(
                     f"保活校验：{snap['keepalive_note']}；下轮将自动重试或通知", "#ff0000"))
@@ -2065,17 +2107,37 @@ class DynamicWeChat(_PluginBase):
                     f"IP检测（{snap['cron']}）：{note}；当前可信IP：{snap['current_ip_masked'] or '未记录'}",
                     color))
         # ---- DDNS ----
-        if snap["company_domain"] and snap["ddns_ok"] is False:
-            banners.append(_banner(
-                f"【DDNS域名解析失败】{snap['company_domain']} 上次解析未成功，本轮未改动可信IP", "#ff0000"))
+        # 补齐正常态/未配置态，与失败红条构成完整三态（此前只有失败分支）
+        if snap["company_domain"]:
+            if snap["ddns_ok"] is False:
+                banners.append(_banner(
+                    f"【DDNS域名解析失败】{snap['company_domain']} 上次解析未成功，本轮未改动可信IP", "#ff0000"))
+            elif snap["ddns_ok"] is True and snap["ddns_ip_masked"]:
+                banners.append(_banner(
+                    f"DDNS正常：{snap['company_domain']} 解析到 {snap['ddns_ip_masked']}，IP来源优先级最高", "#40bb45"))
+            else:
+                banners.append(_banner(f"DDNS：已配置 {snap['company_domain']}，等待首次解析", "#bbbbbb"))
+        # ---- 固定可信IP ----
+        # 快照已算好 pinned_valid/pinned_count，此前从未渲染（机械核查确认的死字段）
+        if snap["pinned_ips"].strip():
+            if snap["pinned_valid"] is False:
+                banners.append(_banner(
+                    "【固定可信IP格式不对】含非IP格式的内容，更新可信IP时会被忽略；请检查是否误填了域名", "#e69b00"))
+            else:
+                banners.append(_banner(
+                    f"固定可信IP：{snap['pinned_count']} 个，每次更新可信IP都会保留它们", "#40bb45"))
 
-        # ---- 二维码区（三态分离，无写副作用） ----
+        # ---- 二维码区（三态分离 + 图片有无两态，无写副作用） ----
+        # 页面是进入时快照：等待出码的用户需要知道"刷新本页"才能看到新状态
         qr_valid = snap["qr_future_timestamp"] > now_ts
         if qr_valid:
-            qr_text = f"二维码有效，过期时间: {datetime.fromtimestamp(snap['qr_future_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}"
+            qr_text = f"二维码有效，过期时间: {datetime.fromtimestamp(snap['qr_future_timestamp']).strftime('%Y-%m-%d %H:%M:%S')}。过期后请刷新本页查看新码"
             qr_color = "#40bb45"
+        elif snap["qr_running"] and snap["qr_has_image"]:
+            qr_text = "二维码已过期。请刷新本页查看是否已生成新码；没有新码就到配置页重新勾选「本地扫码修改IP」保存"
+            qr_color = "#d4a017"
         elif snap["qr_running"]:
-            qr_text = "扫码任务运行中，二维码已过期或尚未生成，请重新发起扫码"
+            qr_text = "扫码任务运行中，二维码生成后本页不会自动出现——请每隔几秒刷新本页查看"
             qr_color = "#d4a017"
         else:
             qr_text = "当前没有扫码任务。需要时到配置页勾选「本地扫码修改IP」保存，或发送 /push_qr 命令"
@@ -2100,7 +2162,7 @@ class DynamicWeChat(_PluginBase):
         else:
             img_component = {
                 "component": "div",
-                "text": "登录二维码会在此展示（生成后约6秒可见）",
+                "text": "登录二维码会在此展示；生成后需刷新本页",
                 "props": {
                     "style": {
                         "fontSize": "16px",
@@ -2140,7 +2202,7 @@ class DynamicWeChat(_PluginBase):
                         ]
                     },
                     img_component,
-                    captcha_component or {},
+                    *( [captcha_component] if captcha_component else [] ),
                 ]
             }
         ]

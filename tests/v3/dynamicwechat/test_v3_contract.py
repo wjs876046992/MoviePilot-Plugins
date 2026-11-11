@@ -99,11 +99,11 @@ def test_v3_contract_versions():
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "plugin_version":
                     version = ast.literal_eval(node.value)
-    assert version == "3.1.0"
+    assert version == "3.1.1"
 
     v3 = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))[PLUGIN_ID]
-    assert v3["version"] == "3.1.0"
-    assert next(iter(v3["history"])) == "v3.1.0"
+    assert v3["version"] == "3.1.1"
+    assert next(iter(v3["history"])) == "v3.1.1"
     assert v3["system_version"] == ">=3.0.0"
 
     v2 = json.loads((ROOT / "package.v2.json").read_text(encoding="utf-8"))[PLUGIN_ID]
