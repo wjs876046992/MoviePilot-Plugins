@@ -11,19 +11,40 @@ try:
 except Exception:
     import importlib.util
 
-    # 纯无宿主环境（--noconftest）下的轻量桩
-    for mod in [
-        "app", "app.core", "app.core.config", "app.core.event", "app.db", "app.db.site_oper",
-        "app.helper", "app.helper.downloader", "app.helper.sites", "app.helper.torrent",
-        "app.log", "app.plugins", "app.schemas", "app.schemas.types", "app.utils",
-        "app.utils.string", "app.utils.timer",
-    ]:
-        sys.modules.setdefault(mod, MagicMock())
+    # 纯无宿主环境（--noconftest）下的轻量桩。
+    # 注意：每个 `app.*` 桩都必须是**真正的 module**，而不是 MagicMock —— 否则
+    # `from app.utils.http import RequestUtils` 会因 `app.utils` 被当成非包对象而失败。
+    import types
 
     class _PluginBase:
         pass
 
-    sys.modules["app.plugins"]._PluginBase = _PluginBase
+    def _stub(name: str, **attrs) -> types.ModuleType:
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    sys.modules["app"] = _stub("app")
+    sys.modules["app.core"] = _stub("app.core")
+    sys.modules["app.core.config"] = _stub("app.core.config", settings=MagicMock())
+    sys.modules["app.core.event"] = _stub("app.core.event", eventmanager=MagicMock())
+    sys.modules["app.db"] = _stub("app.db")
+    sys.modules["app.db.site_oper"] = _stub("app.db.site_oper", SiteOper=MagicMock)
+    sys.modules["app.helper"] = _stub("app.helper")
+    sys.modules["app.helper.downloader"] = _stub("app.helper.downloader", DownloaderHelper=MagicMock)
+    sys.modules["app.helper.sites"] = _stub("app.helper.sites", SitesHelper=MagicMock)
+    sys.modules["app.helper.torrent"] = _stub("app.helper.torrent", TorrentHelper=MagicMock)
+    sys.modules["app.log"] = _stub("app.log", logger=MagicMock())
+    sys.modules["app.plugins"] = _stub("app.plugins", _PluginBase=_PluginBase)
+    sys.modules["app.schemas"] = _stub(
+        "app.schemas", NotificationType=MagicMock(), ServiceInfo=MagicMock()
+    )
+    sys.modules["app.schemas.types"] = _stub("app.schemas.types", EventType=MagicMock())
+    sys.modules["app.utils"] = _stub("app.utils")
+    sys.modules["app.utils.http"] = _stub("app.utils.http", RequestUtils=MagicMock)
+    sys.modules["app.utils.string"] = _stub("app.utils.string", StringUtils=MagicMock)
+    sys.modules["app.utils.timer"] = _stub("app.utils.timer", TimerUtils=MagicMock)
 
     _repo_root = Path(__file__).resolve().parents[3]
     _plugin_file = _repo_root / "plugins.v2" / "crossseed" / "__init__.py"
