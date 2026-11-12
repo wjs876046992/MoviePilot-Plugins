@@ -147,16 +147,59 @@ def test_local_cookie_disk_roundtrip():
     assert oct((tmp / "cookie.json").stat().st_mode)[-3:] == "600"
 
 
-def test_get_cookie_prefers_disk_then_cloud():
-    """读取顺序：内存 → 本地落盘 → CookieCloud"""
+def test_cookie_source_is_strictly_exclusive():
+    """3.1.8 起严格二选一：开启 CookieCloud 只读云端，关闭只读本地，不交叉回退。"""
     src = SOURCE
-    # 本地落盘检查应出现在 CookieCloud 下载之前
-    idx_disk = src.index("使用本地落盘 Cookie")
-    idx_cloud = src.index("self._cookiecloud.download")
-    assert idx_disk < idx_cloud
+    # 关闭时必须走本地分支并直接返回，不落到云端下载
+    assert "if not self._use_cookiecloud:" in src
+    assert "使用本地 Cookie（" in src
+    # 云端下载只应出现在 use_cookiecloud 为真的路径上
+    fn = src[src.index("async def get_cookie_async"):src.index("def parse_cookie_header")]
+    assert fn.index("if not self._use_cookiecloud:") < fn.index("self._cookiecloud.download")
+    # 关闭分支必须提前 return，不能继续走云端
+    offline = fn[fn.index("if not self._use_cookiecloud:"):fn.index("try:", fn.index("if not self._use_cookiecloud:"))]
+    assert "return disk_cookie or None" in offline
+
+
+def test_disk_save_is_only_for_local_mode():
+    """落盘只在关闭 CookieCloud 时发生 —— 开启时云端是唯一副本。"""
+    src = SOURCE
+    body = src[src.index("async def _update_cookie"):src.index("async def _send_cookie_false")]
+    # 云端分支里不得再落盘
+    cloud_part = body[body.index("if self._use_cookiecloud:"):body.index("else:", body.index("if self._use_cookiecloud:"))]
+    assert "_save_cookie_to_disk" not in cloud_part
+    # 本地分支里必须有落盘
+    local_part = body[body.index("else:", body.index("if self._use_cookiecloud:")):]
+    assert "_save_cookie_to_disk" in local_part
+
+
+def test_empty_payload_deletes_stale_file():
+    """空 payload 必须删除旧文件，不能留 0 字节（真机踩过）。"""
+    assert "path.unlink(missing_ok=True)" in SOURCE
+    assert "不写空文件" in SOURCE
+
+
+def test_disk_load_treats_empty_as_missing():
+    """0 字节/空数组都按「无备份」处理。"""
+    import inspect
+    src = SOURCE
+    body = src[src.index("def _load_cookie_from_disk"):]
+    body = body[:body.index("async def _send_cookie_false")]
+    assert "st_size" in body
+    assert "and data" in body
 
 
 def test_verify_requires_wwrtx_sid():
     """回读校验必须检查 wwrtx.sid，而不是只看域名存在"""
     assert "wwrtx.sid" in SOURCE
     assert "_verify_cookiecloud_has_sid" in SOURCE
+
+
+def test_update_cookie_reads_full_browser_cookies():
+    """
+    真机事故（2026-11-12）：按当前 URL 取 cookie 拿不到 `.work.weixin.qq.com`
+    下的登录凭证，导致 cookie.json 被过滤成空。必须取全量再筛选。
+    """
+    src = SOURCE
+    body = src[src.index("async def _update_cookie"):src.index("async def _send_cookie_false")]
+    assert "await context.cookies()" in body, "必须取全量 cookie，而不是仅当前 URL 的"

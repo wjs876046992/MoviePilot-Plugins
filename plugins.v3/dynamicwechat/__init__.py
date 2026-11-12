@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.7"
+    plugin_version = "3.1.8"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -1014,7 +1014,11 @@ class DynamicWeChat(_PluginBase):
         # 1. 先从浏览器获取cookie（即使云端更新失败，也标记cookie有效）
         try:
             current_url = page.url
-            current_cookies = await context.cookies(current_url)
+            # ⚠️ 取**全量** cookie，而不是当前 URL 的：企微登录凭证挂在
+            # `.work.weixin.qq.com` 下，而扫码完成后 page.url 可能停在某个
+            # frame/回跳地址上，按当前 URL 取会拿不到它们 —— 这正是此前
+            # `cookie.json` 被写成 0 字节的直接原因（2026-11-12 真机）。
+            current_cookies = await context.cookies() or await context.cookies(current_url)
             if current_cookies:
                 self._saved_cookie = current_cookies
                 self._cookie_valid = True
@@ -1072,16 +1076,15 @@ class DynamicWeChat(_PluginBase):
                 else:
                     logger.error("更新 CookieCloud 失败，但本地cookie已有效")
                     self._is_special_upload = False
-                # 本地落盘兜底：不依赖 CookieCloud 是否可用
-                await self._save_cookie_to_disk(current_cookies)
             except Exception as e:
                 logger.error(f"CookieCloud更新 cookie 发生错误: {e}")
         else:
+            # 严格二选一（3.1.8）：关闭 CookieCloud 时**只**写本地，
+            # 不碰云端；开启时只写云端，不写本地。两种模式各自闭环，
+            # 不存在「本地与云端谁覆盖谁」的问题。
             self._is_special_upload = True  # 不用cookiecloud 也显示cookie寿命
-            logger.info("更新本地 Cookie成功")
-        # 未启用 CookieCloud 时同样要落盘，否则重启后必丢
-        if not self._use_cookiecloud:
             await self._save_cookie_to_disk(current_cookies)
+            logger.info("Cookie 已保存到本地（未启用 CookieCloud）")
 
     def _verify_cookiecloud_has_sid(self) -> bool:
         """回读 CookieCloud，确认企微登录凭证（wwrtx.sid）确实存在"""
@@ -1100,15 +1103,24 @@ class DynamicWeChat(_PluginBase):
 
     async def _save_cookie_to_disk(self, cookies: List[dict]) -> None:
         """
-        把企微 Cookie 落到插件数据目录，作为 CookieCloud 之外的持久兜底。
-        只保存 work.weixin.qq.com 相关域，避免把浏览器里其它敏感 Cookie 抄一份。
+        把企微 Cookie 落到插件数据目录（**仅关闭 CookieCloud 时使用**）。
+        只保存 weixin 相关域，避免把浏览器里其它敏感 Cookie 抄一份。
+
+        ⚠️ 空 payload 时**删除**旧文件而不是写 0 字节：0 字节文件会让
+        `_load_cookie_from_disk` 解析失败，看起来像「有备份但坏了」，
+        比没有文件更误导（2026-11-12 真机踩到）。
         """
+        path = self.get_data_path() / "cookie.json"
+        payload = [c for c in (cookies or [])
+                   if "weixin" in str(c.get("domain", "")).lower()]
+        if not payload:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning(f"清理空 cookie.json 失败: {e}")
+            logger.warning("浏览器未返回任何企微域 Cookie，已跳过落盘（不写空文件）")
+            return
         try:
-            path = self.get_data_path() / "cookie.json"
-            payload = [c for c in (cookies or [])
-                       if "weixin" in str(c.get("domain", "")).lower()]
-            if not payload:
-                return
             def _write():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(path, "w", encoding="utf-8") as fh:
@@ -1123,14 +1135,14 @@ class DynamicWeChat(_PluginBase):
             logger.warning(f"Cookie 落盘失败: {e}")
 
     def _load_cookie_from_disk(self) -> List[dict]:
-        """从插件数据目录读取兜底 Cookie（不存在或损坏时返回空列表）"""
+        """从插件数据目录读取本地 Cookie（不存在/空文件/损坏时返回空列表）"""
         try:
             path = self.get_data_path() / "cookie.json"
-            if not path.is_file():
+            if not path.is_file() or path.stat().st_size <= 2:  # [] 也算空
                 return []
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, list) else []
+            return data if isinstance(data, list) and data else []
         except Exception:
             return []
 
@@ -1303,19 +1315,25 @@ class DynamicWeChat(_PluginBase):
 
     async def get_cookie_async(self):
         """
-        异步获取企业微信 Cookie
-        优先使用本地缓存，否则从CookieCloud下载
+        异步获取企业微信 Cookie。
+
+        **严格二选一（3.1.8）**：
+          · 开启 CookieCloud → 只从云端取，完全不读本地文件；
+          · 关闭 CookieCloud → 只从本地 `cookie.json` 取，完全不碰云端。
+        两条路径各自闭环。此前是「本地优先、云端兜底」的混合回退，
+        结果是插件与外部客户端互相覆盖同一份云端数据、且本地还可能留下
+        0 字节空文件（2026-11-12 真机两次 Cookie 丢失）。
         """
         if self._saved_cookie and self._cookie_valid:
             return self._saved_cookie
-        # 本地落盘优先于 CookieCloud：重启后不依赖云端是否正常
-        disk_cookie = await asyncio.to_thread(self._load_cookie_from_disk)
-        if disk_cookie:
-            logger.info(f"使用本地落盘 Cookie（{len(disk_cookie)} 条）")
-            return disk_cookie
+        if not self._use_cookiecloud:
+            disk_cookie = await asyncio.to_thread(self._load_cookie_from_disk)
+            if disk_cookie:
+                logger.info(f"使用本地 Cookie（{len(disk_cookie)} 条）")
+            else:
+                logger.warning("未启用 CookieCloud 且本地无 Cookie，需要重新扫码登录")
+            return disk_cookie or None
         try:
-            if not self._use_cookiecloud:
-                return None
             result = await asyncio.to_thread(self._cookiecloud.download)
             # 兼容不同版本的CookieCloudHelper返回格式
             if isinstance(result, tuple):
@@ -2028,7 +2046,19 @@ class DynamicWeChat(_PluginBase):
                         '进阶选项 —— 保持默认即可，不改不影响正常使用',
                         [
                             _row(
-                                _col(12, {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（跨设备备份Cookie，建议开启）'}}),
+                                _col(12, {'component': 'VSwitch', 'props': {'model': 'use_cookiecloud', 'label': '使用CookieCloud（开启＝Cookie 只存云端；关闭＝只存本地，重启不丢）'}}),
+                            ),
+                            _row(
+                                _col(12, {'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal',
+                                         'text': ('当前：Cookie 只保存在本机插件目录。重启/重载插件都不会丢失；'
+                                                  'Cookie 失效时需要重新扫码（没有云端备份可恢复）。'
+                                                  '如果这台机器的插件目录有持久化且只有这一个插件实例使用企微，推荐保持关闭——'
+                                                  '开启 CookieCloud 会与浏览器扩展互相覆盖同一份数据。'
+                                                  if not self._use_cookiecloud else
+                                                  '当前：Cookie 只保存在 CookieCloud。重启/重载后从云端恢复；'
+                                                  '若你在企业微信里退出登录或云端被其它客户端覆盖，只能重新扫码。'
+                                                  '注意：本插件写入时会保留其它站点的 Cookie，但其它客户端上传整份快照时可能抹掉企微域——'
+                                                  '遇到这种情况请改用「关闭 CookieCloud」（只存本地）。')}}),
                             ),
                         ],
                     ),
