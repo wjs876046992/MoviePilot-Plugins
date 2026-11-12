@@ -26,6 +26,7 @@ __init__.py 顶层 import 失败无法 exec 整个文件；因此本测试把
 """
 
 import ast
+import asyncio
 import re
 import textwrap
 import base64  # noqa: F401  (exec 命名空间用)
@@ -44,7 +45,7 @@ TREE = ast.parse(SOURCE, filename="__init__.py")
 def _extract_function(name: str) -> str:
     """按顶层类内函数边界切出源码段（含装饰器行之前的 def）。"""
     lines = SOURCE.split("\n")
-    starts = [i for i, l in enumerate(lines) if re.match(rf"    def {name}\(", l)]
+    starts = [i for i, l in enumerate(lines) if re.match(rf"    (?:async )?def {name}\(", l)]
     assert starts, f"{name} not found"
     s = starts[0]
     # 函数结束：下一个同缩进 def/装饰器/类结束
@@ -126,6 +127,7 @@ def _build_page_env(extra_attrs: dict):
     exec(_extract_function("_page_snapshot"), snap_ns)
     self._page_snapshot = lambda: snap_ns["_page_snapshot"](self)
     self._is_ipv4 = lambda ip: snap_ns["_is_ipv4"](ip)
+    self.get_ip_from_domain = lambda d: ddns_ip
     return ns, self
 
 
@@ -480,3 +482,56 @@ def test_page_banner_texts_survive_card_wrap():
     assert any("每次更新可信IP都会保留" in t for t in texts), texts
     assert any(t in ("多WAN多出口", "DDNS域名", "公网IP探测") for t in texts), texts
     assert any("运行状态" not in t for t in texts)  # 卡标题不是 banner，不应混入
+
+
+# ---------- 3.1.7 回归：DDNS 成功路径必须刷新 IP 检测状态 ----------
+
+def _checkip_ddns_env(ddns_ip="203.0.113.10", current_ip="203.0.113.10"):
+    """构造可执行 CheckIP 的 stub 环境（DDNS 分支）。"""
+    import asyncio as _asyncio
+    import types as _types
+    from types import SimpleNamespace as _NS
+    ns = {
+        "asyncio": _asyncio,
+        "datetime": datetime, "timedelta": timedelta, "re": re,
+        "List": list, "Dict": dict, "Any": object, "Tuple": tuple, "Optional": object,
+        "logger": _NS(error=lambda *a, **k: None, warning=lambda *a, **k: None,
+                      info=lambda *a, **k: None),
+    }
+    exec(_extract_function("resolve_domains"), ns)
+    exec(_extract_function("_translate_check_result"), ns)
+    exec(_extract_function("CheckIP"), ns)
+    self = SimpleNamespace(
+        _company_domain="a.example.com,b.example.com",
+        _current_ip_address=current_ip,
+        _ip_changed=True,
+        wan2=None,
+        _last_ddns_ok=None, _last_ddns_ip="",
+        _last_ip_check_ok=None, _last_ip_check_note="Cookie已失效，本轮未检测IP",
+        _cookie_invalid_notified=False,
+        _wechat_available=True,
+        resolve_domains=lambda raw: ns["resolve_domains"](self, raw),
+        get_ip_from_domain=lambda d: ddns_ip,
+    )
+    self.get_ip_from_domain = lambda d: ddns_ip
+    return ns, self
+
+
+def test_ddns_success_refreshes_ip_check_state():
+    """DDNS 解析成功必须覆盖旧的「失败」记录 —— 此前只有多WAN/单IP分支写。"""
+    ns, self_ = _checkip_ddns_env()
+    # Cookie 失效期间留下的旧记录
+    self_._last_ip_check_ok = False
+    self_._last_ip_check_note = "Cookie已失效，本轮未检测IP"
+    ok = asyncio.run(ns["CheckIP"](self_))
+    assert ok is False  # IP 未变化
+    assert self_._last_ip_check_ok is True, "成功路径必须刷新状态"
+    assert "Cookie已失效" not in self_._last_ip_check_note
+
+
+def test_ddns_success_detects_change():
+    ns, self_ = _checkip_ddns_env(ddns_ip="198.51.100.7", current_ip="203.0.113.10")
+    import asyncio
+    ok = asyncio.run(ns["CheckIP"](self_))
+    assert ok is True
+    assert "检测到IP变化" in self_._last_ip_check_note

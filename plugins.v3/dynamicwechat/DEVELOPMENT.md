@@ -406,3 +406,39 @@ requests.post(self.url + '/update', ...)      # /update 是整体替换语义
 形状测试 walker 增收 VChip/td/span 文本；「无成功色」断言改为「无 success chip」；
 新增断言：页面必须含 VChip/VTable、不得再有 `_banner(` 与任何硬编码 hex。
 49 项全绿。
+
+---
+
+## 3.1.7 DDNS 分支不刷新 IP 检测状态（真机确认的陈旧状态缺陷）
+
+### 症状
+
+用户面板截图：Cookie「有效·已保活 9小时50分」，但 IP 检测行显示「失败 · Cookie已失效，
+本轮未检测IP」。DDNS 行同时显示「正常·3 个域名」。两个条目自相矛盾，且矛盾挂了
+9 个多小时。
+
+### 根因
+
+3.1.0 给 `CheckIP` 三个分支加了状态记录，但 **DDNS 分支的成功路径漏写**：
+
+| 分支 | 成功时写 `_last_ip_check_ok=True`？ |
+|---|---|
+| 多WAN | ✅ |
+| 单IP探测 | ✅ |
+| DDNS | ❌ 只写 `_last_ddns_*` |
+
+Cookie 失效期间 `check()` 每轮写「失败」；恢复后 DDNS 分支每轮都成功、更新
+`_last_ddns_*`，却从不覆盖旧的失败记录——没有任何清除路径。
+
+3.1.1 修过同类问题（keepalive 的两类 None），但只对照了 keepalive 自身，
+**没有对照三个 IP 来源分支**——同一模式在第三处出现时漏掉了。
+
+### 做法
+
+DDNS 分支补齐：解析成功即写 `_last_ip_check_ok=True` + 说明（含失败域名计数），
+检测到变化时写「检测到IP变化，正在更新可信IP」，未变化写「DDNS解析结果未变化」。
+
+### 测试
+
++2 项（`CheckIP` async 函数提取到 stub 命名空间直接执行）：DDNS 成功覆盖旧的
+「Cookie已失效」记录、检测到变化时说明同步更新。51 项全绿。

@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.6"
+    plugin_version = "3.1.7"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -693,6 +693,13 @@ class DynamicWeChat(_PluginBase):
             logger.info(f"IP获取成功: 解析域名 {','.join(ok_domains)}: {ip_address}")
             self._last_ddns_ok = True
             self._last_ddns_ip = str(ip_address)
+            # DDNS 分支的成功必须同样写 IP 检测状态：此前只有多WAN/单IP分支写，
+            # Cookie 失效期间留下的「失败」记录会挂到永远 —— 页面上 DDNS 显示
+            # 正常、IP 检测却一直红，两个条目自相矛盾（2026-11-12 真机确认）
+            self._last_ip_check_ok = True
+            self._last_ip_check_note = (
+                f"DDNS解析到 {len(ok_domains)} 个域名"
+                + ("，部分域名解析失败" if failed_domains else ""))
             if not self._ip_changed and func != "public":
                 logger.info("上次IP修改IP失败 继续尝试修改IP")
                 return True
@@ -700,7 +707,9 @@ class DynamicWeChat(_PluginBase):
                 logger.info("检测到IP变化")
                 self._wechat_available = False
                 self._cookie_invalid_notified = False
+                self._last_ip_check_note = "检测到IP变化，正在更新可信IP"
                 return True
+            self._last_ip_check_note = "DDNS解析结果未变化"
             return False
         if self.wan2:
             # 多WAN模式：读取保存的url_ip和ips
