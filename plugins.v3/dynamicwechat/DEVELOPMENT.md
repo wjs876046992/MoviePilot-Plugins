@@ -823,3 +823,31 @@ response model」属同一类：**插件 API 的响应形状是宿主合同，�
 
 +1：`get_api` 必须声明 response_model、`_api_refresh` 必须走 `_envelope`、
 envelope 必须含 message。共 81 项全绿。
+
+---
+
+## 3.3.3 陈旧提示：登录成功后仍显示「没有可校验的 Cookie」
+
+### 症状
+
+用户扫码登录成功（日志确认 `Cookie 已落盘（13 条，2502 字节）`），但详情页
+仍显示「没有可校验的 Cookie，请重新扫码登录」。
+
+### 根因
+
+```python
+if self._last_keepalive_ok is None and not self._last_keepalive_note:
+    self._last_keepalive_note = "没有可校验的 Cookie，请重新扫码登录"
+```
+
+`and not self._last_keepalive_note` 这个条件让它只在 note 为空时写入 ——
+一旦某轮写下这句话，后续无论是「有 Cookie 了」还是「换了个原因」，都不会
+再覆盖它。而页面渲染是「ok=None 且 note 非空 → 显示无结论并带出note」，
+于是登录成功后页面仍挂着登录前的旧理由。
+
+与 3.1.7（DDNS 分支漏写）、3.1.9（无 Cookie 却报成功）同族：**状态写入必须
+每轮无条件更新，加「仅在为空时写」的守卫等于制造陈旧状态**。
+
+### 做法
+
+去掉条件，每轮如实覆盖。

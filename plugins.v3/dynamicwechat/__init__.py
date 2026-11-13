@@ -38,7 +38,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.3.2"
+    plugin_version = "3.3.3"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -1680,8 +1680,10 @@ class DynamicWeChat(_PluginBase):
                 logger.info(f"Cookie 保活成功，当前生命周期: {self._cookie_lifetime} 秒")
             elif not cookie_used:
                 logger.warning("本轮没有任何可校验的 Cookie（本地模式无落盘 / 云端未取到），保活未执行")
-                if self._last_keepalive_ok is None and not self._last_keepalive_note:
-                    self._last_keepalive_note = "没有可校验的 Cookie，请重新扫码登录"
+                # ⚠️ 无条件覆盖（3.3.3）：此前只在 note 为空时才写，导致「没有可校验
+                # 的 Cookie」这句陈旧文案一旦写入就永不过期 —— 用户扫码登录成功后，
+                # 页面仍带着这句话显示「无结论」。
+                self._last_keepalive_note = "本轮没有可校验的 Cookie，请重新扫码登录"
             # 无论成功/失败/未执行，都记录本轮结束时间，页面据此显示"最近运行"
             self._last_keepalive_at = time.time()
         except Exception as e:
