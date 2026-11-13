@@ -33,13 +33,17 @@ Implications when editing:
   `P115StrmHelper` (the last bundles offline cp314 wheels in `wheels/`, a path that is gitignored
   globally but force-included just for that plugin). A second category is **shared plugins the fork
   has diverged from**: `BrushFlow` exists upstream (v6.1.4) but
-  this fork is far ahead (v6.4.14); similarly in V2, `plugins.v2/autosignin` has diverged locally with
-  FlareSolverr Cloudflare challenge bypass, attendance verification, and 14-day history. Develop them freely,
-  but never assume upstream shares your state — an upstream merge will not supply fork-only index entries,
-  nor carry the fork's newer `BrushFlow` entry or V2 custom logic. Fork-local non-merge commit totals drift
-  upward as work continues; run `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count
+  this fork is far ahead (v6.4.14), and V2 `plugins.v2/crossseed` carries a local Passkey-parsing fix.
+  Develop them freely, but never assume upstream shares your state — an upstream merge will not supply
+  fork-only index entries, nor carry the fork's newer `BrushFlow` entry or V2 custom logic. Fork-local
+  non-merge commit totals drift upward as work continues; run
+  `git log --oneline --no-merges -- plugins.v3/<id> | wc -l` for the live count
   rather than trusting a number here (at the time of writing `Rsync115Sync` dominates by far, then
   `ClashRuleProvider`, `IMDbSource`, `BrushFlow`).
+  V2 `plugins.v2/autosignin` is **no longer** in this category: its local FlareSolverr bypass and
+  debug page dump were reverted to upstream (commit `3f2f942`), because 观众 closed sign-in and the
+  host (v3.2.6) loads `plugins.v3/autosignin` anyway (`package.v2.json` gates it at `<=3.1.5`).
+  Do not reintroduce fork-local changes there; keep the directory byte-identical to upstream.
   Because `BrushFlow` and `P115StrmHelper` live in `package.v3.json`, upstream edits to the shared index
   files can conflict there too, not only in `package.v2.json`. In practice the two index files conflict on
   nearly every sync, and a reliable resolution is a **structural merge** — per key take the higher
