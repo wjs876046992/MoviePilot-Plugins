@@ -203,3 +203,30 @@ def test_update_cookie_reads_full_browser_cookies():
     src = SOURCE
     body = src[src.index("async def _update_cookie"):src.index("async def _send_cookie_false")]
     assert "await context.cookies()" in body, "必须取全量 cookie，而不是仅当前 URL 的"
+
+
+# ---------- 3.1.9 regression: local-mode startup restore + fake-success guard ----------
+
+def test_init_plugin_restores_cookie_from_disk():
+    """Local mode keeps _saved_cookie in memory only; after reload it is empty, so
+    both validation branches are skipped and the loop logs a fake keepalive success.
+    init_plugin must restore it from cookie.json."""
+    src = SOURCE
+    init = src[src.index("def init_plugin"):src.index("def _migrate_legacy_magic_strings")]
+    assert "_load_cookie_from_disk" in init
+    assert "if not self._use_cookiecloud and not self._saved_cookie" in init
+
+
+def test_refresh_cookie_reloads_disk_before_skipping():
+    """Reload from disk again before validating (memory may be empty after config change)."""
+    src = SOURCE
+    fn = src[src.index("async def refresh_cookie"):src.index("async def check_login_status")]
+    assert "保活前从本地恢复" in fn
+
+
+def test_keepalive_requires_real_validation():
+    """No real validation (cookie_used=False) must not extend lifetime or log success."""
+    src = SOURCE
+    fn = src[src.index("async def refresh_cookie"):src.index("async def check_login_status")]
+    assert "if self._cookie_valid and cookie_used:" in fn
+    assert "本轮没有任何可校验的 Cookie" in fn

@@ -31,7 +31,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.8"
+    plugin_version = "3.1.9"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -228,6 +228,20 @@ class DynamicWeChat(_PluginBase):
         # 旧值迁移：应用ID里的 ||wanN（多WAN）与 ids||url1,url2（自定义探测URL）
         # 拆到独立字段。幂等：新字段已存在时旧语法仍被兼容解析，不重复迁移。
         self._migrate_legacy_magic_strings()
+
+        # 本地模式启动恢复（3.1.8 修复）：_saved_cookie 只存在于内存，重载/重启后
+        # 必须从落盘的 cookie.json 恢复，否则保活循环会因「无本地 Cookie 且云端
+        # 关闭」而整段跳过校验、直接假成功（页面永远显示「还没跑过第一轮」，
+        # 实际 IP 检测也在用空 Cookie —— 2026-11-13 真机确认）。
+        # CookieCloud 模式不读本地文件（严格二选一），首轮 refresh_cookie 会从云端恢复。
+        if not self._use_cookiecloud and not self._saved_cookie:
+            restored = self._load_cookie_from_disk()
+            if restored:
+                self._saved_cookie = restored
+                self._cookie_valid = True
+                logger.info(f"已从本地恢复 {len(restored)} 条 Cookie")
+            else:
+                logger.warning("本地模式下未找到任何已保存的 Cookie，请到配置页勾选「本地扫码修改IP」重新登录")
 
         # 初始化第三方通知发送器（MP内置通知由 post_message 直接处理）
         self._my_send = MySender(self._notification_token)
@@ -1387,6 +1401,14 @@ class DynamicWeChat(_PluginBase):
         try:
             context = await self._launch_browser_context_with_retry(headless=True)
             cookie_used = False
+            # 本地模式下内存里没有 Cookie 时，先补一次落盘读取。init_plugin 已经
+            # 恢复过，但换配置/运行期写坏时仍可能为空 —— 不补的话下面两段全跳过，
+            # 直接走到「延长生命周期」并打「保活成功」，实际一次校验都没做。
+            if not self._use_cookiecloud and not self._saved_cookie:
+                restored = await asyncio.to_thread(self._load_cookie_from_disk)
+                if restored:
+                    self._saved_cookie = restored
+                    logger.info(f"保活前从本地恢复 {len(restored)} 条 Cookie")
             # 尝试使用本地保存的cookie
             if self._saved_cookie:
                 await context.add_cookies(self._saved_cookie)
@@ -1475,8 +1497,12 @@ class DynamicWeChat(_PluginBase):
                     else:
                         logger.info("CookieCloud获取失败，发送通知")
                         await self._send_cookie_false()
-            # 如果cookie有效，延长生命周期
-            if self._cookie_valid:
+            # ⚠️ 假成功守卫（3.1.8）：本轮**一次校验都没做**时不得延长寿命、不得打
+            # 「保活成功」。判据是 cookie_used —— 只有真正拿 Cookie 进浏览器并得出
+            # 结论的轮次才置 True。此前 `_cookie_valid` 初始为 True，本地模式又
+            # 没 Cookie 可校验，于是每轮都打「保活成功」而 `_last_keepalive_ok`
+            # 恒为 None，页面永远显示「还没跑过第一轮」（2026-11-13 真机确认）。
+            if self._cookie_valid and cookie_used:
                 if self._my_send:
                     self._my_send.reset_limit()
                 if await self._acquire_file_lock():
@@ -1488,6 +1514,10 @@ class DynamicWeChat(_PluginBase):
                     logger.warning("获取文件锁超时，跳过增加Cookie生命周期")
                 self._cookie_lifetime = await PyCookieCloud.load_cookie_lifetime_async(self._settings_file_path)
                 logger.info(f"Cookie 保活成功，当前生命周期: {self._cookie_lifetime} 秒")
+            elif not cookie_used:
+                logger.warning("本轮没有任何可校验的 Cookie（本地模式无落盘 / 云端未取到），保活未执行")
+                if self._last_keepalive_ok is None and not self._last_keepalive_note:
+                    self._last_keepalive_note = "没有可校验的 Cookie，请重新扫码登录"
         except Exception as e:
             logger.error(f"cookie 校验过程中发生异常: {e}")
         finally:

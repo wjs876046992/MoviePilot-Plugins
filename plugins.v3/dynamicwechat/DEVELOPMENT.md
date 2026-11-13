@@ -491,3 +491,47 @@ DDNS 分支补齐：解析成功即写 `_last_ip_check_ok=True` + 说明（含�
 `test_cookie_persistence.py` 重写为 8 项：严格互斥（关闭不落云端、开启不落本地）、
 空 payload 删除文件、空文件按无备份、全量 cookie 读取（真机事故回归）。
 共 55 项全绿。
+
+---
+
+## 3.1.9 本地模式假成功：保活校验永远显示「还没跑过第一轮」
+
+### 症状
+
+3.1.8 切到本地模式后，页面「保活校验」永远是「未运行 · 还没跑过第一轮」，
+但日志每 10 分钟都在打「Cookie 保活成功，当前生命周期: N 秒」。
+
+### 根因（真机日志确认）
+
+近 20 小时日志里，「检查登录状态」与「本地缓存 Cookie 有效」出现 **0 次** ——
+也就是说校验根本没跑过。链条：
+
+1. `_saved_cookie` 是纯内存属性，插件重载后为空；`init_plugin` **没有**从
+   `cookie.json` 恢复它
+2. `refresh_cookie` 第一段 `if self._saved_cookie:` 不成立 → 跳过本地校验
+3. 第二段 `if not cookie_used and self._use_cookiecloud:` → 本地模式下云端关闭 → 跳过
+4. 落到 `if self._cookie_valid:` —— `_cookie_valid` 类属性初始值为 **True** →
+   **延长寿命并打「保活成功」**
+5. `_last_keepalive_ok` 从未被赋值，恒为 None → 页面显示「还没跑过第一轮」
+
+同时 IP 检测也在用空 Cookie，改 IP 实际会失败——只是还没到触发点。
+
+### 做法
+
+1. `init_plugin`：本地模式且内存无 Cookie 时，从 `cookie.json` 恢复；
+   恢复不到就明确告警「请重新扫码」。
+2. `refresh_cookie`：校验前再补一次落盘读取（配置文件切换/运行期写坏时兜底）。
+3. **假成功守卫**：延长寿命与「保活成功」日志改为 `if self._cookie_valid and cookie_used:`，
+   即必须真的拿 Cookie 进过浏览器并得出过结论。没有可校验 Cookie 时记 warning，
+   并把说明写进 `_last_keepalive_note`，页面因此能显示「没有可校验的 Cookie，请重新扫码登录」。
+
+### 教训
+
+「状态字段恒为初始值」这类缺陷不会有任何报错：日志在打成功、页面在显示默认值，
+两者互相印证成一个假象。**成功的日志必须由「真正做过那件事」的变量来守卫**，
+而不是由「配置上看起来应该成功」的变量守卫。
+
+### 测试
+
++3 项回归：init_plugin 必须恢复落盘 Cookie、保活前补读、假成功守卫存在。
+共 58 项全绿。
