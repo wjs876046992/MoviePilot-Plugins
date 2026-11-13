@@ -791,3 +791,35 @@ while not task.done():
 
 +2：端点必须纯只读（不得 `_start_bg_task` / `check`）、按钮文案为「刷新」
 且页面不再出现「立即检测」字样。共 80 项全绿。
+
+---
+
+## 3.3.2 「刷新」按钮报「服务器返回了无效响应」
+
+### 症状
+
+3.3.1 上线后点详情页「刷新」按钮，前端提示「服务器返回了无效响应」。
+
+### 根因
+
+`docs/V3_API_Response_Adaptation.md` §2 明确：Vuetify JSON 页面的
+`events.click.api` 走宿主普通数据客户端，**严格校验 `success/message/data`
+三字段 envelope**，endpoint 必须显式返回并声明 `schemas.Response[DataModel]`。
+`/refresh` 返回的是裸 `{"success": True, "data": {...}}`——缺 `message` 字段，
+宿主客户端判定无效。
+
+这是文档里写明的合同，实现时没查——与 3.2.1 之前的「endpoint 签名变
+response model」属同一类：**插件 API 的响应形状是宿主合同，不是插件自由裁量**。
+
+### 做法
+
+照 `courseorganizer` 的防御模式：
+
+1. 顶部 `try: from app import schemas as _schemas`（桩环境降级）
+2. `get_api()` 里给全部路由声明 `response_model = _schemas.Response[Dict[str, Any]]`
+3. `_envelope(success, data, message)` 辅助函数返回标准 envelope
+
+### 测试
+
++1：`get_api` 必须声明 response_model、`_api_refresh` 必须走 `_envelope`、
+envelope 必须含 message。共 81 项全绿。

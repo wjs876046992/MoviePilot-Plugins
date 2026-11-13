@@ -590,6 +590,34 @@ def test_refresh_is_read_only_snapshot():
     assert "纯只读" in SOURCE
 
 
+def test_refresh_returns_standard_envelope():
+    """events.click.api 走宿主普通数据客户端，严格校验 success/message/data 三字段。
+
+    真机事故（2026-11-13）：裸 {"success":..., "data":...} 缺 message，
+    前端判「服务器返回了无效响应」。必须声明 Response 模型并返回标准 envelope。
+    """
+    import ast
+    tree = ast.parse(SOURCE)
+    api_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and n.name == "get_api")
+    api_body = ast.unparse(api_fn)
+    assert "response_model" in api_body
+    assert "_schemas.Response[Dict[str, Any]]" in api_body
+
+    refresh_fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                      and n.name == "_api_refresh")
+    refresh_body = ast.unparse(refresh_fn)
+    assert "_envelope(" in refresh_body
+    # envelope helper 必须含 message 字段
+    env_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and n.name == "_envelope")
+    env_body = ast.unparse(env_fn)
+    assert "message=message" in env_body
+
+
 def test_last_run_timestamp_is_recorded():
     """Both loops must stamp their finish time, else the page can never show it."""
     assert "_last_ip_check_at = time.time()" in SOURCE

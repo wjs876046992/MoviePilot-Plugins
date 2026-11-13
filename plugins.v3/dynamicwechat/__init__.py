@@ -22,6 +22,11 @@ from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
 from app.schemas.types import EventType, MessageType
 
+try:
+    from app import schemas as _schemas
+except Exception:  # pragma: no cover - 桩环境
+    _schemas = None
+
 from .helper import PyCookieCloud, MySender, IpLocationParser, JsonFieldManager
 
 
@@ -33,7 +38,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.3.1"
+    plugin_version = "3.3.2"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -2778,7 +2783,7 @@ class DynamicWeChat(_PluginBase):
         ]
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return [
+        routes = [
             {
                 "path": "/test_notify",
                 "endpoint": self._test_notify,
@@ -2792,20 +2797,36 @@ class DynamicWeChat(_PluginBase):
                 "endpoint": self._api_refresh,
                 "methods": ["GET"],
                 "auth": "bear",
-                "summary": "立即检测一次",
+                "summary": "刷新页面快照",
                 "description": "详情页「刷新」按钮：返回页面快照数据（纯只读，不触发检测）"
             }
         ]
+        # ⚠️ events.click.api 走宿主普通数据客户端，**严格校验三字段 envelope**
+        # （success/message/data，见 docs/V3_API_Response_Adaptation.md §2）。
+        # 裸 dict 缺 message 字段会被判「服务器返回了无效响应」—— 必须显式
+        # 声明 Response 响应模型并返回标准 envelope。
+        if _schemas is not None and hasattr(_schemas, "Response"):
+            response_model = _schemas.Response[Dict[str, Any]]
+            for route in routes:
+                route["response_model"] = response_model
+        return routes
+
+    @staticmethod
+    def _envelope(success: bool, data: Any = None, message: str = "") -> Any:
+        """返回标准三字段 envelope；宿主 schemas 不可用时退回同构 dict"""
+        if _schemas is not None and hasattr(_schemas, "Response"):
+            return _schemas.Response(success=success, data=data, message=message)
+        return {"success": success, "data": data, "message": message}
 
     def _api_refresh(self):
         """
         API 端点：返回页面快照数据（纯只读）。
 
         宿主 JSON 表单里的按钮只能调 API、无法重载前端页面，所以「刷新」图标
-        的作用是**取一份最新快照**：详情页脚本可据响应刷新本地状态，不触发
+        的作用是取一份最新快照：详情页可据响应刷新本地状态，不触发
         任何检测/浏览器任务。快照本身由 `_page_snapshot()` 提供，方法纯只读。
         """
-        return {"success": True, "data": self._page_snapshot()}
+        return self._envelope(success=True, data=self._page_snapshot())
 
     def _test_notify(self):
         """API端点：测试通知推送"""
