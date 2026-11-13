@@ -285,3 +285,14 @@ def test_atomic_write_keeps_old_file_on_failure(tmp_path):
 
     assert path.read_text(encoding="utf-8") == before, "失败时原文件被破坏了"
     assert not (tmp_path / "cookie.json.tmp").exists()
+
+
+def test_plugin_module_imports_json():
+    """_save_cookie_to_disk / _load_cookie_from_disk 都用到 json。
+
+    Real incident (2026-11-13): 3.2.0 的原子写用了 json.dumps，但 __init__.py
+    从未 import json —— 函数一执行就 NameError，cookie 永远存不下来。
+    3.2.0 新加的「落盘失败不再静默」把这条错误暴露在了日志里。
+    """
+    head = SOURCE[:SOURCE.index("class ")]
+    assert "import json" in head, "__init__.py 必须 import json"

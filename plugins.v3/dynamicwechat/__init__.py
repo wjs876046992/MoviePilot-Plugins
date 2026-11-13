@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import os
 import random
 import re
@@ -32,7 +33,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.2.1"
+    plugin_version = "3.2.2"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
