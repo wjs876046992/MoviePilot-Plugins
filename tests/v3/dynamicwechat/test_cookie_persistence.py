@@ -180,13 +180,31 @@ def test_empty_payload_deletes_stale_file():
 
 
 def test_disk_load_treats_empty_as_missing():
-    """0 字节/空数组都按「无备份」处理。"""
-    import inspect
+    """0 字节 / 空数组 / 无企微域条目都按「无备份」处理。"""
     src = SOURCE
     body = src[src.index("def _load_cookie_from_disk"):]
     body = body[:body.index("async def _send_cookie_false")]
     assert "st_size" in body
-    assert "and data" in body
+    assert "if not isinstance(data, list) or not data:" in body
+    # 只认含 weixin 域的条目（文件可能被手工改坏或被别的插件写过）
+    assert '"weixin" in str(c.get("domain", "")).lower()' in body
+
+
+def test_disk_save_is_atomic():
+    """落盘必须原子写：先写 .tmp 再 os.replace，失败时不截断原文件。
+
+    真机事故（2026-11-13）：open(w) 先截断，json.dump 中途异常就留下 0 字节
+    文件，重载后从它恢复得到空 Cookie —— 表现为「每次更新插件 Cookie 都失效」。
+    """
+    src = SOURCE
+    body = src[src.index("async def _save_cookie_to_disk"):src.index("def _load_cookie_from_disk")]
+    assert "os.replace(tmp, path)" in body, "必须用 os.replace 原子替换"
+    assert 'with_suffix(".json.tmp")' in body
+    # 序列化必须先成功、再落盘（否则临时文件可能半截）
+    assert body.index("json.dumps(payload") < body.index("open(tmp")
+    # 失败必须 error + 站内提示，不能静默
+    assert "Cookie 落盘失败" in body
+    assert "systemmessage.put" in body
 
 
 def test_verify_requires_wwrtx_sid():
@@ -230,3 +248,40 @@ def test_keepalive_requires_real_validation():
     fn = src[src.index("async def refresh_cookie"):src.index("async def check_login_status")]
     assert "if self._cookie_valid and cookie_used:" in fn
     assert "本轮没有任何可校验的 Cookie" in fn
+
+
+def test_atomic_write_keeps_old_file_on_failure(tmp_path):
+    """序列化失败时原文件必须原封不动（这是 0 字节事故的直接防线）。"""
+    import json as _json
+    import os
+
+    path = tmp_path / "cookie.json"
+    path.write_text('[{"name":"old","domain":".work.weixin.qq.com","value":"keep"}]',
+                    encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    # 复刻 _atomic_write 的结构，但让序列化抛错
+    def _atomic_write(payload):
+        tmp = path.with_suffix(".json.tmp")
+        try:
+            data = _json.dumps(payload, ensure_ascii=False, default=_no_serialize)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    class Bad:
+        pass
+
+    def _no_serialize(o):
+        raise TypeError("not serializable")
+
+    try:
+        _atomic_write([Bad()])
+    except TypeError:
+        pass
+
+    assert path.read_text(encoding="utf-8") == before, "失败时原文件被破坏了"
+    assert not (tmp_path / "cookie.json.tmp").exists()

@@ -32,7 +32,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.10"
+    plugin_version = "3.2.0"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -1126,9 +1126,18 @@ class DynamicWeChat(_PluginBase):
         把企微 Cookie 落到插件数据目录（**仅关闭 CookieCloud 时使用**）。
         只保存 weixin 相关域，避免把浏览器里其它敏感 Cookie 抄一份。
 
-        ⚠️ 空 payload 时**删除**旧文件而不是写 0 字节：0 字节文件会让
-        `_load_cookie_from_disk` 解析失败，看起来像「有备份但坏了」，
-        比没有文件更误导（2026-11-12 真机踩到）。
+        ## 为什么必须原子写（3.2.0）
+
+        旧实现直接 `open(path, "w")` —— 这会**先截断文件**再写内容。只要
+        `json.dump` 在中途抛任何异常（不可序列化的值、磁盘满、权限变化），
+        留下的就是一个 **0 字节文件**：看起来有备份，实际什么都没有。
+        而「更新插件 → 重载 → 从 0 字节文件恢复 → 空 Cookie → 判定失效」
+        正是用户反复遇到的「每次更新后 Cookie 都失效」（2026-11-13 真机）。
+
+        现在改为写临时文件 + `os.replace()`：要么完整替换，要么原文件分毫不动。
+        异常一律 `logger.error` 且写站内消息 —— 不得再静默。
+
+        ⚠️ 空 payload 时删除旧文件而不是写空的：留着只会误导「有备份」。
         """
         path = self.get_data_path() / "cookie.json"
         payload = [c for c in (cookies or [])
@@ -1137,33 +1146,73 @@ class DynamicWeChat(_PluginBase):
             try:
                 path.unlink(missing_ok=True)
             except OSError as e:
-                logger.warning(f"清理空 cookie.json 失败: {e}")
+                logger.error(f"清理空 cookie.json 失败: {e}")
             logger.warning("浏览器未返回任何企微域 Cookie，已跳过落盘（不写空文件）")
             return
-        try:
-            def _write():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh, ensure_ascii=False)
+
+        def _atomic_write():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            try:
+                # 先完整序列化到内存：序列化失败时连临时文件都不创建
+                data = json.dumps(payload, ensure_ascii=False)
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
                 try:
-                    os.chmod(path, 0o600)
+                    os.chmod(tmp, 0o600)
                 except OSError:
                     pass
-            await asyncio.to_thread(_write)
-            logger.info(f"Cookie 已落盘（{len(payload)} 条）")
+                os.replace(tmp, path)   # 原子替换，旧文件要么保留、要么被完整替换
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+
+        try:
+            await asyncio.to_thread(_atomic_write)
+            size = path.stat().st_size if path.is_file() else 0
+            logger.info(f"Cookie 已落盘（{len(payload)} 条，{size} 字节）")
         except Exception as e:
-            logger.warning(f"Cookie 落盘失败: {e}")
+            # 落盘失败是「下次重载必失效」的前兆，必须让用户看见，不能只写日志
+            logger.error(f"Cookie 落盘失败（本次更新后重载将丢失登录态）: {e}")
+            try:
+                self.systemmessage.put(
+                    f"【动态企微可信IP】Cookie 保存到本地失败：{e}。"
+                    "本次登录态只存在内存中，插件重载后会丢失，请检查插件数据目录权限")
+            except Exception:
+                pass
 
     def _load_cookie_from_disk(self) -> List[dict]:
-        """从插件数据目录读取本地 Cookie（不存在/空文件/损坏时返回空列表）"""
+        """
+        从插件数据目录读取本地 Cookie。
+
+        不存在 / 0 字节 / 空数组 / 解析失败都返回空列表，但**只有真正的异常才记日志**——
+        初次安装时没有文件属于正常情况，不该刷 warning。
+        """
+        path = self.get_data_path() / "cookie.json"
         try:
-            path = self.get_data_path() / "cookie.json"
-            if not path.is_file() or path.stat().st_size <= 2:  # [] 也算空
+            if not path.is_file():
+                return []
+            size = path.stat().st_size
+            if size <= 2:            # 0 字节，或 "[]"
+                if size == 0:
+                    logger.warning("本地 Cookie 文件为空（0 字节），按无备份处理")
                 return []
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, list) and data else []
-        except Exception:
+            if not isinstance(data, list) or not data:
+                return []
+            # 只认含 weixin 域的条目：文件可能被手工改坏或被别的插件写过
+            valid = [c for c in data if "weixin" in str(c.get("domain", "")).lower()]
+            if not valid:
+                logger.warning("本地 Cookie 文件存在但无企微域条目，按无备份处理")
+            return valid
+        except Exception as e:
+            logger.warning(f"本地 Cookie 文件读取失败，按无备份处理: {e}")
             return []
 
     async def _send_cookie_false(self):
