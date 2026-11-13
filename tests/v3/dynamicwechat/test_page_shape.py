@@ -573,3 +573,37 @@ def test_last_run_timestamp_is_recorded():
     assert "_last_ip_check_at = time.time()" in SOURCE
     assert "_last_keepalive_at = time.time()" in SOURCE
     assert 'snap["last_run_at"] = max(' in SOURCE
+
+
+# ---------- 3.2.1 stopping flag must always be reset ----------
+
+def test_stopping_flag_reset_even_when_stop_service_partially_fails():
+    """`_stopping` must be cleared before the early-return on leftover tasks.
+
+    Real incident (2026-11-13): after a reload with leftover tasks, stop_service()
+    returned False and init_plugin returned early, leaving _stopping=True forever.
+    Every _start_bg_task then self-cancelled within 0.5s, so /push_qr produced no
+    logs at all -- the command "succeeded" and nothing happened.
+    """
+    src = SOURCE
+    init = src[src.index("def init_plugin"):src.index("def _migrate_legacy_magic_strings")]
+    stop_idx = init.index("stopped = self.stop_service()")
+    reset_idx = init.index("self._stopping = False", stop_idx)
+    warn_idx = init.index("仍有后台任务未退出", stop_idx)
+    assert stop_idx < reset_idx < warn_idx, (
+        "重置 _stopping 必须在 stop_service 之后、早退分支之前")
+
+
+def test_bg_task_yields_before_watching_stopping():
+    """Worker thread must let the coroutine run once before the stop check."""
+    src = SOURCE
+    fn = src[src.index("def _start_bg_task"):src.index("async def _acquire_file_lock")]
+    assert "await asyncio.sleep(0)" in fn
+    # 让出一轮必须早于「监控停止标志」那一处 while（第一个 while 属于循环消费）
+    runner_at = fn.index("async def runner")
+    # 注意：注释里也提到了 `while not task.done()`，锚点必须落在代码行上
+    yield_at = fn.index("await asyncio.sleep(0)", runner_at)
+    loop_at = fn.index("                        while not task.done():", runner_at)
+    assert yield_at < loop_at
+    # 取消不再静默
+    assert "收到停止信号，取消后台任务" in fn

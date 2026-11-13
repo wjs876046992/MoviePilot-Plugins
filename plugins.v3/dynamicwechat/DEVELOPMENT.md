@@ -633,3 +633,58 @@ with open(path, "w", encoding="utf-8") as fh:   # ← 先截断
 +3：原子写结构哨兵（必须 `os.replace`、必须先序列化后落盘、失败必须 error +
 站内提示）、真实行为测试（序列化失败时原文件内容不变、临时文件被清理）、
 读取侧识别三类无效文件。共 64 项全绿。
+
+---
+
+## 3.2.1 更新插件后所有后台命令静默失效（停止标志残留）
+
+### 症状
+
+用户发 `/push_qr`，宿主日志显示「开始执行：立即推送登录二维码 ... 执行完成」，
+但**插件日志一行都没有**，Telegram 收不到二维码。详情页「立即检测」同样无反应。
+
+### 根因
+
+`init_plugin` 的顺序：
+
+```python
+if not self.stop_service():          # 有残留任务 → False
+    logger.warning("仍有后台任务未退出，跳过启动新后台循环")
+    self.__update_config()
+    return                            # ← _stopping 仍是 True
+self._stopping = False                # ← 永远走不到
+```
+
+而 `_start_bg_task` 的线程分支会在任务启动后立刻轮询 `self._stopping`：
+
+```python
+task = asyncio.create_task(coro)
+while not task.done():
+    if self._stopping:      # True → 立刻 cancel
+        task.cancel()
+        break
+```
+
+于是重载后 `_stopping` 永久为 True，**任何**新后台任务（`/push_qr`、立即检测）
+在协程体第一行之前就被取消——命令「成功」但零输出。
+
+为什么会有残留任务：`stop_service` 对「当前事件循环里的任务」只能 cancel 不能同步等待，
+把它们留在 `_bg_tasks` 里返回 False。这条路径在每次重载时都可能走到。
+
+### 做法
+
+1. `self._stopping = False` 提到 `stop_service()` 之后**无条件执行**，早于任何 return。
+   残留任务已被 cancel，新标志只服务于新任务，二者不冲突。
+2. `_start_bg_task` 的线程分支增加 `await asyncio.sleep(0)`：先让协程真正跑起来，
+   再开始监控停止标志。取消时记 info 日志，不再静默。
+
+### 教训
+
+「提前 return 跳过了状态重置」是这类 bug 的通用形态。与 3.1.7（DDNS 分支漏写状态）、
+3.1.9（无 Cookie 却报成功）同属一族：**状态必须由真正的执行路径维护，不能依赖
+「正常流程一定会走到某一行」的假设**。
+
+### 测试
+
++2：重置必须早于 stop_service 后的早退分支；协程先让出一轮再检查停止标志
+（锚点落在代码行而非注释，注释里也提到了同一段代码）。

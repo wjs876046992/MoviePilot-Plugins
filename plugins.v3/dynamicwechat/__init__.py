@@ -32,7 +32,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.2.0"
+    plugin_version = "3.2.1"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -265,15 +265,22 @@ class DynamicWeChat(_PluginBase):
             self.wan2 = None
             self._current_ip_address = self.cfg.get("WECHAT_NOW_IP")
 
-        # 停止之前残留的任务，若未完全停止则跳过启动
-        if not self.stop_service():
-            logger.warning("仍有后台任务未退出，跳过启动新后台循环")
-            self.__update_config()
-            return
+        # 停止之前残留的任务
+        stopped = self.stop_service()
 
-        # 重置停止标志，使新任务可以启动
+        # ⚠️ 无论 stop_service 是否完全成功，**必须**重置停止标志（3.2.1）。
+        # 此前它在 `if not self.stop_service(): return` 之后，于是「有残留任务」
+        # 那条路径会把 _stopping 永久留在 True —— 之后任何 _start_bg_task 起的
+        # 协程（包括 /push_qr、立即检测）都会在 0.5 秒内被线程监控循环自行
+        # cancel，表现为「命令执行了但插件一行日志都没有」（2026-11-13 真机）。
+        # 残留任务本身已经由 stop_service 尽力取消，新的停止标志只服务于新任务。
         self._stopping = False
         self._loops_started = False
+
+        if not stopped:
+            logger.warning("仍有后台任务未退出，跳过启动新后台循环（停止标志已重置）")
+            self.__update_config()
+            return
 
         # 配置检查（缺失时站内提示，不再只写日志）
         if not self._input_id_list:
@@ -473,8 +480,15 @@ class DynamicWeChat(_PluginBase):
                 async def runner():
                     task = asyncio.create_task(coro)
                     try:
+                        # ⚠️ 先让协程真正跑起来，再开始监控停止标志（3.2.1）。
+                        # 旧实现会先检查 `while not task.done(): if self._stopping`
+                        # —— 若标志残留为 True，任务在第一次调度前就被 cancel，
+                        # 连协程体第一行都没执行，表现为「命令执行了但零日志」。
+                        # 现在显式让出一轮事件循环，并记录被取消的任务，避免静默。
+                        await asyncio.sleep(0)
                         while not task.done():
                             if self._stopping:
+                                logger.info("收到停止信号，取消后台任务")
                                 task.cancel()
                                 break
                             await asyncio.sleep(0.5)
