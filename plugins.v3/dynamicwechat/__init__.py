@@ -5,6 +5,7 @@ import random
 import re
 import base64
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -31,7 +32,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.1.9"
+    plugin_version = "3.1.10"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -186,7 +187,9 @@ class DynamicWeChat(_PluginBase):
         self._none_streak = 0
         self._last_ip_check_ok = None          # None=还没跑过 / True / False
         self._last_ip_check_note = ''          # 上次IP检测的一句用户可读结论
+        self._last_ip_check_at = 0.0           # 上次IP检测结束时间戳（页面显示"最近运行"）
         self._last_keepalive_ok = None         # None=还没跑过 / True / False
+        self._last_keepalive_at = 0.0          # 上次保活结束时间戳
         self._last_keepalive_note = ''         # 上次保活的一句用户可读结论
         self._waiting_captcha = False          # 是否正在等待短信验证码
         self._last_ddns_ok = None              # None=没配DDNS / True / False
@@ -656,6 +659,7 @@ class DynamicWeChat(_PluginBase):
             if await self.CheckIP():
                 await self.ChangeIP()
                 self.__update_config()
+            self._last_ip_check_at = time.time()
             logger.info("----------------------本次任务结束----------------------")
             return
         # 情况2：cookie失效但启用了"IP变动后通知"
@@ -663,12 +667,14 @@ class DynamicWeChat(_PluginBase):
             logger.info("开始检测公网IP,等待IP变动后发送通知")
             if await self.CheckIP(func="public"):
                 await self._send_cookie_false()
+            self._last_ip_check_at = time.time()
             logger.info("----------------------本次任务结束----------------------")
             return
         # 情况3：cookie失效且未启用延迟通知，立即通知
         logger.info("Cookie已失效，本次不检查IP")
         self._last_ip_check_ok = False
         self._last_ip_check_note = "Cookie已失效，本轮未检测IP"
+        self._last_ip_check_at = time.time()
         await self._send_cookie_false()
 
     def _translate_check_result(self, reason) -> str:
@@ -1252,12 +1258,23 @@ class DynamicWeChat(_PluginBase):
                 await asyncio.sleep(3)
                 image_src, refuse_time = await self.find_qrc(page)
                 if image_src:
-                    if self._my_send:
+                    # ⚠️ 两个通道**各自独立**判断（3.1.10）：此前整块被
+                    # `if self._my_send:` 包住，只开了 MP 内置通知、没配第三方
+                    # Token 的用户点 /push_qr 什么都收不到，插件侧连一行日志
+                    # 都没有（2026-11-13 真机确认）。
+                    has_mp = bool(self._use_mp_notify)
+                    has_third = bool(self._my_send and self._my_send.other_channel)
+                    if not (has_mp or has_third):
+                        logger.warning("推送二维码失败：未开启 MP 内置通知，也未配置第三方通知 Token")
+                        self.systemmessage.put(
+                            "【动态企微可信IP】收到 /push_qr，但没有可用的通知方式："
+                            "请到配置页开启「MP内置通知」或填写第三方通知 Token")
+                    else:
                         success_count = 0
                         fail_count = 0
 
                         # 1. 尝试MoviePilot内置通知（由 use_mp_notify 控制，MP管理所有渠道）
-                        if self._use_mp_notify:
+                        if has_mp:
                             try:
                                 await asyncio.to_thread(
                                     self.post_message,
@@ -1272,7 +1289,7 @@ class DynamicWeChat(_PluginBase):
                                 fail_count += 1
 
                         # 2. 遍历所有第三方通知通道（由 notification_token 配置）
-                        if self._my_send and self._my_send.other_channel:
+                        if has_third:
                             for channel, token in self._my_send.other_channel:
                                 try:
                                     error = await asyncio.to_thread(
@@ -1312,8 +1329,6 @@ class DynamicWeChat(_PluginBase):
                                 break
                             else:
                                 logger.info("用户可能没有扫码或登录失败")
-                    else:
-                        logger.warning("远程推送任务: 没有找到可用的通知方式")
                 else:
                     logger.warning("远程推送任务: 未找到二维码")
                 logger.info("----------------------本次任务结束----------------------")
@@ -1518,6 +1533,8 @@ class DynamicWeChat(_PluginBase):
                 logger.warning("本轮没有任何可校验的 Cookie（本地模式无落盘 / 云端未取到），保活未执行")
                 if self._last_keepalive_ok is None and not self._last_keepalive_note:
                     self._last_keepalive_note = "没有可校验的 Cookie，请重新扫码登录"
+            # 无论成功/失败/未执行，都记录本轮结束时间，页面据此显示"最近运行"
+            self._last_keepalive_at = time.time()
         except Exception as e:
             logger.error(f"cookie 校验过程中发生异常: {e}")
         finally:
@@ -1855,8 +1872,12 @@ class DynamicWeChat(_PluginBase):
         # --- 两个循环的上次结果 ---
         snap["keepalive_ok"] = getattr(self, "_last_keepalive_ok", None)
         snap["keepalive_note"] = str(getattr(self, "_last_keepalive_note", "") or "")
+        snap["keepalive_at"] = float(getattr(self, "_last_keepalive_at", 0.0) or 0.0)
         snap["ip_check_ok"] = getattr(self, "_last_ip_check_ok", None)
         snap["ip_check_note"] = str(getattr(self, "_last_ip_check_note", "") or "")
+        snap["ip_check_at"] = float(getattr(self, "_last_ip_check_at", 0.0) or 0.0)
+        # 「最近运行」取两个循环里更晚的那次：任何一个在跑都说明插件在工作
+        snap["last_run_at"] = max(snap["keepalive_at"], snap["ip_check_at"])
         snap["ip_changed"] = bool(self._ip_changed)
         snap["current_ip_masked"] = ";".join(
             self.mask_ip(ip) for ip in str(self._current_ip_address or "").split(";") if ip
@@ -2284,11 +2305,30 @@ class DynamicWeChat(_PluginBase):
                                 _span(f" · 上次：{note}")]),
                 ]})
         cards.append(_card(
-            "运行状态", "插件总开关、Cookie 登录态与两个后台任务",
+            "运行状态",
+            # 副标题带「最近运行」时间：页面是快照，用户需要知道数据是哪一刻的。
+            # 没有时间戳时明确说「暂无」，不写空的「最近：」。
+            "插件总开关、Cookie 登录态与两个后台任务"
+            + (f"；最近运行 {datetime.fromtimestamp(snap['last_run_at']).strftime('%m-%d %H:%M:%S')}"
+               if snap["last_run_at"] else "；暂无运行记录"),
             [_summary_row(summary_chip, summary_note),
              _kv_table(status_rows) if status_rows else
              _span("插件未启用，Cookie 保活与 IP 检测均已停止",
-                   "text-caption text-medium-emphasis")]))
+                   "text-caption text-medium-emphasis"),
+             # 刷新按钮：宿主 JSON 表单里的按钮只能调 API、无法重载前端页面，
+             # 所以这里触发一次真实检测，并告知用户几秒后手动刷新本页。
+             {
+                 "component": "div",
+                 "props": {"class": "d-flex justify-end mt-3"},
+                 "content": [{
+                     "component": "VBtn",
+                     "props": {"size": "small", "variant": "tonal", "color": "primary",
+                               "prependIcon": "mdi-refresh"},
+                     "text": "立即检测",
+                     "events": {"click": {"api": "plugin/DynamicWeChat/refresh",
+                                          "method": "get"}},
+                 }],
+             }]))
 
         # ================= 卡 2 · IP 来源 =================
         # 模式判定与 CheckIP 的实际优先级一致：多WAN > DDNS > 公网探测
@@ -2569,8 +2609,32 @@ class DynamicWeChat(_PluginBase):
                 "auth": "bear",
                 "summary": "测试通知推送",
                 "description": "测试所有配置的通知渠道"
+            },
+            {
+                "path": "/refresh",
+                "endpoint": self._api_refresh,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "立即检测一次",
+                "description": "详情页「立即检测」按钮：触发一轮 IP 检测（不改变列表配置）"
             }
         ]
+
+    def _api_refresh(self):
+        """
+        API 端点：立即触发一轮检测。
+
+        为什么需要它：宿主 JSON 表单里的按钮只能调 API，没有「重载本页」动作，
+        所以详情页的刷新图标做不成真正的刷新。改为触发一次真实检测——用户点完
+        等几秒再手动刷新页面，就能看到最新状态与「最近运行」时间。
+        """
+        if not self._enabled:
+            return {"success": False, "message": "插件未启用"}
+        if not str(self._input_id_list or "").strip():
+            return {"success": False, "message": "未配置应用ID"}
+        self._start_bg_task(self.check(None))
+        logger.info("收到「立即检测」请求，已触发一轮检测")
+        return {"success": True, "message": "已触发检测，几秒后刷新本页查看结果"}
 
     def _test_notify(self):
         """API端点：测试通知推送"""

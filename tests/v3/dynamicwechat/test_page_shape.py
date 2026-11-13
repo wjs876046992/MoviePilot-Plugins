@@ -535,3 +535,41 @@ def test_ddns_success_detects_change():
     ok = asyncio.run(ns["CheckIP"](self_))
     assert ok is True
     assert "检测到IP变化" in self_._last_ip_check_note
+
+
+# ---------- 3.1.10 push_qr guard + refresh button + last-run time ----------
+
+def test_push_qr_mp_notify_not_gated_by_third_party():
+    """MP built-in notification must not be nested inside the third-party guard.
+
+    Real incident (2026-11-13): user with only MP notify enabled sent /push_qr and
+    received nothing -- the whole block sat under `if self._my_send:`.
+    """
+    src = SOURCE
+    fn = src[src.index("async def _push_qr_code_async"):src.index("async def get_cookie_async")]
+    assert "has_mp = bool(self._use_mp_notify)" in fn
+    assert "has_third = bool(self._my_send and self._my_send.other_channel)" in fn
+    assert "if not (has_mp or has_third):" in fn
+    # MP path must be guarded by has_mp, not by _my_send
+    mp_block = fn[fn.index("if has_mp:"):fn.index("if has_third:")]
+    assert "self.post_message" in mp_block
+
+
+def test_page_has_refresh_button_and_last_run():
+    """Detail page needs a refresh control and the last-run timestamp."""
+    page_src = _extract_function("get_page")
+    assert "plugin/DynamicWeChat/refresh" in page_src
+    assert "最近运行" in page_src
+    assert "mdi-refresh" in page_src
+
+
+def test_refresh_endpoint_registered():
+    assert '"/refresh"' in SOURCE
+    assert "def _api_refresh" in SOURCE
+
+
+def test_last_run_timestamp_is_recorded():
+    """Both loops must stamp their finish time, else the page can never show it."""
+    assert "_last_ip_check_at = time.time()" in SOURCE
+    assert "_last_keepalive_at = time.time()" in SOURCE
+    assert 'snap["last_run_at"] = max(' in SOURCE
