@@ -33,7 +33,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.2.2"
+    plugin_version = "3.3.0"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -126,6 +126,8 @@ class DynamicWeChat(_PluginBase):
 
     # cookie有效检测
     _cookie_valid = True
+    # 本次重载后是否真的校验过（3.3.0：区分「有 Cookie」与「已验证」）
+    _cookie_verified = False
     # cookie失效通知已发送标志（防止重复通知）
     _cookie_invalid_notified = False
     # cookie存活时间
@@ -233,19 +235,29 @@ class DynamicWeChat(_PluginBase):
         # 拆到独立字段。幂等：新字段已存在时旧语法仍被兼容解析，不重复迁移。
         self._migrate_legacy_magic_strings()
 
-        # 本地模式启动恢复（3.1.8 修复）：_saved_cookie 只存在于内存，重载/重启后
-        # 必须从落盘的 cookie.json 恢复，否则保活循环会因「无本地 Cookie 且云端
-        # 关闭」而整段跳过校验、直接假成功（页面永远显示「还没跑过第一轮」，
-        # 实际 IP 检测也在用空 Cookie —— 2026-11-13 真机确认）。
-        # CookieCloud 模式不读本地文件（严格二选一），首轮 refresh_cookie 会从云端恢复。
-        if not self._use_cookiecloud and not self._saved_cookie:
+        # ⚠️ 按模式重置内存 Cookie（3.3.0）。get_cookie_async 会优先返回内存里的
+        # _saved_cookie，且不区分模式；init_plugin 若不清理，用户切换
+        # 「使用CookieCloud」开关后仍会继续用旧模式的内存副本，直到进程重启 ——
+        # 正好破坏 3.1.8 立的「严格二选一」不变量。
+        # 只清内存副本；_cookie_valid 保持「尚未验证」的中性值 True 不适用，
+        # 因此用一个显式标记表示「本轮还没校验过」，由首轮保活给出真实结论。
+        self._saved_cookie = None
+        self._cookie_verified = False
+
+        # 本地模式启动恢复：Cookie 只存在于内存，重载/重启后必须从落盘的
+        # cookie.json 恢复，否则保活循环会因「无本地 Cookie 且云端关闭」而整段
+        # 跳过校验（页面永远显示「还没跑过第一轮」—— 2026-11-13 真机确认）。
+        # CookieCloud 模式不读本地文件（严格二选一），首轮 refresh_cookie 从云端恢复。
+        if not self._use_cookiecloud:
             restored = self._load_cookie_from_disk()
             if restored:
                 self._saved_cookie = restored
                 self._cookie_valid = True
+                self._cookie_verified = False   # 有 Cookie，但尚未校验
                 logger.info(f"已从本地恢复 {len(restored)} 条 Cookie")
             else:
                 logger.warning("本地模式下未找到任何已保存的 Cookie，请到配置页勾选「本地扫码修改IP」重新登录")
+        # CookieCloud 模式：交给首轮保活从云端取（不改 _cookie_valid 的初始语义）
 
         # 初始化第三方通知发送器（MP内置通知由 post_message 直接处理）
         self._my_send = MySender(self._notification_token)
@@ -503,6 +515,8 @@ class DynamicWeChat(_PluginBase):
 
             thread = threading.Thread(target=run, daemon=True)
             thread.start()
+            # 顺手清理已结束的线程，避免长跑实例里列表无限增长（3.3.0）
+            self._bg_threads = [t for t in self._bg_threads if t.is_alive()]
             self._bg_threads.append(thread)
 
     async def _acquire_file_lock(self):
@@ -573,8 +587,17 @@ class DynamicWeChat(_PluginBase):
             event_data = event.event_data
             if not event_data or event_data.get("action") != "dynamicwechat":
                 return
+        # ⚠️ 与 /push_qr 互斥（3.3.0）：两条扫码流共用 _qr_running、
+        # _verification_code 与 cookie.json.tmp 路径，并发时会互相把
+        # _qr_running 置 False、丢弃对方的验证码、甚至回滚对方刚写的 Cookie。
+        if not self._qr_lock.acquire(blocking=False):
+            logger.info("已有扫码任务在执行，忽略本次本地扫码")
+            return
         context = None
         self._qr_running = True
+        # 新一轮扫码必须清掉上一轮残留的验证码，否则第一轮轮询会拿旧码立即提交
+        self._verification_code = ''
+        self._last_code = ''
         try:
             context = await self._launch_browser_context_with_retry(headless=True)
             page = await context.new_page()
@@ -607,9 +630,15 @@ class DynamicWeChat(_PluginBase):
             logger.error(f"本地扫码任务失败: {e}")
         finally:
             self._qr_running = False
+            # 收尾务必清验证码，避免失败/中断后残留给下一轮
+            self._verification_code = ''
             if context:
-                await context.close()
+                try:
+                    await asyncio.wait_for(context.close(), timeout=10)
+                except Exception as e:
+                    logger.warning(f"浏览器关闭超时或失败（已忽略）: {e}")
                 await asyncio.sleep(0.5)
+            self._qr_lock.release()
 
     async def write_wan2_ip(self, event: Event = None):
         """
@@ -669,6 +698,9 @@ class DynamicWeChat(_PluginBase):
             if not event_data or event_data.get("action") != "dynamicwechat":
                 return
         # 情况1：cookie有效，正常检测IP并更新
+        # （_cookie_verified 为 False 表示本次重载后还没校验过 —— 仍按有效处理，
+        #  因为 ChangeIP 自己会用 cookie 实际登录，登录失败会写回状态；
+        #  这里不用它做门控，只是让状态语义可读。）
         if self._cookie_valid:
             logger.info("开始检测公网IP")
             if await self.CheckIP():
@@ -742,6 +774,7 @@ class DynamicWeChat(_PluginBase):
                 logger.info("检测到IP变化")
                 self._wechat_available = False
                 self._cookie_invalid_notified = False
+                # 「检测到变化」不等于「已更新成功」：成功/失败由 ChangeIP 写回（3.3.0）
                 self._last_ip_check_note = "检测到IP变化，正在更新可信IP"
                 return True
             self._last_ip_check_note = "DDNS解析结果未变化"
@@ -815,6 +848,7 @@ class DynamicWeChat(_PluginBase):
                 logger.info("检测到IP变化")
                 self._cookie_invalid_notified = False  # 重置通知标志
                 self._last_ip_check_ok = True
+                # 「检测到变化」不等于「已更新成功」：成功/失败由 ChangeIP 写回（3.3.0）
                 self._last_ip_check_note = "检测到IP变化，正在更新可信IP"
                 return True
             self._last_ip_check_ok = True
@@ -822,7 +856,10 @@ class DynamicWeChat(_PluginBase):
         return False
 
     async def try_connect_cc_async(self):
-        """异步连接CookieCloud服务器"""
+        """异步连接CookieCloud服务器（每次调用重建客户端，凭据改动即时生效）"""
+        # 3.3.0：清掉旧客户端，否则改了 CookieCloud 地址/KEY/密码后仍用旧连接，
+        # 必须重启进程才生效。
+        self._cc_server = None
         if not self._use_cookiecloud:
             self._cc_server = None
             return
@@ -1024,6 +1061,9 @@ class DynamicWeChat(_PluginBase):
                     self._cookie_valid = False
                     self._cookie_invalid_notified = False
                     logger.info("cookie已失效,且没有配置通知方式,本次修改可信IP失败")
+                # 3.3.0：无论哪种分支都要把失败写回状态，否则详情页仍显示「正常」
+                self._last_ip_check_ok = False
+                self._last_ip_check_note = "Cookie已失效，未能更新可信IP"
             else:
                 logger.info("尝试cookie登录")
                 if await self.check_login_status(page, ""):
@@ -1032,12 +1072,19 @@ class DynamicWeChat(_PluginBase):
                     logger.info("发生了意料之外的错误,请附上配置信息到github反馈")
                     await self._send_cookie_false()
                     self._ip_changed = False
+                    self._last_ip_check_ok = False
+                    self._last_ip_check_note = "登录校验未通过，未能更新可信IP"
         except Exception as e:
             self._ip_changed = False
             logger.error(f"更改可信IP失败: {e}")
+            self._last_ip_check_ok = False
+            self._last_ip_check_note = f"更新可信IP异常：{type(e).__name__}: {e}"
         finally:
             if context:
-                await context.close()
+                try:
+                    await asyncio.wait_for(context.close(), timeout=10)
+                except Exception as e:
+                    logger.warning(f"浏览器关闭超时或失败（已忽略）: {e}")
                 await asyncio.sleep(0.5)
 
     async def _update_cookie(self, page, context):
@@ -1057,6 +1104,7 @@ class DynamicWeChat(_PluginBase):
             if current_cookies:
                 self._saved_cookie = current_cookies
                 self._cookie_valid = True
+                self._cookie_verified = True
                 self._cookie_invalid_notified = False
                 self._is_special_upload = True
                 logger.info("从浏览器获取cookie成功")
@@ -1247,8 +1295,13 @@ class DynamicWeChat(_PluginBase):
         try:
             success_count = 0
             fail_count = 0
+            mp_attempted = False
 
             # 1. 尝试MoviePilot内置通知（由 use_mp_notify 控制，MP管理所有渠道）
+            # ⚠️ post_message 按宿主契约返回 None、失败不上报（3.3.0）。
+            # 因此**不能**把它算成「发送成功」——那会让用户看到「成功 1 个」
+            # 而实际什么都没收到，并且 _cookie_invalid_notified 闩锁永不释放、
+            # 后续重试被永久抑制。这里只记为「已尝试」。
             if self._use_mp_notify:
                 try:
                     await asyncio.to_thread(
@@ -1257,8 +1310,8 @@ class DynamicWeChat(_PluginBase):
                         title="cookie已失效,请及时更新",
                         text="请在企业微信应用发送/push_qr, 验证码以'？'结束发送到企业微信应用。"
                     )
-                    success_count += 1
-                    logger.info("MP内置通知发送成功")
+                    mp_attempted = True
+                    logger.info("MP内置通知已提交（送达结果由宿主管理，无法确认）")
                 except Exception as e:
                     logger.error(f"MP内置通知发送失败：{e}")
                     fail_count += 1
@@ -1283,10 +1336,13 @@ class DynamicWeChat(_PluginBase):
                         logger.error(f"第三方通道 {channel} 发送异常：{e}")
                         fail_count += 1
 
-            # 汇总结果
-            if success_count > 0:
+            # 汇总结果：第三方通道能确认真实结果，MP 内置通知只能确认「已提交」。
+            # 只有真的发出了至少一条，才锁住闩锁；否则保留重试机会。
+            if success_count > 0 or mp_attempted:
                 notified = True
-                logger.info(f"cookie失效通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
+                logger.info(
+                    f"cookie失效通知已发送：第三方成功 {success_count} 个 / 失败 {fail_count} 个"
+                    + ("；MP内置通知已提交（送达不可确认）" if mp_attempted else ""))
             elif not self._use_mp_notify and (not self._my_send or not self._my_send.other_channel):
                 logger.warning("cookie已失效，但未配置任何通知方式，用户可能无法及时感知")
                 self.systemmessage.put("cookie已失效，请及时更新，当前未配置通知方式")
@@ -1322,6 +1378,13 @@ class DynamicWeChat(_PluginBase):
                 await asyncio.sleep(3)
                 image_src, refuse_time = await self.find_qrc(page)
                 if image_src:
+                    # ⚠️ 必须同步二维码有效期（3.3.0）：详情页只在
+                    # qr_future_timestamp > now 时才渲染图片。此前只把图存进
+                    # _qr_code_image 而不设时间戳，用户从 /push_qr 收到码后
+                    # 面板里要么看不到图、要么显示上一次的过期时间。
+                    self._future_timestamp = int(
+                        (datetime.now() + timedelta(seconds=self.QR_CODE_EXPIRE_SECONDS)).timestamp())
+                if image_src:
                     # ⚠️ 两个通道**各自独立**判断（3.1.10）：此前整块被
                     # `if self._my_send:` 包住，只开了 MP 内置通知、没配第三方
                     # Token 的用户点 /push_qr 什么都收不到，插件侧连一行日志
@@ -1336,6 +1399,7 @@ class DynamicWeChat(_PluginBase):
                     else:
                         success_count = 0
                         fail_count = 0
+                        mp_attempted = False
 
                         # 1. 尝试MoviePilot内置通知（由 use_mp_notify 控制，MP管理所有渠道）
                         if has_mp:
@@ -1346,8 +1410,8 @@ class DynamicWeChat(_PluginBase):
                                     title="企业微信登录二维码",
                                     image=image_src
                                 )
-                                success_count += 1
-                                logger.info("MP内置通知推送二维码成功")
+                                mp_attempted = True
+                                logger.info("MP内置通知已提交二维码（送达不可确认）")
                             except Exception as e:
                                 logger.error(f"MP内置通知推送二维码失败：{e}")
                                 fail_count += 1
@@ -1371,13 +1435,15 @@ class DynamicWeChat(_PluginBase):
                                     logger.error(f"第三方通道 {channel} 推送二维码异常：{e}")
                                     fail_count += 1
 
-                        # 汇总结果
-                        if success_count == 0:
+                        # 汇总结果（MP 内置通知只能确认「已提交」，不算可验证成功）
+                        if success_count == 0 and not mp_attempted:
                             logger.warning("所有通知通道推送二维码均失败")
                             logger.info("----------------------本次任务结束----------------------")
                             return
 
-                        logger.info(f"二维码推送完成：成功 {success_count} 个，失败 {fail_count} 个")
+                        logger.info(
+                            f"二维码推送完成：第三方成功 {success_count} 个 / 失败 {fail_count} 个"
+                            + ("；MP内置通知已提交（送达不可确认）" if mp_attempted else ""))
                         # 发送成功，开始等待扫码
                         logger.info("远程推送任务: 二维码发送成功,等待用户 80 秒内扫码登录。V2'微信通知'的用户,此消息并不准确")
                         for attempt in range(self.QR_CODE_MAX_ATTEMPTS):
@@ -1499,6 +1565,7 @@ class DynamicWeChat(_PluginBase):
                     self._cookie_valid = True
                     self._cookie_invalid_notified = False
                     cookie_used = True
+                    self._cookie_verified = True
                     self._last_keepalive_ok = True
                     self._last_keepalive_note = "本地Cookie校验有效"
                     self._waiting_captcha = False
@@ -1519,8 +1586,12 @@ class DynamicWeChat(_PluginBase):
                         logger.info("本地缓存 Cookie 失效，发送通知")
                         await self._send_cookie_false()
                 else:
-                    self._cookie_valid = False
-                    self._saved_cookie = None
+                    # ⚠️ 三态里的 None 是「无结论」，**不是**失效（3.3.0）。
+                    # check_login_status 的契约明写：None 时调用方不得修改
+                    # _cookie_valid、不得发失效通知。旧实现把一次 15 秒超时
+                    # 当成确定失效，直接清掉内存 Cookie 并触发失效通知 ——
+                    # Cookie 明明有效却被告知失效（同日 3 次误报的真因）。
+                    # 现在只累计无结论计数、保留 Cookie 与有效性标记。
                     reason = getattr(self, '_last_check_result', 'unknown')
                     self._none_streak = getattr(self, '_none_streak', 0) + 1
                     self._last_keepalive_ok = None
@@ -1532,8 +1603,8 @@ class DynamicWeChat(_PluginBase):
                         'captcha_btn_error': '验证码确认环节页面异常',
                     }.get(reason, f'未知原因({reason})')
                     logger.info(
-                        f"本次 Cookie 校验无结论（{reason_text}），已尝试用 CookieCloud 备份 cookie 复核；"
-                        f"若复核仍无效将发送失效通知，请留意后续消息。"
+                        f"本次 Cookie 校验无结论（{reason_text}），Cookie 状态保持不变；"
+                        f"连续 {self._none_streak} 次无结论后提示检查网络。"
                     )
                     if self._none_streak >= 3:
                         logger.warning(
@@ -1549,13 +1620,22 @@ class DynamicWeChat(_PluginBase):
                     page = await context.new_page()
                     await page.goto(self._wechatUrl)
                     await asyncio.sleep(3)
-                    if await self.check_login_status(page, task='refresh_cookie'):
+                    cloud_result = await self.check_login_status(page, task='refresh_cookie')
+                    if cloud_result is True:
                         self._cookie_valid = True
                         self._cookie_invalid_notified = False
                         self._saved_cookie = await context.cookies()
+                        self._cookie_verified = True
                         self._last_keepalive_ok = True
                         self._last_keepalive_note = "CookieCloud Cookie校验有效"
                         self._none_streak = 0
+                    elif cloud_result is None:
+                        # 同样是「无结论」：不改 _cookie_valid、不发失效通知
+                        self._none_streak = getattr(self, '_none_streak', 0) + 1
+                        self._last_keepalive_ok = None
+                        self._last_keepalive_note = self._translate_check_result(
+                            getattr(self, '_last_check_result', 'unknown'))
+                        logger.info("CookieCloud Cookie 校验无结论，状态保持不变")
                     else:
                         self._cookie_valid = False
                         self._saved_cookie = None
@@ -1600,10 +1680,20 @@ class DynamicWeChat(_PluginBase):
             # 无论成功/失败/未执行，都记录本轮结束时间，页面据此显示"最近运行"
             self._last_keepalive_at = time.time()
         except Exception as e:
+            # ⚠️ 异常也必须更新状态（3.3.0）：否则浏览器连续启动失败时
+            # _last_keepalive_ok 会永远停在旧的 True，页面显示「正常」而实际
+            # 十几天没校验过 —— 把故障藏起来比报错更糟。
             logger.error(f"cookie 校验过程中发生异常: {e}")
+            self._last_keepalive_ok = False
+            self._last_keepalive_note = f"校验过程异常：{type(e).__name__}: {e}"
         finally:
+            self._last_keepalive_at = time.time()
             if context:
-                await context.close()
+                try:
+                    await asyncio.wait_for(context.close(), timeout=10)
+                except Exception as e:
+                    # 关闭超时很常见（真机日志里反复出现），记录但不再向上抛
+                    logger.warning(f"浏览器关闭超时或失败（已忽略）: {e}")
                 await asyncio.sleep(0.5)
 
     async def check_login_status(self, page, task):
@@ -1696,6 +1786,7 @@ class DynamicWeChat(_PluginBase):
                 logger.error(
                     "未收到短信验证码，请以问号结尾发送到企业微信应用。如：510010? 使用全局AI助手需使用/wxcode 510010的格式发送验证码")
                 self._last_check_result = 'captcha_no_code'
+                self._verification_code = ''
                 return False
             # 输入验证码并确认
             for digit in self._verification_code:
@@ -1708,6 +1799,7 @@ class DynamicWeChat(_PluginBase):
             except Exception as e:
                 logger.warning(f"点击验证码确认按钮失败: {e}")
                 self._last_check_result = 'captcha_btn_error'
+                self._verification_code = ''
                 return None
             # 确认后短轮询登录结果（兼容提交后的页面跳转延迟）
             for _ in range(6):
@@ -1720,6 +1812,7 @@ class DynamicWeChat(_PluginBase):
                 await asyncio.sleep(1)
             logger.warning("验证码已提交但未确认登录成功")
             self._last_check_result = 'captcha_failed'
+            self._verification_code = ''
             return False
 
         # ---------- 主竞速轮询 ----------
@@ -1888,10 +1981,19 @@ class DynamicWeChat(_PluginBase):
         detected = [ip.strip() for ip in str(detected_ips or '').split(';') if ip.strip()]
         seen = set()
         merged = []
+        # ⚠️ 只收合法 IPv4（3.3.0）：页面文案写着「含非IP格式的内容…会被忽略」，
+        # 旧实现却原样拼进去 —— 企微拒绝整份列表，而代码照样报「修改成功」。
+        invalid = []
         for ip in pinned + detected:
-            if ip and ip not in seen:
-                seen.add(ip)
-                merged.append(ip)
+            if not ip or ip in seen:
+                continue
+            if not self._is_ipv4(ip):
+                invalid.append(ip)
+                continue
+            seen.add(ip)
+            merged.append(ip)
+        if invalid:
+            logger.warning(f"固定可信IP 中这些不是合法 IPv4，已忽略: {invalid}")
         return ';'.join(merged)
 
     @staticmethod
@@ -2535,6 +2637,7 @@ class DynamicWeChat(_PluginBase):
         """
         success_count = 0
         fail_count = 0
+        mp_attempted = False
 
         # 1. 尝试MoviePilot内置通知（MP管理所有渠道）
         if self._use_mp_notify:
@@ -2545,8 +2648,8 @@ class DynamicWeChat(_PluginBase):
                     title="动态企微可信IP - 测试通知",
                     text="这是一条测试通知，用于验证通知配置是否正常。"
                 )
-                success_count += 1
-                logger.info("MP内置通知测试成功")
+                mp_attempted = True
+                logger.info("MP内置通知已提交（送达结果由宿主管理，无法确认）")
             except Exception as e:
                 logger.error(f"MP内置通知测试失败：{e}")
                 fail_count += 1
@@ -2571,10 +2674,14 @@ class DynamicWeChat(_PluginBase):
                     logger.error(f"第三方通道 {channel} 测试异常：{e}")
                     fail_count += 1
 
-        # 汇总结果
-        if success_count > 0:
-            self.systemmessage.put(f"通知测试完成：成功 {success_count} 个，失败 {fail_count} 个")
-            logger.info(f"通知测试完成：成功 {success_count} 个，失败 {fail_count} 个")
+        # 汇总结果（MP 内置通知只代表「已提交」）
+        if success_count > 0 or mp_attempted:
+            self.systemmessage.put(
+                f"通知测试完成：第三方成功 {success_count} 个 / 失败 {fail_count} 个"
+                + ("；MP内置通知已提交（是否送达无法查询）" if mp_attempted else ""))
+            logger.info(
+                f"通知测试完成：第三方成功 {success_count} 个 / 失败 {fail_count} 个"
+                + ("；MP内置通知已提交" if mp_attempted else ""))
         else:
             self.systemmessage.put("通知测试失败：所有通道均发送失败")
             logger.warning("通知测试失败：所有通道均发送失败")
@@ -2772,11 +2879,16 @@ class DynamicWeChat(_PluginBase):
 
         self._bg_tasks = pending_tasks
 
-        # 等待后台线程退出
+        # 等待后台线程退出。
+        # ⚠️ 逐个 join(10s) 会串行阻塞宿主（3.3.0）：线程多时最坏累计几十秒，
+        # 期间宿主事件循环停摆。现在只给一个总预算，超出即放弃等待——
+        # 线程是 daemon，未退出也不阻止进程，只是下次不能再启动新循环。
         alive_threads = []
+        deadline = time.time() + self.BACKUP_TASK_JOIN_TIMEOUT
         for thread in list(getattr(self, "_bg_threads", []) or []):
-            if thread.is_alive():
-                thread.join(timeout=self.BACKUP_TASK_JOIN_TIMEOUT)
+            remaining = deadline - time.time()
+            if thread.is_alive() and remaining > 0:
+                thread.join(timeout=remaining)
             if thread.is_alive():
                 alive_threads.append(thread)
         self._bg_threads = alive_threads

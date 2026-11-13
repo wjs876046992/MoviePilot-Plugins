@@ -724,3 +724,45 @@ while not task.done():
 3. 测试 +1：`__init__.py` 顶部必须 `import json`（防止再犯）。
 
 共 67 项全绿。
+
+---
+
+## 3.3.0 全量代码审查后的集中修复（14 项）
+
+一次完整审查（全文件 + 逐条核实）发现的问题，按「假成功 → 数据丢失 → 状态失真 → 边界」分类。
+
+### 假成功（最伤信任，全部修掉）
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | `refresh_cookie` 把三态 `None`（无结论）当成 Cookie 失效，清内存 Cookie 并发失效通知 | 只累计 `_none_streak`，保留 Cookie 与有效性；本地/云端两条校验路径都区分 `None` |
+| 2 | `post_message` 返回 None、失败不上报，却被计为「发送成功」 | 改为 `mp_attempted` 语义，文案写「已提交（送达不可确认）」；三处（失效通知/二维码/测试通知） |
+| 3 | `_merge_pinned_ips` 不校验 IPv4，企微拒绝整份列表却报「修改成功」 | 只收合法 IPv4，非法项记 warning 并忽略 |
+| 4 | `CheckIP` 在 `ChangeIP` 之前就记 `ok=True`，更新失败也永远显示「正常」 | `ChangeIP` 的每个失败分支都写回 `_last_ip_check_ok=False` + 原因 |
+| 5 | 外层 `except` 只打日志不动状态，浏览器连续失败时页面仍显示「正常」 | 异常也写 `_last_keepalive_ok=False` + 原因 |
+
+### 数据与状态
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 6 | `_push_qr_code_async` 丢弃 `refuse_time`，详情页因无时间戳不渲染图 | 推送成功即写 `_future_timestamp` |
+| 7 | 切换 CookieCloud 开关后仍用旧模式的内存 Cookie（破坏严格二选一） | `init_plugin` 无条件清 `_saved_cookie`，再按模式恢复；新增 `_cookie_verified` 区分「有 Cookie」与「已验证」 |
+| 8 | `local_scanning` 无锁，与 `/push_qr` 并发时抢 `_qr_running`/验证码/临时文件 | 复用 `_qr_lock` 互斥，`finally` 释放 |
+| 9 | `_is_local()` 用 URL 前缀判断，自建 CookieCloud 在 localhost 会误判 | 改为「是否提供 local_dir」 |
+| 10 | `_verification_code` 只在成功时清除，失败后残留污染下一轮 | 三个失败分支 + 新一轮扫码开始时都清 |
+
+### 健壮性
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 11 | `settings.json` 三处非原子写，中断即损坏 | 新增 `atomic_write_json()`（临时文件 + `os.replace`） |
+| 12 | `JsonFieldManager._load` 解析失败静默返回 `{}`，随后的读-改-写会抹掉其它字段 | 损坏时先备份为 `.corrupt` 再返回空字典 |
+| 13 | `_bg_threads` 只增不减 | 每次启动前过滤已结束线程 |
+| 14 | `stop_service` 逐个 `join(10s)` 串行阻塞宿主 | 改为总预算 deadline；`context.close()` 统一加 10 秒超时（真机日志里的「浏览器关闭超时」不再抛到外层） |
+| 15 | `_cc_server` 从不重置，改凭据需重启 | `try_connect_cc_async` 开头先清空 |
+
+### 测试
+
+新增 `test_review_fixes.py` 13 项，覆盖：None 不误判失效、MP 通知不计成功、pinned 校验、
+跨模式重置、二维码时间戳、验证码清理、扫码互斥、原子写替换、损坏备份、`_is_local` 判定。
+合计 79 项全绿。

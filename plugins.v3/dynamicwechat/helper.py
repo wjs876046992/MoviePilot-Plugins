@@ -12,6 +12,32 @@ from Crypto.Cipher import AES
 import aiohttp
 
 
+def atomic_write_json(path, data, *, indent=4, ensure_ascii=False) -> None:
+    """
+    原子写 JSON 文件：先写同目录临时文件，再 os.replace 整体替换。
+
+    ⚠️ 直接 `open(path, "w")` 会先截断原文件 —— 写入中途任何异常都会留下
+    0 字节或半截文件。`settings.json` 存着 WECHAT_NOW_IP 与 Cookie 寿命，
+    写坏一次就会丢状态（3.3.0 与 cookie.json 同一处置）。
+    """
+    import tempfile
+    directory = os.path.dirname(os.path.abspath(str(path))) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=indent, ensure_ascii=ensure_ascii)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def bytes_to_key(data: bytes, salt: bytes, output=48) -> bytes:
     """兼容v2 将bytes_to_key和encrypt导入"""
     if len(salt) != 8:
@@ -119,8 +145,15 @@ class PyCookieCloud:
         return doc.get("cookie_data") or doc or {}
 
     def _is_local(self) -> bool:
-        """判断是否连接内建（本地文件）CookieCloud 服务"""
-        return str(self.url).startswith("http://localhost")
+        """
+        判断是否连接内建（本地文件）CookieCloud 服务。
+
+        ⚠️ 判据是「调用方是否给了本地数据目录」，不是 URL 前缀（3.3.0）。
+        自建 CookieCloud 若恰好部署在 localhost（同机或同 nginx），旧实现
+        会误判为内建模式、去读不存在的本地文件，导致写入永远失败且错误
+        信息无从解释。
+        """
+        return bool(self.local_dir)
 
     def _load_local_encrypted(self) -> Dict[str, Any]:
         """
@@ -212,8 +245,7 @@ class PyCookieCloud:
 
         data['_cookie_lifetime'] = cookie_lifetime
 
-        with open(settings_file, 'w') as file:
-            json.dump(data, file, indent=4)
+        atomic_write_json(settings_file, data, indent=4)
 
     @staticmethod
     def increase_cookie_lifetime(settings_file, seconds: int):
@@ -592,8 +624,7 @@ class IpLocationParser:
 
         data[field] = new_ips
 
-        with open(self._settings_file_path, 'w') as f:
-            json.dump(data, f, indent=4)
+        atomic_write_json(self._settings_file_path, data, indent=4)
 
     def read_ips(self, field) -> str:
         """获取 JSON 文件中指定字段的所有 IP 地址，返回分号分隔的字符串"""
@@ -633,17 +664,30 @@ class JsonFieldManager:
         self._settings_file_path = settings_file_path
 
     def _load(self) -> dict:
-        """读取完整 JSON 内容；若文件损坏或不存在则返回空字典"""
+        """
+        读取完整 JSON 内容。
+
+        ⚠️ 文件损坏时**备份原文件再返回空字典**（3.3.0）：此前直接返回 {},
+        随后的「读-改-写」会把其它字段全部抹掉（丢 WECHAT_NOW_IP 等）。
+        备份让损坏数据可人工恢复，也让问题留下痕迹而不是静默丢失。
+        """
         try:
             with open(self._settings_file_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, IOError) as err:
+            try:
+                backup = f"{self._settings_file_path}.corrupt"
+                os.replace(self._settings_file_path, backup)
+                print(f"[dynamicwechat] settings.json 损坏，已备份到 {backup}: {err}")
+            except OSError:
+                pass
             return {}
 
     def _save(self, data: dict) -> None:
-        """直接写入原文件"""
-        with open(self._settings_file_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
+        """原子写入原文件（截断式写入会因中途异常留下损坏的 JSON）"""
+        atomic_write_json(self._settings_file_path, data, indent=4)
 
     # ---------- 同步操作方法 ----------
     def get(self, field: str, default: Any = None) -> Any:

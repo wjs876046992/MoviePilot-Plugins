@@ -232,7 +232,10 @@ def test_init_plugin_restores_cookie_from_disk():
     src = SOURCE
     init = src[src.index("def init_plugin"):src.index("def _migrate_legacy_magic_strings")]
     assert "_load_cookie_from_disk" in init
-    assert "if not self._use_cookiecloud and not self._saved_cookie" in init
+    # 3.3.0：先无条件清空内存副本（否则切换 CookieCloud 开关不生效），
+    # 再在本地模式下从落盘恢复。
+    assert "self._saved_cookie = None" in init
+    assert "if not self._use_cookiecloud:" in init
 
 
 def test_refresh_cookie_reloads_disk_before_skipping():
