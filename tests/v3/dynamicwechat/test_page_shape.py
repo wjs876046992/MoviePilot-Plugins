@@ -561,11 +561,33 @@ def test_page_has_refresh_button_and_last_run():
     assert "plugin/DynamicWeChat/refresh" in page_src
     assert "最近运行" in page_src
     assert "mdi-refresh" in page_src
+    # 按钮文案是「刷新」而非「立即检测」，并有快照提示
+    assert '"text": "刷新"' in page_src or "'text': '刷新'" in page_src
+    assert '立即检测"' not in page_src and "立即检测'" not in page_src
 
 
 def test_refresh_endpoint_registered():
     assert '"/refresh"' in SOURCE
     assert "def _api_refresh" in SOURCE
+
+
+def test_refresh_is_read_only_snapshot():
+    """3.3.1：/refresh 改为纯只读快照，不得触发检测任务。
+
+    用户反馈「立即检测，改成仅刷新页面」——按钮应取最新快照数据，
+    而不是启动一轮真实检测（那是「立即检测一次」开关的职责）。
+    """
+    import ast
+    tree = ast.parse(SOURCE)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and n.name == "_api_refresh")
+    body = ast.unparse(fn)
+    assert "_page_snapshot" in body
+    assert "_start_bg_task" not in body, "刷新端点不得启动检测任务"
+    assert "self.check(" not in body
+    # 端点描述也要一致
+    assert "纯只读" in SOURCE
 
 
 def test_last_run_timestamp_is_recorded():

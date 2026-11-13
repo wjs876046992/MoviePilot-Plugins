@@ -33,7 +33,7 @@ class DynamicWeChat(_PluginBase):
     # 插件图标
     plugin_icon = "Wecom_A.png"
     # 插件版本
-    plugin_version = "3.3.0"
+    plugin_version = "3.3.1"
     # 插件作者
     plugin_author = "RamenRa"
     # 作者主页
@@ -2481,19 +2481,25 @@ class DynamicWeChat(_PluginBase):
              _kv_table(status_rows) if status_rows else
              _span("插件未启用，Cookie 保活与 IP 检测均已停止",
                    "text-caption text-medium-emphasis"),
-             # 刷新按钮：宿主 JSON 表单里的按钮只能调 API、无法重载前端页面，
-             # 所以这里触发一次真实检测，并告知用户几秒后手动刷新本页。
+             # 刷新按钮：宿主 JSON 表单里的按钮只能调 API、无法重载前端页面。
+             # 端点 /refresh 返回最新快照数据（纯只读），不触发任何检测任务；
+             # 重新查看最新状态请刷新浏览器页面。
              {
                  "component": "div",
-                 "props": {"class": "d-flex justify-end mt-3"},
-                 "content": [{
-                     "component": "VBtn",
-                     "props": {"size": "small", "variant": "tonal", "color": "primary",
-                               "prependIcon": "mdi-refresh"},
-                     "text": "立即检测",
-                     "events": {"click": {"api": "plugin/DynamicWeChat/refresh",
-                                          "method": "get"}},
-                 }],
+                 "props": {"class": "d-flex justify-end mt-3 align-center ga-2"},
+                 "content": [
+                     {"component": "span",
+                      "props": {"class": "text-caption text-medium-emphasis"},
+                      "text": "状态为进入页面时的快照；查看最新请刷新浏览器页面"},
+                     {
+                         "component": "VBtn",
+                         "props": {"size": "small", "variant": "tonal", "color": "primary",
+                                   "prependIcon": "mdi-refresh"},
+                         "text": "刷新",
+                         "events": {"click": {"api": "plugin/DynamicWeChat/refresh",
+                                              "method": "get"}},
+                     },
+                 ],
              }]))
 
         # ================= 卡 2 · IP 来源 =================
@@ -2787,25 +2793,19 @@ class DynamicWeChat(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "立即检测一次",
-                "description": "详情页「立即检测」按钮：触发一轮 IP 检测（不改变列表配置）"
+                "description": "详情页「刷新」按钮：返回页面快照数据（纯只读，不触发检测）"
             }
         ]
 
     def _api_refresh(self):
         """
-        API 端点：立即触发一轮检测。
+        API 端点：返回页面快照数据（纯只读）。
 
-        为什么需要它：宿主 JSON 表单里的按钮只能调 API，没有「重载本页」动作，
-        所以详情页的刷新图标做不成真正的刷新。改为触发一次真实检测——用户点完
-        等几秒再手动刷新页面，就能看到最新状态与「最近运行」时间。
+        宿主 JSON 表单里的按钮只能调 API、无法重载前端页面，所以「刷新」图标
+        的作用是**取一份最新快照**：详情页脚本可据响应刷新本地状态，不触发
+        任何检测/浏览器任务。快照本身由 `_page_snapshot()` 提供，方法纯只读。
         """
-        if not self._enabled:
-            return {"success": False, "message": "插件未启用"}
-        if not str(self._input_id_list or "").strip():
-            return {"success": False, "message": "未配置应用ID"}
-        self._start_bg_task(self.check(None))
-        logger.info("收到「立即检测」请求，已触发一轮检测")
-        return {"success": True, "message": "已触发检测，几秒后刷新本页查看结果"}
+        return {"success": True, "data": self._page_snapshot()}
 
     def _test_notify(self):
         """API端点：测试通知推送"""
