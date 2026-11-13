@@ -1,9 +1,10 @@
 # DynamicWeChat（动态企微可信IP）V3 交付总结
 
-> 状态：**已交付 / 已推送 / 已部署到 NAS（未重启）**
-> 日期：2026-11-11
+> 状态：**已交付 / 已推送 / 已部署到 NAS / 用户确认无问题**
+> 日期：2026-11-11 起，2026-11-14 收敛
 > 仓库：`wjs876046992/MoviePilot-Plugins`，分支 `main`
-> 当前版本：**v3.1.6**
+> 当前版本：**v3.3.3**（NAS HEAD `4a6429d`）
+> 测试：**81 项全绿**（`--noconftest`）
 
 ---
 
@@ -25,6 +26,17 @@
 | 详情页卡片化 | 3.1.4 | `9b8011f` | 三张 VCard 与配置页统一 |
 | CookieCloud 修复 | 3.1.5 | `c8d7632` | 读-合并-写 + 回读校验 + 本地落盘兜底 |
 | 详情页视觉重构 | 3.1.6 | `72551cc` | VChip 徽章 + VTable 替代色块横幅 |
+| DDNS 分支状态 | 3.1.7 | `aca5a83` | DDNS 成功时补写 IP 检测状态 |
+| Cookie 严格二选一 | 3.1.8 | `1530f85` | 开 CookieCloud 只存云端、关则只存本地 |
+| 保活假成功 | 3.1.9 | `7e38dc2` | 无 Cookie 可校验时不再谎报成功 |
+| 推送守卫 + 刷新 | 3.1.10 | `66c7790` | /push_qr 不再被第三方 Token 守卫挡住 |
+| Cookie 原子写 | 3.2.0 | `0352ff3` | 根治「每次更新插件后 Cookie 失效」 |
+| 停止标志残留 | 3.2.1 | `23a79eb` | 重载后所有后台命令静默失效 |
+| 补 import json | 3.2.2 | `756d6c2` | 上版原子写的直接回归 |
+| 审查集中修复 | 3.3.0 | `6563af9` | 14 项（假成功 / 数据 / 健壮性） |
+| 刷新按钮语义 | 3.3.1 | `d2ac5fc` | 改为纯取快照，不再触发真实检测 |
+| 响应 envelope | 3.3.2 | `4ae0742` | 插件 API 需显式 `schemas.Response` |
+| 登录后陈旧提示 | 3.3.3 | `4a6429d` | 「没有可校验的 Cookie」只在空时写→永不过期 |
 
 > **两次依赖修正的关系**：`50729d5` 把声明从 `>=0.7,<0.8` 改为 `>=0.6,<0.7`；
 > 但宿主预检把「插件要求 `<0.7`、实例装 0.7.2」判为需降级并拒绝加载，
@@ -55,8 +67,8 @@ tests/v3/dynamicwechat/
 
 | 项 | 值 |
 |---|---|
-| `plugin_version` | `3.1.6`（`__init__.py:34`） |
-| `package.v3.json` version | `3.1.6`，history 首项 `v3.1.6` |
+| `plugin_version` | `3.3.3`（`__init__.py` 类属性） |
+| `package.v3.json` version | `3.3.3`，history 首项 `v3.3.3` |
 | `system_version` | `>=3.0.0` |
 | `package.v2.json` | **2.1.9**（上游原样）+ `"v3": false` |
 | `package.json` V1 | 1.7.3（上游原样）+ `"v3": false` |
@@ -144,6 +156,35 @@ tests/v3/dynamicwechat/
   用临时文件 + Python 定位替换
 - 多域名语义选「全部解析合并」而非「第一个成功者胜」：多线路需要每个出口
   都进白名单；全部失败时不静默回退其它来源
+- 插件 API 的响应形状是**宿主合同**：`events.click.api` 走宿主普通数据客户端，
+  严格校验 `success/message/data` 三字段 envelope，端点必须显式声明
+  `response_model = schemas.Response[T]`。返回裸 dict 缺 `message` 会被前端
+  判为无效（v3.3.2 实锤）。与「endpoint 签名被 FastAPI introspect」同类。
+
+### 5. 问题谱系：本轮反复出现的一类缺陷
+
+本轮 12 个补丁里有 **7 个属于同一族：状态字段没有由真实执行路径维护**。
+这不是巧合，而是这个插件「长跑 + 多分支 + 大量外部依赖」的必然产物。
+
+| 版本 | 形态 | 具体表现 |
+|---|---|---|
+| 3.1.7 | 漏写 | DDNS 分支成功时不写 IP 检测状态，旧「失败」记录永不清除 |
+| 3.1.9 | 假成功 | 无 Cookie 可校验却打「保活成功」，页面永远「还没跑过第一轮」 |
+| 3.2.0 | 截断式写 | `open(w)` 先清空，中途异常留 0 字节，重载后从空文件恢复 |
+| 3.2.1 | 提前 return 跳过重置 | `_stopping` 永久 True，所有后台任务启动即被取消 |
+| 3.3.0 | 失败不写回 | `ChangeIP` 失败只设 `_ip_changed`，页面永远「IP 检测正常」 |
+| 3.3.0 | 异常不更新 | 外层 `except` 只记日志，浏览器连续失败时页面仍显示「正常」 |
+| 3.3.3 | 条件写入 | 「没有可校验的 Cookie」加 `and not note` 守卫，写下一次后永不过期 |
+
+**共同判据（写进任何插件的自查清单）**：
+
+1. 每个状态字段，**每条执行路径**（成功 / 失败 / 异常 / 无结论）都必须写一次，
+   不允许「正常流程一定会走到」的假设。
+2. 写入**不得带「仅当为空时」的条件**——那等于制造陈旧状态。
+3. 成功日志必须由「真正做过那件事」的变量守卫（如 `cookie_used`），
+   不能由「配置上看起来应该成功」的变量守卫（如 `_cookie_valid` 的初值）。
+4. 持久化必须原子写；截断式写入的失败形态（0 字节文件）比没有文件更糟。
+5. 宿主返回 None 的接口（`post_message`）不得当作成功。
 
 ---
 
@@ -184,13 +225,19 @@ tests/v3/dynamicwechat/
 
 | 验证项 | 结果 |
 |---|---|
-| 插件测试（`--noconftest`） | **49 passed** |
+| 插件测试（`--noconftest`） | **81 passed** |
 | 版本门禁（strict=dynamicwechat） | 通过 |
 | `compileall` | 通过 |
 | CI 后端无关批 | 51 passed |
 | 文案红线（Markdown / 内部术语） | 零违规 |
 | 硬编码色（get_page） | 零（已全部主题 token 化） |
 | 宿主预检（cookie 冲突） | `preflight ok: True` |
+| 真机验收 | 用户确认「已确认无问题」 |
+
+测试文件构成：`test_v3_contract.py`（代际合同/版本三元组）、
+`test_page_shape.py`（页面结构与状态回归）、`test_cookie_persistence.py`
+（CookieCloud 合并写入 / 原子落盘 / 跨模式）、`test_review_fixes.py`
+（审查 14 项逐条回归）。
 
 **已核实但未消除的既有限制**：`tests/ci/test_v3_dependency_manifests.py`
 的 2 个失败是仓库既有问题（`rsync115sync` 的 `project.name`、
@@ -202,29 +249,32 @@ tests/v3/dynamicwechat/
 
 | 项 | 值 |
 |---|---|
-| 远端 `origin/main` | `72551cc` |
-| NAS `local_plugins` HEAD | `72551ccf`，`plugin_version = "3.1.6"`，工作区 clean |
-| 容器 `mp3` | healthy（最近一次授权重启后） |
-| 容器内 cloakbrowser | 0.6.5 |
-| 运行中的插件代码 | 取决于宿主插件文件监控是否自动重载；**未再重启** |
+| 远端 `origin/main` | `6563af9`（v3.3.0）→ 其后 v3.3.1/3.3.2/3.3.3 已推送到远端 |
+| NAS `local_plugins` HEAD | `4a6429dc`，`plugin_version = "3.3.3"` |
+| 容器 `mp3` | healthy |
+| 容器内 cloakbrowser | 0.6.5（`UV_CONSTRAINT` 固定 `>=0.6,<0.7`） |
+| Cookie 存储模式 | 本地（`use_cookiecloud = false`），`cookie.json` 原子写 |
+| 真机状态 | 用户确认无问题 |
 
-**生效提示**：若配置页/详情页看到的还是旧布局，说明插件尚未重载。
-按规则需要你明确授权才会重启容器；宿主的文件监控通常会自动重载本地插件。
+**生效提示**：宿主会检测 `local_plugins` 变化自动重载；按既定规则，
+**未经明确授权不重启容器**。
 
 ---
 
 ## 八、待办 / 开放项
 
-1. **真机视觉验收**：无 thead 的 VTable 需在实际宿主里看一眼；
-   渲染异常时兜底补一行表头（项目/状态/详情）。
-2. **CookieCloud 站点 Cookie 补同步**：3.1.5 之前被清空的其它站点 Cookie
-   需重新同步一次。
-3. **free key**：拿到 CloakBrowser license key 后可解除 0.6.x 固定，
-   写进 `/config/app.env` 的 `CLOAKBROWSER_LICENSE_KEY`。
-4. **未实现的能力**（历次评审刻意延后）：详情页「立即扫码/立即检测」按钮、
-   验证码页面输入、`cookie_header` 配置页输入框。
-5. **快照 9 个未消费 key**（通知通道 / CookieCloud 组）：对应状态配置页已表达，
+1. **CookieCloud 站点 Cookie 补同步**：3.1.5 之前被清空的其它站点 Cookie
+   需重新同步一次（一次性，MoviePilot 的站点同步会补回）。
+2. **free key**：拿到 CloakBrowser license key 后可解除 0.6.x 固定
+   （当前无 key 时 0.7.x 启动会报错/挂起），写进 `/config/app.env` 的
+   `CLOAKBROWSER_LICENSE_KEY`。
+3. **未实现的能力**（历次评审刻意延后）：验证码页面输入、
+   `cookie_header` 配置页输入框。（「立即检测」已由 v3.3.1 收敛为纯快照刷新，
+   触发检测的职责交还配置页开关。）
+4. **快照未消费字段**（通知通道 / CookieCloud 组）：对应状态配置页已表达，
    详情页重复展示违反单一信息源，维持不渲染。
+5. **未列出的审查补充项**：审查还提到若干低优先级项（如更细粒度的锁粒度），
+   本轮未全部展开；如出现相关症状再按「问题谱系」的五条判据排查。
 
 ---
 
