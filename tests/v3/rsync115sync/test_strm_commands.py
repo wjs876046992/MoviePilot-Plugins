@@ -194,6 +194,95 @@ def test_list_works_without_strm_dir_configured():
     assert "无法扫描" not in reply, "list 被扫描守卫挡住了"
 
 
+# --------------------------------------------------------------------------
+# strm list：与通知同款的按钮组（用户 2026-11-14 反馈）
+# --------------------------------------------------------------------------
+
+def _captured_post(plugin):
+    """让 _post_reply 捕获 (text, buttons)，返回捕获表。"""
+    captured = []
+    plugin._post_reply = (
+        lambda event, msg, *a, buttons=None, **kw: captured.append((msg, buttons)))
+    return captured
+
+
+def test_list_reply_carries_the_same_buttons_as_the_notification():
+    """
+    `/rsync_strm list` 的回复必须带**与通知同款**的操作按钮。
+
+    通知里有「补生成 / 删旧重传 / 忽略」按钮，而用户主动敲 list 想处理清单时
+    只有文字 —— 按钮就在手边却用不上。宿主对定向回复与通知走同一条
+    Message 通路，因此 list 复用 `suspect_command_buttons`：指纹回调、
+    越权护栏、文案全部同源，不新增第三套入口语义。
+    """
+    keys = ["电视剧:某剧/S01/E01.mkv", "电视剧:某剧/S01/E02.mkv", "电影:独一份.mkv"]
+    plugin, module = _plugin({k: {"ts": 1.0, "origin": "scan"} for k in keys})
+    plugin._sync_pairs = [{
+        "name": "电视剧", "src": "/tmp", "dest": "/115/TV",
+        "strm_dir": "/strm/TV", "all_ext": False,
+    }, {
+        "name": "电影", "src": "/tmp2", "dest": "/115/M",
+        "strm_dir": "/strm/M", "all_ext": False,
+    }]
+    captured = _captured_post(plugin)
+    _run_strm(plugin, module, "list")
+
+    assert captured, "list 没有回复"
+    text, buttons = captured[0]
+    assert buttons, "list 回复没有携带按钮"
+    cmds = [b["callback_data"] for row in buttons for b in row]
+    # 整批操作在
+    assert "[PLUGIN]Rsync115Sync|gen" in cmds
+    assert "[PLUGIN]Rsync115Sync|check" in cmds
+    # 清单总数 > 1 → 「全部删旧重传」在（与通知同判据）
+    assert "[PLUGIN]Rsync115Sync|retry_all" in cmds
+    # 每个列出的条目都有 指纹回调（retry / ignore）
+    import hashlib
+    for k in keys:
+        fp = hashlib.sha1(k.encode()).hexdigest()[:10]
+        assert f"[PLUGIN]Rsync115Sync|retry {fp}" in cmds, f"{k} 缺少重传按钮"
+        assert f"[PLUGIN]Rsync115Sync|ignore {fp}" in cmds, f"{k} 缺少忽略按钮"
+    # 正文只剩破坏性警告（按钮文案已自明，不再重复教按钮用法）
+    assert "删旧重传会先删云端旧文件" in text
+    assert "/rsync_strm gen" not in text, "带按钮时正文不应再重复命令教程"
+
+
+def test_list_reply_without_buttons_keeps_the_text_footer():
+    """
+    按钮被预检丢弃（超限，防御路径）时退回纯文本尾注 ——
+    列表本身必须仍然完整可用，不能因为按钮出问题把处理指引也弄丢。
+    """
+    keys = ["电视剧:某剧/S01/E01.mkv"]
+    plugin, module = _plugin({k: {"ts": 1.0, "origin": "scan"} for k in keys})
+    # 不配 pairs：brief_target_of 解析不出目标 → suspect_command_buttons
+    # 不会给任何条目按钮（整批操作不受 pairs 影响，仍在）。
+    # 这里直接把整批按钮也去掉，模拟"超限整批丢弃"后的空按钮路径。
+    import app.plugins.rsync115sync.strm as strm_mod
+    original = strm_mod.suspect_command_buttons
+    strm_mod.suspect_command_buttons = lambda *a, **kw: []
+    try:
+        captured = _captured_post(plugin)
+        _run_strm(plugin, module, "list")
+    finally:
+        strm_mod.suspect_command_buttons = original
+
+    text, buttons = captured[0]
+    assert buttons == []
+    assert "/rsync_strm gen" in text, "无按钮时退回了旧版文字尾注"
+    assert "看板「strm 疑似异常」" in text
+
+
+def test_list_empty_has_no_buttons():
+    """空清单的提示不带按钮（也没有可操作的对象）。"""
+    plugin, module = _plugin()
+    captured = _captured_post(plugin)
+    _run_strm(plugin, module, "list")
+
+    text, buttons = captured[0]
+    assert buttons == []
+    assert "没有 strm 疑似异常" in text
+
+
 def test_clear_works_without_strm_dir_configured():
     """
     `clear` 同样只操作已有清单。看板没有清空入口，命令是唯一途径 ——

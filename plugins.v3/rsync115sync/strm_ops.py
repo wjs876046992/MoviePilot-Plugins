@@ -773,17 +773,15 @@ class StrmOpsMixin:
             # 而下面照样打「已推送」并置位闩锁 —— 用户什么都没收到，日志也看不出。
             # 现在按钮只带 10 字节指纹（见 `strm.fingerprint`），这里的断言是
             # **最后一道防线**：真超限时宁可丢按钮也要把正文发出去。
-            oversized = [
-                b for row in buttons for b in row
-                if len(str(b.get("callback_data", "")).encode("utf-8")) > _strm.BUTTON_MAX_BYTES
-            ]
+            # 判据在 `strm.sanitize_buttons`（命令侧 `/rsync_strm list` 的按钮
+            # 同样要过这道检），此处只保留日志。
+            buttons, oversized = _strm.sanitize_buttons(buttons)
             if oversized:
                 logger.error(
                     f"[Rsync115Sync] ⚠️ {len(oversized)} 个按钮的 callback_data 超过 "
                     f"Telegram 上限 {_strm.BUTTON_MAX_BYTES} 字节，已**整批去掉按钮**"
                     f"只发正文（否则整条消息都会被拒）: "
                     f"{[b.get('text') for b in oversized[:3]]}")
-                buttons = None
 
             # ⚠️ 文案原则：**成功/常规短，失败/需处置长**。
             #

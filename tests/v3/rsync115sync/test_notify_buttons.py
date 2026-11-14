@@ -271,3 +271,35 @@ def test_handle_button_action_retry_all():
     assert len(plugin.replies) == 1
     assert "已清理 2 个旧文件" in plugin.replies[0]
     assert "已提交全部 2 个疑似异常文件" in plugin.replies[0]
+
+# --------------------------------------------------------------------------
+# sanitize_buttons：发送前的 64 字节预检（通知与 /rsync_strm list 共用）
+# --------------------------------------------------------------------------
+
+def test_sanitize_passes_normal_buttons_through():
+    """正常按钮原样通过，oversized 为空。"""
+    mod = _strm()
+    rows = mod.suspect_command_buttons([KEY], [_pair()], total_count=2)
+    out, oversized = mod.sanitize_buttons(rows)
+    assert out == rows
+    assert oversized == []
+
+
+def test_sanitize_drops_the_whole_batch_when_one_button_oversizes():
+    """
+    任何一个按钮超限 → **整批**变 None。
+
+    Telegram 的 64 字节上限作用在整条消息上：有一个超限，整条发送直接失败
+    （BUTTON_DATA_INVALID），其余按钮并不会照常发出。所以"只剔掉超限那个"
+    救不了这条消息 —— 唯一安全的动作是整批去掉按钮只发正文。
+    """
+    mod = _strm()
+    good = [{"text": "ok", "callback_data": "[PLUGIN]Rsync115Sync|gen"}]
+    bad = [{"text": "bad", "callback_data": "[PLUGIN]Rsync115Sync|x " + "长" * 30}]
+    out, oversized = mod.sanitize_buttons([good, bad])
+    assert out is None, "超限时必须整批丢弃（返回 None），不能只剔一个"
+    assert oversized == [bad[0]]
+    # 边界：恰好 64 字节是合法的（上限含 64）
+    exactly = [{"text": "e", "callback_data": "[PLUGIN]Rsync115Sync|" + "a" * (64 - len("[PLUGIN]Rsync115Sync|"))}]
+    out2, oversized2 = mod.sanitize_buttons([exactly])
+    assert out2 == [exactly] and oversized2 == [], "恰好 64 字节应当通过"

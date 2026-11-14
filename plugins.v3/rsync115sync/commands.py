@@ -159,7 +159,7 @@ class CommandsMixin:
             f"【strm 有问题】\n"
             f"/rsync_strm —— 全量扫描缺 strm 的文件\n"
             f"/rsync_strm <文件名> —— 只查这一个（不遍历整库，秒回）\n"
-            f"/rsync_strm list —— 列出疑似清单\n"
+            f"/rsync_strm list —— 列出疑似清单（回复带操作按钮）\n"
             f"/rsync_strm check —— 立即检查观察期（不等下一轮巡检）\n"
             f"/rsync_strm gen —— 请助手补生成 strm（多数问题的第一步）\n"
             f"/rsync_strm clear —— 清空疑似与待观察清单\n"
@@ -176,25 +176,35 @@ class CommandsMixin:
 
     # ---- 疑似清单的命令侧处理 / suspect handling over chat ---------------
 
-    def _strm_suspect_list_text(self) -> str:
+    def _strm_suspect_list_reply(self) -> Tuple[str, List[List[Dict[str, str]]]]:
         """
-        用**带序号的列表**回报疑似清单（`/rsync_strm list`）。
+        回报疑似清单（`/rsync_strm list`）：正文 + **与通知同款**的操作按钮。
 
-        Render the suspect list with stable indices.
+        Render the suspect list (`/rsync_strm list`) as text plus buttons.
+
+        ## 为什么 list 也要带按钮（用户 2026-11-14 反馈）
+
+        通知里有「补生成 / 删旧重传 / 忽略」按钮，而用户主动敲 `/rsync_strm list`
+        想处理清单时反而只有文字 —— 按钮就在手边却用不上，只能照旧去敲命令或
+        打开看板。宿主对定向回复与通知走同一条 Message 通路（`buttons` 照常
+        渲染），因此 list 直接复用 `strm.suspect_command_buttons`：同一组按钮、
+        同一套指纹反查与越权护栏，**不新增第三套入口语义**。
+
+        ⚠️ 正文与按钮取**同一段** `shown`（前 10 条），保证用户看到的序号与
+        按钮行一一对应；`total_count` 传清单总数，因此「全部删旧重传」在
+        清单 >1 时就会出现（与通知同判据）。
 
         ⚠️ 序号必须基于**确定顺序**：`Store.by_status` 按 `updated_at` 排序，
         因此同一个时刻生成的列表在同一条消息里可复现。序号还会**截断显示**
         （清单可能有上百条），但截断只影响显示 —— 完整清单在看板
         「strm 疑似异常」标签内。
-        Indices come from a deterministic ordering; truncation is display-only.
 
-        ⚠️ v0.8.0 起删除了 `/rsync_strm retry` / `ignore` 两个子命令：删除性
-        动作只在看板与通知按钮里提供（看板要勾选确认，按钮走同一套 API）。
-        清单本身仍是只读入口，因此这里只给「去哪里处理」，不教用户敲已删除的命令。
+        ⚠️ 按钮必须先过 `strm.sanitize_buttons`：真超限时退回纯文本，**绝不
+        带着超限按钮发送** —— 那会让整条回复都发不出去（BUTTON_DATA_INVALID）。
         """
         keys = list(self._strm_suspects.keys())
         if not keys:
-            return "✅ 当前没有 strm 疑似异常。\n💡 /rsync_strm 可全量扫描一次。"
+            return "✅ 当前没有 strm 疑似异常。\n💡 /rsync_strm 可全量扫描一次。", []
 
         # 上限从 `_STRM_CMD_LIST_LIMIT` 收到 10：带序号的清单在手机上一条占
         # 两三行，30 条就接近宿主 4096 字符的拆分边界，拆开后的续条会丢掉
@@ -205,15 +215,35 @@ class CommandsMixin:
         if len(keys) > len(shown):
             reply += (f"\n… 其余 {len(keys) - len(shown)} 个未列出"
                       f"（完整清单见看板「strm 疑似异常」标签）")
-        # 保留 gen（安全、多数够用）与看板处理入口。破坏性动作的警告仍然保留：
-        # 看板上的「删旧重传」会真的删云端文件，用户不能被清单文案引到没有
-        # 二次确认的路径上。
-        reply += (
-            f"\n\n/rsync_strm gen —— 先试补生成（多数够用）\n"
-            f"💡 删旧重传 / 忽略请到看板「strm 疑似异常」内勾选，或点通知里的按钮。\n"
-            f"⚠️ 删旧重传会先删云端旧文件再重传，请先确认。"
-        )
-        return reply
+        # 正文与按钮同源（同一段 shown、同一个总数），不漂移。
+        # ⚠️ limit 必须显式给到 len(shown)：默认上限是 MAX_LOGGED_PATHS（5，
+        # 通知正文的显示宽度），而 list 正文列 10 条 —— 不传的话只有前 5 条
+        # 有按条按钮，用户看着第 6 条的序号却找不到它的按钮。
+        # Telegram 对按钮总数（100）与行数远宽于 10，这里不会触界。
+        from . import strm as _strm_mod
+        buttons = _strm_mod.suspect_command_buttons(
+            shown, self._sync_pairs, limit=len(shown), total_count=len(keys))
+        buttons, oversized = _strm_mod.sanitize_buttons(buttons)
+        if oversized:
+            # 最后一道防线（判据同通知路径）：真超限就整批去掉，退回纯文本
+            # 尾注 —— 列表本身仍然完整可用。
+            logger.error(
+                f"[Rsync115Sync] ⚠️ list 回复的 {len(oversized)} 个按钮 callback_data "
+                f"超过 Telegram 上限，已整批去掉只发正文: "
+                f"{[b.get('text') for b in oversized[:3]]}")
+            buttons = []
+        if buttons:
+            # 通知按钮的文案自明（「先试补生成（多数够用）」等），这里不再
+            # 教一遍怎么用；只保留破坏性动作的警告 —— 看板上的「删旧重传」
+            # 会真的删云端文件，用户不能被清单文案引到没有二次确认的路径上。
+            reply += "\n\n⚠️ 删旧重传会先删云端旧文件再重传，请先确认。"
+        else:
+            reply += (
+                f"\n\n/rsync_strm gen —— 先试补生成（多数够用）\n"
+                f"💡 删旧重传 / 忽略请到看板「strm 疑似异常」内勾选，或点通知里的按钮。\n"
+                f"⚠️ 删旧重传会先删云端旧文件再重传，请先确认。"
+            )
+        return reply, buttons
 
     @staticmethod
     def _parse_retry_target(text: str) -> Tuple[str, Optional[Any]]:
@@ -713,7 +743,8 @@ class CommandsMixin:
             # "无法扫描"这种与操作无关的话。清单可能是迁移进来的历史数据，
             # 压根不需要扫描；清空同理（看板没有清空入口，命令是唯一途径）。
             if arg_lower in ("list", "ls", "列表", "清单"):
-                self._post_reply(event, self._strm_suspect_list_text())
+                text, buttons = self._strm_suspect_list_reply()
+                self._post_reply(event, text, buttons=buttons)
                 return
             if arg_lower in ("clear", "清空", "reset"):
                 result = self._api_strm_clear()
@@ -1012,13 +1043,20 @@ class CommandsMixin:
                 return mtype
         return None
 
-    def _post_reply(self, event: Optional[Event], text: str):
+    def _post_reply(self, event: Optional[Event], text: str,
+                    buttons: Optional[List[List[Dict[str, str]]]] = None):
         """
         回复用户主动发起的命令。
 
         必须使用 userid 参数指定接收者：post_message 的形参名为 userid，
         若误传 user，该字段会被 Message 模型丢弃，导致 userid 为空，
         消息降级为“广播给所有渠道”，每个用户都会收到本条回复。
+
+        `buttons` 与通知共用同一形态（Telegram inline keyboard）：宿主对
+        **定向回复**与通知走同一条 Message 通路，`buttons` 照常渲染 ——
+        这是 `/rsync_strm list` 能在聊天里直接给操作按钮的基础。
+        传入前调用方必须先过 `strm.sanitize_buttons`（64 字节上限会让
+        **整条**消息发送失败，不是只丢那个按钮）。
         """
         if not event:
             return
@@ -1029,6 +1067,7 @@ class CommandsMixin:
                 userid=data.get("user"),
                 title="115网盘同步助手",
                 text=text,
+                buttons=buttons,
             )
         except Exception as e:
             logger.warning(f"[Rsync115Sync] 命令回复发送失败: {e}")

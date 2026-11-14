@@ -149,7 +149,7 @@ def fingerprint(key: str) -> str:
 
     ## 为什么不用序号
 
-    `_strm_suspect_list_text` 用序号，那是**给人看的**（先 `list` 看一眼再敲）。
+    `_strm_suspect_list_reply` 用序号，那是**给人看的**（先 `list` 看一眼再敲）。
     按钮不行：通知常在几小时后才被点，那时清单可能已增删，序号指向别的条目
     —— 而 `retry` 是**删除性操作**，点错就是删错文件。
 
@@ -226,6 +226,33 @@ def suspect_command_buttons(new_suspects: List[str], pairs: List[Dict[str, Any]]
         ])
     return rows
 
+
+def sanitize_buttons(buttons: List[List[Dict[str, str]]]) -> Tuple[
+        Optional[List[List[Dict[str, str]]]], List[Dict[str, str]]]:
+    """
+    按钮体积预检：任何 `callback_data` 超过 Telegram 64 字节上限就**整批丢弃**。
+
+    Oversize pre-check: drop the *whole batch* if any callback exceeds 64 bytes.
+
+    ## 为什么是整批而不是单个
+
+    Telegram 对 `callback_data` 的 64 字节上限作用在**整条消息**上：只要有一个
+    按钮超限，发送直接失败（`BUTTON_DATA_INVALID`），其余按钮并不会照常发出。
+    所以"只剔掉超限那个"救不了这条消息 —— 唯一安全的动作是整批去掉按钮，
+    只发正文。宁可丢按钮也要让正文出去，见 `strm_ops._notify_strm_suspects`
+    的实测记录（曾因按钮带中文关键字 83 字节而整条通知发不出去，且插件侧
+    把发送失败当成功）。
+
+    返回 `(buttons, oversized)`：通过时 `(原列表, [])`；超限时 `(None, 超限按钮)`，
+    调用方据此记日志并退回纯文本文案。
+    """
+    oversized = [
+        b for row in (buttons or []) for b in row
+        if len(str(b.get("callback_data", "")).encode("utf-8")) > BUTTON_MAX_BYTES
+    ]
+    if oversized:
+        return None, oversized
+    return buttons or [], []
 
 
 def expected_path(key: str, pairs: List[Dict[str, Any]]) -> Optional[str]:
