@@ -4728,59 +4728,21 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 # ---- P0-1：出队与 strm 登记只看对账，不看退出码 ----
                 # exit 23/24 是整批告警；批内已就绪文件若被 `exit_code == 0`
                 # 拦住，会永不出队、也永不进入 strm 观察。
-                if mode == "ready":
-                    succeeded_keys = set(_success_keys_after_audit(
-                        pair_name, pair_files, m_list, c_list))
-                    # 用 pair_files 正向拼 key，不用 split(":",1) 反解析 ——
-                    # 任务名本身可能含冒号（paths.split_pair_key 已注明）。
-                    watchable_keys: List[str] = []
-                    for rel_p in pair_files:
-                        k = f"{pair_name}:{rel_p}"
-                        if k not in succeeded_keys:
-                            if k in cd2_blocked_keys:
-                                # CD2 显示仍在传（TODO 10.5）：**留在冷却队列**，
-                                # 下一轮继续取件重传 —— 不进 failed、也不出队。
-                                # 出队会让它失去跟踪（不进 failed 又不在队列）。
-                                continue
-                            # 对账失败（v0.7.0 统一语义）：离开冷却队列，进 failed
-                            # 清单。此前 ready 失败项**留在队列里**每轮重传，
-                            # 而 backfill 失败项进异常清单后只能人工接手 ——
-                            # 两条路径的失败语义相反。现在两者都走「失败进清单、
-                            # retry 取清单候选」。
-                            # ⚠️ 只摘缓存：具体的 failed 状态由本轮结算末尾统一写
-                            # （同行改 status）；这里 pop 会删掉整行。
-                            _store_mod.forget_key(self._pending_queue, k)
-                            continue
-                        # ⚠️ 成功离开冷却队列是**状态迁移**，不是删行。
-                        # 可观察的：这里只摘缓存，随后 arm_watch 把同一行改成
-                        #   pending_verify（正交列全部保留）；
-                        # 不可观察的（字幕 / 未配 strm_dir / 已忽略）：直接落终态
-                        #   done，并记下 synced_at —— 它们确实传成功了，只是没有
-                        #   strm 可验证，不该因此从台账里消失。
-                        # 此前一律 pop（DELETE）再由 arm_watch 插一行全新的，
-                        # ingest_source / src_mtime / 冷却基准全部丢失。
-                        ok, _skip_code, _skip_text = self._strm_watchable(k)
-                        if ok and not self._is_ignored(k):
-                            watchable_keys.append(k)
-                            _store_mod.forget_key(self._pending_queue, k)
-                        else:
-                            _store_mod.retire_key(self._pending_queue, k,
-                                                  synced_at=time.time())
-                        logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
+                # ⚠️ ready 与 retry 的结算共用 `_settle_candidate_batch`
+                # （v0.8.7，修 2026-11-14 实测缺陷）：此前结算写在 ready 分支里，
+                # retry（看板批量直传 `/sync_item` 的模式）只调 arm_watch ——
+                # 而它对非视频文件直接跳过，于是那批行的台账 status 永远停在
+                # candidate：行不在缓存 → ready 巡检取不到件 → 看板「冷却队列」
+                # 挂死直到插件重载。抽成共享方法后两处不可能再分叉。
+                if mode in ("ready", "retry"):
+                    watchable_keys = self._settle_candidate_batch(
+                        pair_name, pair_files, m_list, c_list, cd2_blocked_keys)
                     # strm 交叉验证：登记待观察（有 strm_dir 的映射才实际生效）
                     if watchable_keys:
                         armed = self._strm_arm_watch(sorted(watchable_keys))
                         if armed:
                             logger.info(f"[Rsync115Sync] [{pair_name}] 📺 已登记 {armed} 个文件进入 "
                                         f"strm 观察期（{self._strm_grace_minutes} 分钟内未生成 strm 将标记疑似异常）")
-
-                # 重试模式成功：同样登记 strm 观察（重传后自动复核 strm 是否生成，
-                # 生成即自动解除疑点，无需用户再确认）
-                if mode == "retry":
-                    succeeded_retry = _success_keys_after_audit(
-                        pair_name, pair_files, m_list, c_list)
-                    if succeeded_retry:
-                        self._strm_arm_watch(succeeded_retry)
 
                 # 补传模式：无论本批成功与否都从补传队列移除
                 # （失败的会进入 missing/corrupt 清单，由 /rsync_retry 接手，

@@ -75,6 +75,7 @@ from .paths import (  # noqa: E402
     excluded_dir_names as _excluded_dir_names,
     pair_name as _pair_name,
     rel_path_of_key as _rel_path_of_key,
+    success_keys_after_audit as _success_keys_after_audit,
     valid_exts_of as _valid_exts_of,
 )
 
@@ -423,6 +424,69 @@ class StrmOpsMixin:
             logger.debug(f"[Rsync115Sync] 📺 已跳过 {skipped_non_video} 个非视频文件"
                          f"（字幕/图片等永远不会生成 strm，不纳入交叉验证）")
         return armed
+
+    def _settle_candidate_batch(self, pair_name: str, pair_files: List[str],
+                                m_list: List[str], c_list: List[str],
+                                cd2_blocked_keys: set) -> List[str]:
+        """
+        对账后对**冷却队列行**做统一出队结算（ready / retry 共用）。
+
+        Settle candidate rows after the audit — shared by ready & retry.
+
+        ## 为什么 retry 也需要它（2026-11-14 用户实测缺陷）
+
+        看板「批量直接同步」走 `/sync_item` → `mode="retry"` + custom_files，
+        并先把所选 key 从队列**缓存**摘掉（行仍是 candidate）。retry 轮此前的
+        结算只有 `_strm_arm_watch`，而 arm_watch 对**非视频文件直接跳过** ——
+        于是 16 个 nfo/jpg 传完后既没落终态、也没人再写这一行；行不在缓存 →
+        ready 巡检永远取不到件 → 它们以 candidate 挂死在「冷却队列」里，
+        直到插件重载缓存重建才被自愈。ready 路径的结算写在 `__init__.py`
+        的 `mode == "ready"` 分支里，retry 够不着它。
+
+        ## 结算语义（与 ready 分支逐字同口径）
+
+          · 对账**失败**且未被 CD2 hold：只摘缓存 —— failed 状态由结算末尾
+            统一写（同行改 status）；CD2 hold 的**留在队列**继续跟踪。
+          · 对账**成功**且可观察（视频 + 未忽略）：摘缓存，返回给调用方交给
+            `_strm_arm_watch`（arm_watch 把行改成 pending_verify）。
+          · 对账**成功**但不可观察（非视频 / 未配 strm_dir / 已忽略）：落终态
+            `done` 并记 `synced_at`。⚠️ 此刻行可能**不在缓存**（`/sync_item`
+            已摘过）—— `retire_key` 对缓存外 key 返回 False 不写行，必须显式
+            `ledger.upsert(DONE)` 兜底；写前查一次现 status，避免把已经
+            pending_verify / suspect 的行倒退覆盖。
+          · 三种成功的「摘缓存」都用 forget/retire —— 绝不 pop（pop = 删行）。
+
+        :returns: 需要登记 strm 观察的 key 列表（调用方传给 `_strm_arm_watch`）
+        """
+        succeeded_keys = set(_success_keys_after_audit(
+            pair_name, pair_files, m_list, c_list))
+        watchable_keys: List[str] = []
+        now_ts = time.time()
+        for rel_p in pair_files:
+            k = f"{pair_name}:{rel_p}"
+            if k not in succeeded_keys:
+                if k in cd2_blocked_keys:
+                    # CD2 显示仍在传（TODO 10.5）：留在冷却队列，下一轮继续
+                    # 取件重传 —— 不进 failed、也不出队（出队会失去跟踪）。
+                    continue
+                # 对账失败：离开冷却队列（只摘缓存，failed 由结算末尾统一写）
+                _store_mod.forget_key(self._pending_queue, k)
+                continue
+            ok, _skip_code, _skip_text = self._strm_watchable(k)
+            if ok and not self._is_ignored(k):
+                watchable_keys.append(k)
+                _store_mod.forget_key(self._pending_queue, k)
+            else:
+                if not _store_mod.retire_key(self._pending_queue, k,
+                                             synced_at=now_ts):
+                    # 缓存里没有（/sync_item 已摘、或本视图本来就没载入它）。
+                    # 行若存在且仍是 candidate，直接落终态 —— 它确实传成功了。
+                    ledger = getattr(self, "_ledger", None)
+                    row = ledger.get(k) if ledger is not None else None
+                    if row is not None and str(row.get("status")) == _store_mod.STATUS_CANDIDATE:
+                        ledger.upsert(k, _store_mod.STATUS_DONE, synced_at=now_ts)
+            logger.info(f"[Rsync115Sync] [{pair_name}] 🧊 已移出冷却队列: {rel_p}")
+        return watchable_keys
 
     def _strm_check(self) -> Dict[str, Any]:
         """

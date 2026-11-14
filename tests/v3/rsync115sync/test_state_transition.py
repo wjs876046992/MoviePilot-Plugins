@@ -294,9 +294,22 @@ def test_retry_candidates_come_from_the_failed_view():
 
 
 def test_ready_failure_leaves_the_cooling_queue_without_deleting_the_row():
-    """ready 失败项离开冷却队列时只摘缓存 —— pop 会删掉整行。"""
+    """
+    冷却队列结算离开时只摘缓存 —— pop 会删掉整行。
+
+    ⚠️ v0.8.7 起结算收口在 `_settle_candidate_batch`（ready/retry 共用，
+    修 2026-11-14 生产缺陷），哨兵随之搬到这里 —— `_execute_sync` 里不再
+    直接出现结算调用。两处都要守：共享方法不得 pop，`_execute_sync` 不得
+    把结算写回本地分支。
+    """
+    settle_body = _func_src("strm_ops.py", "_settle_candidate_batch")
+    assert "forget_key(self._pending_queue" in settle_body, (
+        "_settle_candidate_batch 不再用 forget_key 摘缓存 —— pop 会删整行")
+    assert "pop(self._pending_queue" not in settle_body, (
+        "结算里出现了 pop(self._pending_queue) —— 那是 DELETE 整行")
     body = _func_src("__init__.py", "_execute_sync")
-    assert "forget_key(self._pending_queue" in body
+    assert "_settle_candidate_batch" in body, (
+        "_execute_sync 的 ready/retry 结算没有走共享方法 —— 两处会分叉")
 
 
 def test_scheduled_cycle_retries_failed_files():
