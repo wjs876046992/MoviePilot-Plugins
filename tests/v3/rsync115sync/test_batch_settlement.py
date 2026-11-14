@@ -196,8 +196,10 @@ def test_ready_mode_selects_by_cooldown_basis():
     )
     # 出账仍必须晚于 rsync 真正执行：Popen 失败/超时的条目若提前出队，
     # 会既没传、又没进异常清单，静默丢失（这是 v0.2.1 修过的那一类）。
+    # ⚠️ v0.8.7 起出账结算收口在 `_settle_candidate_batch`（ready/retry 共用），
+    # `_execute_sync` 里的顺序断言改为「Popen → 结算调用」。
     popen_idx = src.index("subprocess.Popen")
-    settle_idx = src.index("succeeded_keys = set(")
+    settle_idx = src.index("self._settle_candidate_batch(")
     assert settle_idx > popen_idx, (
         "冷却队列出账早于 rsync 执行：Popen 失败/超时的条目会既没传、又没进异常清单"
     )
