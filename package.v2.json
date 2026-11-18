@@ -166,7 +166,7 @@
     "name": "站点自动签到",
     "description": "自动模拟登录、签到站点。",
     "labels": "站点",
-    "version": "2.9.15",
+    "version": "2.9.17",
     "system_version": "<=3.1.5",
     "icon": "signin.png",
     "author": "thsrite",
@@ -174,6 +174,8 @@
     "v3": true,
     "release": true,
     "history": {
+      "v2.9.17": "修复U2提交后未识别跳转脚本便跳过签到确认；始终回读当天状态，未确认时最多延时重试两次且不重复提交答题",
+      "v2.9.16": "修复U2历史查询表单导致签到结果恒未确认，改用明确当天完成提示，避免昨日导航误报今日已签到；答题参数与按钮仅从真实答题表单提取",
       "v2.9.15": "修复空周期随机签到只保留一次及重载后当天漏签，持久化当天计划并保证服务任务唯一",
       "v2.9.14": "修复PTZONE升级后签到失效，改用POST提交并校验登录和签到完成状态，避免假成功",
       "v2.9.13": "修复学校(btschool)一次性到账提示未识别导致的签到误报；馒头(m-team)按前端接口生成签名更新访问时间，需在站点配置Token中填写浏览器登录态",
@@ -320,16 +322,19 @@
   },
   "FFmpegThumb": {
     "name": "FFmpeg缩略图",
-    "description": "TheMovieDb没有背景图片时使用FFmpeg截取视频文件缩略图",
+    "description": "为缺少分集剧照的视频截取画面作为分集缩略图，已有分集图片时不重复生成",
     "labels": "刮削",
-    "version": "2.1",
+    "version": "2.3",
     "icon": "ffmpeg.png",
     "author": "jxxghp",
     "level": 1,
     "history": {
+      "v2.3": "跳过已有剧照与蓝光原盘，优化截帧定位；修复空排除目录、亚秒短片及空图片判定，补充失败日志和回归测试。",
+      "v2.2": "跳过已有分集图片与蓝光原盘（iso/BDMV），短剧自动前移截取点，截取时间参数前置提速，失败写入日志",
       "v2.1": "优化执行周期输入，需要MoviePilot v2.2.1+",
       "v2.0": "兼容MoviePilot V2 版本"
-    }
+    },
+    "release": true
   },
   "LibraryScraper": {
     "v3": false,
@@ -1034,6 +1039,7 @@
     "description": "根据 Trakt 播放记录，自动清理下载器中已观看的种子。",
     "labels": "Trakt,清理",
     "version": "1.4",
+    "v3": false,
     "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/trakt.png",
     "author": "Guoyin-Wen",
     "level": 1,
@@ -1140,6 +1146,7 @@
     "description": "下载剧集时自动给任务打集数标签（E01、E02-03），连续集数按阈值合并，前缀/分隔符可配，修改配置自动刷新存量标签，qB/Tr 通用",
     "labels": "下载管理",
     "version": "1.3",
+    "v3": false,
     "icon": "Youtube-dl_B.png",
     "author": "devin",
     "level": 1,
@@ -1155,6 +1162,7 @@
     "description": "自动为下载任务打上 PT 站点促销标签（免费/2X免费/50%/2X 等），限时促销到期后自动移除；支持兜底扫描补全手动添加的种子。",
     "labels": "下载,标签",
     "version": "1.0",
+    "v3": false,
     "icon": "seed.png",
     "author": "devin",
     "level": 1,
