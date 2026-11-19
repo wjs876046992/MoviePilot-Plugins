@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import MutableMapping
 from pathlib import Path
@@ -601,45 +602,55 @@ class LedgerFieldMap(MutableMapping):
     def __init__(self, ledger: "Store", field: str):
         self._ledger = ledger
         self._field = field
+        self._lock = threading.RLock()
         self._cache: Dict[str, float] = {}
         self._load()
 
     def _load(self) -> None:
-        self._cache = {}
-        if self._ledger is None or not getattr(self._ledger, "usable", False):
-            return
-        for row in self._ledger._query(
-                f"SELECT key, {self._field} AS v FROM files WHERE {self._field} IS NOT NULL"):
-            try:
-                self._cache[str(row["key"])] = float(row["v"])
-            except (TypeError, ValueError):
-                continue
+        with self._lock:
+            self._cache = {}
+            if self._ledger is None or not getattr(self._ledger, "usable", False):
+                return
+            for row in self._ledger._query(
+                    f"SELECT key, {self._field} AS v FROM files WHERE {self._field} IS NOT NULL"):
+                try:
+                    self._cache[str(row["key"])] = float(row["v"])
+                except (TypeError, ValueError):
+                    continue
 
     def reload(self) -> None:
         self._load()
 
     # ---- MutableMapping ------------------------------------------------
     def __getitem__(self, key: str) -> float:
-        return self._cache[key]
+        with self._lock:
+            return self._cache[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
         try:
             ts = float(value)
         except (TypeError, ValueError):
             return
-        self._cache[key] = ts
+        with self._lock:
+            self._cache[key] = ts
         if self._ledger is not None:
             self._ledger.set_field(key, self._field, ts)
 
     def __delitem__(self, key: str) -> None:
-        self._cache.pop(key, None)
+        with self._lock:
+            self._cache.pop(key, None)
         if self._ledger is not None:
             self._ledger.clear_field(key, self._field)
 
     def pop(self, key, *args):
         """与 `LedgerMapping.pop` 同一理由：`q.pop(k, None)` 必须不抛异常。"""
-        if key in self._cache:
-            value = self._cache.pop(key)
+        with self._lock:
+            if key in self._cache:
+                value = self._cache.pop(key)
+                existed = True
+            else:
+                existed = False
+        if existed:
             if self._ledger is not None:
                 self._ledger.clear_field(key, self._field)
             return value
@@ -648,16 +659,19 @@ class LedgerFieldMap(MutableMapping):
         raise KeyError(key)
 
     def setdefault(self, key, default=None):
-        if key in self._cache:
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
         self[key] = default
         return default
 
     def clear(self) -> None:
-        for key in list(self._cache):
+        with self._lock:
+            keys = list(self._cache)
+            self._cache.clear()
+        for key in keys:
             if self._ledger is not None:
                 self._ledger.clear_field(key, self._field)
-        self._cache.clear()
 
     def update(self, other=(), **kwargs) -> None:      # type: ignore[override]
         items = dict(other, **kwargs) if other else dict(**kwargs)
@@ -665,25 +679,32 @@ class LedgerFieldMap(MutableMapping):
             self[k] = v
 
     def keys(self):
-        return self._cache.keys()
+        with self._lock:
+            return self._cache.copy().keys()
 
     def values(self):
-        return self._cache.values()
+        with self._lock:
+            return self._cache.copy().values()
 
     def items(self):
-        return self._cache.items()
+        with self._lock:
+            return self._cache.copy().items()
 
     def get(self, key, default=None):
-        return self._cache.get(key, default)
+        with self._lock:
+            return self._cache.get(key, default)
 
     def __iter__(self):
-        return iter(self._cache)
+        with self._lock:
+            return iter(list(self._cache))
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
     def __contains__(self, key: object) -> bool:
-        return key in self._cache
+        with self._lock:
+            return key in self._cache
 
     def __repr__(self) -> str:
         return f"<LedgerFieldMap {self._field} n={len(self._cache)}>"
@@ -748,6 +769,7 @@ class LedgerMapping(MutableMapping):
         self._ts_field = ts_field
         self._extra = dict(extra_from_value or {})
         self._events = dict(events or {})
+        self._lock = threading.RLock()
         self._cache: Dict[str, Any] = {}
         self._load()
 
@@ -787,11 +809,12 @@ class LedgerMapping(MutableMapping):
     # ---- 载入 --------------------------------------------------------
     def _load(self) -> None:
         """从台账重建内存缓存。台账不可用时留空缓存（降级为空集合）。"""
-        self._cache = {}
-        if self._ledger is None or not getattr(self._ledger, "usable", False):
-            return
-        for row in self._ledger.by_status(self._status):
-            self._cache[str(row["key"])] = self._row_to_value(row)
+        with self._lock:
+            self._cache = {}
+            if self._ledger is None or not getattr(self._ledger, "usable", False):
+                return
+            for row in self._ledger.by_status(self._status):
+                self._cache[str(row["key"])] = self._row_to_value(row)
 
     def reload(self) -> None:
         """外部改过台账后重新载入（跨实例共享同一台账时用）。"""
@@ -839,10 +862,12 @@ class LedgerMapping(MutableMapping):
 
     # ---- MutableMapping 接口 ----------------------------------------
     def __getitem__(self, key: str) -> Any:
-        return self._cache[key]
+        with self._lock:
+            return self._cache[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        self._cache[key] = value
+        with self._lock:
+            self._cache[key] = value
         self._note(key, value)
         if self._ledger is None:
             return
@@ -856,8 +881,9 @@ class LedgerMapping(MutableMapping):
             pass
 
     def __delitem__(self, key: str) -> None:
-        existed = key in self._cache
-        self._cache.pop(key, None)
+        with self._lock:
+            existed = key in self._cache
+            self._cache.pop(key, None)
         if existed and self._events and self._ledger is not None:
             # 离场也记一条，并把**从哪个队列走的**写进 detail。
             #
@@ -877,20 +903,25 @@ class LedgerMapping(MutableMapping):
             self._ledger.delete(key)
 
     def __iter__(self):
-        return iter(self._cache)
+        with self._lock:
+            return iter(list(self._cache))
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
     def __contains__(self, key: object) -> bool:
-        return key in self._cache
+        with self._lock:
+            return key in self._cache
 
     def clear(self) -> None:
         """清空该状态的全部条目（只删本状态的行，不动其它状态）。"""
-        for key in list(self._cache):
+        with self._lock:
+            keys = list(self._cache)
+            self._cache.clear()
+        for key in keys:
             if self._ledger is not None:
                 self._ledger.delete(key)
-        self._cache.clear()
 
     def forget(self, key: str) -> bool:
         """
@@ -902,10 +933,11 @@ class LedgerMapping(MutableMapping):
         Cache-only eviction. pop would DELETE the row that the target view just
         wrote, taking every orthogonal column with it.
         """
-        if key in self._cache:
-            self._cache.pop(key, None)
-            return True
-        return False
+        with self._lock:
+            if key in self._cache:
+                self._cache.pop(key, None)
+                return True
+            return False
 
     def retire(self, key: str, **fields: Any) -> bool:
         """
@@ -920,9 +952,10 @@ class LedgerMapping(MutableMapping):
         随媒体库无界增长，而 `trim_events` 的按 key 窗口函数要在每次加载时
         扫全表。
         """
-        if key not in self._cache:
-            return False
-        self._cache.pop(key, None)
+        with self._lock:
+            if key not in self._cache:
+                return False
+            self._cache.pop(key, None)
         if self._ledger is not None:
             self._ledger.upsert(key, STATUS_DONE, **fields)
             self._ledger._write("DELETE FROM events WHERE key = ?", (key,))
@@ -935,8 +968,13 @@ class LedgerMapping(MutableMapping):
         对**不存在的 key 抛 KeyError**，而本插件到处在用 `q.pop(k, None)`
         ——语义上应当与 dict 完全一致。直接代理到缓存即可。
         """
-        if key in self._cache:
-            value = self._cache.pop(key)
+        with self._lock:
+            if key in self._cache:
+                value = self._cache.pop(key)
+                existed = True
+            else:
+                existed = False
+        if existed:
             if self._events and self._ledger is not None:
                 self._ledger.log_event(key, "dequeue", self._status)
             if self._ledger is not None:
@@ -953,22 +991,27 @@ class LedgerMapping(MutableMapping):
             self[k] = v
 
     def setdefault(self, key, default=None):
-        if key in self._cache:
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
         self[key] = default
         return default
 
     def keys(self):
-        return self._cache.keys()
+        with self._lock:
+            return self._cache.copy().keys()
 
     def values(self):
-        return self._cache.values()
+        with self._lock:
+            return self._cache.copy().values()
 
     def items(self):
-        return self._cache.items()
+        with self._lock:
+            return self._cache.copy().items()
 
     def get(self, key, default=None):
-        return self._cache.get(key, default)
+        with self._lock:
+            return self._cache.get(key, default)
 
     def __repr__(self) -> str:
         return f"<LedgerMapping {self._status} n={len(self._cache)}>"

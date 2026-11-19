@@ -3608,7 +3608,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         # 会贡献一个负的剩余量，把结果压成 0 —— 消息里就出现了
         # 「1 个仍在冷却中（最快还需约 0 分钟）」这种自相矛盾的话
         # （实测：那个文件实际还有 4 小时）。已就绪的条目本来也不该参与这个数。
-        remaining = [threshold - (now_ts - basis) for basis in self._pending_queue.values()]
+        remaining = [threshold - (now_ts - basis) for basis in list((self._pending_queue or {}).values())]
         pending_remainders = [r for r in remaining if r > 0]
         cooling_min = max(0, int(min(pending_remainders, default=0) / 60))
 
@@ -4003,7 +4003,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         """
         now_ts = time.time()
         threshold = self._delay_hours * 3600
-        for basis_ts in (self._pending_queue or {}).values():
+        for basis_ts in list((self._pending_queue or {}).values()):
             try:
                 if now_ts - float(basis_ts) >= threshold:
                     return True
