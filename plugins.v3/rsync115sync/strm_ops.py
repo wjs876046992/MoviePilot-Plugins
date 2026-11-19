@@ -1848,7 +1848,9 @@ class StrmOpsMixin:
         The pruning lives in the shared `_check_watch_now`, not here: doing it only
         at this endpoint made the dashboard and the chat command disagree.
         """
-        res = self._check_watch_now((body or {}).get("keys") or [])
+        payload = body or {}
+        keys = list(self._strm_watch.keys()) if payload.get("all") else (payload.get("keys") or [])
+        res = self._check_watch_now(keys)
         data = res.get("data") or {}
         cooling = data.get("cooling_pruned") or []
         resolved = data.get("resolved_suspects") or []
@@ -1899,7 +1901,8 @@ class StrmOpsMixin:
 
         只接受已在疑似清单中的 key（与 /strm_retry 同一道越权护栏）。
         """
-        keys = (body or {}).get("keys") or []
+        payload = body or {}
+        keys = list(self._strm_suspects.keys()) if payload.get("all") else (payload.get("keys") or [])
         if not keys:
             return {"success": False, "message": "未指定要补生成的文件"}
         allowed = [k for k in keys if k in self._strm_suspects]
@@ -2049,7 +2052,8 @@ class StrmOpsMixin:
         """
         if self._is_running:
             return {"success": False, "message": "已有任务正在运行，请稍后再试"}
-        keys = body.get("keys") or []
+        payload = body or {}
+        keys = list(self._strm_suspects.keys()) if payload.get("all") else (payload.get("keys") or [])
         if not keys:
             return {"success": False, "message": "未指定要重传的文件"}
         # 只允许对疑似清单里的 key 操作，防止越权构造任意路径

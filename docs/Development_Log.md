@@ -6,6 +6,7 @@
 
 ## 目录（按日期倒序）
 
+- 2026-11-18（Rsync115Sync 看板真实后端分页与首页/末页/跳转改造 v0.8.8）
 - 2026-11-14（DynamicWeChat 收敛：审查修复与状态谱系）
 - 2026-11-12（DynamicWeChat DDNS 分支状态漏写）
 - 2026-11-11（Rsync115Sync 疑似条目标注 CD2 失败）
@@ -21,6 +22,18 @@
 - 2026-11-08
 - 2026-11-05
 - 2026-09-14
+
+---
+
+## 2026-11-18（Rsync115Sync 看板真实后端分页与首页/末页/跳转改造 v0.8.8）
+
+**分支：** `main`
+**涉及插件：** Rsync115Sync
+
+- **真实后端分页**：`store.py` 新增 `count_candidate_split`、`count_where`、`query_where`，`__init__.py` 的 `_api_get_items` 与 `_api_get_ignored` 支持 `page` + `page_size=30` 的 SQL `LIMIT/OFFSET` 与切片分页，按当前激活标签页按需拉取，并保持 `page_size=0` 向后兼容；`_api_get_status` 补充 `ignored_total`。
+- **全量操作兜底**：`strm_ops.py` 的 `_api_strm_check`、`_api_strm_generate`、`_api_strm_retry` 支持 `all: true` 参数，避免分页后“全部检查 / 先尝试生成 / 全部删旧重传”遗漏非当前页条目。
+- **前端分页条与状态修复**：`Page.vue` 每页改为 30 条，修复 `strmPaged` 分页条此前误绑 `paged` 的问题，5 个列表分页条均补齐「首页」「末页」「跳至 N 页 [跳转]」控件；跨页勾选保留 `selectedStateMap` 以便准确分流 `strm_retry` 与 `sync_item`。
+- **版本更新**：`0.8.7` → `0.8.8`。
 
 ---
 

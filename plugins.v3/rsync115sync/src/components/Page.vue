@@ -415,7 +415,7 @@
                 radius-sm
                 :loading="batchSyncing"
                 :disabled="!selectedKeys.length || statusData.is_running"
-                @click="ignoreStrmSuspects(selectedKeys.filter((k) => strmSuspectKeys.includes(k)))"
+                @click="ignoreStrmSuspects(selectedKeys.filter((k) => isSuspectSelected(k)))"
               >
                 <v-icon start size="16">mdi-eye-off-outline</v-icon>
                 忽略选中 ({{ strmSelectedCount }})
@@ -498,7 +498,7 @@
         <v-tabs v-model="currentTab" color="primary" density="compact" show-arrows class="mb-3 border-b">
           <v-tab value="queue">
             <v-icon start size="16">mdi-timer-sand</v-icon>
-            入库延迟冷却队列 ({{ queueList.length }})
+            入库延迟冷却队列 ({{ queueTabCount }})
           </v-tab>
           <v-tab value="failed">
             <v-icon start size="16">mdi-alert-circle-outline</v-icon>
@@ -506,7 +506,7 @@
           </v-tab>
           <v-tab value="ignored">
             <v-icon start size="16">mdi-eye-off-outline</v-icon>
-            已忽略 ({{ ignoredList.length }})
+            已忽略 ({{ ignoredTabCount }})
           </v-tab>
         </v-tabs>
 
@@ -522,7 +522,7 @@
                   hide-details
                   color="primary"
                   class="flex-shrink-0 mr-2"
-                  @update:model-value="toggleSelect(item.key)"
+                  @update:model-value="toggleSelect(item.key, item.state)"
                 ></v-checkbox>
                 <div class="overflow-hidden">
                   <div class="font-weight-bold text-body-2 text-truncate">{{ item.key }}</div>
@@ -564,12 +564,19 @@
               </div>
             </div>
           </div>
-          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <!-- 分页条：冷却队列（后端分页 + 首页/末页/跳转） -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
-              @click="paged.pageRef.value = paged.page - 1"
+              @click="goToPage('queue', paged.pageRef, 1, paged.pages)"
+            >
+              <v-icon start size="16">mdi-page-first</v-icon>首页
+            </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="goToPage('queue', paged.pageRef, paged.page - 1, paged.pages)"
             >
               <v-icon start size="16">mdi-chevron-left</v-icon>上一页
             </v-btn>
@@ -580,10 +587,35 @@
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
-              @click="paged.pageRef.value = paged.page + 1"
+              @click="goToPage('queue', paged.pageRef, paged.page + 1, paged.pages)"
             >
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="goToPage('queue', paged.pageRef, paged.pages, paged.pages)"
+            >
+              末页<v-icon end size="16">mdi-page-last</v-icon>
+            </v-btn>
+            <div class="pager-jump d-flex align-center ga-1">
+              <span class="text-caption text-medium-emphasis">跳至</span>
+              <input
+                v-model="jumpInputs.queue"
+                type="number"
+                min="1"
+                :max="paged.pages"
+                class="pager-jump-input"
+                @keyup.enter="goToPage('queue', paged.pageRef, jumpInputs.queue, paged.pages)"
+              />
+              <span class="text-caption text-medium-emphasis">页</span>
+              <v-btn
+                size="x-small" variant="tonal" color="primary" radius-sm class="pager-btn"
+                @click="goToPage('queue', paged.pageRef, jumpInputs.queue, paged.pages)"
+              >
+                跳转
+              </v-btn>
+            </div>
           </div>
           <!-- 空态显式绑定清单长度：不要用 v-else 挂在分页条上 —— 那会让
                「单页数据」时同时显示条目与空态（已忽略标签曾因此自相矛盾） -->
@@ -606,7 +638,7 @@
                   hide-details
                   color="primary"
                   class="flex-shrink-0 mr-2"
-                  @update:model-value="toggleSelect(entry.file)"
+                  @update:model-value="toggleSelect(entry.file, 'broken')"
                 ></v-checkbox>
                 <div class="overflow-hidden">
                   <div
@@ -657,12 +689,19 @@
               </div>
             </div>
           </div>
-          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <!-- 分页条：对账异常列表（后端分页 + 首页/末页/跳转） -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
-              @click="paged.pageRef.value = paged.page - 1"
+              @click="goToPage('failed', paged.pageRef, 1, paged.pages)"
+            >
+              <v-icon start size="16">mdi-page-first</v-icon>首页
+            </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="goToPage('failed', paged.pageRef, paged.page - 1, paged.pages)"
             >
               <v-icon start size="16">mdi-chevron-left</v-icon>上一页
             </v-btn>
@@ -673,10 +712,35 @@
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
-              @click="paged.pageRef.value = paged.page + 1"
+              @click="goToPage('failed', paged.pageRef, paged.page + 1, paged.pages)"
             >
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="goToPage('failed', paged.pageRef, paged.pages, paged.pages)"
+            >
+              末页<v-icon end size="16">mdi-page-last</v-icon>
+            </v-btn>
+            <div class="pager-jump d-flex align-center ga-1">
+              <span class="text-caption text-medium-emphasis">跳至</span>
+              <input
+                v-model="jumpInputs.failed"
+                type="number"
+                min="1"
+                :max="paged.pages"
+                class="pager-jump-input"
+                @keyup.enter="goToPage('failed', paged.pageRef, jumpInputs.failed, paged.pages)"
+              />
+              <span class="text-caption text-medium-emphasis">页</span>
+              <v-btn
+                size="x-small" variant="tonal" color="primary" radius-sm class="pager-btn"
+                @click="goToPage('failed', paged.pageRef, jumpInputs.failed, paged.pages)"
+              >
+                跳转
+              </v-btn>
+            </div>
           </div>
           <div v-if="!failedCount" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center">
             <v-icon size="32" color="success" class="mb-2">mdi-shield-check</v-icon>
@@ -849,9 +913,9 @@
                  strm 出来了（刚跑完生成任务），却只能干等下一轮巡检（最长 30 分钟）。
                  补生成之后的等待尤其需要这个按钮：助手是异步长任务，用户想知道
                  「到底出来了没」只能靠它。 -->
-            <div v-if="strmWatchingEntries.length" class="d-flex align-center flex-wrap ga-2 mb-2">
+            <div v-if="watchingCount" class="d-flex align-center flex-wrap ga-2 mb-2">
               <span class="text-caption text-medium-emphasis">
-                观察期 {{ strmWatchingEntries.length }} 个文件
+                观察期 {{ watchingCount }} 个文件
               </span>
               <v-btn
                 size="x-small"
@@ -864,7 +928,7 @@
                 <v-icon start size="14">mdi-refresh</v-icon>
                 立即检查全部
                 <v-tooltip activator="parent" location="top" max-width="320">
-                  立刻比对这 {{ strmWatchingEntries.length }} 个文件的 .strm 是否已生成，
+                  立刻比对这 {{ watchingCount }} 个文件的 .strm 是否已生成，
                   不必等下一轮巡检（最长 30 分钟）。纯本地读取，不访问 115。
                   已生成的会即时解除观察；宽限期已过的会转入疑似清单。
                 </v-tooltip>
@@ -930,7 +994,7 @@
                     hide-details
                     color="warning"
                     class="flex-shrink-0 mr-2"
-                    @update:model-value="toggleSelect(key)"
+                    @update:model-value="toggleSelect(key, 'suspect')"
                   ></v-checkbox>
                   <div class="overflow-hidden">
                     <div class="font-weight-bold text-body-2 text-warning text-truncate">{{ key }}</div>
@@ -1031,7 +1095,14 @@
               <v-btn
                 size="small" variant="text" radius-sm class="pager-btn"
                 :disabled="watchingPaged.page <= 1"
-                @click="watchingPaged.pageRef.value = watchingPaged.page - 1"
+                @click="goToPage('watching', watchingPaged.pageRef, 1, watchingPaged.pages)"
+              >
+                <v-icon start size="16">mdi-page-first</v-icon>首页
+              </v-btn>
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="watchingPaged.page <= 1"
+                @click="goToPage('watching', watchingPaged.pageRef, watchingPaged.page - 1, watchingPaged.pages)"
               >
                 <v-icon start size="16">mdi-chevron-left</v-icon>上一页
               </v-btn>
@@ -1042,31 +1113,88 @@
               <v-btn
                 size="small" variant="text" radius-sm class="pager-btn"
                 :disabled="watchingPaged.page >= watchingPaged.pages"
-                @click="watchingPaged.pageRef.value = watchingPaged.page + 1"
+                @click="goToPage('watching', watchingPaged.pageRef, watchingPaged.page + 1, watchingPaged.pages)"
               >
                 下一页<v-icon end size="16">mdi-chevron-right</v-icon>
               </v-btn>
-            </div>
-            <!-- 通用分页条：strm 独立成标签后与其它三个标签共用 paged 的绑定 -->
-            <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
               <v-btn
                 size="small" variant="text" radius-sm class="pager-btn"
-                :disabled="paged.page <= 1"
-                @click="paged.pageRef.value = paged.page - 1"
+                :disabled="watchingPaged.page >= watchingPaged.pages"
+                @click="goToPage('watching', watchingPaged.pageRef, watchingPaged.pages, watchingPaged.pages)"
+              >
+                末页<v-icon end size="16">mdi-page-last</v-icon>
+              </v-btn>
+              <div class="pager-jump d-flex align-center ga-1">
+                <span class="text-caption text-medium-emphasis">跳至</span>
+                <input
+                  v-model="jumpInputs.watching"
+                  type="number"
+                  min="1"
+                  :max="watchingPaged.pages"
+                  class="pager-jump-input"
+                  @keyup.enter="goToPage('watching', watchingPaged.pageRef, jumpInputs.watching, watchingPaged.pages)"
+                />
+                <span class="text-caption text-medium-emphasis">页</span>
+                <v-btn
+                  size="x-small" variant="tonal" color="primary" radius-sm class="pager-btn"
+                  @click="goToPage('watching', watchingPaged.pageRef, jumpInputs.watching, watchingPaged.pages)"
+                >
+                  跳转
+                </v-btn>
+              </div>
+            </div>
+            <!-- strm 疑似清单分页条（独立绑定 strmPaged，修复此前误绑 paged 的问题） -->
+            <div v-if="strmPaged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="strmPaged.page <= 1"
+                @click="goToPage('strm', strmPaged.pageRef, 1, strmPaged.pages)"
+              >
+                <v-icon start size="16">mdi-page-first</v-icon>首页
+              </v-btn>
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="strmPaged.page <= 1"
+                @click="goToPage('strm', strmPaged.pageRef, strmPaged.page - 1, strmPaged.pages)"
               >
                 <v-icon start size="16">mdi-chevron-left</v-icon>上一页
               </v-btn>
               <span class="text-caption text-medium-emphasis">
-                第 <strong>{{ paged.page }}</strong> / {{ paged.pages }} 页 ·
-                共 {{ paged.total }} 条（每页 {{ PAGE_SIZE }} 条）
+                第 <strong>{{ strmPaged.page }}</strong> / {{ strmPaged.pages }} 页 ·
+                共 {{ strmPaged.total }} 条（每页 {{ PAGE_SIZE }} 条）
               </span>
               <v-btn
                 size="small" variant="text" radius-sm class="pager-btn"
-                :disabled="paged.page >= paged.pages"
-                @click="paged.pageRef.value = paged.page + 1"
+                :disabled="strmPaged.page >= strmPaged.pages"
+                @click="goToPage('strm', strmPaged.pageRef, strmPaged.page + 1, strmPaged.pages)"
               >
                 下一页<v-icon end size="16">mdi-chevron-right</v-icon>
               </v-btn>
+              <v-btn
+                size="small" variant="text" radius-sm class="pager-btn"
+                :disabled="strmPaged.page >= strmPaged.pages"
+                @click="goToPage('strm', strmPaged.pageRef, strmPaged.pages, strmPaged.pages)"
+              >
+                末页<v-icon end size="16">mdi-page-last</v-icon>
+              </v-btn>
+              <div class="pager-jump d-flex align-center ga-1">
+                <span class="text-caption text-medium-emphasis">跳至</span>
+                <input
+                  v-model="jumpInputs.strm"
+                  type="number"
+                  min="1"
+                  :max="strmPaged.pages"
+                  class="pager-jump-input"
+                  @keyup.enter="goToPage('strm', strmPaged.pageRef, jumpInputs.strm, strmPaged.pages)"
+                />
+                <span class="text-caption text-medium-emphasis">页</span>
+                <v-btn
+                  size="x-small" variant="tonal" color="primary" radius-sm class="pager-btn"
+                  @click="goToPage('strm', strmPaged.pageRef, jumpInputs.strm, strmPaged.pages)"
+                >
+                  跳转
+                </v-btn>
+              </div>
             </div>
           </div>
         </div>
@@ -1100,12 +1228,19 @@
               </div>
             </div>
           </div>
-          <!-- 分页条：三个标签共用，绑定各自页码 -->
+          <!-- 分页条：已忽略列表（后端分页 + 首页/末页/跳转） -->
           <div v-if="paged.pages > 1" class="pager-bar d-flex align-center justify-center flex-wrap ga-2 mt-3">
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page <= 1"
-              @click="paged.pageRef.value = paged.page - 1"
+              @click="goToPage('ignored', paged.pageRef, 1, paged.pages)"
+            >
+              <v-icon start size="16">mdi-page-first</v-icon>首页
+            </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page <= 1"
+              @click="goToPage('ignored', paged.pageRef, paged.page - 1, paged.pages)"
             >
               <v-icon start size="16">mdi-chevron-left</v-icon>上一页
             </v-btn>
@@ -1116,10 +1251,35 @@
             <v-btn
               size="small" variant="text" radius-sm class="pager-btn"
               :disabled="paged.page >= paged.pages"
-              @click="paged.pageRef.value = paged.page + 1"
+              @click="goToPage('ignored', paged.pageRef, paged.page + 1, paged.pages)"
             >
               下一页<v-icon end size="16">mdi-chevron-right</v-icon>
             </v-btn>
+            <v-btn
+              size="small" variant="text" radius-sm class="pager-btn"
+              :disabled="paged.page >= paged.pages"
+              @click="goToPage('ignored', paged.pageRef, paged.pages, paged.pages)"
+            >
+              末页<v-icon end size="16">mdi-page-last</v-icon>
+            </v-btn>
+            <div class="pager-jump d-flex align-center ga-1">
+              <span class="text-caption text-medium-emphasis">跳至</span>
+              <input
+                v-model="jumpInputs.ignored"
+                type="number"
+                min="1"
+                :max="paged.pages"
+                class="pager-jump-input"
+                @keyup.enter="goToPage('ignored', paged.pageRef, jumpInputs.ignored, paged.pages)"
+              />
+              <span class="text-caption text-medium-emphasis">页</span>
+              <v-btn
+                size="x-small" variant="tonal" color="primary" radius-sm class="pager-btn"
+                @click="goToPage('ignored', paged.pageRef, jumpInputs.ignored, paged.pages)"
+              >
+                跳转
+              </v-btn>
+            </div>
           </div>
           <div v-if="!ignoredList.length" class="empty-box d-flex flex-column align-center justify-center py-10 px-4 radius-lg text-center">
             <v-icon size="32" color="primary" class="mb-2">mdi-eye-off-outline</v-icon>
@@ -1132,7 +1292,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import CollapsibleNote from './CollapsibleNote.vue'
 
 const props = defineProps({
@@ -1204,32 +1364,42 @@ const webhookVisible = computed(() =>
   || (Number(webhookStat.value.claimed) || 0) > 0
 )
 
-const ignoredList = ref([])
-
-// 分页：每页固定条数。队列可能上百条，一次全渲染既卡顿又难浏览。
-// v0.6.0 起 `/items` 只返回活跃条目（终态 done 不再逐条下发 —— 实机台账里压着
-// 十万量级的完成记录，那才是列表规模问题的根源），活跃集合因此有界，
-// 每页放大到 50：页数少了，翻页往返也少了 —— 但**仍是分页渲染**，不是取消分页。
-// 页码按标签分别记录，切换标签不会丢失各自的位置。
-// ⚠️ 页码越界由 paginate() 就地纠偏（条目在两轮轮询之间被处理掉时，
-// 停在第 N 页会渲染出空列表而分页条还说「第 N / M 页」）。
-// Per-tab pagination state. The queue can hold hundreds of entries; rendering all
-// of them hurts both performance and readability.
-const PAGE_SIZE = 50
+// 后端真实分页：每页固定 30 条，按标签/列表独立请求 LIMIT/OFFSET。
+const PAGE_SIZE = 30
 const pageQueue = ref(1)
 const pageFailed = ref(1)
 const pageIgnored = ref(1)
-// strm 疑似清单与「对账异常」标签同屏，但数据源与长度都不同，页码必须独立
 const pageStrm = ref(1)
-// strm 标签里的**「观察中」列表**同样要分页：它是最容易变长的一段
-// （实机一次同步就登记了 90+ 个待观察文件），而宽限期到期前它只会增长。
-// 它嵌在 strm 标签内部、与疑似清单是两个独立列表，因此必须有自己的页码 ——
-// 两个列表共用一个页码时，翻疑似清单会把观察中列表一起翻走。
 const pageWatching = ref(1)
+const jumpInputs = ref({
+  queue: '1',
+  failed: '1',
+  watching: '1',
+  strm: '1',
+  ignored: '1',
+})
+
+const queuePageData = ref({ items: [], total: 0, page: 1, pages: 1, states: {}, done_total: 0 })
+const failedPageData = ref({ items: [], total: 0, page: 1, pages: 1, states: {}, done_total: 0 })
+const watchingPageData = ref({ items: [], total: 0, page: 1, pages: 1, states: {}, done_total: 0 })
+const strmPageData = ref({ items: [], total: 0, page: 1, pages: 1, states: {}, done_total: 0 })
+const ignoredPageData = ref({ items: [], total: 0, page: 1, pages: 1 })
+
+const globalStates = ref({})
+const doneTotal = ref(0)
+
+const ignoredList = computed(() => ignoredPageData.value.items || [])
+const ignoredTabCount = computed(() => {
+  const fromStatus = Number(statusData.value.ignored_total)
+  if (Number.isFinite(fromStatus) && statusData.value.ignored_total != null) return fromStatus
+  return Number(ignoredPageData.value.total) || 0
+})
+const queueTabCount = computed(() => (globalStates.value.cooling || 0) + (globalStates.value.ready || 0))
 
 // 批量选择 / 单条手动触发
 const selectMode = ref(false)
 const selectedKeys = ref([])
+const selectedStateMap = ref({})
 const itemLoading = ref('')
 const batchSyncing = ref(false)
 // 存量补传：扫描中状态
@@ -1344,62 +1514,14 @@ const progressStaleText = computed(() => {
   return `⚠️ 已 ${formatDuration(p.stale_seconds)} 没有收到 rsync 输出`
 })
 
-// 计数一律读 `/items` 的 states —— 与列表**同源**。
-// 此前计数走 `/status`、列表走 `/queue`，两条路各算各的，一旦判据漂移
-// 就会出现「角标写 3、列表里 2 条」这种自相矛盾的界面。
-const brokenCount = computed(() => itemsData.value.states.broken || 0)
-// ================= 统一条目列表（看板的唯一取数） =================
-//
-// 存储层早就统一了（`files` 表 + `status`），界面此前却按"五个清单"分别取数，
-// 于是同一份数据被切成五块、各有各的判据。`/items` 把它透成一个列表 +
-// `state` 字段，下面这些 computed 全部由它派生 —— **不再有第二个取数来源**。
-//
-// ⚠️ 保留 `queueList` / `failedEntries` 等既有名字：模板与操作函数用了一百多处，
-// 改名会让 diff 淹没真实改动。改的是**它们的来源**，不是名字。
-//
-// ⚠️ 必须声明在**所有读取它的 computed 之前**：`<script setup>` 里 const 有
-// 暂时性死区，后面的 computed 在 setup 阶段求值时读到未初始化的绑定会直接抛错
-// （表现为整个看板白屏，而不是某个数字不对）。
-// v0.6.0 起后端还带 `done_total`（累计完成数 —— 终态 done 不再逐条下发，
-// 只在 `items` 之外给这一个数；旧后端没有该字段时按 0 处理）。
-const itemsData = ref({ items: [], states: {}, done_total: 0 })
-
-/** 按 state 取条目 —— 唯一的筛选方式。 */
-function itemsByState(...states) {
-  return itemsData.value.items.filter((it) => states.includes(it.state))
-}
-
-/**
- * 累计完成数（`done_total`）。
- * 只是**聚合计数**，不是清单入口 —— 看板没有 done 标签，它也永远不该被做成可点的：
- * 数据没有下发，点进去必然是空的。
- */
-const doneTotal = computed(() => Number(itemsData.value.done_total) || 0)
-
+// 计数一律读 `/items` 返回的全局 states —— 与列表**同源**。
+const brokenCount = computed(() => globalStates.value.broken || 0)
 const failedCount = computed(() => brokenCount.value)
+const strmSuspectCount = computed(() => globalStates.value.suspect || 0)
+const watchingCount = computed(() => globalStates.value.watching || 0)
 
-// strm 疑似异常数量与 key 列表（交叉验证发现的上传可疑文件）
-const strmSuspectCount = computed(() => itemsData.value.states.suspect || 0)
-
-// 观察期计数：同样读统一列表的 states，与 strmWatchingEntries 同源。
-// 此前计数与明细分别读 /status 的两个字段 ——
-// 计数与明细是两条取数路径，一旦漂移就会出现「说 3 个在观察、只列出 2 个」。
-const watchingCount = computed(() => itemsData.value.states.watching || 0)
-
-// 观察期条目明细：显示在疑似清单上方，带「观察中」tag、不可操作。
-// 宽限期从同步成功时刻起算，这里换算出剩余时间让用户对「还要等多久」有预期；
-// 剩余时间只在每次 fetchStatus（30 秒轮询）时刷新，精度足够。
-//
-// ⚠️ 计时窗口**按基准分两种**，与后端 strm.watch_state_of 一一对应：
-//   基准 sync：宽限期配置值（刮削/入库传播延迟）
-//   基准 gen ：补生成窗口 strm_regrace_hours（等待助手遍历云端目录）
-// 后端用哪把尺子判到期，这里就必须用哪把尺子算剩余；否则会出现「看板说还剩
-// 5 小时、下一轮巡检却已判到期转疑似」—— 两边各自都自洽，用户完全无从判断
-// 该信谁，而这正是双钟问题最难排查的地方。
 const strmWatchingEntries = computed(() => {
-  // ⚠️ 来源改为统一列表（`state === 'watching'`），不再读 /status 的观察明细
-  // 与计时字段拼装 —— 那是同一件事的第二份真相，两份对不上时看板会自己跟自己矛盾。
-  const watching = itemsByState('watching')
+  const watching = watchingPageData.value.items || []
   const graceSync = (Number(statusData.value.strm_grace_minutes) || 5) * 60
   const graceGen = (Number(statusData.value.strm_regrace_hours) || 1) * 3600
   const now = Date.now() / 1000
@@ -1424,21 +1546,13 @@ const strmWatchingEntries = computed(() => {
     .sort((a, b) => a.key.localeCompare(b.key))
 })
 
-// 是否已为某个映射配置了 strm 目录。后端 /status 未返回 sync_pairs，故用
-// 「开关开启」近似判定 —— 没配 strm_dir 时扫描会返回明确的失败提示，
-// 比整个区块都不显示更容易让用户明白该怎么配置。
 const strmConfigured = computed(() => statusData.value.strm_check_enabled !== false)
-const strmSuspectKeys = computed(() => itemsByState('suspect').map((it) => it.key))
+const strmSuspectKeys = computed(() => (strmPageData.value.items || []).map((it) => it.key))
 
-// strm 助手是否就绪（运行中 + 至少一个映射配了网盘目录）。
-// 不可用时按钮置灰**并在区块内常驻说明原因** —— tooltip 在 disabled 元素上
-// 根本不会弹出（不派发鼠标事件），只放 tooltip 等于没有提示。
 const helperReady = computed(() => statusData.value.strm_helper_ok?.ready === true)
 const helperReason = computed(
   () => statusData.value.strm_helper_ok?.reason || 'strm 助手未就绪'
 )
-// 助手健康：needed 表示这台实例真的在用 strm 交叉验证（总开关开 + 至少一个映射配了
-// strm 目录）。needed=false 时一律不提示 —— 未启用该功能的用户不该看到任何相关文案。
 const helperHealthWarning = computed(() => {
   const h = statusData.value.helper_health
   return !!h && h.needed === true && h.ok !== true
@@ -1446,48 +1560,34 @@ const helperHealthWarning = computed(() => {
 const helperHealthReason = computed(
   () => statusData.value.helper_health?.reason || '未检测到 strm 助手在运行'
 )
-// 已请求过补生成的 key。
-//
-// ⚠️ 这里**不能**推论成「补生成无效 ⇒ 云端确实缺文件」。助手可能压根没执行
-// （路径不在它的「全量同步路径」里就被它直接拒绝），而拒绝提示只发给助手侧、
-// 本插件收不到 —— 那种情况下 strm 不会出现，但云端文件是完好的。
-// 把「命令已发出」当成「生成已失败」，会诱导用户去删掉一个好文件。
-// 因此标记只表达「已请求、等结果」，按钮改成「再试生成」提示可重复发起。
-// ⚠️ 来源改为统一列表的 suspect 条目（`gen_requested` 字段）。
-// 原先是 /status 的一份独立映射，与列表各算各的 —— 同一件事两份真相。
+
 const genRequested = computed(() => {
   const out = {}
-  for (const it of itemsByState('suspect')) {
-    if (it.gen_requested && it.since) out[it.key] = it.since
+  for (const it of strmPageData.value.items || []) {
+    if (it.gen_requested) out[it.key] = it.since || true
   }
   return out
 })
 
-// CD2 侧失败/暂停说明（v0.8.6）。
-//
-// 疑似清单里「还在传」的条目会被后端移出，所以留下来的若 CD2 报失败，
-// 用户最需要知道的就是「不是在等，是传失败了」。后端只在查得到时下发
-// `cd2_state_text`；查不到 / 未启用 CD2 核对时为空，界面与改造前完全一致。
 const cd2StateText = computed(() => {
   const out = {}
-  for (const it of itemsByState('suspect')) {
+  for (const it of strmPageData.value.items || []) {
     if (it.cd2_state_text) out[it.key] = it.cd2_state_text
   }
   return out
 })
 
-// 选中项中有多少属于 strm 疑似清单。
-// 用途：strm 项需要「先删旧再传」才能绕过 CD2 假成功，而普通条目绝不能删旧，
-// 因此批量按钮必须按选中项的成分决定走哪条通道，不能只看当前在哪个标签页
-// （勾选状态是跨分组保留的，用户可以在对账清单里勾选、再翻到别的分组）。
+function isSuspectSelected(key) {
+  return selectedStateMap.value[key] === 'suspect' || strmSuspectKeys.value.includes(key)
+}
+
 const strmSelectedCount = computed(
-  () => selectedKeys.value.filter((k) => strmSuspectKeys.value.includes(k)).length
+  () => selectedKeys.value.filter((k) => isSuspectSelected(k)).length
 )
 const selectedStrmOnly = computed(
   () => selectedKeys.value.length > 0 && strmSelectedCount.value === selectedKeys.value.length
 )
 
-// 是否处于风控退避期（时间戳为未来时刻）
 const isThrottled = computed(
   () => (statusData.value.upload_blocked_until || 0) * 1000 > Date.now()
 )
@@ -1495,77 +1595,46 @@ const blockedMinutes = computed(() =>
   Math.max(1, Math.ceil(((statusData.value.upload_blocked_until || 0) * 1000 - Date.now()) / 60000))
 )
 
-// 冷却队列标签 = 统一列表里 state ∈ {cooling, ready} 的那些。
-// ⚠️ 它此前是 `/queue` 返回的独立数组；现在由统一列表派生，
-// 因此**不再有第二个取数来源**（角标与列表也不可能再对不上）。
-const queueList = computed(() => itemsByState('cooling', 'ready'))
+const queueList = computed(() => queuePageData.value.items || [])
 
 let timer = null
 
-// ---- 分页工具 ----
-// 三个标签共用同一套切片/页码纠偏逻辑，只在外面绑定各自的页码 ref。
-// Shared slicing helpers; each tab binds its own page ref.
-function paginate(list, pageRef) {
-  const total = list.length
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  // 数据变少（如同步成功后条目被移除）时页码可能越界，这里就地纠偏，
-  // 否则用户会停留在空白页且无法自行返回
-  const page = Math.min(Math.max(1, pageRef.value), pages)
-  if (page !== pageRef.value) pageRef.value = page
-  const start = (page - 1) * PAGE_SIZE
-  // 一并带出 pageRef，模板里的翻页按钮才能作用于当前标签对应的页码
-  return { total, pages, page, pageRef, slice: list.slice(start, start + PAGE_SIZE) }
+// ---- 后端分页包装 ----
+function makePaged(pageDataRef, pageRef, sliceItems = null) {
+  const d = pageDataRef.value || {}
+  const total = Number(d.total) || 0
+  const pages = Math.max(1, Number(d.pages) || Math.ceil(total / PAGE_SIZE) || 1)
+  const page = Math.min(Math.max(1, Number(d.page) || pageRef.value || 1), pages)
+  const slice = sliceItems !== null ? sliceItems : (d.items || [])
+  return { total, pages, page, pageRef, slice }
 }
 
-// 对账异常标签：**由统一列表派生**（state = broken）。
-//
-// ⚠️ 这里此前从 `last_status.missing_files` / `corrupt_files` 两个平行数组拼装 ——
-// 那两个数组是"某个文件的状态"的**第二份真相**，与台账可能不一致。现在
-// reason 由后端在 `/items` 里给出（`detail`），前端不再自己判断属于哪一类。
 const failedEntries = computed(() =>
-  itemsByState('broken').map((it) => ({
+  (failedPageData.value.items || []).map((it) => ({
     file: it.key,
-    // detail 是后端给的中文类别（缺失/残缺）；缺省时按 missing 渲染，
-    // 保证旧后端（没有 detail 字段）也能显示而不是空白。
     kind: it.detail === '残缺' ? 'corrupt' : 'missing',
-    // v0.8.1：重试预算（后端 /items 给出，旧后端缺省按 0 / 未达上限）。
     retryCount: it.retry_count || 0,
     exhausted: !!it.exhausted,
   }))
 )
 
-const queuePaged = computed(() => paginate(queueList.value, pageQueue))
-const failedPaged = computed(() => paginate(failedEntries.value, pageFailed))
-const ignoredPaged = computed(() => paginate(ignoredList.value, pageIgnored))
-// strm 疑似清单不分页时列表可无限增长（strm 插件大面积漏生成时会成批出现），
-// 与另外三个列表统一按 PAGE_SIZE 切片
-const strmPaged = computed(() => paginate(strmSuspectKeys.value, pageStrm))
-// 观察中列表的分页（嵌在 strm 标签内，与 strmPaged 是两个独立列表）
-const watchingPaged = computed(() => paginate(strmWatchingEntries.value, pageWatching))
+const queuePaged = computed(() => makePaged(queuePageData, pageQueue))
+const failedPaged = computed(() => makePaged(failedPageData, pageFailed, failedEntries.value))
+const ignoredPaged = computed(() => makePaged(ignoredPageData, pageIgnored))
+const strmPaged = computed(() => makePaged(strmPageData, pageStrm, strmSuspectKeys.value))
+const watchingPaged = computed(() => makePaged(watchingPageData, pageWatching, strmWatchingEntries.value))
 
-// 当前标签页的分页结果，供模板统一渲染底部页码条。
-// ⚠️ 合并标签后，本页的「主列表」是**对账项**（strm 疑似有自己独立的分页条，
-// 见模板里 strmPaged 那一段）—— 因此这里仍返回 failedPaged，不是两者拼接：
-// 拼接后页码条会同时驱动两个列表，翻页时用户看不到自己以为在翻的那一批。
 const paged = computed(() => {
   if (currentTab.value === 'queue') return queuePaged.value
   if (currentTab.value === 'failed') return failedPaged.value
   return ignoredPaged.value
 })
 
-// 当前标签页可被勾选的条目 key 列表。
-// ⚠️ 必须是**本页**条目而不是全部条目：批量选择以「页」为单位才符合直觉，
-// 否则「全选本页」会选中用户看不见的条目，误同步风险很高。
 const selectableItems = computed(() => {
   if (currentTab.value === 'queue') {
     return queuePaged.value.slice.map((it) => it.key)
   }
   if (currentTab.value === 'failed') {
-    // ⚠️ 本页可勾选集合 = 对账项 + strm 疑似项 —— 两者**现在同一个标签**，
-    // 因此必须合在一起。早先 strm 独立成标签时这里只返回 failedPaged，
-    // 合并后若不改，「全选本页」会漏掉页面上明明看得见的 strm 条目。
-    // 批量按钮的分流逻辑（按选中项成分）不受影响：它看的是 selectedKeys，
-    // 与"哪些可勾选"是两件事。
     return [...failedPaged.value.slice.map((it) => it.file), ...strmPaged.value.slice]
   }
   return []
@@ -1579,23 +1648,37 @@ const allSelected = computed(
 
 function toggleSelectMode() {
   selectMode.value = !selectMode.value
-  if (!selectMode.value) selectedKeys.value = []
+  if (!selectMode.value) {
+    selectedKeys.value = []
+    selectedStateMap.value = {}
+  }
 }
 
-function toggleSelect(key) {
+function toggleSelect(key, state = '') {
   const i = selectedKeys.value.indexOf(key)
-  if (i >= 0) selectedKeys.value.splice(i, 1)
-  else selectedKeys.value.push(key)
+  if (i >= 0) {
+    selectedKeys.value.splice(i, 1)
+    delete selectedStateMap.value[key]
+  } else {
+    selectedKeys.value.push(key)
+    if (state) selectedStateMap.value[key] = state
+  }
 }
 
-// 全选/取消全选：仅作用于当前标签页的条目，不影响其它标签页已勾选的内容
 function toggleSelectAll(val) {
   const current = selectableItems.value
   if (val) {
     const merged = new Set([...selectedKeys.value, ...current])
     selectedKeys.value = Array.from(merged)
+    if (currentTab.value === 'queue') {
+      for (const it of queuePaged.value.slice) selectedStateMap.value[it.key] = it.state || 'cooling'
+    } else if (currentTab.value === 'failed') {
+      for (const it of failedPaged.value.slice) selectedStateMap.value[it.file] = 'broken'
+      for (const k of strmPaged.value.slice) selectedStateMap.value[k] = 'suspect'
+    }
   } else {
     selectedKeys.value = selectedKeys.value.filter((k) => !current.includes(k))
+    for (const k of current) delete selectedStateMap.value[k]
   }
 }
 
@@ -1815,8 +1898,8 @@ async function batchSyncSelected() {
   try {
     // 路由分流：strm 疑似项走后端 /strm_retry（含删旧护栏），其余走 /sync_item。
     // 后端 /strm_retry 会对不在疑似清单内的 key 二次校验并忽略，这里有前端分流兜底。
-    const strmKeys = keys.filter((k) => strmSuspectKeys.value.includes(k))
-    const plainKeys = keys.filter((k) => !strmSuspectKeys.value.includes(k))
+    const strmKeys = keys.filter((k) => isSuspectSelected(k))
+    const plainKeys = keys.filter((k) => !isSuspectSelected(k))
 
     const messages = []
     if (strmKeys.length) {
@@ -1829,6 +1912,7 @@ async function batchSyncSelected() {
     }
     actionMsg.value = messages.join('；') || '未提交任何条目'
     selectedKeys.value = []
+    selectedStateMap.value = {}
     await fetchStatus()
   } catch (e) {
     actionMsg.value = '批量触发出错: ' + e.message
@@ -1849,20 +1933,18 @@ async function checkWatching(key) {
 
 async function checkAllWatching() {
   if (itemLoading.value.startsWith('strmchk')) return
-  const keys = strmWatchingEntries.value.map((e) => e.key)
-  if (!keys.length) return
-  await postStrmCheck(keys, 'strmchk:all')
+  if (!watchingCount.value) return
+  await postStrmCheck(null, 'strmchk:all', true)
 }
 
 // 单条与全量共用，避免两条路径的提示文案与状态处理漂移
-async function postStrmCheck(keys, loadingKey) {
+async function postStrmCheck(keys, loadingKey, all = false) {
   itemLoading.value = loadingKey
   try {
-    const res = await props.api.post('plugin/Rsync115Sync/strm_check', { keys })
+    const payload = all ? { all: true } : { keys }
+    const res = await props.api.post('plugin/Rsync115Sync/strm_check', payload)
     if (res && res.success) {
       strmScanMsg.value = res.message || '已检查'
-      // 被检查的条目若已离场（生成成功或转疑似），勾选状态要一并清掉，
-      // 否则它们会留在 selectedKeys 里，让后续「批量操作」对着不存在的条目提交
       const gone = new Set([
         ...(res.data?.settled || []),
         ...(res.data?.suspects || []),
@@ -1880,21 +1962,12 @@ async function postStrmCheck(keys, loadingKey) {
   }
 }
 
-// 请 strm 助手补生成 .strm —— 删旧重传**之前**该先试的一步。
-//
-// 为什么值得：疑似清单的两种成因（助手漏生成 / CD2 假成功）在插件本地视角完全
-// 无法区分，但处理成本差好几个数量级 —— 前者重新生成指针文件即可，后者要删掉
-// 云端文件再完整重传。花一次助手侧目录遍历换取「大概率免掉整轮重传」明显划算，
-// 而且它顺带给出判别结果。因此这一步不是「多试一次」，而是**判据的补充**。
-//
-// 不做无确认的自动触发：助手会对每个参数遍历整个云端子树，属于对 115 的访问。
-// 清单有几十条时自动触发就等于自动打出几十次遍历，与插件整体的风控保守取向相悖。
 async function generateStrm() {
-  const keys = [...strmSuspectKeys.value]
-  if (!keys.length || statusData.value.is_running) return
+  const total = strmSuspectCount.value
+  if (!total || statusData.value.is_running) return
   const ok = window.confirm(
     `将请 strm 助手按这些文件所在的网盘目录重新生成 .strm：\n\n` +
-    `${keys.length} 个文件\n\n` +
+    `${total} 个文件\n\n` +
     `• 生成成功 ⇒ 此前只是助手漏生成，无需删旧重传（省下一整轮删除与上传）\n` +
     `• 生成后仍无 ⇒ 云端确实缺该文件，届时再执行「删旧重传」\n\n` +
     `这些文件会移回「观察中」，按 ${statusData.value.strm_regrace_hours}h 窗口重新计时，` +
@@ -1903,7 +1976,7 @@ async function generateStrm() {
     `${statusData.value.strm_gen_dir_limit} 个目录，超过会整批拒绝。\n\n确定继续吗？`
   )
   if (!ok) return
-  await postStrmGenerate(keys, 'strm:gen')
+  await postStrmGenerate(null, 'strm:gen', true)
 }
 
 // 单条：与批量同一后端入口，只是 keys 只有一个
@@ -1913,15 +1986,15 @@ async function generateStrmForKey(key) {
 }
 
 // 批量与单条共用的提交逻辑，避免两条路径的提示文案与状态处理漂移
-async function postStrmGenerate(keys, loadingKey) {
+async function postStrmGenerate(keys, loadingKey, all = false) {
   itemLoading.value = loadingKey
   try {
-    const res = await props.api.post('plugin/Rsync115Sync/strm_generate', { keys })
+    const payload = all ? { all: true } : { keys }
+    const res = await props.api.post('plugin/Rsync115Sync/strm_generate', payload)
     if (res && res.success) {
-      strmScanMsg.value = res.message || `已请助手补生成 ${keys.length} 个文件`
+      const count = all ? strmSuspectCount.value : (keys?.length || 0)
+      strmScanMsg.value = res.message || `已请助手补生成 ${count} 个文件`
     } else {
-      // 失败时保留后端原文：上限整批拒绝、助手未就绪、无法反查网盘目录
-      // 都是**不同原因**，笼统覆盖会让用户无从处置
       strmScanMsg.value = res?.message || '补生成请求失败'
     }
     await fetchStatus()
@@ -2002,12 +2075,12 @@ async function pruneStrmSuspects() {
   }
 }
 
-// 一键处理全部 strm 疑似异常（清单规模小时最实用，省去逐条确认）
+// 一键处理全部 strm 疑似异常（支持跨页全部删旧重传）
 async function retryAllStrmSuspects() {
-  const keys = [...strmSuspectKeys.value]
-  if (!keys.length || statusData.value.is_running) return
+  const total = strmSuspectCount.value
+  if (!total || statusData.value.is_running) return
   const ok = window.confirm(
-    `将对全部 ${keys.length} 个 strm 疑似异常文件执行「删旧重传」：\n\n` +
+    `将对全部 ${total} 个 strm 疑似异常文件执行「删旧重传」：\n\n` +
     `1. 先删除 115 端这些文件（删挂载点上的文件，由 CD2 转发 115 删除）\n` +
     `2. 立即定向重传（仍受批次上限与限流配额约束，可能需要多轮）\n` +
     `3. 传完后自动复核 strm 是否生成\n\n` +
@@ -2015,13 +2088,12 @@ async function retryAllStrmSuspects() {
   )
   if (!ok) return
   itemLoading.value = 'strm:all'
-  actionMsg.value = `正在对 ${keys.length} 个疑似异常执行删旧重传...`
+  actionMsg.value = `正在对 ${total} 个疑似异常执行删旧重传...`
   try {
-    const res = await postStrmRetry(keys)
+    const res = await props.api.post('plugin/Rsync115Sync/strm_retry', { all: true })
     if (res && res.success) {
-      actionMsg.value = res.message || `已删除并开始重传 ${keys.length} 个文件`
+      actionMsg.value = res.message || `已删除并开始重传 ${total} 个文件`
     } else {
-      // 失败时保留 actionMsg 原文（例如部分文件删不掉），不要笼统覆盖
       actionMsg.value = res?.message || '删旧重传失败'
     }
     await fetchStatus()
@@ -2040,6 +2112,72 @@ function notifySwitch() {
   emit('switch')
 }
 
+async function fetchItemsPage(stateParam, pageRef, targetRef, jumpKey = '') {
+  const itRes = await props.api.get('plugin/Rsync115Sync/items', {
+    params: { state: stateParam, page: pageRef.value, page_size: PAGE_SIZE },
+  })
+  if (itRes && itRes.success && itRes.data) {
+    targetRef.value = itRes.data
+    if (itRes.data.page) {
+      pageRef.value = itRes.data.page
+      if (jumpKey) jumpInputs.value[jumpKey] = String(itRes.data.page)
+    }
+    if (itRes.data.states) globalStates.value = itRes.data.states
+    if (itRes.data.done_total != null) doneTotal.value = Number(itRes.data.done_total) || 0
+  }
+}
+
+async function fetchIgnoredPage() {
+  const iRes = await props.api.get('plugin/Rsync115Sync/ignored', {
+    params: { page: pageIgnored.value, page_size: PAGE_SIZE },
+  })
+  if (iRes && iRes.success && iRes.data) {
+    if (Array.isArray(iRes.data)) {
+      ignoredPageData.value = { items: iRes.data, total: iRes.data.length, page: 1, pages: 1 }
+    } else {
+      ignoredPageData.value = iRes.data
+      if (iRes.data.page) pageIgnored.value = iRes.data.page
+    }
+  }
+}
+
+async function fetchTabItems() {
+  if (currentTab.value === 'queue') {
+    await fetchItemsPage('cooling,ready', pageQueue, queuePageData, 'queue')
+  } else if (currentTab.value === 'failed') {
+    await Promise.all([
+      fetchItemsPage('broken', pageFailed, failedPageData, 'failed'),
+      fetchItemsPage('watching', pageWatching, watchingPageData, 'watching'),
+      fetchItemsPage('suspect', pageStrm, strmPageData, 'strm'),
+    ])
+  } else {
+    await fetchIgnoredPage()
+  }
+}
+
+async function goToPage(listKey, pageRef, targetPage, totalPages) {
+  const maxPage = Math.max(1, Number(totalPages) || 1)
+  const parsed = parseInt(targetPage, 10)
+  const clamped = Number.isFinite(parsed) ? Math.min(Math.max(1, parsed), maxPage) : 1
+  pageRef.value = clamped
+  jumpInputs.value[listKey] = String(clamped)
+  if (listKey === 'queue') {
+    await fetchItemsPage('cooling,ready', pageQueue, queuePageData)
+  } else if (listKey === 'failed') {
+    await fetchItemsPage('broken', pageFailed, failedPageData)
+  } else if (listKey === 'watching') {
+    await fetchItemsPage('watching', pageWatching, watchingPageData)
+  } else if (listKey === 'strm') {
+    await fetchItemsPage('suspect', pageStrm, strmPageData)
+  } else if (listKey === 'ignored') {
+    await fetchIgnoredPage()
+  }
+}
+
+watch(currentTab, () => {
+  fetchTabItems()
+})
+
 async function fetchStatus() {
   loading.value = true
   try {
@@ -2047,28 +2185,7 @@ async function fetchStatus() {
     if (res && res.success && res.data) {
       statusData.value = res.data
     }
-    // 统一条目列表（一行一个文件 + state）：看板**唯一**的数据源。
-    // 存储层早就统一了（files 表 + status），此前界面却按"五个清单"分别取数，
-    // 于是同一份数据被切成五块、各有各的判据。这里改为一处取、按 state 分。
-    // ⚠️ `/status` 仍然要取：它带的是**计数与运行态**（限流窗口、扫描健康度、
-    // 补传进度、webhook 统计），那些不是"某个文件的状态"，不属于台账。
-    const itRes = await props.api.get('plugin/Rsync115Sync/items')
-    if (itRes && itRes.success && itRes.data) {
-      itemsData.value = itRes.data
-    }
-    const iRes = await props.api.get('plugin/Rsync115Sync/ignored')
-    if (iRes && iRes.success && iRes.data) {
-      ignoredList.value = iRes.data
-    }
-    // 清理已不存在条目的勾选状态，避免提交到已消失的文件。
-    // ⚠️ 存活集合现在直接来自统一列表：以前这里手工拼了四份来源
-    // （冷却队列 + 两个对账数组 + strm 疑似），任何一处漏加都会让用户
-    // 勾选后一刷新（30 秒轮询）就被静默清除 —— 这正是"五套取数"的代价。
-    // `/items` 已经把全部可勾选条目装在一个列表里，拼不拼得全不再是问题。
-    if (selectedKeys.value.length) {
-      const alive = new Set(itemsData.value.items.map((it) => it.key))
-      selectedKeys.value = selectedKeys.value.filter((k) => alive.has(k))
-    }
+    await fetchTabItems()
   } catch (e) {
     console.error('获取状态失败:', e)
   } finally {
@@ -2334,6 +2451,21 @@ onUnmounted(() => {
 .pager-btn {
   /* 与说明文字基线对齐，避免按钮内图标把行高撑开 */
   letter-spacing: normal;
+}
+.pager-jump-input {
+  width: 52px;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 12px;
+  text-align: center;
+  color: rgb(var(--v-theme-on-surface));
+  background: rgba(var(--v-theme-on-surface), 0.04);
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 4px;
+  outline: none;
+}
+.pager-jump-input:focus {
+  border-color: rgb(var(--v-theme-primary));
 }
 
 /* ===== 移动端适配 =====

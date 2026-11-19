@@ -148,3 +148,51 @@ def test_missing_ledger_degrades_to_reconciliation_only(tmp_path):
     p._last_status = {"missing_files": ["电视剧:x.mkv"], "corrupt_files": []}
     data = p._api_get_items()["data"]
     assert data["states"] == {"broken": 1}
+
+
+def test_backend_pagination_on_items_and_ignored(tmp_path):
+    """验证 /items 和 /ignored 的真实后端分页、越界页码纠偏及跨状态筛选。"""
+    p, led, st = _plugin(tmp_path)
+    p._ignored_rules = [{"rule": f"r{i}", "match": "exact", "created_at": "2026-01-01"} for i in range(65)]
+    now = time.time()
+    for i in range(35):
+        led.upsert(f"电视剧:cool_{i:02d}.mkv", st.STATUS_CANDIDATE, pair="电视剧",
+                   rel_path=f"cool_{i:02d}.mkv", enqueued_at=now - 60)
+    for i in range(5):
+        led.upsert(f"电视剧:ready_{i:02d}.mkv", st.STATUS_CANDIDATE, pair="电视剧",
+                   rel_path=f"ready_{i:02d}.mkv", enqueued_at=now - 5 * 3600)
+    for i in range(3):
+        led.upsert(f"电视剧:bad_{i:02d}.mkv", st.STATUS_FAILED, pair="电视剧",
+                   rel_path=f"bad_{i:02d}.mkv", fail_reason=st.FAIL_MISSING)
+
+    # /items 分页查询 cooling,ready（共 40 条，每页 30 条 → 2 页）
+    d1 = p._api_get_items(state="cooling,ready", page=1, page_size=30)["data"]
+    assert d1["total"] == 40
+    assert d1["pages"] == 2
+    assert d1["page"] == 1
+    assert len(d1["items"]) == 30
+    assert d1["states"] == {"cooling": 35, "ready": 5, "broken": 3}
+
+    d2 = p._api_get_items(state="cooling,ready", page=2, page_size=30)["data"]
+    assert d2["page"] == 2
+    assert len(d2["items"]) == 10
+
+    # 越界页码夹紧到末页
+    d_over = p._api_get_items(state="cooling,ready", page=99, page_size=30)["data"]
+    assert d_over["page"] == 2
+    assert len(d_over["items"]) == 10
+
+    # /ignored 分页（共 65 条，每页 30 条 → 3 页）
+    ig1 = p._api_get_ignored(page=1, page_size=30)["data"]
+    assert ig1["total"] == 65
+    assert ig1["pages"] == 3
+    assert len(ig1["items"]) == 30
+
+    ig3 = p._api_get_ignored(page=99, page_size=30)["data"]
+    assert ig3["page"] == 3
+    assert len(ig3["items"]) == 5
+
+    # page_size=0 保持向后兼容，直接返回完整列表
+    ig_all = p._api_get_ignored(page_size=0)["data"]
+    assert isinstance(ig_all, list)
+    assert len(ig_all) == 65

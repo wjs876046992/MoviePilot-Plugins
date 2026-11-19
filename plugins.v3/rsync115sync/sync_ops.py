@@ -50,7 +50,7 @@ class SyncOpsMixin:
         ready_count = 0
         cooling_count = 0
         stale_count = 0
-        for key, ts in self._pending_queue.items():
+        for key, ts in list(self._pending_queue.items()):
             if not self._queue_key_exists(key):
                 stale_count += 1
                 continue
@@ -79,7 +79,7 @@ class SyncOpsMixin:
         的那些。失效条目（源端已删）与 `_count_queue` 同口径排除。
         """
         items: List[Dict[str, Any]] = []
-        for key, basis_ts in self._pending_queue.items():
+        for key, basis_ts in list(self._pending_queue.items()):
             if not self._queue_key_exists(key):
                 continue
             elapsed = now_ts - float(basis_ts)

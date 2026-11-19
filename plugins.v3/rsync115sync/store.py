@@ -449,6 +449,36 @@ class Store:
             out[str(r["status"])] = int(r["n"])
         return out
 
+    def count_candidate_split(self, now_ts: float, threshold: float) -> tuple:
+        """按冷却阈值拆算 candidate 状态的 (cooling, ready) 条数（SQL 聚合）。"""
+        rows = self._query(
+            "SELECT "
+            "  SUM(CASE WHEN (? - COALESCE(enqueued_at, 0.0)) < ? THEN 1 ELSE 0 END) AS cooling_n, "
+            "  SUM(CASE WHEN (? - COALESCE(enqueued_at, 0.0)) >= ? THEN 1 ELSE 0 END) AS ready_n "
+            "FROM files WHERE status = ?",
+            (float(now_ts), float(threshold), float(now_ts), float(threshold), STATUS_CANDIDATE),
+        )
+        if not rows:
+            return 0, 0
+        r = rows[0]
+        return int(r["cooling_n"] or 0), int(r["ready_n"] or 0)
+
+    def count_where(self, where_sql: str, params: Iterable[Any] = ()) -> int:
+        """按条件统计 files 表行数，用于后端真实分页的 total 计算。"""
+        sql = f"SELECT COUNT(*) AS n FROM files WHERE {where_sql}"
+        rows = self._query(sql, params)
+        return int(rows[0]["n"]) if rows else 0
+
+    def query_where(self, where_sql: str, params: Iterable[Any] = (), *,
+                    limit: int = 0, offset: int = 0) -> List[Dict[str, Any]]:
+        """按条件分页查询 files 表（固定按 updated_at, key 排序以保证翻页稳定）。"""
+        sql = f"SELECT * FROM files WHERE {where_sql} ORDER BY updated_at, key"
+        q_params: List[Any] = list(params)
+        if limit and int(limit) > 0:
+            sql += " LIMIT ? OFFSET ?"
+            q_params.extend([int(limit), max(0, int(offset))])
+        return [dict(r) for r in self._query(sql, q_params)]
+
     def page_by_status(self, statuses: Iterable[str], *, limit: int = 0,
                        offset: int = 0) -> List[Dict[str, Any]]:
         """

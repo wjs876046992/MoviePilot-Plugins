@@ -256,7 +256,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
     plugin_name = "115网盘同步助手"
     plugin_desc = "需依赖 CloudDrive2 (CD2) 将 115 网盘挂载到本地宿主机并映射至 MoviePilot 容器。专为 CD2 挂载 115 打造：支持入库 N 小时冷却后同步、双向对账审计、关键字查找入库重试与手机端交互指令。"
     plugin_icon = "mdi-cloud-sync"
-    plugin_version = "0.8.7"
+    plugin_version = "0.8.8"
     plugin_author = "HermanWu"
 
     # rsync 退出码语义见 constants.TOLERATED_EXIT_CODES（含逐码说明）
@@ -2352,8 +2352,29 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         except Exception:
             pass  # 运行态落盘失败绝不能影响入库本身
 
-    def _api_get_ignored(self):
-        return {"success": True, "data": self._ignored_rules}
+    def _api_get_ignored(self, page: int = 1, page_size: int = 0):
+        rules = getattr(self, "_ignored_rules", []) or []
+        try:
+            psize = int(page_size or 0)
+            pnum = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            psize, pnum = 0, 1
+        if psize <= 0:
+            return {"success": True, "data": rules}
+        total = len(rules)
+        pages = max(1, -(-total // psize))
+        pnum = min(pnum, pages)
+        start = (pnum - 1) * psize
+        return {
+            "success": True,
+            "data": {
+                "items": rules[start:start + psize],
+                "total": total,
+                "page": pnum,
+                "page_size": psize,
+                "pages": pages,
+            },
+        }
 
     def _api_add_ignore(self, body: Dict[str, Any]):
         rule = (body or {}).get("rule", "").strip()
@@ -3239,6 +3260,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                 # 前端据此整块显示/隐藏进度区，不必逐个字段判空。
                 # ⚠️ 它是瞬时观测：任务结束就被清掉（见 _progress_reset /
                 # _progress_snapshot_clear）—— 留着过期数字比没有更糟。
+                "ignored_total": len(getattr(self, "_ignored_rules", []) or []),
                 "progress": self._progress_snapshot(),
             }
         }
@@ -3327,14 +3349,83 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
         threshold = self._delay_hours * 3600
         items: List[Dict[str, Any]] = []
         done_total = 0
+        states: Dict[str, int] = {}
 
-        # ---- 台账驱动的活跃状态（candidate / pending_verify / suspect / ignored）----
+        try:
+            wanted_list = [s.strip() for s in str(state or "").split(",") if s.strip()]
+            psize = int(page_size or 0)
+            pnum = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            wanted_list, psize, pnum = [], 0, 1
+
         ledger = getattr(self, "_ledger", None)
         if ledger is not None:
             try:
-                rows = ledger.page_by_status(_store_mod.ACTIVE_STATUSES)
-                # CD2 失败状态一次性批量查（v0.8.6）：只用于给疑似条目附加
-                # 「已在 CD2 失败」的解释，不参与任何判定。查不到时为空字典。
+                status_counts = ledger.count_by_status()
+                done_total = int(status_counts.get(_store_mod.STATUS_DONE, 0))
+                if status_counts.get(_store_mod.STATUS_CANDIDATE, 0) > 0:
+                    cooling_n, ready_n = ledger.count_candidate_split(now_ts, threshold)
+                    if cooling_n > 0:
+                        states["cooling"] = cooling_n
+                    if ready_n > 0:
+                        states["ready"] = ready_n
+                for st_key, api_state in (
+                    (_store_mod.STATUS_PENDING_VERIFY, "watching"),
+                    (_store_mod.STATUS_SUSPECT, "suspect"),
+                    (_store_mod.STATUS_FAILED, "broken"),
+                ):
+                    cnt = int(status_counts.get(st_key, 0))
+                    if cnt > 0:
+                        states[api_state] = cnt
+
+                clauses: List[str] = []
+                params: List[Any] = []
+                if not wanted_list:
+                    marks = ",".join("?" for _ in _store_mod.ACTIVE_STATUSES)
+                    clauses.append(f"status IN ({marks})")
+                    params.extend(_store_mod.ACTIVE_STATUSES)
+                else:
+                    wanted_set = set(wanted_list)
+                    has_cooling = "cooling" in wanted_set
+                    has_ready = "ready" in wanted_set
+                    if has_cooling and has_ready:
+                        clauses.append("status = ?")
+                        params.append(_store_mod.STATUS_CANDIDATE)
+                    elif has_cooling:
+                        clauses.append("(status = ? AND (? - COALESCE(enqueued_at, 0.0)) < ?)")
+                        params.extend([_store_mod.STATUS_CANDIDATE, now_ts, threshold])
+                    elif has_ready:
+                        clauses.append("(status = ? AND (? - COALESCE(enqueued_at, 0.0)) >= ?)")
+                        params.extend([_store_mod.STATUS_CANDIDATE, now_ts, threshold])
+                    for api_state, st_key in (
+                        ("watching", _store_mod.STATUS_PENDING_VERIFY),
+                        ("suspect", _store_mod.STATUS_SUSPECT),
+                        ("broken", _store_mod.STATUS_FAILED),
+                    ):
+                        if api_state in wanted_set:
+                            clauses.append("status = ?")
+                            params.append(st_key)
+
+                if not clauses:
+                    total = 0
+                    pages = 1
+                    pnum = 1
+                    rows = []
+                else:
+                    where_sql = " OR ".join(clauses)
+                    if psize > 0:
+                        total = ledger.count_where(where_sql, params)
+                        pages = max(1, -(-total // psize))
+                        pnum = min(pnum, pages)
+                        offset = (pnum - 1) * psize
+                        rows = ledger.query_where(where_sql, params, limit=psize, offset=offset)
+                    else:
+                        rows = ledger.query_where(where_sql, params)
+                        total = len(rows)
+                        pages = 1
+                        pnum = 1
+
+                # CD2 失败状态一次性批量查（v0.8.6）：只对当前页的 suspect 条目查询
                 suspect_keys = [r["key"] for r in rows
                                 if str(r["status"]) == _store_mod.STATUS_SUSPECT]
                 try:
@@ -3345,33 +3436,29 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                     cd2_failed = {}
                 items = [self._ledger_row_to_item(r, now_ts, threshold, cd2_failed)
                          for r in rows]
-                done_total = int(ledger.count_by_status().get(_store_mod.STATUS_DONE, 0))
             except Exception as e:
                 # 台账读取失败降级为空列表（不炸整个看板）—— 与 _ledger_overview 同取向
                 logger.debug(f"[Rsync115Sync] 台账条目读取失败（已忽略）: {e}")
-
-        # ---- 对账失败（v0.7.0）：已是台账 status=failed，不再是独立清单 ----
-        # 只有台账不可用时才从降级字典补投影，避免同一文件出现两次。
-        if ledger is None:
+                total, pages, pnum = 0, 1, 1
+        else:
+            # ---- 对账失败（v0.7.0）：只有台账不可用时才从降级字典补投影 ----
             for kind, label in (("missing_files", "缺失"), ("corrupt_files", "残缺")):
                 for key in (self._last_status.get(kind) or []):
                     items.append({"key": key, "state": "broken", "detail": label,
                                   "pair": "", "rel_path": "", "notes": []})
-
-        # 计数按全量活跃集合算，再过滤/分页 —— 否则角标会随翻页变化。
-        states = self._state_counts(items)
-        try:
-            wanted = str(state or "").strip()
-            psize = int(page_size or 0)
-            pnum = max(1, int(page or 1))
-        except (TypeError, ValueError):
-            wanted, psize, pnum = "", 0, 1
-        if wanted:
-            items = [it for it in items if it.get("state") == wanted]
-        total = len(items)
-        if psize > 0:
-            start = (pnum - 1) * psize
-            items = items[start:start + psize]
+            states = self._state_counts(items)
+            if wanted_list:
+                wanted_set = set(wanted_list)
+                items = [it for it in items if it.get("state") in wanted_set]
+            total = len(items)
+            if psize > 0:
+                pages = max(1, -(-total // psize))
+                pnum = min(pnum, pages)
+                start = (pnum - 1) * psize
+                items = items[start:start + psize]
+            else:
+                pages = 1
+                pnum = 1
 
         return {"success": True,
                 "data": {"items": items,
@@ -3379,6 +3466,7 @@ class Rsync115Sync(StrmOpsMixin, SyncOpsMixin, CommandsMixin, Cd2OpsMixin, _Plug
                          "total": total,
                          "page": pnum,
                          "page_size": psize,
+                         "pages": pages,
                          "done_total": done_total,
                          "delay_hours": self._delay_hours}}
 

@@ -108,17 +108,12 @@ def test_watching_list_has_its_own_page_state():
     """
     src = _source()
     assert "const pageWatching = ref(1)" in src
-    # ⚠️ 必须断言**它绑的是 pageWatching**，而不是只断言"这个 computed 存在"。
-    # 第一版这里写的是 `"const watchingPaged = computed(" in src`，而它对本节的
-    # 目标缺陷（把两个列表绑到同一个页码 ref）**永远为真** ——
-    # 变异测试当场证明：改成 `paginate(strmWatchingEntries.value, pageStrm)`
-    # 之后全部用例仍然通过。断言必须落在"绑给谁"上。
-    assert ("const watchingPaged = computed(() => "
-            "paginate(strmWatchingEntries.value, pageWatching))") in src, (
+    assert "const watchingPaged = computed(() => makePaged(watchingPageData, pageWatching, strmWatchingEntries.value))" in src, (
         "观察中列表没有绑定自己的页码 ref —— 翻疑似清单时会把它一起翻走"
     )
     body = _tab_body(src, "failed")   # strm 两个列表已并入 failed 标签（v0.8.0）
     assert "watchingPaged.pages > 1" in body
+    assert "strmPaged.pages > 1" in body
     assert "paged.pages > 1" in body
     assert "watchingPaged.slice" in body and "strmPaged.slice" in body
 
@@ -128,7 +123,7 @@ def test_pager_bars_only_appear_when_needed():
     分页条只在超过一页时出现 —— 不分页时多一条「第 1/1 页」只是噪声。
     """
     src = _source()
-    for pager in ("paged", "watchingPaged"):
+    for pager in ("paged", "watchingPaged", "strmPaged"):
         assert f'v-if="{pager}.pages > 1"' in src, f"{pager} 的分页条缺少条件"
 
 
@@ -144,32 +139,32 @@ def test_page_refs_are_per_tab():
         assert f"const {name} = ref(1)" in src, f"缺少独立页码 {name}"
 
 
+def test_page_size_is_30_and_has_first_last_jump():
+    """每页 30 条，所有分页条均包含首页、末页和页码跳转控件。"""
+    src = _source()
+    assert "const PAGE_SIZE = 30" in src
+    assert src.count("首页") >= 5
+    assert src.count("末页") >= 5
+    assert src.count("jumpInputs.") >= 10
+    assert "function goToPage(" in src
+
+
 def test_paginate_clamps_page_when_list_shrinks():
     """
     ⚠️ 页码必须**就地纠偏**：条目被移出后总页数会变小，若仍停在第 5 页，
     模板渲染出的是空列表，而分页条又显示「第 5 / 共 2 页」——
     用户既看不到内容也点不动（下一页已禁用），只能刷新页面。
-
-    `paginate` 定义在 .vue 里无法直接 import，因此这里既断言源码里的关键
-    纠偏语句存在，也用一段**逐句等价**的实现验证行为。
     """
     src = _source()
-    # ⚠️ 断言必须**锚定整条纠偏语句**，不能被别处的相似子串满足。
-    # 第一版写的是 `"pageRef.value = page" in src` —— 而翻页按钮里的
-    # `paged.pageRef.value = paged.page - 1` **刚好包含这个子串**，
-    # 于是删掉纠偏语句后用例照样通过（变异测试发现的）。
-    # 这类"断言被无关代码满足"的假绿在本仓已反复出现，锚定整句是唯一可靠的写法。
-    assert "if (page !== pageRef.value) pageRef.value = page" in src, \
-        "页码纠偏语句不见了 —— 条目变少后用户会停在空白页且无法自行返回"
+    assert "const clamped = Number.isFinite(parsed) ? Math.min(Math.max(1, parsed), maxPage) : 1" in src
 
-    def paginate(total, page_val, size=15):
-        pages = max(1, -(-total // size))
-        return min(max(1, page_val), pages)
-
-    assert paginate(0, 1) == 1
-    assert paginate(10, 5) == 1        # 只有 1 页 → 回到第 1 页
-    assert paginate(45, 5) == 3        # 3 页 → 夹到最后一页
-    assert paginate(45, 2) == 2        # 未越界则不动
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))))
+    py = open(os.path.join(root, "plugins.v3", "rsync115sync", "__init__.py"),
+              encoding="utf-8").read()
+    assert "pnum = min(pnum, pages)" in py, (
+        "后端分页缺少越界页码纠偏 —— 条目变少后用户会停在空白页"
+    )
 
 # --------------------------------------------------------------------------
 # ⚠️ 分页最常见的静默错误：把「页内下标」当「全表下标」用
