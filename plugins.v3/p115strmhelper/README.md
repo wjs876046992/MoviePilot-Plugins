@@ -52,17 +52,17 @@
 
 - `full_strm_sync`、`share_strm_scan`、`txt_tree_storage`：Rust 扩展，未发布到 PyPI，
   只以 `wheels/` 内的 cp314 wheel 形式提供。
-- `p115client==0.0.9.6.5.1`：该版本在 `tool/upload.py` 中执行
-  `from concurrenttools import threadpool_map, taskgroup_map`，而其元数据只声明
-  `python-concurrenttools>=0.1.8`（**没有上界**）。`python-concurrenttools` 0.1.9 已把
-  这两个名字改名为 `thread_conmap` / `async_conmap`，因此不锁定时会解析到 0.1.9，
-  导致 `p115client` 导入即失败、插件加载失败（`load_failed`）。
-  本清单已锁定 `python-concurrenttools==0.1.8` 规避。
+- `p115client==0.0.9.7.8.3`：该版本已改用 `thread_conmap` / `async_conmap`
+  （旧版用的 `threadpool_map` / `taskgroup_map` 在 `python-concurrenttools` 0.1.9 里被改名移除），
+  其元数据自带 `Requires-Dist: python-concurrenttools (>=0.1.9)`，因此**不再需要**在本清单里
+  锁定 `python-concurrenttools`；本清单也不再显式声明它。
 
 > [!IMPORTANT]
-> 若你自行升级 `p115client` 到使用 `thread_conmap` / `async_conmap` 的版本
-> （`>=0.0.9.7.2`），应同时把 `python-concurrenttools` 改为 `>=0.1.9` 并删除该锁定，
-> 否则会反向不兼容。改动后请重新检查 `wheels/` 是否仍匹配当前 Python 版本。
+> 升级 `p115client` 时留意 `python-concurrenttools` 的 API 断代：`<0.0.9.7.2` 依赖
+> `threadpool_map` / `taskgroup_map`，只有旧的 `python-concurrenttools==0.1.8` 提供；
+> `>=0.0.9.7.2` 依赖 `thread_conmap` / `async_conmap`，需要 `>=0.1.9`。两者不可混用，
+> 混用表现为 `p115client` 导入即失败、插件加载失败（`load_failed`）。
+> 改动后请重新检查 `wheels/` 是否仍匹配当前 Python 版本。
 
 本插件不支持 free-threaded（`v3t`）运行时：上述 Rust wheel 无 `cp314t` 轮子，
 且 `p115center-sdk` 也未提供，故在插件市场索引中声明 `"v3t": false`。

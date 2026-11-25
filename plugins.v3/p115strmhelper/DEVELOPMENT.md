@@ -2,7 +2,11 @@
 
 本文件记录**本仓相对上游的改动**与其中的设计取舍，避免后续升级上游时把结论丢掉。
 上游代码以 `DDSRem-Dev/MoviePilot-Plugins` 为准；本仓在 `v3.4.x` 上做了一轮
-「统一媒体库目录映射」改造。
+「统一媒体库目录映射」改造，`v3.5.0` 同步上游 `v3.1.0` 后把该改造迁到新的
+Apple HIG 前端上（见第 6 节）。
+
+**版本号自成一条线**：本仓 `3.5.0` 与上游 `3.1.0` 无对应关系，不要按上游版本号
+推断本仓版本。
 
 ---
 
@@ -105,43 +109,51 @@ reconcileUnifiedPaths();   // ← 此刻 config.* 已有值，但 refs 还是初
 
 ## 3. 移动端排版约定
 
-配置页在手机上最常被投诉的两件事，各自的根因与规矩：
+> ⚠️ 本节在**上游 v3.1.0 的 Apple HIG 前端重写**后已整体换底：旧版用
+> `.stacked-label` + `cols="12"` + `.inheritance-banner` 三件套，新版改由
+> `PathMappingComposer.vue`（CSS grid + 媒体查询）与
+> `PathInheritanceBanner.vue` 承担。3.1~3.4 的**结论**仍然成立（标签不进
+> 输入框、标签不折字、窄屏整行、提示条两端对齐），但**落点**换成了下面这些
+> 类名，改前端时按新落点改，不要再往旧类名上加样式。
 
-### 3.1 标签放框外上方，框内只留 placeholder
+### 3.1 标签不进输入框，路径框只用 placeholder
 
-**不要**给这些路径输入框传 `label=`。
+**不要**给路径类输入框传 `label=`。
 
 - Vuetify 在 outlined 变体里会把 label 渲染成**两份**（框内一份 + 边框缺口一份），
   缺口宽度由后者决定 → 窄屏上要么豁口、要么把输入区挤窄；
 - 路径类输入框的价值全在**横向可见字符数**，框内 label 恰好占用最宝贵的左侧空间。
 
-统一做法：`.stacked-label` div 在框外上方，框内只放 `placeholder` 示例。
-与 `Rsync115Sync` 的配置页是同一套取向（见其 `Config.vue` 里 `stacked-label`
-那段长注释）。
+现落点：`PathMappingComposer` 的 dual 卡片把两个 `v-text-field` 排成
+`.p115-composer-dual` grid（`minmax(0,1fr) 26px minmax(0,1fr) auto`，
+开启 CD2 前缀时 actions 跨 3 行），label 由 `localLabel` / `remoteLabel` 经
+`AppleSettingsRow` 的外置标签区渲染，输入框内只有
+`localPlaceholder` / `remotePlaceholder`。
 
 ### 3.2 标签不许纵向折字
 
 复选框 / 开关的 `v-label` 在 flex 容器里会被压到逐字换行（「监控整理」竖着排）。
-统一加：
-
-```css
-white-space: nowrap !important;
-word-break: keep-all !important;
-```
-
-并给控件本身 `flex: 0 0 auto`，让它们不被压缩。
+新版已由样式层统一兜住：`.p115-field-label`（`apple-theme.css`）自带
+`white-space: nowrap`，场景勾选按钮（`.p115-scene-chip`）本身是按钮而非
+`v-label`，不存在被压缩的风险。新增标签类样式时仍要守住这条。
 
 ### 3.3 一行放不下就整行换行，不要硬挤
 
-`sm=` 断点让两列在 ≥600px 并排；605px 以下各占 `cols="12"` 独占整行。
 **不要**用 `d-flex` + `flex-grow-1` 强行让两个输入框同处一行 ——
 窄屏下会被压到只剩几像素，看起来就是「输入框消失了」。
 
+现落点：`PathMappingComposer` 自带媒体查询 —— dual 在
+`max-width: 768px` 塌成单列且箭头旋转 90°，triple 在 `max-width: 860px`
+塌成单列。**新加的双栏/三栏路径卡片直接复用这个组件**，不要在调用方另写
+响应式布局。
+
 ### 3.4 继承提示条的对齐
 
-`.inheritance-banner` 里左侧是说明 + 跳转按钮，右侧只有开关。
-开关容器必须 `align-items: center` 且限高，否则在 `flex-wrap` 生效后
-容易跑出基线、看起来「错位」。
+`PathInheritanceBanner.vue`（`.p115-inherit-banner`，`--on` 绿色 / `--off` 琥珀）
+左侧是图标 + 标题 + 说明 + 「去修改」按钮，右侧只有「独立自定义路径」开关；
+容器 `align-items: center`，`max-width: 600px` 时整体转纵向。开关用
+`v-switch ... hide-details inset` 且**不传 `label=`**（标题已在左侧），
+避免 Vuetify 再渲染一份标签。
 
 ---
 
@@ -242,3 +254,88 @@ npm test --prefix plugins.v3/p115strmhelper
 
 注意：`plugins.v3/p115strmhelper/tests/` 下的 Python 测试需要 MoviePilot 后端才能跑，
 与前端这套 Node 测试是两条独立的线。
+
+---
+
+## 6. 上游同步记录
+
+### 6.1 2026-11-25：同步到上游 v3.1.0（`8cc17862`）
+
+**基线**：本次之前本仓最后一次同步停在**上游 tag v3.0.2 = `242d7e46`**（即本仓
+v3.2.0 那次手工同步），此后上游的 40 个 commit 本仓都没有。
+
+**为什么是「目录 diff 移植」而不是 merge**：本仓与上游 `DDSRem-Dev/MoviePilot-Plugins`
+**没有共同 git 历史**（`git merge-base` 返回空）。本仓的 v3.2.0 是「手工把上游代码
+贴进来」的一个提交，不是 merge 上游的 commit。所以：
+
+```bash
+git fetch --no-tags git@github.com:DDSRem-Dev/MoviePilot-Plugins.git main:refs/remotes/ddsrem/main
+git diff 242d7e46:plugins.v3/p115strmhelper refs/remotes/ddsrem/main:plugins.v3/p115strmhelper
+```
+
+取上游独有改动，与本仓相对基线的改动逐文件对照后合并。**不要**试图 cherry-pick。
+
+**目录布局差异（每次同步都会踩）**：上游把前端放在**仓库级**
+`frontend.v3/<插件id>/`，由 `.github/scripts/plugin_frontend.py` 在构建时拷进插件目录；
+本仓把前端源码**内联在插件目录**内（`plugins.v3/p115strmhelper/src/` + `dist/`）。
+所以上游的 `frontend.v3/p115strmhelper/src/**` 对应本仓
+`plugins.v3/p115strmhelper/src/**`。
+
+**本次带进来的上游内容**：
+
+| 上游 commit | 内容 | 本仓需注意 |
+|---|---|---|
+| `3beb138b` | 前端整体重写为 Apple HIG 风格（`src/` 40 个文件，新增 `styles/apple-theme.css`、`components/ui/*`、`useConfigSearch`、`useThemeAdapter`、`OfflineDownloadSheet`、`ShareSyncSheet`、`BasicConfigSection`） | 本仓统一映射要**重新叠加**到新写法上（见 6.2） |
+| `d66c1bbd` | 离线下载失败自动重试（`offline_retry_enabled` / `offline_retry_max_attempts` / `offline_retry_interval_hours`，`helper/offline/retry.py`） | 纯新增，整份取上游 |
+| `9cd0ec5a` | 同步删除精确删视频与外挂字幕、季/剧集子树逐文件删除、残留空目录清理（`helper/mediasyncdel/p115_cleanup.py` 802 行） | 纯新增 |
+| `82d65137` | 全量同步目录扫描重试（`helper/strm/full/scan.py`、`scan_error`） | 纯新增 |
+| `7e017720` | 分片上传期间复判秒传（`upload_module_recheck_secupload*`） | 纯新增 |
+| `56f4f848` | 目录上传漏传巡检（`directory_upload_rescan_*`） | 纯新增 |
+| `d20046b5` / `ff22d879` | `p115client` 升到 `0.0.9.7.8.3`、P115Client 缓存清理 | 同时修掉本仓手工移植版与新 client 的调用差异 |
+
+**本仓保留下来的三类改动**（同步时逐处重新叠加，不能整份取上游）：
+
+1. **`plugin_version` 必须是字符串字面量**。上游写 `plugin_version = VERSION`，
+   而本仓的版本门禁（`.github/scripts/check_plugin_versions.py`）用 AST 只认
+   `ast.Constant`，Name 节点会被判「未声明类级 plugin_version」。
+   `tests/v3/p115strmhelper/test_version_sync.py` 锁住这一点。
+2. **统一媒体库目录映射**（第 1、2 节的全部内容）。
+3. **本仓版本号自成一条线**（`3.4.x`），不跟上游 `3.1.x`；`version.py` 不要取上游。
+
+**`system_version` 有意保持 `>=3.0.0`**：上游 `cec64c10` 给 P115Disk、P115StrmHelper、
+CloudDriveDisk 同时提到 `>=3.2.12`，但那次是配套它对 `plugins.v3/p115disk` 的补丁
+（新增 `get_file_item_strict` 端点）。本仓**没有** p115disk 插件，而
+`StorageChain().get_file_item_strict(...)` 在宿主侧从本仓基线起就存在
+（`helper/strm/transfer/postprocess.py` 一直在用），插件不依赖那个补丁。
+抬上去只会无谓限制可安装的宿主版本。
+
+**依赖清单同步后的形态**：`p115client==0.0.9.7.8.3`、`sentry-sdk~=2.76.0`，
+**不再声明 `python-concurrenttools`** —— `p115client>=0.0.9.7.2` 已改用
+`thread_conmap` / `async_conmap`，其元数据自带 `Requires-Dist:
+python-concurrenttools (>=0.1.9)`。`tests/v3/p115strmhelper/test_dependency_manifest.py`
+的两个用例锁住这条（精确锁定 + >=0.0.9.7.2 + 不重复声明）。
+
+### 6.2 ⚠️ 上游没采纳本仓的「统一媒体库目录映射」
+
+`3beb138b` 把 UI **卡片**统一了（`PathMappingComposer.vue` 让五个场景共用一套
+双路径卡片），但**数据模型没统一** —— 上游 `usePathManagement.js` 仍是五套 refs
+各管一摊、各自 `watch` 回写自己的 legacy 字段，没有 unifiedPaths / reconcile /
+syncAllPathsToConfig。
+
+因此同步后必须在**上游新写法**上重新叠加本仓的数据层，落点四处：
+
+| 文件 | 叠加内容 |
+|---|---|
+| `src/components/composables/usePathManagement.js` | **整份保留本仓版**（上游只改过其中 1 行，即 `incrementSyncExcludePaths` 初值笔误，已合并进来） |
+| `src/components/composables/useDirSelector.js` | 上游把初始化逻辑重构成表驱动的 `resolveInitialDirPath()`，需在新函数里加 `unified` 分支 + `confirmDirSelection` 的 `case 'unified'` |
+| `src/components/Config.vue` | 解构 9 项（unifiedPaths/unifiedMpPaths/5 个 custom*/reconcileUnifiedPaths/syncAllPathsToConfig）；`applyLoadedData()` 末尾调 `reconcileUnifiedPaths()`；`saveConfig()` 与 `triggerFullSync()` 里的逐字段序列化换成 `syncAllPathsToConfig()`；provide 9 项 |
+| `src/components/sections/StrmSyncSection.vue` | 新增「媒体库映射」子页签（`UnifiedPathSection.vue`），五场景各加 `PathInheritanceBanner` + `v-if="customXxxPaths"` 双分支 |
+| `src/components/dialogs/ShareSyncSheet.vue` | 分享弹窗的 MP 路径转换改为只读（统一在配置页维护） |
+
+**`reconcileUnifiedPaths()` 的调用点选在 `applyLoadedData()` 末尾而不是
+`loadConfig()` 里**，因为上游新增了未保存修改保护：`loadConfig()` 结束时会
+`await nextTick()` 后重建 `baselineSnapshot`（`buildSnapshot()` 里也包含
+unifiedPaths 与 5 个 custom* 开关）。放在 `applyLoadedData()` 可以同时覆盖
+`loadConfig()` 与 `resetToLoadedSnapshot()` 两条路径，且保证 reconcile 在
+baseline 生成之前完成 —— 否则统一表的内容会被算进 `isDirty` 的差异里，
+一打开配置页就显示「有未保存修改」。

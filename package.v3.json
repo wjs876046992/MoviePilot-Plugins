@@ -1449,7 +1449,7 @@
     "name": "115网盘STRM助手",
     "description": "115网盘STRM生成一条龙服务",
     "labels": "云盘",
-    "version": "3.4.7",
+    "version": "3.5.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem",
     "level": 1,
@@ -1457,6 +1457,7 @@
     "system_version": ">=3.0.0",
     "v3t": false,
     "history": {
+      "v3.5.0": "同步上游 DDSRem-Dev/MoviePilot-Plugins v3.1.0（8cc17862），本仓统一媒体库目录映射一并重叠加固：\n- 新增能力来自上游：离线下载失败自动重试、目录上传漏传巡检、分片上传期间复判秒传、全量同步扫描重试、同步删除精确删视频与外挂字幕并清理残留空目录、P115Client 缓存清理\n- 前端整体换成上游 Apple HIG 风格（含配置搜索与未保存修改保护），本仓的统一媒体库映射在新写法上重新落地：新增「媒体库映射」子页签，五个场景各带继承/独立自定义双分支\n- 依赖 p115client 升到 0.0.9.7.8.3 并移除 python-concurrenttools 显式声明（新 client 元数据自带该约束）\n- 版本号自成一条线（3.5.0），与上游 3.1.x 无关",
       "v3.4.7": "生活事件生成 STRM 的合并通知现在会列出具体文件名：\n- 正文在数量之外逐条列出生成/下载的文件路径，最多 10 条，其余折叠为「还有 N 个」\n- 计数与展示分离，目录事件一次展开上千个文件时也不会把通知撑爆或漏报数量\n- 计数逻辑抽到 helper/life/notification.py，可在无 MoviePilot 后端的环境下直接单测",
       "v3.4.6": "媒体服务器路径转换说明与标签精简：\n- 说明精炼为一句话：「通知 Emby / Jellyfin 刷新时使用。仅在两端容器挂载路径不一致时配置（一致请留空，自动应用到所有场景）」\n- 字段标签与占位符精简为「媒体服务器路径 (Emby / Jellyfin)」与「MoviePilot 路径」，示例对应真实宿主挂载关系",
       "v3.4.5": "媒体服务器路径转换语义理清与分享场景统一：\n- 统一路径转换明确标注为容器映射翻译（Emby 容器内部路径 ⇄ MoviePilot 容器内部路径），详尽说明两端一致时直接留空、仅在开刷新或提取时才需配置\n- 分享 STRM 场景的媒体服务器转换路径（share_strm_mp_mediaserver_paths）一并纳入统一表维护与双向融合分发\n- 补充分享转换覆盖单测并更新开发文档",

@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 from unittest import TestCase
 from unittest.mock import MagicMock
 
+from pydantic import ValidationError
+
 
 def _module(name: str, **attributes: Any) -> ModuleType:
     result = ModuleType(name)
@@ -126,6 +128,32 @@ class TestV3InstanceConfig(TestCase):
         owner.get_config = MagicMock(return_value=source_config or {})
         owner.update_config = MagicMock(return_value=True)
         return owner
+
+    def test_offline_retry_defaults_and_validation(self) -> None:
+        """
+        旧配置默认不启用重试，次数与间隔经真实配置模型校验并可序列化保存
+        """
+        config = self.config_type()
+        self.assertFalse(config.offline_retry_enabled)
+        self.assertEqual(config.offline_retry_max_attempts, 3)
+        self.assertEqual(config.offline_retry_interval_hours, 24)
+        updated = self.config_type(
+            offline_retry_enabled=True,
+            offline_retry_max_attempts=5,
+            offline_retry_interval_hours=48,
+        )
+        restored = self.config_type(**updated.model_dump())
+        self.assertTrue(restored.offline_retry_enabled)
+        self.assertEqual(restored.offline_retry_max_attempts, 5)
+        self.assertEqual(restored.offline_retry_interval_hours, 48)
+        for field, values in (
+            ("offline_retry_max_attempts", (0, -1, 101, 1.5, None, "invalid")),
+            ("offline_retry_interval_hours", (0, -1, 8761, 1.5, None, "invalid")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValidationError):
+                        self.config_type(**{field: value})
 
     def test_config_uses_bound_instance_and_excludes_runtime_owner(self) -> None:
         """
@@ -483,6 +511,24 @@ class TestV3InstanceConfig(TestCase):
         )
         self.assertEqual(config.model_dump(), before)
         self.assertTrue(token.exists())
+
+    def test_empty_address_survives_host_construction_and_initialization(self) -> None:
+        """
+        已保存的空地址配置可重新构造和初始化插件，且持久化为 null
+        """
+        for value in (None, "", " \t\n"):
+            with self.subTest(value=value):
+                persisted = {"moviepilot_address": value, "notify": True}
+                entry_type, config, _, api_factory, _ = self._entry_type(persisted)
+                entry = entry_type()
+                entry.init_plugin(persisted)
+                self.assertIsNone(config.moviepilot_address)
+                self.assertTrue(config.notify)
+                self.assertIsNotNone(entry.action_handler)
+                api_factory.assert_called_once_with(client=None)
+                payload = entry.update_config.call_args.args[0]
+                self.assertIsNone(payload["moviepilot_address"])
+                self.assertTrue(payload["notify"])
 
     def test_reinitialize_refuses_config_change_while_stop_is_pending(self) -> None:
         """
