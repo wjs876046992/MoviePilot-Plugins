@@ -6,10 +6,15 @@
 0.1.9 已把这两个名字改名为 ``thread_conmap`` / ``async_conmap``，于是安装时
 解析到 0.1.9 会让 p115client 导入即失败，插件以 ``load_failed`` 结束。
 
-这些用例锁住随之而来的清单约束，防止有人「顺手」把锁去掉：
-1. ``python-concurrenttools`` 必须是 0.1.8 的精确匹配；
-2. 未发布到 PyPI 的三个 Rust 扩展必须有本地 wheel 来源声明；
-3. 本地 wheel 目录真实存在且包含清单引用的文件。
+上游已把这个坑从根上解决：``p115client>=0.0.9.7.2`` 改用 ``thread_conmap`` /
+``async_conmap``，元数据自带 ``Requires-Dist: python-concurrenttools (>=0.1.9)``，
+故清单不再需要（也不再声明）``python-concurrenttools``。
+
+这些用例锁住随之而来的清单约束：
+1. ``p115client`` 精确锁定，且落在支持新 concurrenttools API 的版本线上；
+2. 清单不再显式声明 ``python-concurrenttools``（避免与 p115client 自带的约束打架）；
+3. 未发布到 PyPI 的三个 Rust 扩展必须有本地 wheel 来源声明；
+4. 本地 wheel 目录真实存在且包含清单引用的文件。
 """
 import tomllib
 from pathlib import Path
@@ -38,13 +43,23 @@ def _dependency(manifest: dict, name: str) -> str | None:
 
 
 def test_p115client_is_pinned_exactly(manifest):
-    """p115client 升级并锁到 0.0.9.7.2。"""
-    assert _dependency(manifest, "p115client") == "p115client==0.0.9.7.2"
+    """p115client 必须精确锁定，且不得退回不支持新 concurrenttools API 的版本线。"""
+    dependency = _dependency(manifest, "p115client")
+    assert dependency is not None, "清单缺少 p115client 依赖"
+    assert dependency.startswith("p115client=="), f"p115client 必须精确锁定，实际：{dependency}"
+    version = dependency.split("==", 1)[1]
+    assert tuple(int(part) for part in version.split(".")) >= (0, 0, 9, 7, 2), (
+        f"p115client 需 >=0.0.9.7.2 才适配 concurrenttools 0.1.9 的 "
+        f"thread_conmap / async_conmap，实际：{version}"
+    )
 
 
-def test_concurrenttools_is_compatible_with_019(manifest):
-    """0.0.9.7.2 已原生适配 concurrenttools 0.1.9 的新 API。"""
-    assert _dependency(manifest, "python-concurrenttools") == "python-concurrenttools>=0.1.9"
+def test_concurrenttools_is_not_pinned_manually(manifest):
+    """p115client 的元数据已声明 python-concurrenttools>=0.1.9，清单不应再重复锁定。"""
+    assert _dependency(manifest, "python-concurrenttools") is None, (
+        "清单不应再声明 python-concurrenttools：p115client 自带 Requires-Dist 约束，"
+        "重复声明会与上游版本线脱节"
+    )
 
 
 @pytest.mark.parametrize("package", RUST_PACKAGES)
