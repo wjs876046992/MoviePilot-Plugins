@@ -3,6 +3,7 @@ import json
 import time
 from typing import Tuple, Optional
 
+from app.log import logger
 from app.utils.http import RequestUtils
 
 
@@ -58,16 +59,43 @@ class IyuuHelper(object):
         else:
             return None, f"请求IYUU失败，未获取到返回信息"
 
-    def get_torrent_url(self, sid: str) -> Tuple[Optional[str], Optional[str]]:
-        """根据站点 ID 返回站点基础地址和种子下载页地址。"""
+    def __get_site(self, sid) -> Optional[dict]:
+        """
+        按站点 ID 取 IYUU 站点配置，兼容整数与字符串 ID
+
+        :param sid: IYUU 站点 ID
+        :return: 站点配置，未维护时返回 None
+        """
         if not sid:
-            return None, None
+            return None
         if not self._sites:
             self._sites = self.__get_sites()
-        if not self._sites.get(sid):
+        return self._sites.get(sid) or self._sites.get(str(sid)) or None
+
+    def get_torrent_url(self, sid: str) -> Tuple[Optional[str], Optional[str]]:
+        """根据站点 ID 返回站点基础地址和种子下载页地址。"""
+        site = self.__get_site(sid)
+        if not site:
             return None, None
-        site = self._sites.get(sid)
         return site.get('base_url'), site.get('download_page')
+
+    def get_site_info(self, sid) -> Optional[dict]:
+        """
+        返回 IYUU 站点标识、昵称、站点地址与协议声明，用于站点匹配与拼装 API 地址
+
+        :param sid: IYUU 站点 ID
+        :return: 站点信息，未维护时返回 None
+        """
+        site = self.__get_site(sid)
+        if not site:
+            return None
+        return {"site": site.get("site"), "nickname": site.get("nickname"),
+                "base_url": site.get("base_url"), "is_https": site.get("is_https")}
+
+    def reset_sites(self):
+        """清空站点清单缓存，下次取用时重新向 IYUU 拉取"""
+        self._sites = {}
+        self._sid_sha1 = None
 
     def __get_sites(self) -> dict:
         """
@@ -82,7 +110,7 @@ class IyuuHelper(object):
                 ret_sites[site.get('id')] = site
             return ret_sites
         else:
-            print(msg)
+            logger.warning(f"获取IYUU站点列表失败：{msg}")
             return {}
 
     def __report_existing(self) -> Optional[str]:

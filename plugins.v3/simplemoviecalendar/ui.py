@@ -1,5 +1,8 @@
 """Small Vuetify JSON views shared by plugin details and optional dashboard."""
-from .calendar import BASE_URL, KINDS, beijing_timestamp, media_payload, rating_rows, release_line, release_timing
+from datetime import date
+from uuid import uuid4
+
+from .calendar import BASE_URL, KINDS, beijing_timestamp, media_payload, rating_rows, records, release_line, release_timing
 
 
 def _node(component, text=None, props=None, content=None):
@@ -33,33 +36,202 @@ def status_nodes(view: dict, *, show_timestamp: bool = True) -> list[dict]:
     return result
 
 
+PAGE_CSS = """
+.smc-page { container-type: inline-size; min-width: 0; }
+.smc-page .smc-toolbar { display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: 8px 16px; margin-bottom: 20px; }
+.smc-page .smc-updated { margin-inline-start: auto; color: rgba(var(--v-theme-on-surface), .65);
+    font-size: 12px; overflow-wrap: anywhere; text-align: end; }
+.smc-page .smc-section + .smc-section { margin-top: 26px; padding-top: 22px;
+    border-top: 1px solid rgba(var(--v-theme-on-surface), .12); }
+.smc-page .smc-heading { display: flex; align-items: center; gap: 9px;
+    font-size: 17px; font-weight: 600; margin: 0 0 12px; }
+.smc-page .smc-heading::before { content: ''; width: 4px; height: 17px;
+    border-radius: 3px; background: rgb(var(--v-theme-primary)); flex-shrink: 0; }
+.smc-page .smc-recent .smc-heading::before { background: rgba(var(--v-theme-on-surface), .5); }
+.smc-page .smc-grid { display: grid; grid-template-columns: minmax(0, 1fr);
+    align-items: start; gap: 14px; }
+.smc-page .smc-film { min-width: 0; border-radius: 11px; overflow: hidden;
+    border: 1px solid rgba(var(--v-theme-on-surface), .12); background: rgb(var(--v-theme-surface)); }
+.smc-page .smc-film.smc-pinned { border-color: #b38b3a;
+    border-color: color-mix(in srgb, #cba04b 82%, rgb(var(--v-theme-on-surface))); }
+.smc-page .smc-pin-badge { position: absolute; top: 8px; left: 8px; z-index: 1;
+    border-radius: 999px; padding: 2px 6px; background: #f8e3ac; color: #523d1c;
+    font-size: 10px; font-weight: 700; line-height: 16px; white-space: nowrap;
+    pointer-events: none; }
+.smc-page .smc-poster { position: relative; isolation: isolate; aspect-ratio: 2 / 3; width: 100%; min-width: 0;
+    display: grid; place-items: center; overflow: hidden;
+    background: rgba(var(--v-theme-on-surface), .06); }
+.smc-page .smc-film-info { min-width: 0; padding: 12px 11px 9px; text-align: center; }
+.smc-page .smc-film-summary { min-width: 0; }
+.smc-page .smc-film-title { font-size: 15px; line-height: 22px; font-weight: 600;
+    overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; overflow: hidden; }
+.smc-page .smc-original { color: rgba(var(--v-theme-on-surface), .6); font-size: 11px;
+    line-height: 17px; min-height: 17px; margin: 2px 0 9px; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; }
+.smc-page .smc-ratings { display: grid; align-content: center; gap: 3px; min-height: 43px; }
+.smc-page .smc-rating { display: flex; justify-content: center; align-items: center;
+    flex-wrap: wrap; gap: 3px 5px; font-size: 12px; line-height: 18px; }
+.smc-page .smc-brand { display: inline-flex; align-items: center; flex-shrink: 0;
+    justify-content: center; min-width: 27px; padding: 1px 3px; border-radius: 3px;
+    font-size: 10px; line-height: 14px; font-weight: 800; }
+.smc-page .smc-brand-douban { background: #12a64e; color: #fff; }
+.smc-page .smc-brand-imdb { background: #f5c518; color: #191811; letter-spacing: -.5px; }
+.smc-page .smc-score { font-weight: 600; }
+.smc-page .smc-votes, .smc-page .smc-unrated { color: rgba(var(--v-theme-on-surface), .6);
+    font-size: 11px; overflow-wrap: anywhere; }
+.smc-page .smc-release-summary { border-top: 1px solid rgba(var(--v-theme-on-surface), .12);
+    margin-top: 11px; padding-top: 10px; }
+.smc-page .smc-timing { display: inline-block; color: rgb(var(--v-theme-primary));
+    background: rgba(var(--v-theme-primary), .08); border: 1px solid rgba(var(--v-theme-primary), .15);
+    border-radius: 14px; padding: 1px 9px; font-size: 11px; line-height: 20px; }
+.smc-page .smc-recent .smc-timing { color: rgba(var(--v-theme-on-surface), .65);
+    background: rgba(var(--v-theme-on-surface), .04); border-color: rgba(var(--v-theme-on-surface), .1); }
+.smc-page .smc-date { font-size: 11px; line-height: 18px; margin-top: 6px;
+    color: rgba(var(--v-theme-on-surface), .7); font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere; text-wrap: balance; }
+.smc-page .smc-details { margin-top: 3px; min-width: 0; }
+.smc-page .smc-details summary { color: rgb(var(--v-theme-primary)); cursor: pointer;
+    min-height: 28px; display: flex; justify-content: center; align-items: center;
+    gap: 3px; list-style: none; font-size: 11px; }
+.smc-page .smc-details summary::-webkit-details-marker { display: none; }
+.smc-page .smc-details .smc-expand-icon { font-size: 15px; }
+.smc-page .smc-details[open] .smc-expand-icon { transform: rotate(180deg); }
+.smc-page .smc-versions { border-top: 1px solid rgba(var(--v-theme-on-surface), .12);
+    margin-top: 5px; padding-top: 8px; text-align: start; color: rgba(var(--v-theme-on-surface), .7); }
+.smc-page .smc-version { font-size: 12px; line-height: 1.8;
+    white-space: pre-line; overflow-wrap: anywhere; }
+.smc-page .smc-version + .smc-version { margin-top: 5px; }
+.smc-page .smc-footer { display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: flex-end; gap: 8px; margin-top: 18px; }
+@container (min-width: 260px) {
+    .smc-page .smc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 560px) {
+    .smc-page .smc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (min-width: 800px) {
+    .smc-page .smc-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@container (min-width: 1060px) {
+    .smc-page .smc-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+@container (max-width: 559px) {
+    .smc-page .smc-grid { gap: 12px; }
+    .smc-page .smc-film-info { padding: 10px 7px 8px; }
+    .smc-page .smc-pin-badge { top: 6px; left: 6px; padding: 1px 5px; font-size: 9px; }
+    .smc-page .smc-film-title { font-size: 14px; line-height: 21px; }
+    .smc-page .smc-original, .smc-page .smc-votes, .smc-page .smc-unrated { font-size: 10px; }
+    .smc-page .smc-rating { gap: 3px 4px; }
+    .smc-page .smc-brand { font-size: 9px; min-width: 24px; line-height: 13px; padding: 1px 2px; }
+    .smc-page .smc-date { font-size: 10px; }
+}
+@media (pointer: coarse) {
+    .smc-page .smc-details summary { min-height: 44px; }
+}
+"""
+
+
+def _page_ratings(movie: dict) -> dict:
+    """展示真实评分和原有的人数文案，缺少来源时不补造评分。"""
+    rows = []
+    for provider, score, votes in rating_rows(movie):
+        label = '豆瓣' if provider == 'douban' else 'IMDb'
+        children = [
+            _node('span', label, {'class': 'smc-brand smc-brand-' + provider}),
+            _node('span', score, {'class': 'smc-score' if score[0].isdigit() else 'smc-unrated'}),
+        ]
+        if votes:
+            children.append(_node('span', votes, {'class': 'smc-votes'}))
+        rows.append(_node('div', props={'class': 'smc-rating', 'aria-label': label + '评分'}, content=children))
+    return _node('div', props={'class': 'smc-ratings'}, content=rows or [
+        _node('span', '暂无评分', {'class': 'smc-unrated'}),
+    ])
+
+
 def movie_card(record: dict, view: dict, today: str) -> dict:
-    """Show every release version, and link to the maintained public film page."""
+    """大海报下居中展示评分和单次发行摘要，完整版本在当前卡片展开。"""
     item = media_payload(record, view['snapshot'], today, stale=view['stale'])
-    text = [
-        _node('div', item['title_year'], {'class': 'text-subtitle-1 font-weight-bold'}),
-        _node('div', item['tagline'], {'class': 'text-caption mb-2', 'style': 'white-space:pre-line;overflow-wrap:anywhere'}),
-    ]
-    for release in record['releases']:
-        text.append(_node('div', release_line(release), {'class': 'text-body-2 mb-1', 'style': 'white-space:pre-line;overflow-wrap:anywhere'}))
-    text.append(_node('VBtn', '查看完整排期', {'href': item['homepage'], 'target': '_blank', 'rel': 'noopener noreferrer', 'variant': 'text', 'size': 'small', 'class': 'mt-1'}))
-    columns = []
-    if item['poster_path']:
-        columns.append(_node('VCol', props={'cols': 3, 'sm': 2}, content=[_node('VImg', props={'src': item['poster_path'], 'aspect-ratio': 2 / 3, 'cover': True, 'max-width': 96, 'alt': item['title']})]))
-    columns.append(_node('VCol', props={'cols': 9 if item['poster_path'] else 12, 'sm': 10 if item['poster_path'] else 12}, content=text))
-    return _node('VCard', props={'variant': 'outlined', 'class': 'mb-3'}, content=[_node('VCardText', content=[_node('VRow', props={'dense': True}, content=columns)])])
+    release_date = record['primary']['date']
+    same_day_kinds = {release.get('kind') for release in record['releases'] if release['date'] == release_date}
+    kinds = ' · '.join(KINDS[kind] for kind in ('digital', 'physical', 'streaming') if kind in same_day_kinds)
+    timing = release_timing(release_date, today)
+    if not record['upcoming']:
+        timing = f'已发行 {(date.fromisoformat(today) - date.fromisoformat(release_date)).days} 天'
+    subtitle = ' · '.join(part for part in (
+        item['original_title'] if item['original_title'] != item['title'] else None, item['year'],
+    ) if part)
+    summary = _node('div', props={'class': 'smc-film-summary'}, content=[
+        _node('div', item['title'], {'class': 'smc-film-title', 'title': item['title']}),
+        _node('div', subtitle, {'class': 'smc-original', 'title': subtitle}),
+        _page_ratings(record['movie']),
+        _node('div', props={'class': 'smc-release-summary'}, content=[
+            _node('span', timing, {'class': 'smc-timing'}),
+            _node('div', props={'class': 'smc-date'}, content=[
+                _node('time', release_date, {'datetime': release_date}),
+                _node('span', ' · ' + (kinds or '发行')),
+            ]),
+        ]),
+    ])
+    poster = _node('VImg', props={
+        'src': item['poster_path'], 'width': '100%', 'aspect-ratio': 2 / 3, 'cover': True, 'alt': item['title'],
+    }) if item['poster_path'] else _node('VIcon', props={'icon': 'mdi-movie-outline', 'aria-hidden': 'true'})
+    details = _node('details', props={'class': 'smc-details'}, content=[
+        _node('summary', '完整排期', content=[
+            _node('VIcon', props={'icon': 'mdi-chevron-down', 'class': 'smc-expand-icon', 'aria-hidden': 'true'}),
+        ]),
+        _node('div', props={'class': 'smc-versions'}, content=[
+            _node('div', release_line(release), {'class': 'smc-version'}) for release in record['releases']
+        ]),
+    ])
+    # 与即将发行的排序逻辑保持一致；过去影片保留标记时也不高亮。
+    pinned = record['upcoming'] and record['movie'].get('pinned')
+    poster_content = [poster]
+    if pinned:
+        poster_content.append(_node('span', '置顶推荐', {'class': 'smc-pin-badge'}))
+    return _node('article', props={
+        'class': 'smc-film smc-pinned' if pinned else 'smc-film', 'aria-label': item['title'],
+    }, content=[
+        _node('div', props={'class': 'smc-poster'}, content=poster_content),
+        _node('div', props={'class': 'smc-film-info'}, content=[summary, details]),
+    ])
 
-
-def calendar_nodes(view: dict, items: list[dict], today: str, title: str) -> list[dict]:
-    """Render cached records without triggering per-film requests."""
-    result = status_nodes(view)
-    if view.get('snapshot') is not None:
-        result.append(_node('div', title, {'class': 'text-subtitle-1 mb-3'}))
-        if not items:
-            result.append(_node('div', '暂无符合条件的发行排期。', {'class': 'text-body-2 mb-3'}))
-        result.extend(movie_card(item, view, today) for item in items)
-    result.append(_node('VBtn', '打开完整观影日历', {'href': BASE_URL, 'target': '_blank', 'rel': 'noopener noreferrer', 'variant': 'text'}))
-    return result
+def calendar_nodes(view: dict, items: list[dict], today: str, *, refresh_api: str | None = None) -> list[dict]:
+    """生成按容器宽度重排的详情页，分区内按既有日期顺序显示。"""
+    toolbar = []
+    if refresh_api:
+        refresh = _node('VBtn', '立即更新日历', {
+            'variant': 'tonal', 'color': 'primary', 'size': 'small', 'prepend-icon': 'mdi-refresh',
+        })
+        refresh['events'] = {'click': {'api': refresh_api, 'method': 'post', 'params': {}}}
+        toolbar.append(refresh)
+    snapshot = view.get('snapshot')
+    if snapshot is not None:
+        timestamp = snapshot['generated_at']
+        state = '缓存 · ' if view.get('stale') else ''
+        toolbar.append(_node('time', state + '更新于 ' + beijing_timestamp(timestamp) + ' · 北京时间', {
+            'datetime': timestamp, 'class': 'smc-updated',
+        }))
+    content = [_node('div', props={'class': 'smc-toolbar'}, content=toolbar)] if toolbar else []
+    content.extend(status_nodes(view, show_timestamp=False))
+    if snapshot is not None:
+        for upcoming, label in ((True, '即将发行'), (False, '最近发行')):
+            group = [item for item in items if item['upcoming'] is upcoming]
+            grid = _node('div', props={'class': 'smc-grid'}, content=[
+                movie_card(item, view, today) for item in group[:100]
+            ]) if group else _node('div', '暂无' + label + '的电影', {'class': 'text-body-2 text-medium-emphasis'})
+            content.append(_node('section', props={
+                'class': 'smc-section' if upcoming else 'smc-section smc-recent', 'aria-label': label,
+            }, content=[_node('h3', label, {'class': 'smc-heading'}), grid]))
+        footer = []
+        if any(sum(item['upcoming'] is upcoming for item in items) > 100 for upcoming in (True, False)):
+            footer.append(_node('span', '每个区域最多显示 100 部，更多请到探索页查看。', {'class': 'text-caption text-medium-emphasis'}))
+        footer.append(_node('VBtn', '查看完整观影日历', {
+            'href': BASE_URL, 'target': '_blank', 'rel': 'noopener noreferrer', 'variant': 'text', 'size': 'small',
+        }))
+        content.append(_node('div', props={'class': 'smc-footer'}, content=footer))
+    return [_node('style', PAGE_CSS), _node('div', props={'class': 'smc-page'}, content=content)]
 
 
 def _dashboard_ratings(movie: dict) -> list[dict]:
@@ -90,7 +262,7 @@ def _dashboard_ratings(movie: dict) -> list[dict]:
 
 
 def _dashboard_card(record: dict, snapshot: dict, today: str) -> dict:
-    """Link one poster and its compact release summary to the full schedule."""
+    """居中展示海报、评分和发行信息，影片卡片保持纯展示。"""
     item = media_payload(record, snapshot, today)
     release_date = record['primary']['date']
     timing = release_timing(release_date, today).replace(' ', '')
@@ -113,9 +285,8 @@ def _dashboard_card(record: dict, snapshot: dict, today: str) -> dict:
         'display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;'
         'overflow:hidden;overflow-wrap:anywhere;line-height:1.35'
     )
-    return _node('a', props={
-        'href': item['homepage'], 'target': '_blank', 'rel': 'noopener noreferrer',
-        'title': item['title'],
+    return _node('div', props={
+        'class': 'smc-dashboard-film', 'aria-label': item['title'],
         'style': 'display:block;min-width:0;scroll-snap-align:start;color:inherit;text-decoration:none;text-align:center',
     }, content=[
         _node('div', props={
@@ -131,6 +302,66 @@ def _dashboard_card(record: dict, snapshot: dict, today: str) -> dict:
             'class': 'text-caption text-medium-emphasis', 'style': 'text-wrap:balance;word-break:keep-all;overflow-wrap:anywhere',
         }),
     ])
+
+
+MORE_CSS = """
+.smc-dashboard-more { width: 42px; padding: 12px 8px; align-self: start;
+    height: calc(clamp(min(100cqw, 118px), 26cqw, 156px) * 1.5);
+    border: 1px solid rgba(var(--v-theme-primary), .18); border-radius: 8px;
+    background: rgba(var(--v-theme-primary), .06); color: rgb(var(--v-theme-primary));
+    font: inherit; font-size: 13px; writing-mode: vertical-rl; text-orientation: upright;
+    letter-spacing: 3px; cursor: pointer; scroll-snap-align: end; }
+.smc-dashboard-more:hover { background: rgba(var(--v-theme-primary), .12); }
+.smc-calendar-popup { display: none; position: fixed; inset: 0; margin: auto;
+    width: min(80rem, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+    overflow: auto; overscroll-behavior: contain; padding: 0;
+    border: 1px solid rgba(var(--v-theme-on-surface), .12); border-radius: 14px;
+    background: rgb(var(--v-theme-surface)); color: rgb(var(--v-theme-on-surface));
+    box-shadow: 0 16px 48px rgba(0, 0, 0, .24); }
+.smc-calendar-popup:popover-open { display: block; }
+.smc-calendar-popup::backdrop { background: rgba(0, 0, 0, .4); pointer-events: auto; }
+.smc-calendar-popup .smc-popup-header { display: flex; justify-content: space-between;
+    align-items: center; gap: 12px; padding: 16px 20px; position: sticky; top: 0;
+    background: rgb(var(--v-theme-surface)); z-index: 1;
+    border-bottom: 1px solid rgba(var(--v-theme-on-surface), .12); }
+.smc-calendar-popup .smc-popup-title { font-size: 20px; font-weight: 600; margin: 0; }
+.smc-calendar-popup .smc-popup-close { font: inherit; font-size: 24px; cursor: pointer;
+    display: grid; place-items: center; width: 40px; height: 40px;
+    border: 0; border-radius: 8px; color: inherit; background: transparent; }
+.smc-calendar-popup .smc-popup-close:hover { background: rgba(var(--v-theme-on-surface), .08); }
+.smc-calendar-popup .smc-popup-body { padding: 18px 20px 24px; }
+@media (max-width: 600px) {
+    .smc-calendar-popup { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+    .smc-calendar-popup .smc-popup-header { padding: 12px; }
+    .smc-calendar-popup .smc-popup-body { padding: 14px 12px; }
+}
+"""
+
+
+def _dashboard_more(view: dict, today: str) -> tuple[dict, dict]:
+    """用唯一原生触发器打开同一缓存的完整排期，无需仪表盘 API 事件。"""
+    popup_id = 'smc-calendar-' + uuid4().hex
+    title_id = popup_id + '-title'
+    button = _node('button', '查看更多', {
+        'type': 'button', 'class': 'smc-dashboard-more', 'aria-label': '查看更多发行排期',
+        'popovertarget': popup_id, 'popovertargetaction': 'show',
+    })
+    popup = _node('div', props={
+        'id': popup_id, 'popover': 'auto', 'role': 'dialog',
+        'aria-labelledby': title_id, 'class': 'smc-calendar-popup',
+    }, content=[
+        _node('div', props={'class': 'smc-popup-header'}, content=[
+            _node('h2', '简单观影日历', {'id': title_id, 'class': 'smc-popup-title'}),
+            _node('button', '×', {
+                'type': 'button', 'class': 'smc-popup-close', 'aria-label': '关闭观影日历',
+                'autofocus': True, 'popovertarget': popup_id, 'popovertargetaction': 'hide',
+            }),
+        ]),
+        _node('div', props={'class': 'smc-popup-body'}, content=calendar_nodes(
+            view, records(view['snapshot'], today, group='all'), today,
+        )),
+    ])
+    return button, popup
 
 
 def dashboard_nodes(view: dict, items: list[dict], today: str) -> list[dict]:
@@ -150,17 +381,21 @@ def dashboard_nodes(view: dict, items: list[dict], today: str) -> list[dict]:
         }, content=header),
         *status_nodes(view, show_timestamp=False),
     ]
-    if items:
+    if snapshot is not None:
+        more, popup = _dashboard_more(view, today)
+        if not items:
+            nodes.append(_node('div', '暂无即将发行的电影', {'class': 'text-body-2 text-medium-emphasis mb-2'}))
+        columns = f'repeat({len(items)}, clamp(min(100%,118px),26%,156px)) 42px' if items else '42px'
+        nodes.append(_node('style', MORE_CSS))
         nodes.append(_node('div', props={
             'role': 'region', 'aria-label': '即将发行电影', 'tabindex': 0,
             'style': (
-                'display:grid;grid-auto-flow:column;grid-auto-columns:clamp(min(100%,118px),26%,156px);'
-                'gap:10px;min-width:0;max-width:100%;overflow-x:auto;'
+                f'display:grid;grid-auto-flow:column;grid-template-columns:{columns};'
+                'container-type:inline-size;gap:10px;min-width:0;max-width:100%;overflow-x:auto;'
                 'scroll-snap-type:x proximity;padding-block-end:6px'
             ),
-        }, content=[_dashboard_card(item, snapshot, today) for item in items]))
-    elif snapshot is not None:
-        nodes.append(_node('div', '暂无即将发行的电影', {'class': 'text-body-2 text-medium-emphasis'}))
+        }, content=[*(_dashboard_card(item, snapshot, today) for item in items), more]))
+        nodes.append(popup)
     return nodes
 
 
